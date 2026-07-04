@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-06-20",
+  "sources": [
+    {
+      "name": "alpha news",
+      "entity": "https://t.me/example_channel",
+      "enabled": true,
+      "limit": 30,
+      "notes": "Use a public t.me link, @username, channel id, or group id."
+    }
+  ]
+}

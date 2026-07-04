@@ -1,0 +1,645 @@
+{
+  "generated_at": "2026-07-01T05:59:01+00:00",
+  "items": [
+    {
+      "symbol": "O",
+      "name": "o1 exchange",
+      "priority": "P4_ARCHIVED_CASE",
+      "active_monitoring": false,
+      "archive_reason": "User has no O position and paused active O1 wallet monitoring on 2026-06-22. Keep as historical training case only.",
+      "chain": "bsc",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0x500A02a20B0b0A3F3efCCFc0559543F5743bd1C4",
+          "confidence": "from_collected_screenshot_and_tweet_ocr"
+        },
+        {
+          "chain": "base",
+          "address": "0x500A02a20B0b0A3F3efCCFc0559543F5743bd1C4",
+          "confidence": "from_collected_screenshot_and_tweet_ocr"
+        },
+        {
+          "chain": "base",
+          "address": "0x182fa643e5f29d5eca75e7b9cf9336a3fe4620b2",
+          "confidence": "from_hertzflow_coingecko_platforms_needs_official_confirmation"
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha launch and airdrop",
+        "cross-chain BSC/Base setup",
+        "opening block bribe/bundle case study"
+      ],
+      "known_blocks": [
+        {
+          "chain": "bsc",
+          "block": 104769548,
+          "reason": "opening block with failed 368.88 BNB bribe evidence"
+        }
+      ],
+      "known_txs": [
+        {
+          "chain": "bsc",
+          "tx": "0x19fabd65d1106ae7816e119342058404732098fbaab7fdf2d938ed2b9bf1bcc3",
+          "reason": "failed bribe transaction from collected case"
+        }
+      ],
+      "required_checks": [
+        "block_transaction_order",
+        "internal_transactions",
+        "lp_position",
+        "front_run_wallet_followup",
+        "project_wallet_followup"
+      ]
+    },
+    {
+      "symbol": "RE",
+      "name": "Re",
+      "priority": "P1_MONITOR",
+      "chain": "unknown",
+      "contracts": [],
+      "catalysts": [
+        "Binance spot listing on 2026-06-18 14:00 UTC",
+        "OKX spot and derivatives announcements",
+        "Prime Sale / Alpha path"
+      ],
+      "required_checks": [
+        "official_contract",
+        "prime_sale_addresses",
+        "cex_deposit_addresses",
+        "spot_perp_basis",
+        "airdrop_claim_to_cex_flow"
+      ]
+    },
+    {
+      "symbol": "ARX",
+      "name": "Arcium",
+      "priority": "P0_DEEP_REVIEW",
+      "project_watch_skip_generic": true,
+      "market_context": {
+        "pool_init_price_usdt_per_arx": "0.13000013",
+        "coinlist_public_sale_price_usdt": "0.20",
+        "premarket_reference_price_usdt": "0.30",
+        "snipe_200k_reaches_usdt": "0.20",
+        "snipe_400k_reaches_usdt": "0.30",
+        "observed_binance_alpha_price_usdt": "0.4475",
+        "observed_binance_alpha_time_utc8": "2026-06-22 18:46:00"
+      },
+      "event_distributions": [
+        {
+          "name": "Binance Alpha airdrop",
+          "amount_arx": "8500000",
+          "share_of_total": "0.85%",
+          "notes": "User-provided launch note: 49419 spots, 172 ARX each."
+        },
+        {
+          "name": "OKX Booster",
+          "amount_arx": "3000000",
+          "share_of_total": "0.30%",
+          "notes": "Reward pool screenshot shows 3,000,000 ARX on BNB Chain."
+        }
+      ],
+      "chain": "bsc",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0xd5f6ef5deabe61e6d5cdb49bfb6f156f2c1ca715",
+          "confidence": "cmc_and_alpha_news_match"
+        }
+      ],
+      "catalysts": [
+        "BSC bridge signal from local tweet archive",
+        "OKX Boost 0.3% token allocation signal",
+        "Wormhole contract verification lead",
+        "Binance Alpha v4 pool initialized",
+        "OKX Boost / Binance Wallet Booster distribution",
+        "TGE launch window 2026-06-22 UTC+8",
+        "CoinList sale price reference 0.20 USDT"
+      ],
+      "required_checks": [
+        "watch_pool_start_block",
+        "block_transaction_order",
+        "bribe_internal_transactions",
+        "first_buyers_and_project_wallets",
+        "holder_distribution_changes",
+        "boost_distribution_outflow",
+        "market_maker_usdt_and_arx_flow"
+      ],
+      "known_blocks": [
+        {
+          "chain": "bsc",
+          "block": 105344120,
+          "reason": "PoolId 0x8f7d... initialized; start 2026-06-23 02:00 UTC+8"
+        },
+        {
+          "chain": "bsc",
+          "block": 105345242,
+          "reason": "PoolId 0xf617... initialized; start 2026-06-22 18:00 UTC+8"
+        }
+      ],
+      "known_txs": [
+        {
+          "chain": "bsc",
+          "tx": "0x6d64e30fd3da3eaea34f778665a4c09599b08f35b5818632fcea366c60810a8a",
+          "reason": "OKX Boost distribution creation; 3,000,000 ARX to distributor"
+        },
+        {
+          "chain": "bsc",
+          "tx": "0xe122ba03f59ecdd97cebb0dba838e54728766c7e47baea571470c58cb8135cd4",
+          "reason": "v4 pool initialize, price 0.13000013, start 2026-06-23 02:00 UTC+8"
+        },
+        {
+          "chain": "bsc",
+          "tx": "0x6b7725e399135c897820cb090939f12ebda8de63a318bc697392526d671600b1",
+          "reason": "v4 pool initialize, price 0.13000013, start 2026-06-22 18:00 UTC+8"
+        }
+      ],
+      "pool_ids": [
+        {
+          "chain": "bsc",
+          "pool_id": "0x8f7d8f0d55d773b9390d373649573382c19614dad2df4529c2e3bdce07f68fb5",
+          "start_time_utc8": "2026-06-23 02:00:00",
+          "initial_price_usdt_per_arx": "0.13000013"
+        },
+        {
+          "chain": "bsc",
+          "pool_id": "0xf6170c9b48765c56dae252b10e87e9ac51330846fdb613b922f894bc9968a48f",
+          "start_time_utc8": "2026-06-22 18:00:00",
+          "initial_price_usdt_per_arx": "0.13000013"
+        }
+      ]
+    },
+    {
+      "symbol": "GRAM",
+      "name": "GRAM",
+      "priority": "P2_PAPER_TRADE",
+      "chain": "unknown",
+      "contracts": [],
+      "catalysts": [
+        "OKX spot announcement",
+        "OKX Expiry Perp announcement"
+      ],
+      "required_checks": [
+        "official_contract",
+        "okx_deposit_flow",
+        "spot_perp_basis"
+      ]
+    },
+    {
+      "symbol": "NES",
+      "name": "Nesa",
+      "priority": "P0_DEEP_REVIEW",
+      "chain": "bsc",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0x3131f6b80c26936ab03f7d9d29eb4ddf36ac3fb5",
+          "confidence": "aLiiDeez tweet and BSC ERC20 metadata verified"
+        }
+      ],
+      "market_context": {
+        "pool_init_price_usdt_per_nes": "0.11",
+        "fdv_at_pool_init_usd": "110000000",
+        "snipe_400k_end_price_usdt": "0.22336945",
+        "snipe_400k_avg_usdt": "0.15676075",
+        "snipe_1000k_avg_usdt": "0.22743143",
+        "snipe_1100k_end_price_usdt": "0.75343890",
+        "buy_support_total_quote": "500000",
+        "sell_zone_total_token": "4000000",
+        "overrange_buy_pressure_quote": "1090000",
+        "pool_zones": [
+          {
+            "position_id": "860400",
+            "type": "buy_support",
+            "min_price_usdt": "0.054976",
+            "max_price_usdt": "0.108948",
+            "quote_amount": "350000",
+            "token_amount": "0"
+          },
+          {
+            "position_id": "860401",
+            "type": "buy_support",
+            "min_price_usdt": "0.033014",
+            "max_price_usdt": "0.108948",
+            "quote_amount": "150000",
+            "token_amount": "0"
+          },
+          {
+            "position_id": "860404",
+            "type": "sell_zone",
+            "min_price_usdt": "0.111148",
+            "max_price_usdt": "0.440010",
+            "quote_amount": "0",
+            "token_amount": "3000000"
+          },
+          {
+            "position_id": "860405",
+            "type": "sell_zone",
+            "min_price_usdt": "0.111148",
+            "max_price_usdt": "0.770291",
+            "quote_amount": "0",
+            "token_amount": "1000000"
+          }
+        ],
+        "snipe_curve": [
+          {
+            "buy_pressure_usdt": "100000",
+            "amount_out_token": "821721.61738595",
+            "avg_price_usdt": "0.12169572",
+            "end_price_usdt": "0.13461693"
+          },
+          {
+            "buy_pressure_usdt": "200000",
+            "amount_out_token": "1499429.54098096",
+            "avg_price_usdt": "0.13338406",
+            "end_price_usdt": "0.16171749"
+          },
+          {
+            "buy_pressure_usdt": "300000",
+            "amount_out_token": "2067932.90716402",
+            "avg_price_usdt": "0.14507240",
+            "end_price_usdt": "0.19130166"
+          },
+          {
+            "buy_pressure_usdt": "400000",
+            "amount_out_token": "2551659.14161227",
+            "avg_price_usdt": "0.15676075",
+            "end_price_usdt": "0.22336945"
+          },
+          {
+            "buy_pressure_usdt": "500000",
+            "amount_out_token": "2968255.78971330",
+            "avg_price_usdt": "0.16844909",
+            "end_price_usdt": "0.25792087"
+          },
+          {
+            "buy_pressure_usdt": "600000",
+            "amount_out_token": "3330790.10313740",
+            "avg_price_usdt": "0.18013744",
+            "end_price_usdt": "0.29495590"
+          },
+          {
+            "buy_pressure_usdt": "700000",
+            "amount_out_token": "3649144.47404643",
+            "avg_price_usdt": "0.19182578",
+            "end_price_usdt": "0.33447455"
+          },
+          {
+            "buy_pressure_usdt": "800000",
+            "amount_out_token": "3930931.00884542",
+            "avg_price_usdt": "0.20351413",
+            "end_price_usdt": "0.37647683"
+          },
+          {
+            "buy_pressure_usdt": "900000",
+            "amount_out_token": "4182108.06112161",
+            "avg_price_usdt": "0.21520247",
+            "end_price_usdt": "0.42096272"
+          },
+          {
+            "buy_pressure_usdt": "1000000",
+            "amount_out_token": "4396929.66492490",
+            "avg_price_usdt": "0.22743143",
+            "end_price_usdt": "0.55386212"
+          },
+          {
+            "buy_pressure_usdt": "1090000",
+            "amount_out_token": "4536241.67558886",
+            "avg_price_usdt": "0.24028702",
+            "end_price_usdt": "0.75343890"
+          }
+        ],
+        "pool_range_note": "350K+150K buy support; 3M+1M sell zone; over 1.1M USDT buy pressure exits range",
+        "quality_note": "aLiiDeez: relative quality/background weaker than recent Alpha launches"
+      },
+      "event_distributions": [
+        {
+          "name": "Binance Alpha",
+          "share_of_total": "1%",
+          "notes": "from aLiiDeez: BN total allocation 2.75%"
+        },
+        {
+          "name": "Binance Booster",
+          "share_of_total": "0.1%",
+          "notes": "activity distribution risk"
+        },
+        {
+          "name": "Binance follow-up activities",
+          "share_of_total": "1.65%",
+          "notes": "post-launch distribution risk"
+        }
+      ],
+      "watch_addresses": [
+        {
+          "chain": "bsc",
+          "address": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+          "label": "v4 PoolManager",
+          "role": "pool_manager",
+          "level": "CRITICAL"
+        },
+        {
+          "chain": "bsc",
+          "address": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+          "label": "old_hook",
+          "role": "pool_hook",
+          "level": "HIGH",
+          "watch_quote": true
+        },
+        {
+          "chain": "bsc",
+          "address": "0xb55edcbec988931a1f25f541b1c09f7ab817cd9e",
+          "label": "hook_operator",
+          "role": "pool_time_operator",
+          "level": "HIGH",
+          "watch_quote": true
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha TGE on 2026-06-24 20:00 UTC+8",
+        "old hook only sets start time; token confirmed by poolId match",
+        "NES/USDT pair",
+        "possible OKX/KuCoin transfer tests",
+        "bridge open; monitor large BSC inflows",
+        "BN activity allocation 2.75%"
+      ],
+      "required_checks": [
+        "pool_id_match_confirmation",
+        "watch_pool_start_block",
+        "block_transaction_order",
+        "bribe_internal_transactions",
+        "first_buyers_and_exit_trace",
+        "bridge_large_inflow",
+        "cex_transfer_tests",
+        "activity_distribution_outflow"
+      ],
+      "known_txs": [
+        {
+          "chain": "bsc",
+          "tx": "0xfcd88cfde82ca46530621dce5276cf46f9b3f9c9e91ca472a4d2208a5faf762b",
+          "reason": "old hook start time update; poolId expected-match confirmation from aLiiDeez image"
+        }
+      ],
+      "pool_ids": [
+        {
+          "chain": "bsc",
+          "pool_id": "0x1c0195a12979e395d956a9e2581ef720b925b2a7cc1c60a5b82d9fc0fc564ffa",
+          "start_time_utc8": "2026-06-24 20:00:00",
+          "initial_price_usdt": "0.11",
+          "hook": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+          "operator": "0xb55edcbec988931a1f25f541b1c09f7ab817cd9e",
+          "pair": "NES/USDT",
+          "confirmation": "candidate token and poolId matched in aLiiDeez image"
+        }
+      ]
+    },
+    {
+      "symbol": "CAP",
+      "name": "CAP",
+      "priority": "P1_MONITOR",
+      "chain": "bsc",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0x99991c6AAbba5a096f24f250b73580F5179b9999",
+          "confidence": "telegram_user_alpha_news_okx_boost_and_bsc_receipt_verified"
+        }
+      ],
+      "market_context": {
+        "pool_init_price_usdt_per_cap": "0.01",
+        "premarket_reference_price_usdt": "0.021-0.025",
+        "estimated_snipe_price_usdt": "0.025",
+        "snipe_400k_reaches_usdt": "0.025",
+        "binance_tge_cost_est_usdt": "0.0034",
+        "institution_avg_cost_usdt": "0.00825",
+        "public_sale_cost_usdt": "0.011",
+        "total_supply_cap": "10000000000",
+        "initial_circulation_pct": "15.6",
+        "initial_pressure_pct": "5.0",
+        "binance_alpha_airdrop_pct": "1.0",
+        "ico_tge_pressure_pct": "4.0",
+        "okx_boost_pct": "0.2",
+        "pool_tvl_usd": "300000",
+        "observed_premarket_price_usdt": "0.0214",
+        "observed_premarket_time_utc8": "2026-06-26 18:40:00",
+        "erc_unreleased_timelock_pct_reported": "84.5",
+        "cex_prefund_pct_reported": "4.0",
+        "airdrop_claim_open_reported": true,
+        "bridge_open_reported": true,
+        "latest_kol_signal_utc8": "2026-06-26",
+        "latest_kol_signal_summary": "Reported first sniper spent about 400k USDT with 680 BNB bribe, airdrop claim open, bridge open, and around 4% moved to exchanges before open."
+      },
+      "event_distributions": [
+        {
+          "name": "Binance Alpha TGE / airdrop",
+          "amount_cap": "100000000",
+          "share_of_total": "1.0%",
+          "notes": "User-provided launch note: Binance Alpha TGE 2026-06-26 18:00-20:00 UTC+8."
+        },
+        {
+          "name": "ICO TGE unlock",
+          "amount_cap": "400000000",
+          "share_of_total": "4.0%",
+          "notes": "User-provided tokenomics: ICO/TGE initial pressure around 4%."
+        },
+        {
+          "name": "OKX Boost",
+          "amount_cap": "20000000",
+          "share_of_total": "0.2%",
+          "notes": "Message 787 reported new OKX Boost distribution; BSC tx receipt verified 20,000,000 CAP into distribution address."
+        }
+      ],
+      "watch_addresses": [
+        {
+          "chain": "bsc",
+          "address": "0x6f4a11d6d6d4701f0c78fb06b3ee82424e67fb6b",
+          "label": "OKX Boost CAP 分发地址",
+          "role": "event_distribution",
+          "event": "OKX Boost",
+          "level": "HIGH",
+          "watch_quote": false
+        },
+        {
+          "chain": "bsc",
+          "address": "0x9999b7e3cc6979223ff1af980b7d8b90b75d9999",
+          "label": "CAP Alpha空投领取地址",
+          "role": "event_distribution",
+          "event": "Binance Alpha TGE / airdrop",
+          "level": "CRITICAL",
+          "watch_quote": false
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha launch 2026-06-26 20:00 UTC+8",
+        "Coinbase / Bybit / KuCoin / HTX / MEXC / Kraken listing window reported around 21:00 UTC+8",
+        "Binance TGE cost estimated around 0.0034 USDT",
+        "Pool price 0.01 USDT and premarket 0.021-0.025 USDT",
+        "Initial pressure includes Binance Alpha 1%, ICO 4%, OKX Boost 0.2%",
+        "OKX Boost new distribution created",
+        "20,000,000 CAP moved to BSC distribution address",
+        "Airdrop claim address reported active after launch",
+        "Bridge reportedly open after launch",
+        "ERC unreleased allocation reportedly timelocked"
+      ],
+      "required_checks": [
+        "watch_pool_start_block",
+        "block_transaction_order",
+        "bribe_internal_transactions",
+        "first_buyers_and_exit_trace",
+        "tge_claim_to_dex_or_cex_flow",
+        "ico_unlock_outflow",
+        "distribution_outflow",
+        "cex_deposit_flow",
+        "holder_distribution_changes",
+        "official_contract",
+        "activity_claim_rules",
+        "airdrop_claim_address_outflow",
+        "bridge_open_flow",
+        "erc_timelock_verification",
+        "cex_prefund_verification"
+      ],
+      "known_txs": [
+        {
+          "chain": "bsc",
+          "tx": "0x30ca0e5e8a533a9ecb219c45e4aadac8ccf0e1d22ca3d1baa26e30606f2da99a",
+          "block": 106297543,
+          "reason": "OKX Boost distribution creation; verified 20,000,000 CAP transfer to distribution address"
+        },
+        {
+          "chain": "bsc",
+          "tx": "0xadc645fffaac98984a212f80ac109bcfd88e565ebee9f1cd1a2c7249995bd944",
+          "estimated_spent_quote": "400200",
+          "reason": "Opening sniper transaction from aLiiDeez post; buyer receives CAP while quote spend is inferred from pool-side USDT inflow and 680 BNB bribe is visible as internal payment"
+        }
+      ],
+      "pool_ids": [
+        {
+          "chain": "bsc",
+          "pool_id": "",
+          "start_time_utc8": "2026-06-26 20:00:00",
+          "initial_price_usdt_per_cap": "0.01",
+          "quote_address": "0x55d398326f99059ff775485246999027b3197955",
+          "notes": "PoolId pending; user screenshot shows PancakeSwap USDT/CAP CLAMM with 300K USDT and 30M CAP."
+        }
+      ]
+    },
+    {
+      "symbol": "ESPORTS",
+      "name": "ESPORTS",
+      "priority": "P2_PAPER_TRADE",
+      "chain": "unknown",
+      "contracts": [],
+      "catalysts": [
+        "Binance Alpha regional trading competition"
+      ],
+      "required_checks": [
+        "official_contract",
+        "alpha_reward_wallet",
+        "volume_quality",
+        "liquidity_changes"
+      ]
+    },
+    {
+      "symbol": "VELVET",
+      "name": "VELVET",
+      "priority": "P2_PAPER_TRADE",
+      "chain": "bsc/base",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0x8b194370825e37b33373e74a41009161808c1488",
+          "confidence": "surf_search_token_high_volume_hertzflow_scope"
+        },
+        {
+          "chain": "base",
+          "address": "0xbf927b841994731c573bdf09ceb0c6b0aa887cdd",
+          "confidence": "surf_search_token_high_volume_needs_hertzflow_run"
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha regional trading competition"
+      ],
+      "required_checks": [
+        "official_contract",
+        "alpha_reward_wallet",
+        "volume_quality",
+        "liquidity_changes"
+      ]
+    },
+    {
+      "symbol": "NIGHT",
+      "name": "NIGHT",
+      "priority": "P3_BACKLOG",
+      "chain": "unknown",
+      "contracts": [],
+      "catalysts": [
+        "OKX Boost reward pool"
+      ],
+      "required_checks": [
+        "boost_rules",
+        "eligible_pairs",
+        "wash_volume_detection"
+      ]
+    },
+    {
+      "symbol": "WDATAIP",
+      "name": "🟦 [BN Alpha 新Hook] 设置/更新池子开盘时间",
+      "priority": "P0_DEEP_REVIEW",
+      "chain": "bsc",
+      "contracts": [
+        {
+          "chain": "unknown",
+          "address": "0xa37eded373c5cdf88644db7c6b89f222e756afb2",
+          "confidence": "signal_ingest_token_contract"
+        },
+        {
+          "chain": "bsc",
+          "address": "0xa37eded373c5cdf88644db7c6b89f222e756afb2",
+          "confidence": "signal_ingest_token_contract"
+        }
+      ],
+      "catalysts": [
+        "explorer evidence"
+      ],
+      "known_blocks": [],
+      "known_times": [
+        {
+          "time": "2026-07-02 16:00",
+          "reason": "signal_ingest"
+        }
+      ],
+      "known_txs": [
+        {
+          "chain": "unknown",
+          "tx": "0x329b1c1ef4a2c4d137dc48f2bae743fb6bcc0e519e15345abb90787fcf706e16",
+          "reason": "signal_ingest"
+        },
+        {
+          "chain": "bsc",
+          "tx": "0x329b1c1ef4a2c4d137dc48f2bae743fb6bcc0e519e15345abb90787fcf706e16",
+          "reason": "signal_ingest"
+        }
+      ],
+      "required_checks": [
+        "official_contract",
+        "holder_distribution",
+        "address_labeling",
+        "tx_receipt",
+        "block_transaction_order",
+        "internal_transactions"
+      ],
+      "aliases": [
+        "DATA",
+        "WDATAIP",
+        "DATAIP",
+        "WRAPPED DATAIP",
+        "STORY",
+        "IP"
+      ],
+      "facts": {
+        "project_name": "Data Network",
+        "raw_symbol": "WDATAIP",
+        "display_symbol": "DATA"
+      }
+    }
+  ]
+}

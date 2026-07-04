@@ -1,0 +1,150 @@
+{
+  "schema": "external_aux_sources.v1",
+  "updated_at": "2026-07-01",
+  "rules": {
+    "default_authority": "context_only",
+    "trade_action_requires": [
+      "credentials_present",
+      "live_probe_validated",
+      "local_rule_confirmation"
+    ],
+    "unvalidated_source_policy": "can_enrich_context_but_cannot_emit_buy_sell_action",
+    "manual_source_policy": "operator_evidence_only_until_api_or_export_is_validated"
+  },
+  "sources": [
+    {
+      "id": "coinglass",
+      "name": "CoinGlass API",
+      "category": "derivatives_market_data",
+      "priority": 1,
+      "integration_mode": "api",
+      "official_url": "https://www.coinglass.com/CryptoApi",
+      "docs_url": "https://docs.coinglass.com/reference/endpoint-overview",
+      "required_env": [
+        "COINGLASS_API_KEY"
+      ],
+      "validation_env": "AUX_SOURCE_VALIDATED_COINGLASS",
+      "capabilities": [
+        "open_interest",
+        "funding_rate",
+        "liquidations",
+        "long_short_ratio",
+        "spot_market",
+        "options",
+        "etf",
+        "order_book"
+      ],
+      "target_use": [
+        "perp_oi_funding_crosscheck",
+        "liquidation_pressure",
+        "venue_price_momentum"
+      ],
+      "signal_policy": "direct_after_live_probe"
+    },
+    {
+      "id": "coinank",
+      "name": "CoinAnk OpenAPI",
+      "category": "derivatives_market_data",
+      "priority": 2,
+      "integration_mode": "api_or_agent_skill",
+      "official_url": "https://coinank.com/openApi",
+      "docs_url": "https://api-int.doc.coinank.com/",
+      "required_env": [
+        "COINANK_API_KEY"
+      ],
+      "validation_env": "AUX_SOURCE_VALIDATED_COINANK",
+      "capabilities": [
+        "open_interest",
+        "funding_rate",
+        "liquidations",
+        "order_flow",
+        "whale_activity",
+        "price_volume_alerts"
+      ],
+      "target_use": [
+        "perp_oi_funding_crosscheck",
+        "order_flow_context",
+        "liquidation_pressure"
+      ],
+      "signal_policy": "direct_after_live_probe"
+    },
+    {
+      "id": "gmgn",
+      "name": "GMGN.AI",
+      "category": "onchain_smart_money",
+      "priority": 3,
+      "integration_mode": "api_or_agent_skill",
+      "official_url": "https://gmgn.ai/ai",
+      "docs_url": "https://docs.gmgn.ai/index/gmgn-agent-api",
+      "required_env": [
+        "GMGN_API_KEY"
+      ],
+      "validation_env": "AUX_SOURCE_VALIDATED_GMGN",
+      "capabilities": [
+        "token_research",
+        "wallet_analysis",
+        "smart_money_tracking",
+        "kol_signals",
+        "top_holders",
+        "top_traders",
+        "insider_wallets",
+        "bundled_wallet_exposure"
+      ],
+      "target_use": [
+        "smart_money_crosscheck",
+        "holder_distribution_context",
+        "new_pair_discovery"
+      ],
+      "signal_policy": "context_until_wallet_labels_are_reconciled"
+    },
+    {
+      "id": "surf",
+      "name": "AskSurf Surf Skill",
+      "category": "multi_source_crypto_data",
+      "priority": 4,
+      "integration_mode": "cli_skill",
+      "official_url": "https://agents.asksurf.ai/",
+      "docs_url": "https://agents.asksurf.ai/docs/cli/introduction",
+      "required_env": [],
+      "validation_env": "AUX_SOURCE_VALIDATED_SURF",
+      "capabilities": [
+        "exchange_market_data",
+        "dex_token_price",
+        "social_intelligence",
+        "prediction_markets",
+        "onchain_sql",
+        "token_holders_transfers"
+      ],
+      "target_use": [
+        "venue_price_momentum",
+        "cex_listing_crosscheck",
+        "dex_price_context",
+        "social_prediction_context"
+      ],
+      "signal_policy": "context_until_local_rules_promote_specific_fields"
+    },
+    {
+      "id": "debot_ai",
+      "name": "DeBot AI",
+      "category": "onchain_bot_alerts",
+      "priority": 5,
+      "integration_mode": "manual_or_web",
+      "official_url": "https://debot.ai/",
+      "docs_url": "https://debot.ai/pricing",
+      "required_env": [],
+      "validation_env": "AUX_SOURCE_VALIDATED_DEBOT_AI",
+      "capabilities": [
+        "signals",
+        "wallet_tracking",
+        "memecoin_alerts",
+        "news",
+        "ai_insights"
+      ],
+      "target_use": [
+        "human_alert_crosscheck",
+        "manual_signal_evidence"
+      ],
+      "signal_policy": "manual_context_only"
+    }
+  ]
+}

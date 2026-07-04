@@ -1,0 +1,744 @@
+{
+  "generated_at": "2026-06-21T04:50:08+00:00",
+  "schema_version": "monitored_wallets.v1",
+  "wallets": [
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x0501f595d17dd90ff11a9873692ee3f8d478f4e5",
+      "label": "O-异常-501f5",
+      "role": "近 72h 异常大单参与方",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "anomaly_participant",
+      "monitor_reason": "近 72h 异常大单的链上参与方, 当下正在动",
+      "trigger_summary": "链上行为参考: 余额变动 / 接币 / 转出 — 关联行为标签 C2",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "recent_anomaly_followup",
+        "token_balance_change",
+        "token_out_transfer"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae",
+      "label": "O-异常-1231d",
+      "role": "近 72h 异常大单参与方",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "anomaly_participant",
+      "monitor_reason": "近 72h 异常大单的链上参与方, 当下正在动",
+      "trigger_summary": "链上行为参考: 余额变动 / 接币 / 转出 — 关联行为标签 C2",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "recent_anomaly_followup",
+        "token_balance_change",
+        "token_out_transfer"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x15ca5921c29f7507d8f118d5341a7345e49374d7",
+      "label": "O-启发式抓出的隐藏-15ca5",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x18d3d1beb50bb1e0f7edd1a1189622a34ca7bb63",
+      "label": "O-异常-18d3d",
+      "role": "近 72h 异常大单参与方",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "anomaly_participant",
+      "monitor_reason": "近 72h 异常大单的链上参与方, 当下正在动",
+      "trigger_summary": "链上行为参考: 余额变动 / 接币 / 转出 — 关联行为标签 C2",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "recent_anomaly_followup",
+        "token_balance_change",
+        "token_out_transfer"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x7022c09e1a7fb3823a3ec26585bc7a2b00df8fe5",
+      "label": "O-启发式抓出的隐藏-7022c",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x86b50b10561163bee543cb7abe4e4c1564697eb3",
+      "label": "O-启发式抓出的隐藏-86b50",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xc1b55958bce6dc82e73d5e7b24ef7fbe1b85ad85",
+      "label": "O-启发式抓出的隐藏-c1b55",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xc8662486e8141a05c38f09f29a8ff47463224685",
+      "label": "O-启发式抓出的隐藏-c8662",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 9,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x139a5bedaef0be8d9775238e9681f3ff0ebc8de2",
+      "label": "O-启发式抓出的隐藏-139a5",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 8,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x2a43a71ae4e450e16179f3797647a7652fe8b6c4",
+      "label": "O-启发式抓出的隐藏-2a43a",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 8,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "label": "O-启发式抓出的隐藏-500a0",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 8,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x5b07984626c4b1faa3cfc1710052bf57857adad2",
+      "label": "O-启发式抓出的隐藏-5b079",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "CRITICAL",
+      "monitor_score": 8,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x7c0f3a9eb040c3a87e911f85b9f8187585d9ecd2",
+      "label": "O-庄家-7c0f3",
+      "role": "庄家中转地 (持 1.61% 总供应)",
+      "monitor_level": "HIGH",
+      "monitor_score": 8,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1",
+        "o1_front_buyers_trace"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex",
+        "token_balance_drop"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x975cb661d02a523a26700338fd24a99718f089fc",
+      "label": "O-front-buyer-975cb",
+      "role": "opening front buyer",
+      "monitor_level": "HIGH",
+      "monitor_score": 8,
+      "monitor_role_enum": "opening_front_buyer",
+      "monitor_reason": "开盘前排买入地址；监控是否转出、砸池子、转入交易所。",
+      "trigger_summary": "O 余额减少、转入池子、转入交易所或拆分到下游地址时触发复盘。",
+      "sources": [
+        "o1_front_buyers_trace"
+      ],
+      "watch_rules": [
+        "token_balance_drop",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xbd1dbe28fa5eaebf6498be090b78f81a5aa8c652",
+      "label": "O-潜伏-bd1db",
+      "role": "潜伏钱包 (持 5,393,203 tokens, 未分发)",
+      "monitor_level": "HIGH",
+      "monitor_score": 8,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1",
+        "o1_front_buyers_trace"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex",
+        "token_balance_drop"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xc26e7056ef210597812a837c2610f5f38a4544ed",
+      "label": "O-庄家-c26e7",
+      "role": "庄家中转地 (持 10.29% 总供应)",
+      "monitor_level": "HIGH",
+      "monitor_score": 8,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1",
+        "o1_front_buyers_trace"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex",
+        "token_balance_drop"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xe269f955c74558ef40929e693a4ec93c42636879",
+      "label": "O-庄家-e269f",
+      "role": "庄家中转地 (持 1.82% 总供应)",
+      "monitor_level": "HIGH",
+      "monitor_score": 8,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1",
+        "o1_front_buyers_trace"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex",
+        "token_balance_drop"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x097fd934ce9124fe6aec6dd325108b34986770d1",
+      "label": "O-已分完钱包-97fd9",
+      "role": "已分完钱包 (已分 100%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x16557542aea17d4b2022d6c0a2e0e2fc0ce65631",
+      "label": "O-启发式抓出的隐藏-16557",
+      "role": "启发式抓出的隐藏庄家弹药",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "suspected_operator_reserve",
+      "monitor_reason": "启发式抓出的隐藏庄家弹药 (大额 ≥10% 流通 + 无 Arkham 标), 极可能项目方储备 / 场外接货 / 做市仓储. 一旦开始拆散到多个地址 / 转入交易所 / 链上撮合, 是项目方启动派发的强信号",
+      "trigger_summary": "标记类型: 启发式抓出的隐藏庄家弹药 (≥ 10% 流通 + 无 Arkham 标记). 用户可关注以下三类链上行为是否已发生 / 何时发生: (1) 拆散到多个下游账户, (2) 转入 Arkham 标的交易所充值地址, (3) 链上撮合 (直接转出对 USDT/BNB/WBNB 等). 如果出现 (2)(3), 结合本报告真实派发段的内幕自卖 TWAP 可估算实际变现 USD.",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "reserve_split",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x286da9568057420df90c5489e51cbb82b29f0301",
+      "label": "O-已分完钱包-286da",
+      "role": "已分完钱包 (已分 100%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x485d922739bcfcf9756dd0e8b5d9f11e5736fda5",
+      "label": "O-异常-485d9",
+      "role": "近 72h 异常大单参与方",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "anomaly_participant",
+      "monitor_reason": "近 72h 异常大单的链上参与方, 当下正在动",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "recent_anomaly_followup",
+        "token_balance_change",
+        "token_out_transfer"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x53d1e1375b8be583c3d7cb6782836322791cf5d7",
+      "label": "O-异常-53d1e",
+      "role": "近 72h 异常大单参与方",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "anomaly_participant",
+      "monitor_reason": "近 72h 异常大单的链上参与方, 当下正在动",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "recent_anomaly_followup",
+        "token_balance_change",
+        "token_out_transfer"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xbd97306a087ed0c46b783cfbfdcdc6c12c7a2866",
+      "label": "O-已分完钱包-bd973",
+      "role": "已分完钱包 (已分 100%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xca8d055d625f5fc29d0891ac0b67c687ed450f51",
+      "label": "O-已分完钱包-ca8d0",
+      "role": "已分完钱包 (已分 100%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 7,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x1a9b68ca1dcacb106c4b853e2d9c915f0cfe2e56",
+      "label": "O-分发中-1a9b6",
+      "role": "分发中钱包 (已分 85%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 6,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x35aac8fc62dbf6d6601bd1e38fc7e049a1333b76",
+      "label": "O-分发中-35aac",
+      "role": "分发中钱包 (已分 0%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 6,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "label": "O-分发中-73d8b",
+      "role": "分发中钱包 (已分 59%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 6,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x84c6b83a0ff505e55ad2067555ac2fc405ed9f90",
+      "label": "O-分发中-84c6b",
+      "role": "分发中钱包 (已分 0%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 6,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x07321f149c4e0a6d57d4c97250c768e6dae6aaee",
+      "label": "O-庄家-7321f",
+      "role": "庄家中转地 (持 1.63% 总供应)",
+      "monitor_level": "HIGH",
+      "monitor_score": 5,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x8f816c7c57638b6c2e0eb8d405dac465f7789466",
+      "label": "O-已分完钱包-8f816",
+      "role": "已分完钱包 (已分 99%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 5,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0x9ba87c84a7cc2a22717ccc01347bcb46b9c208c4",
+      "label": "O-庄家-9ba87",
+      "role": "庄家中转地 (持 1.62% 总供应)",
+      "monitor_level": "HIGH",
+      "monitor_score": 5,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    },
+    {
+      "project": "O1",
+      "symbol": "O",
+      "chain": "bsc",
+      "token_contract": "0x500a02a20b0b0a3f3efccfc0559543f5743bd1c4",
+      "address": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "label": "O-已分完钱包-b3000",
+      "role": "已分完钱包 (已分 100%)",
+      "monitor_level": "HIGH",
+      "monitor_score": 5,
+      "monitor_role_enum": "deployer",
+      "monitor_reason": "项目方部署 / 内幕分发钱包, 余额变化跟项目方动作直接关联",
+      "trigger_summary": "链上行为参考: 大额 (≥ $10k) 转入 DEX 路由 / CEX 充值地址",
+      "sources": [
+        "hertzflow_o1"
+      ],
+      "watch_rules": [
+        "continued_distribution",
+        "token_balance_change",
+        "token_out_transfer",
+        "transfer_to_pool_or_cex"
+      ]
+    }
+  ]
+}

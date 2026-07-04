@@ -1,0 +1,3 @@
+币安 Alpha 池子监控 QAIT / USDT
+alpha池子：https://pancakeswap.finance/liquidity/pool/bsc/0xb67cd0cfc71523a4b6e035eb570ef2198410a156ec589b529e04dd07980b893b
+bscscan tx:https://bscscan.com/tx/0x27e250eca29e4ebdd2edba461efd16ba933deb062f8b1cc86132ffdad807074f

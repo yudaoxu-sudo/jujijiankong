@@ -1,0 +1,42 @@
+{
+  "chains": {
+    "bsc": {
+      "explorer": "https://bscscan.com",
+      "rpc_env": "BSC_RPC_URL"
+    },
+    "base": {
+      "explorer": "https://basescan.org",
+      "rpc_env": "BASE_RPC_URL"
+    }
+  },
+  "accounts_to_monitor": [
+    {
+      "label": "example_project_wallet",
+      "chain": "bsc",
+      "address": "0x0000000000000000000000000000000000000000",
+      "reason": "project wallet placeholder"
+    }
+  ],
+  "contracts_to_monitor": [
+    {
+      "label": "example_token",
+      "chain": "bsc",
+      "address": "0x0000000000000000000000000000000000000000",
+      "checks": [
+        "transfers",
+        "holders",
+        "approvals",
+        "liquidity",
+        "bridge"
+      ]
+    }
+  ],
+  "alert_rules": {
+    "min_score_for_telegram": 62,
+    "min_score_for_p0": 75,
+    "watch_opening_blocks": true,
+    "watch_internal_transactions": true,
+    "watch_lp_positions": true
+  }
+}
+

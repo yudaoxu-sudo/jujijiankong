@@ -1,0 +1,109 @@
+{
+  "schema": "pancake_v4_simulation_samples.v1",
+  "chain": "bsc",
+  "source_files": [
+    "/Users/xuyufan/.Trash/pancake_v4_infinity_tx_samples.md",
+    "/Users/xuyufan/Downloads/pancake_v4_tx_samples.json",
+    "/Users/xuyufan/Downloads/pancake_v4_report.docx"
+  ],
+  "reviewed_at": "2026-06-29",
+  "universal_router": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+  "accepted_samples": [
+    {
+      "tx_hash": "0x046673c3b5217b271da8b2be94d892537f9b120865be9bedb49db9959bd582db",
+      "block_number": 107076456,
+      "transaction_index": 29,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x3593564c",
+      "status": 1,
+      "sample_type": "successful_universal_router_buy",
+      "token_symbol": "ARX",
+      "token_address": "0xd5f6ef5deabe61e6d5cdb49bfb6f156f2c1ca715",
+      "quote_address": "0x55d398326f99059ff775485246999027b3197955",
+      "receipt_summary": "51 USDT user->Infinity Vault, 186.160425870887439123 ARX Infinity Vault->user.",
+      "confidence": "high_route_receipt",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call. Receipt transfers prove the buy direction. Debug trace is unavailable, so this is not a full calldata/action decoder fixture."
+    },
+    {
+      "tx_hash": "0xdbcf8b8d95418c0d08b16fde926abaa9d2355e340e5d6d1d503a75430848e4e7",
+      "block_number": 107076445,
+      "transaction_index": 66,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x3593564c",
+      "status": 1,
+      "sample_type": "successful_universal_router_sell",
+      "token_symbol": "ARX",
+      "token_address": "0xd5f6ef5deabe61e6d5cdb49bfb6f156f2c1ca715",
+      "quote_address": "0x55d398326f99059ff775485246999027b3197955",
+      "receipt_summary": "102.304216770951440208 ARX user->Infinity Vault, 28.018363127059816622 USDT Infinity Vault->user.",
+      "confidence": "high_route_receipt",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call. Receipt transfers prove the sell direction. Pair with the ARX buy sample as same-token route reference; still not a same-execute roundtrip."
+    },
+    {
+      "tx_hash": "0xcc31145b750ca84cd25b4855beaecf0a8a0379c56145a7b7a695a8c29e4dbbf5",
+      "block_number": 107076453,
+      "transaction_index": 8,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x24856bc3",
+      "status": 1,
+      "sample_type": "successful_universal_router_multihop_swap",
+      "confidence": "medium_route_receipt",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call. It was present in the DOCX raw hash list but absent from the JSON table; keep as multihop route fixture until decoded."
+    },
+    {
+      "tx_hash": "0x8afadf4c1d10e9119d41123fa3f58405acb59ddf8992e250696dd63f75edd0c3",
+      "block_number": 107064721,
+      "transaction_index": 82,
+      "tx_to": "0xd9c500dff816a1da21A48A732d3498Bf09dc9AEB",
+      "selector": "0x3593564c",
+      "status": 1,
+      "sample_type": "successful_universal_router_execute",
+      "confidence": "medium",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call and successful receipt. Amount is tiny, so this is only a route fixture, not a trade-size or sell-tax benchmark."
+    },
+    {
+      "tx_hash": "0xca8fb6cee66556431c33fa8322bfc29c43f4701b07b09b4b6732421c23098877",
+      "block_number": 107064713,
+      "transaction_index": 75,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x3593564c",
+      "status": 1,
+      "sample_type": "successful_universal_router_execute",
+      "confidence": "medium",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call and successful receipt. Amount is tiny, so this is only a route fixture, not a trade-size or sell-tax benchmark."
+    },
+    {
+      "tx_hash": "0x9ebb2d1c0889e6c987a8c0cf423c2174b8a2dba29c98bdbd356737e0133249bd",
+      "block_number": 107064503,
+      "transaction_index": 55,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x24856bc3",
+      "status": 0,
+      "sample_type": "failed_universal_router_execute",
+      "confidence": "medium",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call and failed receipt. NodeReal debug trace returned missing-trie-node, so revert reason is not verified."
+    },
+    {
+      "tx_hash": "0x96eb21bb721feff9eb3a0dc052d5c304df9059499989d83c0d8279f0de5d6782",
+      "block_number": 107064503,
+      "transaction_index": 54,
+      "tx_to": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+      "selector": "0x24856bc3",
+      "status": 0,
+      "sample_type": "failed_universal_router_execute",
+      "confidence": "medium",
+      "review_note": "RPC confirms current Pancake Infinity Universal Router call and failed receipt. NodeReal debug trace returned missing-trie-node, so revert reason is not verified."
+    }
+  ],
+  "rejected_samples": [
+    {
+      "tx_hash": "0xeb126ee663d7af5c9e81a125b816e7b8ef3daf4876b764fad242663f042c13eb",
+      "reason": "RPC shows tx.to is 0xa05405b6340a7f43dc5835351bfc4f5b1f028359 and selector is 0x78f6d597, so it is not a current Pancake Infinity Universal Router execute sample."
+    },
+    {
+      "tx_hash": "0x1d33f0c687e8a362fb5c1455a534ca6a7614eb883f7869bc995153636316e73b",
+      "reason": "External report labels this as failed Universal Router buy, but RPC shows status=1, tx.to=0xa05405b6340a7f43dc5835351bfc4f5b1f028359, selector=0x78f6d597. Reject as current Pancake Infinity Universal Router failure fixture."
+    }
+  ],
+  "open_gap": "These samples improve v4 route and same-token ARX buy/sell coverage. The local sellability gate is now implemented in scripts/simulate_pancake_v4_roundtrip_call.py and scripts/alpha_opening_block_watch.py using same-execute UniversalRouter buy->sell eth_call plus TAKE_ALL amountMinimum binary-search recovery-rate measurement. Route samples still do not unlock automatic follow wording by themselves; each launch must pass the live per-token recovery gate plus opening-block, cohort, venue, and distribution rules."
+}

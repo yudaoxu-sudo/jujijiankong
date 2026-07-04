@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "chains": {
+    "bsc": [
+      {
+        "address": "0x55d398326f99059ff775485246999027b3197955",
+        "label": "BSC USDT",
+        "class": "quote_token"
+      },
+      {
+        "address": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "label": "WBNB",
+        "class": "quote_token"
+      },
+      {
+        "address": "0xe9e7cea3dedca5984780bafc599bd69add087d56",
+        "label": "BUSD",
+        "class": "quote_token"
+      },
+      {
+        "address": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "label": "Binance Alpha 2.0 Proxy/Custody",
+        "class": "exchange_aggregator",
+        "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE buy traces show Router approving and depositing Alpha tokens to Binance Deposit/Proxy-Custody via 0xfed29397; KGEN sell trace shows Router pulling tokens from the same custody path via 0x5d7208c3. Promoted from suspect after nested call evidence."
+      },
+      {
+        "address": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "label": "Binance Alpha 2.0 Router",
+        "class": "exchange_aggregator",
+        "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/KGEN/RAVE traces show direct Alpha Router/Binance Wallet Proxy entry, delegatecall dispatch, DEX Router swap call, and custody deposit/pull interaction. Promoted from suspect after nested call evidence."
+      },
+      {
+        "address": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+        "label": "Binance DEX Router",
+        "class": "dex_router",
+        "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE/KGEN traces show this address as the downstream Binance DEX Router swap executor, including depth-2 swap call 0x810c705b."
+      },
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "label": "Binance 51 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Binance 51 / Exchange / Hot Wallet. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xf977814e90da44bfa03b6295a0616a897441acec",
+        "label": "Binance 20 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Binance 20 / Hot Wallet. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x5a52e96bacd1056251811211bc712e1b270efcb1",
+        "label": "Binance 15 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Binance 15 / Hot Wallet. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+        "label": "Binance 6 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Binance 6 / Hot Wallet. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "label": "Bybit Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Bybit",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Bybit Hot Wallet. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "label": "Gate 1 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Gate",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Gate 1. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23",
+        "label": "KuCoin Hot Wallet 2",
+        "class": "cex_hot_wallet",
+        "exchange": "KuCoin",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label KuCoin Hot Wallet 2. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xdd3cb5c974601bc3974d908ea4a86020f9999e0c",
+        "label": "HTX 72 Hot Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "HTX",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label HTX 72. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b",
+        "label": "OKX Deposit Funder 9",
+        "class": "cex_deposit",
+        "exchange": "OKX",
+        "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label OKX Deposit Funder 9. Treat as CEX pending-sell / MM-inventory destination, not as confirmed DEX sell."
+      },
+      {
+        "address": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
+        "label": "PancakeSwap V3 Router",
+        "class": "dex_router"
+      },
+      {
+        "address": "0x13f4ea83d0bd40e75c8222255bc855a974568dd4",
+        "label": "PancakeSwap Smart Router",
+        "class": "dex_router"
+      },
+      {
+        "address": "0xb048bbc1ee6b733fffcfb9e9cef7375518e25997",
+        "label": "PancakeSwap V3 QuoterV2",
+        "class": "dex_quoter"
+      },
+      {
+        "address": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+        "label": "PancakeSwap Infinity Universal Router",
+        "class": "dex_router"
+      },
+      {
+        "address": "0xd0737c9762912dd34c3271197e362aa736df0926",
+        "label": "PancakeSwap Infinity CLQuoter",
+        "class": "dex_quoter"
+      },
+      {
+        "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "label": "PancakeSwap Infinity Vault",
+        "class": "dex_vault"
+      },
+      {
+        "address": "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768",
+        "label": "PancakeSwap Permit2",
+        "class": "permit2"
+      },
+      {
+        "address": "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364",
+        "label": "PancakeSwap V3 Position Manager",
+        "class": "lp_position_manager"
+      },
+      {
+        "address": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+        "label": "PancakeSwap Infinity CLPoolManager",
+        "class": "pool_manager"
+      },
+      {
+        "address": "0xc697d2898e0d09264376196696c51d7abbbaa4a9",
+        "label": "PancakeSwap Infinity BinPoolManager",
+        "class": "pool_manager"
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "token_aliases.v1",
+  "updated_at": "2026-07-01",
+  "tokens": [
+    {
+      "chain": "bsc",
+      "address": "0xa37eded373c5cdf88644db7c6b89f222e756afb2",
+      "raw_symbol": "WDATAIP",
+      "display_symbol": "DATA",
+      "project_name": "Data Network",
+      "aliases": [
+        "DATAIP",
+        "Wrapped DATAIP",
+        "Story",
+        "IP"
+      ],
+      "confidence": "public_source_and_chain_match",
+      "notes": "Binance Alpha v4 hook uses Wrapped DATAIP on BSC; public project searches as Data Network / DATA."
+    }
+  ]
+}

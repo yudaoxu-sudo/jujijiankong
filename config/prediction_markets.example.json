@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-06-20",
+  "items": [
+    {
+      "symbol": "O",
+      "project": "o1 exchange",
+      "source": "polymarket",
+      "source_type": "polymarket_event_slug",
+      "url": "https://polymarket.com/event/example-token-fdv-after-launch",
+      "slug": "example-token-fdv-after-launch",
+      "total_supply": "1000000000",
+      "float_supply": "160000000",
+      "targets": [
+        {
+          "label": "1d_fdv_above_100m",
+          "outcome": "Yes",
+          "target_fdv_usd": "100000000"
+        },
+        {
+          "label": "1d_fdv_above_200m",
+          "outcome": "Yes",
+          "target_fdv_usd": "200000000"
+        }
+      ],
+      "notes": "Replace with a real Polymarket event or market slug."
+    },
+    {
+      "symbol": "O",
+      "project": "o1 exchange",
+      "source": "predict_fun",
+      "source_type": "manual",
+      "url": "https://predict.fun/zh-cn/market/example",
+      "total_supply": "1000000000",
+      "float_supply": "160000000",
+      "targets": [
+        {
+          "label": "1d_fdv_above_100m",
+          "probability": "0.82",
+          "target_fdv_usd": "100000000"
+        }
+      ],
+      "notes": "Manual source for markets without a stable public API adapter."
+    }
+  ]
+}
