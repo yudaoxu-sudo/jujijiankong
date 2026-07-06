@@ -1,6 +1,6 @@
-# Alpha Sniper Monitor
+# jujijiankong
 
-Binance Alpha / PancakeSwap new-token monitoring workspace.
+Alpha Sniper Monitor workspace for Binance Alpha / PancakeSwap new-token monitoring.
 
 This repository contains the reproducible parts of the project:
 
