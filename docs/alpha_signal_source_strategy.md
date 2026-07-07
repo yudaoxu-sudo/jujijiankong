@@ -33,6 +33,7 @@
 - Codex 抽取字段，写入 `config/current_alpha_watchlist.json`。
 - 服务器开始监控合约、池子、关键地址。
 - Telegram 推送中文解释摘要。
+- 如果是 KOL/帖子方法论沉淀，先使用 `docs/kol_strategy_intake_prompt.md` 收集 raw source manifest、method index、case index 和 integration proposal，再按 `$celue` 更新协议决定是否进入长期策略。
 
 ### 下一步自动化
 

@@ -45,6 +45,7 @@ def main() -> int:
         ROOT / "scripts" / "review_pancake_v4_samples.py",
         ROOT / "scripts" / "x_mcp_readiness.py",
         ROOT / "scripts" / "external_aux_source_readiness.py",
+        ROOT / "scripts" / "audit_celue_integration.py",
         ROOT / "scripts" / "decode_pancake_v4_execute.py",
         ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py",
         ROOT / "scripts" / "verify_pancake_v4_roundtrip_fixture.py",
@@ -74,6 +75,7 @@ def main() -> int:
         ROOT / "scripts" / "o1_trace_front_buyers.py",
         ROOT / "scripts" / "summarize_hertzflow_skeleton.py",
         ROOT / "docs" / "alpha_swap_trace_request_prompt.md",
+        ROOT / "docs" / "kol_strategy_intake_prompt.md",
         ROOT / "docs" / "pancake_v4_roundtrip_request_prompt.md",
         ROOT / "docs" / "pancake_v4_roundtrip_implementation_prompt.md",
         ROOT / "docs" / "cex_wallet_evidence_request_prompt.md",
@@ -1084,6 +1086,47 @@ assert (out / 'latest.md').exists(), out
             "external auxiliary source readiness smoke test",
             external_aux_readiness_result.returncode == 0,
             external_aux_readiness_result.stderr.strip(),
+        )
+    )
+
+    celue_audit_code = """
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+out = Path(tempfile.mkdtemp(prefix='celue_audit_'))
+result = subprocess.run(
+    [
+        sys.executable,
+        str(root / 'scripts' / 'audit_celue_integration.py'),
+        '--out-dir',
+        str(out),
+    ],
+    cwd=root,
+    capture_output=True,
+    text=True,
+)
+assert result.returncode == 0, result.stderr or result.stdout
+payload = json.loads((out / 'latest.json').read_text(encoding='utf-8'))
+assert payload['schema'] == 'celue_integration_audit.v1', payload
+assert payload['failed_count'] == 0, payload
+assert payload['check_count'] >= 40, payload
+assert (out / 'latest.md').exists(), out
+"""
+    celue_audit_result = subprocess.run(
+        [sys.executable, "-c", celue_audit_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "celue integration audit smoke test",
+            celue_audit_result.returncode == 0,
+            celue_audit_result.stderr.strip() or celue_audit_result.stdout.strip(),
         )
     )
 
