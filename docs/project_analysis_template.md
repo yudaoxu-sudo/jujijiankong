@@ -240,6 +240,34 @@
 - 价格锚点写入评分：
 - 不能验证的内容留在“待证”：
 
+## 8.1 Celue 证据分层
+
+| 类型 | 证据 | 可信度 | 还缺什么 |
+| --- | --- | --- | --- |
+| official |  |  |  |
+| onchain |  |  |  |
+| market |  |  |  |
+| social |  |  |  |
+| inference |  |  |  |
+
+## 8.2 Celue 操作字段
+
+| 字段 | 当前内容 | 证据位置 | 状态 |
+| --- | --- | --- | --- |
+| path_stage | source -> CEX cold/hot/deposit -> fresh cluster -> gas source -> sell venue -> quote recovery |  | unknown |
+| cluster_evidence | wallet count / same source / same deposit port / same timing / same gas source |  | unknown |
+| deposit_status | closed / open / reopened / chain-supported / chain-migrated / unknown |  | unknown |
+| derivatives_ratio | OI/MC / OI/FDV / 24h volume/MC / funding direction |  | unknown |
+| event_window | listing / delisting / monitoring tag / unlock / deposit reopen / sector rotation |  | unknown |
+| index_or_deposit_policy_event | deposit closure / deposit reopen / index basket change / venue support change |  | unknown |
+| operator_supply | operator / CEX-pool-custody / verified retail / unknown |  | unknown |
+| follow_up_clock | next check time and required evidence |  | unknown |
+| catalyst_source | official / founder / exchange / KOL / media / community / unknown plus first-seen time |  | unknown |
+| meme_stage | pre-viral / first public trigger / post-5x / post-10x / exhausted / unknown |  | unknown |
+| tokenomics_catalyst | burn / buyback / buyback-to-liquidity / fee donation / foundation / airdrop / initial float / utility change |  | unknown |
+| identity_label_quality | verified official / exchange-custody / market maker / inferred whale / KOL / unknown |  | unknown |
+| venue_rotation | Binance Alpha / Binance spot-perps / Binance Wallet / Coinbase / Korea CEX / SOL-Pump / Base / ASTER / unknown |  | unknown |
+
 ## 9. 决策输出
 
 | 项 | 内容 |

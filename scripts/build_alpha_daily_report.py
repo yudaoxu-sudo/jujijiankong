@@ -12,6 +12,73 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT / "reports"
 TZ_CN = timezone(timedelta(hours=8))
+CELUE_STRATEGY_FIELDS = [
+    (
+        "source_layers",
+        "official / onchain / market / social / inference",
+        "每条交易判断先分离来源类型，再写动作。",
+    ),
+    (
+        "path_stage",
+        "alpha_intraday_flow_watch CEX fields, opening buyer trace, wallet monitor",
+        "标记 source -> CEX cold/hot/deposit -> intermediate wallet -> perp venue treasury/sell venue -> quote recovery。",
+    ),
+    (
+        "cluster_evidence",
+        "funding_source_clusters, intraday runtime CEX candidates, gas priming",
+        "记录钱包数量、共同来源、共同时间窗、共同充值端口、共同 gas 来源。",
+    ),
+    (
+        "deposit_status",
+        "exchange announcements, listing calendar, watchlist required_checks",
+        "记录 closed、open、reopened、chain-supported、chain-migrated、unknown。",
+    ),
+    (
+        "derivatives_ratio",
+        "perp_oi_funding_watch plus MC/FDV from market_context or external validated sources",
+        "跟踪 OI/MC、OI/FDV、24h volume/MC 和 funding 方向。",
+    ),
+    (
+        "event_window",
+        "prelaunch, listing, delisting, unlock, deposit reopen, sector rotation",
+        "附上精确事件窗口和下一次检查时间。",
+    ),
+    (
+        "index_or_deposit_policy_event",
+        "exchange announcements, Binance index basket changes, deposit closure/reopen",
+        "记录充值端口、指数篮子、场所支持变化，并作为市场结构事件处理。",
+    ),
+    (
+        "operator_supply",
+        "holder concentration, tokenomics, CEX/pool/custody labels",
+        "拆分 operator、CEX/pool/custody、verified retail、unknown supply。",
+    ),
+    (
+        "catalyst_source",
+        "official links, founder/exchange posts, KOL/social, media, community",
+        "社交输入进入 discovery 层；动作依赖本地证据确认。",
+    ),
+    (
+        "meme_stage",
+        "first-seen time, market cap, liquidity, holder quality, price multiple",
+        "标记 pre-viral、first trigger、post-5x、post-10x、exhausted、unknown。",
+    ),
+    (
+        "tokenomics_catalyst",
+        "tokenomics section, announcements, on-chain execution",
+        "区分 burn、buyback、buyback-to-liquidity、fee donation、foundation、airdrop、initial float、utility change。",
+    ),
+    (
+        "identity_label_quality",
+        "global address labels, external label review, custody/MM/foundation checks",
+        "标记 verified official、exchange/custody、market maker、inferred whale、KOL、unknown。",
+    ),
+    (
+        "venue_rotation",
+        "price momentum venue class, CEX listings, Surf context-only market rows",
+        "跟踪 Binance Alpha、Binance spot/perps、Binance Wallet、Coinbase、Korea CEX、SOL/Pump、Base、ASTER、unknown。",
+    ),
+]
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -120,6 +187,26 @@ def verification_status() -> str:
         return "missing"
     text = report.read_text(encoding="utf-8")
     return "PASS" if "| FAIL |" not in text else "FAIL"
+
+
+def celue_strategy_checklist() -> list[str]:
+    lines = [
+        "",
+        "## Celue 策略校验清单",
+        "",
+        "| 字段 | 本地来源 | 使用要求 |",
+        "| --- | --- | --- |",
+    ]
+    for field, source, required_use in CELUE_STRATEGY_FIELDS:
+        lines.append(f"| `{field}` | {source} | {required_use} |")
+    lines.extend(
+        [
+            "",
+            "- 动作标签固定使用：Avoid、Observe、Reduce、Small test、Follow only after confirmation。",
+            "- 每条实盘判断都要写止损规则、失效证据、退出触发器和下一次检查时间。",
+        ]
+    )
+    return lines
 
 
 def build_report() -> str:
@@ -366,6 +453,8 @@ def build_report() -> str:
             )
     else:
         lines.append("- No external auxiliary source snapshot available.")
+
+    lines.extend(celue_strategy_checklist())
 
     lines.extend(
         [
