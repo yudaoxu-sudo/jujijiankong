@@ -69,52 +69,58 @@ def main() -> int:
     parser.add_argument("--source-skill", type=Path, default=DEFAULT_SOURCE_SKILL)
     parser.add_argument("--installed-skill", type=Path, default=DEFAULT_INSTALLED_SKILL)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--project-only",
+        action="store_true",
+        help="Skip local Codex skill directory checks; use this on servers that only deploy the sniper project.",
+    )
     args = parser.parse_args()
 
     checks: list[dict[str, Any]] = []
     source = args.source_skill
     installed = args.installed_skill
 
-    add_check(checks, "source skill directory exists", source.is_dir(), str(source))
-    add_check(checks, "installed skill directory exists", installed.is_dir(), str(installed))
+    if not args.project_only:
+        add_check(checks, "source skill directory exists", source.is_dir(), str(source))
+        add_check(checks, "installed skill directory exists", installed.is_dir(), str(installed))
 
-    source_skill = source / "SKILL.md"
-    installed_skill = installed / "SKILL.md"
-    source_skill_text = read_text(source_skill)
-    installed_skill_text = read_text(installed_skill)
+        source_skill = source / "SKILL.md"
+        installed_skill = installed / "SKILL.md"
+        source_skill_text = read_text(source_skill)
+        installed_skill_text = read_text(installed_skill)
 
-    add_check(checks, "source SKILL.md exists", source_skill.exists(), str(source_skill))
-    add_check(checks, "installed SKILL.md exists", installed_skill.exists(), str(installed_skill))
-    add_check(
-        checks,
-        "source and installed SKILL.md match",
-        source_skill_text == installed_skill_text and bool(source_skill_text),
-        "byte-equivalent" if source_skill_text == installed_skill_text and source_skill_text else "mismatch or missing",
-    )
-
-    for ref_name in REQUIRED_REFERENCES:
-        ref_link = f"references/{ref_name}"
-        source_ref = source / "references" / ref_name
-        installed_ref = installed / "references" / ref_name
-        source_ref_text = read_text(source_ref)
-        installed_ref_text = read_text(installed_ref)
-        add_check(checks, f"source reference exists: {ref_name}", source_ref.exists(), ref_link)
-        add_check(checks, f"installed reference exists: {ref_name}", installed_ref.exists(), ref_link)
-        add_check(checks, f"SKILL.md links reference: {ref_name}", ref_link in source_skill_text, ref_link)
+        add_check(checks, "source SKILL.md exists", source_skill.exists(), str(source_skill))
+        add_check(checks, "installed SKILL.md exists", installed_skill.exists(), str(installed_skill))
         add_check(
             checks,
-            f"source and installed reference match: {ref_name}",
-            source_ref_text == installed_ref_text and bool(source_ref_text),
-            "byte-equivalent" if source_ref_text == installed_ref_text and source_ref_text else "mismatch or missing",
+            "source and installed SKILL.md match",
+            source_skill_text == installed_skill_text and bool(source_skill_text),
+            "byte-equivalent" if source_skill_text == installed_skill_text and source_skill_text else "mismatch or missing",
         )
 
-    system_logic = read_text(source / "references" / "system-logic.md")
-    for phrase in REQUIRED_SYSTEM_LOGIC_PHRASES:
-        add_check(checks, f"system logic contains: {phrase}", phrase in system_logic, phrase)
+        for ref_name in REQUIRED_REFERENCES:
+            ref_link = f"references/{ref_name}"
+            source_ref = source / "references" / ref_name
+            installed_ref = installed / "references" / ref_name
+            source_ref_text = read_text(source_ref)
+            installed_ref_text = read_text(installed_ref)
+            add_check(checks, f"source reference exists: {ref_name}", source_ref.exists(), ref_link)
+            add_check(checks, f"installed reference exists: {ref_name}", installed_ref.exists(), ref_link)
+            add_check(checks, f"SKILL.md links reference: {ref_name}", ref_link in source_skill_text, ref_link)
+            add_check(
+                checks,
+                f"source and installed reference match: {ref_name}",
+                source_ref_text == installed_ref_text and bool(source_ref_text),
+                "byte-equivalent" if source_ref_text == installed_ref_text and source_ref_text else "mismatch or missing",
+            )
 
-    update_protocol = read_text(source / "references" / "update-protocol.md")
-    for phrase in REQUIRED_UPDATE_PROTOCOL_PHRASES:
-        add_check(checks, f"update protocol contains: {phrase}", phrase in update_protocol, phrase)
+        system_logic = read_text(source / "references" / "system-logic.md")
+        for phrase in REQUIRED_SYSTEM_LOGIC_PHRASES:
+            add_check(checks, f"system logic contains: {phrase}", phrase in system_logic, phrase)
+
+        update_protocol = read_text(source / "references" / "update-protocol.md")
+        for phrase in REQUIRED_UPDATE_PROTOCOL_PHRASES:
+            add_check(checks, f"update protocol contains: {phrase}", phrase in update_protocol, phrase)
 
     for rel_path in REQUIRED_PROJECT_FILES:
         path = ROOT / rel_path
@@ -150,6 +156,7 @@ def main() -> int:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_skill": str(source),
         "installed_skill": str(installed),
+        "project_only": bool(args.project_only),
         "check_count": len(checks),
         "failed_count": len(failed),
         "checks": checks,
@@ -185,6 +192,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- generated_at_utc: `{payload['generated_at_utc']}`",
         f"- source_skill: `{payload['source_skill']}`",
         f"- installed_skill: `{payload['installed_skill']}`",
+        f"- project_only: `{payload['project_only']}`",
         f"- failed_count: `{payload['failed_count']}`",
         "",
         "| Check | Status | Detail |",
