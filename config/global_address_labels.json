@@ -99,6 +99,76 @@
         "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label OKX Deposit Funder 9. Treat as CEX pending-sell / MM-inventory destination, not as confirmed DEX sell."
       },
       {
+        "address": "0xeb2d2f1b8c558a40207669291fda468e50c8a0bb",
+        "label": "Binance: Hot Wallet 10",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label Binance: Hot Wallet 10. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x161ba15a5f335c9f06bb5bbb0a9ce14076fbb645",
+        "label": "Binance: Hot Wallet 11",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label Binance: Hot Wallet 11. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xa00e6212acac5cb5f43f337e0129a9afd9880a93",
+        "label": "Binance: Hot Wallet 18",
+        "class": "cex_hot_wallet",
+        "exchange": "Binance",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label Binance: Hot Wallet 18. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "label": "MEXC 13",
+        "class": "cex_hot_wallet",
+        "exchange": "MEXC",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label MEXC 13. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x0639556f03714a74a5feeaf5736a4a64ff70d206",
+        "label": "Bitget 4",
+        "class": "cex_hot_wallet",
+        "exchange": "Bitget",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label Bitget 4. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0x785dcc87b6e5853c1c81e2ad215956248c7986c2",
+        "label": "Bitget 3",
+        "class": "cex_hot_wallet",
+        "exchange": "Bitget",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label Bitget 3. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xcd5f3c15120a1021155174719ec5fcf2c75adf5b",
+        "label": "KuCoin: Hot Wallet 1",
+        "class": "cex_hot_wallet",
+        "exchange": "KuCoin",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label KuCoin: Hot Wallet 1. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xcded3bb9d2dc98f6e4e772095b48051acfb84df9",
+        "label": "KuCoin: Hot Wallet 3",
+        "class": "cex_hot_wallet",
+        "exchange": "KuCoin",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label KuCoin: Hot Wallet 3. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xa1ce37506eadf62d2be3741c644aa52a009d3a8b",
+        "label": "KuCoin: Deposit Funder 7",
+        "class": "cex_deposit",
+        "exchange": "KuCoin",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label KuCoin: Deposit Funder 7 with repeated outbound transfers to KuCoin: Hot Wallet 3. Used as CEX destination, never as funding cluster parent."
+      },
+      {
+        "address": "0xc5a93444cc4da6efb9e6fc6e5d3cb55a53b52396",
+        "label": "OKX: Deposit Funder",
+        "class": "cex_deposit",
+        "exchange": "OKX",
+        "evidence": "2026-07-08 external exchange-wallet review: BscScan label OKX: Deposit Funder. Used as CEX destination, never as funding cluster parent."
+      },
+      {
         "address": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
         "label": "PancakeSwap V3 Router",
         "class": "dex_router"

@@ -1,0 +1,92 @@
+[
+  {
+    "chain": "bsc",
+    "address": "0xeb2d2f1b8c558a40207669291fda468e50c8a0bb",
+    "exchange": "Binance",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: Binance: Hot Wallet 10",
+    "source_url": "https://bscscan.com/address/0xeb2d2f1b8c558a40207669291fda468e50c8a0bb"
+  },
+  {
+    "chain": "bsc",
+    "address": "0x161ba15a5f335c9f06bb5bbb0a9ce14076fbb645",
+    "exchange": "Binance",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: Binance: Hot Wallet 11",
+    "source_url": "https://bscscan.com/address/0x161ba15a5f335c9f06bb5bbb0a9ce14076fbb645"
+  },
+  {
+    "chain": "bsc",
+    "address": "0xa00e6212acac5cb5f43f337e0129a9afd9880a93",
+    "exchange": "Binance",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: Binance: Hot Wallet 18",
+    "source_url": "https://bscscan.com/address/0xa00e6212acac5cb5f43f337e0129a9afd9880a93"
+  },
+  {
+    "chain": "bsc",
+    "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+    "exchange": "MEXC",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: MEXC 13",
+    "source_url": "https://bscscan.com/address/0x4982085c9e2f89f2ecb8131eca71afad896e89cb"
+  },
+  {
+    "chain": "bsc",
+    "address": "0x0639556f03714a74a5feeaf5736a4a64ff70d206",
+    "exchange": "Bitget",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: Bitget 4",
+    "source_url": "https://bscscan.com/address/0x0639556f03714a74a5feeaf5736a4a64ff70d206"
+  },
+  {
+    "chain": "bsc",
+    "address": "0x785dcc87b6e5853c1c81e2ad215956248c7986c2",
+    "exchange": "Bitget",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: Bitget 3",
+    "source_url": "https://bscscan.com/address/0x785dcc87b6e5853c1c81e2ad215956248c7986c2"
+  },
+  {
+    "chain": "bsc",
+    "address": "0xcd5f3c15120a1021155174719ec5fcf2c75adf5b",
+    "exchange": "KuCoin",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: KuCoin: Hot Wallet 1",
+    "source_url": "https://bscscan.com/address/0xcd5f3c15120a1021155174719ec5fcf2c75adf5b"
+  },
+  {
+    "chain": "bsc",
+    "address": "0xcded3bb9d2dc98f6e4e772095b48051acfb84df9",
+    "exchange": "KuCoin",
+    "type": "hot_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label: KuCoin: Hot Wallet 3",
+    "source_url": "https://bscscan.com/address/0xcded3bb9d2dc98f6e4e772095b48051acfb84df9"
+  },
+  {
+    "chain": "bsc",
+    "address": "0xa1ce37506eadf62d2be3741c644aa52a009d3a8b",
+    "exchange": "KuCoin",
+    "type": "deposit_funder",
+    "confidence": "high",
+    "evidence": "BscScan label: KuCoin: Deposit Funder 7; repeated outbound transfers to KuCoin: Hot Wallet 3",
+    "source_url": "https://bscscan.com/address/0xa1ce37506eadf62d2be3741c644aa52a009d3a8b"
+  },
+  {
+    "chain": "bsc",
+    "address": "0xc5a93444cc4da6efb9e6fc6e5d3cb55a53b52396",
+    "exchange": "OKX",
+    "type": "deposit_funder",
+    "confidence": "high",
+    "evidence": "BscScan label: OKX: Deposit Funder",
+    "source_url": "https://bscscan.com/address/0xc5a93444cc4da6efb9e6fc6e5d3cb55a53b52396"
+  }
+]
