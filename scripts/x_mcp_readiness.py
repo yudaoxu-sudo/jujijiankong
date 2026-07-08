@@ -120,6 +120,15 @@ def fetch_url(url: str, timeout: int) -> dict[str, object]:
             "error": str(exc.reason),
             "elapsed_sec": round(time.time() - started, 3),
         }
+    except OSError as exc:
+        return {
+            "url": url,
+            "ok": False,
+            "status": None,
+            "body_excerpt": "",
+            "error": str(exc),
+            "elapsed_sec": round(time.time() - started, 3),
+        }
 
 
 def xurl_env(node_path: str | None, pnpm_path: str | None) -> dict[str, str]:

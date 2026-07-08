@@ -1076,6 +1076,7 @@ assert 'CEX打gas≈0.002 BNB / 1 次' in gas_text and '买卖信号: ❗' in ga
     )
 
     x_mcp_readiness_code = """
+import importlib.util
 import json
 import subprocess
 import sys
@@ -1104,6 +1105,14 @@ assert payload['status'] == 'offline_probe', payload
 assert payload['network']['skipped'] is True, payload
 assert payload['xurl']['skipped'] is True, payload
 assert (out / 'latest.md').exists(), out
+spec = importlib.util.spec_from_file_location('x_mcp_readiness', root / 'scripts' / 'x_mcp_readiness.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def raise_reset(*args, **kwargs):
+    raise ConnectionResetError('reset by peer')
+module.urlopen = raise_reset
+fetch = module.fetch_url('https://example.com', 1)
+assert fetch['ok'] is False and fetch['status'] is None and 'reset by peer' in fetch['error'], fetch
 """
     x_mcp_readiness_result = subprocess.run(
         [sys.executable, "-c", x_mcp_readiness_code],
