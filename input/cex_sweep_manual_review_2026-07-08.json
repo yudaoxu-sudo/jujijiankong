@@ -1,0 +1,173 @@
+[
+  {
+    "chain": "bsc",
+    "address": "0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+    "candidate_type": "manual_review_only",
+    "asset_type": "mixed",
+    "source_url": "https://bscscan.com/txs?a=0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+    "observed_paths": [
+      {
+        "tx_hash": "0xa2bce93e61c5b0dd24e7804f377ad00cb63d08c7d3eb65f51d1ff555439a5510",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "counterparty_label": "Binance 51",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0xd2e5602a3481ac519e46fbda82486c75218487a465d92f505274b875cdb5651e",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "counterparty_label": "Gate 1",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x1005e82471941d3920030545fa305efe57fae95971395442753bf576a94d29b8",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "counterparty_label": "Binance 51",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x4898846277df6bca584ce3ddc12ac74787377e755dff3c4ff7506bdc4be06964",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0x97b9d2102a9a65a26e1ee82d59e42d1b73b68689",
+        "counterparty_label": "Bitget 3",
+        "asset": "BNB"
+      }
+    ],
+    "decision": "keep_for_manual_review",
+    "reason": "mixed CEX in/out and many zero-value token rows; no 3 distinct outbound token sweeps to the same configured CEX hot wallet."
+  },
+  {
+    "chain": "bsc",
+    "address": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+    "candidate_type": "manual_review_only",
+    "asset_type": "native_bnb",
+    "source_url": "https://bscscan.com/txs?a=0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+    "observed_paths": [
+      {
+        "tx_hash": "0x051a92f204a70b188f4c2841b6a99176d2b6e61c3b62af921290e0d1b5ee779a",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "counterparty_label": "Gate 1",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x7f4278e0f6b57669181dae23016a1ff4971c545589e4aca97bbd52d6366d9e63",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "counterparty_label": "Gate 1",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0xee0cfd2eefb8421aef63d7e83843f2b050679621165eda3c5a3041ec6d385ca1",
+        "direction": "out_to_router",
+        "counterparty": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "counterparty_label": "OKX Dex Router 2",
+        "asset": "BNB"
+      }
+    ],
+    "decision": "keep_for_manual_review",
+    "reason": "only two Gate inbound native BNB paths were seen on the reviewed page and the address has heavy OKX router / forwarder activity; not a clean CEX deposit or sweep wallet."
+  },
+  {
+    "chain": "bsc",
+    "address": "0x10a28ad09505030ba67436b4f5fd4e6d400c3aa5",
+    "candidate_type": "manual_review_only",
+    "exchange": "Bybit",
+    "asset_type": "native_bnb",
+    "source_url": "https://bscscan.com/txs?a=0x10a28ad09505030ba67436b4f5fd4e6d400c3aa5",
+    "observed_paths": [
+      {
+        "tx_hash": "0x9ed828dc6280c8ac3fb0a125085462247301019a7d2267a5e9c5a173100382b6",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x4818d8126396893bb4bb6f5ff747929bd964dc72da81de8f87b6f87972653371",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0xb292bd1642d42ea88d0fb0b39af65398d95e38cf19c8b1c2f3b11c189adc1152",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x4c38a5fa166a87dda9d033cae8a3f0ae07bd8059f55f968d51646a8cce3b72b9",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x6db3fd544c79838b64213587322447be76a667cb78d5f7761006ba24f4cbde49",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x31a5c6f1cf78e275eb7772b02c3149bec98c98da083044ac492a1daa589a31ec",
+        "direction": "out_to_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      }
+    ],
+    "decision": "keep_for_manual_review",
+    "reason": "repeated outbound native BNB to Bybit hot wallet; kept out of cex_deposit labels until the system has a separate native-deposit class or BEP20 token sweep evidence."
+  },
+  {
+    "chain": "bsc",
+    "address": "0x771c0eed71197e898c577191153208e98d392497",
+    "candidate_type": "manual_review_only",
+    "asset_type": "mixed",
+    "source_url": "https://bscscan.com/txs?a=0x771c0eed71197e898c577191153208e98d392497",
+    "observed_paths": [
+      {
+        "tx_hash": "0x15d13573b71db262f019408add4b1f832897f0b71613713a0413166c1e8d7e11",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x5146d4376d8854749d046c3a03818d18698815087e413a390fff8b1be42c7a77",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x25cb201801d48507057b990fc5358d2ade00122f070d33f955ff5d62fae4a3cb",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "counterparty_label": "Bybit: Hot Wallet",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0xa4fc6ab78842cfb9308529e33e3ddfc674054c722ebfeae26413ee8b5d8789ed",
+        "direction": "in_from_cex_hot_wallet",
+        "counterparty": "0x73f5ebe90f27b46ea12e5795d16c4b408b19cc6f",
+        "counterparty_label": "Binance: Hot Wallet 18",
+        "asset": "BNB"
+      },
+      {
+        "tx_hash": "0x333ac84cb2877f1584db79110f136604248100a618dd9b50f979ea6685d5cd17",
+        "direction": "out_to_dex_router",
+        "counterparty": "0x13f4ea83d0bd40e75c8222255bc855a974568dd4",
+        "counterparty_label": "PancakeSwap V3: Smart Router",
+        "asset": "BNB"
+      }
+    ],
+    "decision": "keep_for_manual_review",
+    "reason": "receives native BNB from CEX hot wallets and later uses routers/swaps; this is closer to gas source / trading wallet evidence than outbound CEX deposit evidence."
+  }
+]

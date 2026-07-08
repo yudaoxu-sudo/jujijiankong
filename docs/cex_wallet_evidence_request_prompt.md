@@ -22,6 +22,7 @@
 2. 每个地址必须给出来源证据：BscScan 标签、Arkham 标签、Nansen/DeBank/CoinCarp 页面、或明确链上归集路径。
 3. 对 deposit/sweep 类地址，最好给 3-5 条真实 tx，证明它们收到用户充值后归集到同一交易所热钱包。
 4. 不要把 DEX router、Binance Alpha Router、项目方 MM 钱包、跨链桥、普通 EOA 混成 CEX 钱包。
+5. 原生 BNB 路径和 BEP20 token 路径必须分开标注；只有原生 BNB 入金/归集证据的地址放人工复核队列。
 
 输出格式：
 
@@ -32,9 +33,18 @@
     "address": "0x...",
     "exchange": "Binance",
     "type": "hot_wallet | deposit_wallet | deposit_funder | sweep_wallet",
+    "asset_type": "bep20_token | native_bnb | mixed | label_only",
     "confidence": "high | medium | low",
     "evidence": "简短证据说明",
-    "source_url": "https://..."
+    "source_url": "https://...",
+    "sweep_paths": [
+      {
+        "tx_hash": "0x...",
+        "direction": "out_to_cex_hot_wallet | in_from_cex_hot_wallet | unknown",
+        "hot_wallet": "0x...",
+        "asset": "USDT | BNB | token symbol"
+      }
+    ]
   }
 ]
 
@@ -44,6 +54,7 @@
 - type
 - confidence
 - source label
+- asset type
 - source url
 - sweep path example: user -> deposit -> sweep -> hot wallet
 - notes
@@ -51,7 +62,9 @@
 第三部分：归集链路证据：
 - 每个新 deposit/sweep 地址列 3 条 tx hash
 - 说明这些 tx 是否把资金归集到已知 hot wallet
+- 对每条 tx 写清 direction；只有 `out_to_cex_hot_wallet` 才算归集路径证据
 - 如果只能证明标签，不能证明归集路径，请明确写 “label_only”
+- 如果只能证明原生 BNB 转入或转出，请明确写 `native_bnb_only`，不要放进可直接入库列表
 
 严格排除：
 - 地址长度不是 42 位的 0x 地址

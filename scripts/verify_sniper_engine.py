@@ -323,6 +323,31 @@ rows = [
             {'tx_hash': '0x' + '3' * 64, 'to': '0x4444444444444444444444444444444444444444'},
         ],
     },
+    {
+        'chain': 'bsc',
+        'address': '0x5555555555555555555555555555555555555555',
+        'exchange': 'Binance',
+        'type': 'deposit_wallet',
+        'confidence': 'high',
+        'asset_type': 'native_bnb',
+        'sweep_paths': [
+            {'tx_hash': '0x' + '4' * 64, 'to': binance_hot, 'asset': 'BNB'},
+            {'tx_hash': '0x' + '5' * 64, 'to': binance_hot, 'asset': 'BNB'},
+            {'tx_hash': '0x' + '6' * 64, 'to': binance_hot, 'asset': 'BNB'},
+        ],
+    },
+    {
+        'chain': 'bsc',
+        'address': '0x6666666666666666666666666666666666666666',
+        'exchange': 'Binance',
+        'type': 'deposit_wallet',
+        'confidence': 'high',
+        'sweep_paths': [
+            {'tx_hash': '0x' + '7' * 64, 'hot_wallet': binance_hot, 'direction': 'in_from_cex_hot_wallet'},
+            {'tx_hash': '0x' + '8' * 64, 'hot_wallet': binance_hot, 'direction': 'in_from_cex_hot_wallet'},
+            {'tx_hash': '0x' + '9' * 64, 'hot_wallet': binance_hot, 'direction': 'in_from_cex_hot_wallet'},
+        ],
+    },
 ]
 source.write_text(json.dumps(rows), encoding='utf-8')
 result = subprocess.run(
@@ -334,7 +359,9 @@ result = subprocess.run(
 assert result.returncode == 0, result.stderr
 review = json.loads((out_dir / 'latest.json').read_text(encoding='utf-8'))
 assert review['counts']['accepted_candidate'] == 1, review
-assert review['counts']['needs_manual_review'] == 2, review
+assert review['counts']['needs_manual_review'] == 4, review
+assert any(item['reason'] == 'native_asset_only' for item in review['reviewed']), review
+assert any(item['reason'] == 'missing_sweep_target' and item['address'] == '0x6666666666666666666666666666666666666666' for item in review['reviewed']), review
 proposal = review['label_proposals'][0]
 assert proposal['class'] == 'cex_deposit', proposal
 assert proposal['exchange'] == 'Binance', proposal

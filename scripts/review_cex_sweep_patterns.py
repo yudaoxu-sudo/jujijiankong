@@ -19,6 +19,8 @@ from sniper_engine.address_labels import global_address_label, is_address, norm
 DEFAULT_OUT_DIR = ROOT / "output" / "exchange_wallet_labels" / "sweep_review"
 SUPPORTED_CHAINS = {"bsc"}
 MIN_SWEEP_TXS = 3
+NATIVE_ASSET_VALUES = {"native", "native_bnb", "bnb"}
+OUTBOUND_SWEEP_DIRECTIONS = {"out_to_cex_hot_wallet", "sweep_to_hot_wallet", "outbound_sweep"}
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:
@@ -41,6 +43,40 @@ def sweep_paths(row: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, dict)]
+
+
+def outbound_sweep_path(path: dict[str, Any]) -> bool:
+    direction = str(path.get("direction") or "").strip().lower()
+    return not direction or direction in OUTBOUND_SWEEP_DIRECTIONS
+
+
+def normalized_asset_type(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_").lstrip("$")
+
+
+def row_asset_type(row: dict[str, Any]) -> str:
+    for key in ("asset_type", "token_type", "asset_class"):
+        value = normalized_asset_type(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def path_asset_type(path: dict[str, Any]) -> str:
+    for key in ("asset_type", "token_type", "asset", "symbol", "token_symbol", "currency"):
+        value = normalized_asset_type(path.get(key))
+        if value:
+            return value
+    return ""
+
+
+def native_asset_only(row: dict[str, Any], paths: list[dict[str, Any]]) -> bool:
+    row_asset = row_asset_type(row)
+    if row_asset in NATIVE_ASSET_VALUES:
+        return True
+    path_assets = [path_asset_type(path) for path in paths]
+    path_assets = [asset for asset in path_assets if asset]
+    return bool(path_assets) and all(asset in NATIVE_ASSET_VALUES for asset in path_assets)
 
 
 def target_address(path: dict[str, Any]) -> str:
@@ -85,7 +121,11 @@ def classify_row(row: dict[str, Any]) -> dict[str, Any]:
     if confidence(row) not in {"high", "medium"}:
         return {"status": "rejected", "reason": "confidence_too_low", "current_class": current.get("class", "")}
 
-    paths = sweep_paths(row)
+    raw_paths = sweep_paths(row)
+    if native_asset_only(row, raw_paths):
+        return {"status": "needs_manual_review", "reason": "native_asset_only", "current_class": ""}
+
+    paths = [path for path in raw_paths if outbound_sweep_path(path)]
     targets = [target_address(path) for path in paths]
     targets = [target for target in targets if target]
     tx_hashes = {path_tx_hash(path) for path in paths if path_tx_hash(path)}
@@ -170,6 +210,7 @@ def build_review(path: Path) -> dict[str, Any]:
             "address": norm(row.get("address")),
             "exchange": row.get("exchange", ""),
             "type": row_type(row),
+            "asset_type": row_asset_type(row),
             "confidence": confidence(row),
             "status": result.get("status"),
             "reason": result.get("reason"),
