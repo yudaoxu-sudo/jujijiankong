@@ -85,6 +85,9 @@ def append_history(snapshot: dict[str, Any]) -> None:
                 "depth_state": row.get("depth_state", ""),
                 "bid_depth_usd": row.get("bid_depth_usd", ""),
                 "ask_depth_usd": row.get("ask_depth_usd", ""),
+                "liquidation_state": row.get("liquidation_state", ""),
+                "long_liquidation_usd": row.get("long_liquidation_usd", ""),
+                "short_liquidation_usd": row.get("short_liquidation_usd", ""),
             }
         )
     entry = {
@@ -311,6 +314,81 @@ def depth_action_note(row: dict[str, Any]) -> str:
     return prefix + "，盘口厚度可用"
 
 
+def liquidation_metrics(
+    details: list[dict[str, Any]],
+    size_multiplier: Decimal | None = None,
+    now_ms: int | None = None,
+    lookback_minutes: int | None = None,
+) -> dict[str, Any]:
+    multiplier = size_multiplier if size_multiplier is not None else Decimal(1)
+    current_ms = now_ms if now_ms is not None else int(datetime.now(timezone.utc).timestamp() * 1000)
+    window_minutes = lookback_minutes if lookback_minutes is not None else int(os.environ.get("PERP_WATCH_LIQUIDATION_LOOKBACK_MINUTES", "60"))
+    since_ms = current_ms - window_minutes * 60 * 1000
+    long_liq = Decimal(0)
+    short_liq = Decimal(0)
+    long_count = 0
+    short_count = 0
+    latest_ms = 0
+    for row in details:
+        ts = int(row.get("ts") or row.get("time") or 0)
+        if ts and ts < since_ms:
+            continue
+        price = decimal_from(row.get("bkPx"))
+        size = decimal_from(row.get("sz"))
+        if price <= 0 or size <= 0:
+            continue
+        latest_ms = max(latest_ms, ts)
+        notional = price * size * multiplier
+        pos_side = str(row.get("posSide") or "").lower()
+        side = str(row.get("side") or "").lower()
+        if pos_side == "long" or side == "sell":
+            long_liq += notional
+            long_count += 1
+        elif pos_side == "short" or side == "buy":
+            short_liq += notional
+            short_count += 1
+    total = long_liq + short_liq
+    threshold = Decimal(os.environ.get("PERP_WATCH_LIQUIDATION_USD_ALERT", "20000"))
+    state = "no_recent_liquidation"
+    if total > 0 and total < threshold:
+        state = "light_liquidation"
+    elif long_liq >= threshold and long_liq >= short_liq * Decimal(2):
+        state = "long_liquidation_pressure"
+    elif short_liq >= threshold and short_liq >= long_liq * Decimal(2):
+        state = "short_liquidation_pressure"
+    elif total >= threshold:
+        state = "two_sided_liquidation"
+    return {
+        "liquidation_status": "ok",
+        "liquidation_venue": "okx_swap",
+        "liquidation_lookback_minutes": str(window_minutes),
+        "long_liquidation_usd": str(long_liq),
+        "short_liquidation_usd": str(short_liq),
+        "total_liquidation_usd": str(total),
+        "long_liquidation_count": long_count,
+        "short_liquidation_count": short_count,
+        "latest_liquidation_ts": str(latest_ms) if latest_ms else "",
+        "liquidation_state": state,
+    }
+
+
+def liquidation_action_note(row: dict[str, Any]) -> str:
+    state = str(row.get("liquidation_state") or "")
+    if row.get("liquidation_status") != "ok" or state in {"", "no_recent_liquidation"}:
+        return ""
+    lookback = row.get("liquidation_lookback_minutes") or os.environ.get("PERP_WATCH_LIQUIDATION_LOOKBACK_MINUTES", "60")
+    long_liq = fmt(row.get("long_liquidation_usd"), "0.01")
+    short_liq = fmt(row.get("short_liquidation_usd"), "0.01")
+    prefix = f"OKX近{lookback}分钟强平 long≈{long_liq} short≈{short_liq}"
+    if state == "long_liquidation_pressure":
+        return prefix + "，多头强平压力"
+    if state == "short_liquidation_pressure":
+        return prefix + "，空头强平压力"
+    if state == "two_sided_liquidation":
+        return prefix + "，双向强平波动"
+    return prefix + "，轻量强平"
+
+
 def binance_depth_context(symbol: str, mark_price: Any) -> dict[str, Any]:
     limit = int(os.environ.get("PERP_WATCH_DEPTH_LIMIT", "50"))
     payload = http_json("/fapi/v1/depth", {"symbol": symbol, "limit": limit}, timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")))
@@ -333,6 +411,42 @@ def okx_depth_context(inst_id: str, mark_price: Any, exchange_info: dict[str, An
     if multiplier <= 0:
         multiplier = Decimal(1)
     return depth_metrics(mark_price, book.get("bids") or [], book.get("asks") or [], size_multiplier=multiplier)
+
+
+def okx_inst_family(inst_id: str, exchange_info: dict[str, Any]) -> str:
+    family = str(exchange_info.get("instFamily") or "").upper()
+    if family:
+        return family
+    if inst_id.endswith("-SWAP"):
+        return inst_id[:-5]
+    parts = inst_id.split("-")
+    return "-".join(parts[:2]) if len(parts) >= 2 else inst_id
+
+
+def okx_liquidation_context(inst_id: str, exchange_info: dict[str, Any]) -> dict[str, Any]:
+    payload = http_json_base(
+        OKX_API,
+        "/api/v5/public/liquidation-orders",
+        {
+            "instType": "SWAP",
+            "mgnMode": os.environ.get("PERP_WATCH_OKX_LIQUIDATION_MGN_MODE", "cross"),
+            "instFamily": okx_inst_family(inst_id, exchange_info),
+            "state": "filled",
+            "limit": int(os.environ.get("PERP_WATCH_LIQUIDATION_LIMIT", "100")),
+        },
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if str(payload.get("code")) != "0":
+        raise RuntimeError(f"OKX liquidation error: {payload.get('msg') or payload.get('code')}")
+    details: list[dict[str, Any]] = []
+    for item in payload.get("data") or []:
+        for detail in item.get("details") or []:
+            if isinstance(detail, dict):
+                details.append(detail)
+    multiplier = decimal_from(exchange_info.get("ctVal") or "1")
+    if multiplier <= 0:
+        multiplier = Decimal(1)
+    return liquidation_metrics(details, size_multiplier=multiplier)
 
 
 def bybit_orderbook(symbol: str, limit: int) -> dict[str, Any]:
@@ -363,6 +477,19 @@ def attach_depth(row: dict[str, Any], fetcher: Any, *args: Any) -> dict[str, Any
     note = depth_action_note(row)
     if note:
         row["depth_note"] = note
+    return row
+
+
+def attach_liquidations(row: dict[str, Any], fetcher: Any, *args: Any) -> dict[str, Any]:
+    try:
+        row.update(fetcher(*args))
+    except Exception as exc:
+        row["liquidation_status"] = "failed"
+        row["liquidation_state"] = "unknown_liquidation"
+        row["liquidation_error"] = str(exc)[:180]
+    note = liquidation_action_note(row)
+    if note:
+        row["liquidation_note"] = note
     return row
 
 
@@ -437,11 +564,14 @@ def okx_context(symbol: str, okx_symbols: dict[str, dict[str, Any]], source_stat
         row = dict(base, status="ok", exchange_status=exchange_info.get("state", ""))
         row.update(metrics)
         attach_depth(row, okx_depth_context, inst_id, row.get("mark_price"), exchange_info)
+        attach_liquidations(row, okx_liquidation_context, inst_id, exchange_info)
         row["perp_state"] = decision.get("status", "")
         row["direction_hint"] = decision.get("direction_hint", "")
         row["action"] = decision.get("action", "")
         if row.get("depth_note"):
             row["action"] += "；" + row["depth_note"]
+        if row.get("liquidation_note"):
+            row["action"] += "；" + row["liquidation_note"]
         return row
     except Exception as exc:
         return dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="OKX合约指标拉取失败")
@@ -459,6 +589,8 @@ def venue_signal_notes(venues: list[dict[str, Any]]) -> list[str]:
         notes.append(
             f"{venue.get('venue')} {hint} OI≈{fmt(venue.get('open_interest_usd'), '0.01')} funding {fmt(funding_pct, '0.0001')}%"
         )
+        if venue.get("liquidation_note"):
+            notes.append(f"{venue.get('venue')} {venue.get('liquidation_note')}")
     return notes
 
 
@@ -756,6 +888,7 @@ def build_snapshot() -> dict[str, Any]:
                 rows.append(row)
             else:
                 rows.append(dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="合约指标拉取失败"))
+    alert_liquidation_states = {"long_liquidation_pressure", "short_liquidation_pressure", "two_sided_liquidation"}
     alerts = [
         row
         for row in rows
@@ -764,6 +897,7 @@ def build_snapshot() -> dict[str, Any]:
             row.get("direction_hint") in {"拥挤", "可观察"}
             or bool(row.get("cross_venue_notes"))
             or row.get("depth_state") in {"thin_depth", "wide_spread", "ask_thin", "bid_thin"}
+            or row.get("liquidation_state") in alert_liquidation_states
         )
     ]
     return {
@@ -805,8 +939,8 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- item_count: `{snapshot['item_count']}`",
         f"- alert_count: `{snapshot['alert_count']}`",
         "",
-        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding | 24h Vol | 24h Chg | Depth | Trend | Action |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding | 24h Vol | 24h Chg | Depth | Liq | Trend | Action |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in snapshot["rows"]:
         funding_pct = decimal_from(row.get("last_funding_rate")) * Decimal(100)
@@ -821,11 +955,17 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"{row.get('depth_state')} bid={fmt(row.get('bid_depth_usd'), '0.01')} "
                 f"ask={fmt(row.get('ask_depth_usd'), '0.01')} spread={fmt(row.get('spread_bps'), '0.01')}bps"
             )
+        liquidation = ""
+        if row.get("liquidation_status") == "ok":
+            liquidation = (
+                f"{row.get('liquidation_state')} long={fmt(row.get('long_liquidation_usd'), '0.01')} "
+                f"short={fmt(row.get('short_liquidation_usd'), '0.01')}"
+            )
         lines.append(
             f"| `{row.get('symbol')}` | `{row.get('perp_symbol')}` | {venues} | {row.get('status')}:{row.get('perp_state', '')} / {row.get('direction_hint', '')} | "
             f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {fmt(funding_pct, '0.0001')}% | "
             f"{fmt(row.get('quote_volume_24h'), '0.01')} | {fmt(row.get('price_change_pct_24h'), '0.01')}% | "
-            f"{depth} | {row.get('trend_hint', '')} | {combined_action} |"
+            f"{depth} | {liquidation} | {row.get('trend_hint', '')} | {combined_action} |"
         )
     lines.append("")
     return "\n".join(lines)

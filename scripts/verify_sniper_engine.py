@@ -647,7 +647,7 @@ assert readback_gate['can_follow'] is False, readback_gate
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
 
     perp_watch_code = """
-from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, depth_action_note, depth_metrics, listed_venue_names, total_open_interest, trend_for_symbol, venue_signal_notes
+from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, depth_action_note, depth_metrics, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, total_open_interest, trend_for_symbol, venue_signal_notes
 
 thin = classify_perp({'open_interest_usd': '1000', 'last_funding_rate': '0', 'quote_volume_24h': '0'})
 assert thin['status'] == 'thin_or_unusable', thin
@@ -705,6 +705,21 @@ assert depth['ask_depth_usd'] == '26068.000', depth
 assert '上方卖盘薄' in depth_action_note(depth), depth
 thin_depth = depth_metrics('1', bids=[['0.999', '10']], asks=[['1.001', '10']], band_bps=None)
 assert thin_depth['depth_state'] == 'thin_depth', thin_depth
+liq = liquidation_metrics(
+    [
+        {'bkPx': '1', 'sz': '30000', 'posSide': 'long', 'side': 'sell', 'ts': '100000'},
+        {'bkPx': '1', 'sz': '2000', 'posSide': 'short', 'side': 'buy', 'ts': '100000'},
+    ],
+    now_ms=100000,
+    lookback_minutes=60,
+)
+assert liq['liquidation_state'] == 'long_liquidation_pressure', liq
+assert liq['long_liquidation_usd'] == '30000', liq
+assert '多头强平压力' in liquidation_action_note(liq), liq
+old_liq = liquidation_metrics([{'bkPx': '1', 'sz': '50000', 'posSide': 'short', 'side': 'buy', 'ts': '1'}], now_ms=100000000, lookback_minutes=1)
+assert old_liq['liquidation_state'] == 'no_recent_liquidation', old_liq
+assert okx_inst_family('ARX-USDT-SWAP', {}) == 'ARX-USDT'
+assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT'
 """
     perp_watch_result = subprocess.run(
         [sys.executable, "-c", perp_watch_code],

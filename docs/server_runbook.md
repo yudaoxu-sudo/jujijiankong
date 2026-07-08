@@ -140,7 +140,7 @@ Telegram 当前有两层控制：
 
 Surf 免费额度耗尽时，脚本会写入 `output/surf_aux_market_watch/quota_state.json`，当天后续运行直接短路成 `surf_quota_exhausted_today`，避免 5 分钟 cron 反复打失败请求。
 
-`perp_oi_funding_watch.py` 读取 Binance USD-M、OKX SWAP、Bybit linear 的公开合约指标。除 OI、funding、24h volume 和趋势外，它会抓取当前永续盘口，计算默认 ±50bps 内 bid/ask 深度、点差和深度偏斜；`thin_depth`、`wide_spread`、`ask_thin`、`bid_thin` 都只作为合约风险上下文，需要和现货承接、链上流向一起判断。
+`perp_oi_funding_watch.py` 读取 Binance USD-M、OKX SWAP、Bybit linear 的公开合约指标。除 OI、funding、24h volume 和趋势外，它会抓取当前永续盘口，计算默认 ±50bps 内 bid/ask 深度、点差和深度偏斜；`thin_depth`、`wide_spread`、`ask_thin`、`bid_thin` 都只作为合约风险上下文，需要和现货承接、链上流向一起判断。OKX 公开 `liquidation-orders` 可用时会补充近 60 分钟 long/short 强平金额；Binance force-orders 当前需要 API key 或已停维，Bybit liquidation 路由本地返回 404，暂不纳入自动上下文。
 
 可调参数：
 
