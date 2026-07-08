@@ -82,6 +82,7 @@ def main() -> int:
         ROOT / "docs" / "pancake_v4_roundtrip_implementation_prompt.md",
         ROOT / "docs" / "cex_wallet_evidence_request_prompt.md",
         ROOT / "docs" / "x_mcp_setup.md",
+        ROOT / "cases" / "2026-07-08_alpha_rotated_address_review.md",
         ROOT / "config" / "watchlist.example.json",
         ROOT / "config" / "external_aux_sources.json",
         ROOT / "config" / "user_positions.example.json",
@@ -94,6 +95,7 @@ def main() -> int:
         ROOT / "config" / "telegram_user_sources.json",
         ROOT / "config" / "monitored_wallets.json",
         ROOT / "config" / "pancake_v4_simulation_samples.json",
+        ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_swaps.csv",
@@ -179,6 +181,41 @@ def main() -> int:
     except Exception as exc:
         global_labels_msg = str(exc)
     checks.append(("global address labels JSON parses", global_labels_ok, global_labels_msg))
+
+    alpha_rotated_ok = False
+    alpha_rotated_msg = ""
+    try:
+        alpha_review = json.loads((ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json").read_text(encoding="utf-8"))
+        labels = json.loads((ROOT / "config" / "global_address_labels.json").read_text(encoding="utf-8"))
+        bsc_by_address = {str(row.get("address", "")).lower(): row for row in labels.get("chains", {}).get("bsc", []) if isinstance(row, dict)}
+        expected_classes = {
+            "0x6aba0315493b7e6989041c91181337b662fb1b90": "exchange_aggregator",
+            "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db": "exchange_aggregator",
+            "0xb300000b72deaeb607a12d5f54773d1c19c7028d": "dex_router",
+        }
+        configured = alpha_review.get("current_configured_infrastructure", [])
+        candidates = alpha_review.get("manual_review_candidates", [])
+        configured_addresses = {str(row.get("address", "")).lower() for row in configured if isinstance(row, dict)}
+        candidate_statuses = {str(row.get("status", "")) for row in candidates if isinstance(row, dict)}
+        missing_or_wrong = [
+            address
+            for address, label_class in expected_classes.items()
+            if bsc_by_address.get(address, {}).get("class") != label_class
+        ]
+        alpha_rotated_ok = (
+            alpha_review.get("schema") == "alpha_rotated_address_review.v1"
+            and set(expected_classes).issubset(configured_addresses)
+            and not missing_or_wrong
+            and len(alpha_review.get("representative_tx_hashes", [])) >= 10
+            and "candidate_only_do_not_promote" in candidate_statuses
+        )
+        alpha_rotated_msg = (
+            f"configured={len(configured)}, candidates={len(candidates)}, "
+            f"txs={len(alpha_review.get('representative_tx_hashes', []))}, wrong={missing_or_wrong}"
+        )
+    except Exception as exc:
+        alpha_rotated_msg = str(exc)
+    checks.append(("alpha rotated address review parses", alpha_rotated_ok, alpha_rotated_msg))
 
     cex_labels_ok = False
     cex_labels_msg = ""

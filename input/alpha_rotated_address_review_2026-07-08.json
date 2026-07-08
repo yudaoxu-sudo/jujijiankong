@@ -1,0 +1,137 @@
+{
+  "schema": "alpha_rotated_address_review.v1",
+  "updated_at": "2026-07-08",
+  "scope": "Reuse old local Manus and tx_review Binance Alpha swap samples as the rotated Alpha infrastructure evidence pool.",
+  "source_outputs": [
+    {
+      "path": "output/alpha_trace_samples/tx_review/20260629T100032Z/review/latest.json",
+      "sample_count": 8,
+      "distinct_alpha_tokens": 6,
+      "trace_status": "receipt_only"
+    },
+    {
+      "path": "output/alpha_trace_samples/tx_review/20260629T105929Z/review/latest.json",
+      "sample_count": 6,
+      "distinct_alpha_tokens": 5,
+      "trace_status": "receipt_only"
+    },
+    {
+      "path": "output/alpha_trace_samples/manus_round2_20260629/review/latest.json",
+      "sample_count": 5,
+      "distinct_alpha_tokens": 5,
+      "trace_status": "receipt_only"
+    },
+    {
+      "path": "output/alpha_trace_samples/manual_trace_reviews/binance_alpha_raw_trace_report_20260629.md",
+      "status": "TRACE_CONFIRMED_ALLOWLIST_PROMOTION",
+      "coverage": "CLO/KGEN/RAVE invocation-flow evidence"
+    }
+  ],
+  "current_configured_infrastructure": [
+    {
+      "chain": "bsc",
+      "address": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+      "label": "Binance Alpha 2.0 Router",
+      "class": "exchange_aggregator",
+      "evidence_status": "promoted_after_invocation_flow_review",
+      "sample_support": {
+        "tx_to_distinct_alpha_tokens": 5,
+        "transfer_distinct_alpha_tokens": 5,
+        "transfer_hits": 17
+      },
+      "rule": "Exclude from buyer/seller cohorts and do not treat its transfers as retail flow."
+    },
+    {
+      "chain": "bsc",
+      "address": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "label": "Binance Alpha 2.0 Proxy/Custody",
+      "class": "exchange_aggregator",
+      "evidence_status": "promoted_after_invocation_flow_review",
+      "sample_support": {
+        "tx_to_distinct_alpha_tokens": 0,
+        "transfer_distinct_alpha_tokens": 5,
+        "transfer_hits": 6
+      },
+      "rule": "Exclude from holder and flow cohorts as Alpha custody or proxy infrastructure."
+    },
+    {
+      "chain": "bsc",
+      "address": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "label": "Binance DEX Router",
+      "class": "dex_router",
+      "evidence_status": "downstream_router_confirmed",
+      "sample_support": {
+        "tx_to_distinct_alpha_tokens": 0,
+        "transfer_distinct_alpha_tokens": 5,
+        "transfer_hits": 22
+      },
+      "rule": "Protocol router only; never count as buyer, seller, whale, project, or funding parent."
+    }
+  ],
+  "manual_review_candidates": [
+    {
+      "chain": "bsc",
+      "address": "0x1905dbf18c916bf8ec659545de0858d9f20eaeab",
+      "configured_class": "",
+      "recommendation": "protocol_or_router_candidate",
+      "transfer_distinct_alpha_tokens": 4,
+      "transfer_hits": 11,
+      "status": "candidate_only_do_not_promote",
+      "needed_evidence": "Invocation flow, internal transaction rows, or trace JSON proving role."
+    },
+    {
+      "chain": "bsc",
+      "address": "0x7977f3e8e063a4ee95b5f396d63485dbdea4515d",
+      "configured_class": "",
+      "recommendation": "protocol_or_router_candidate",
+      "transfer_distinct_alpha_tokens": 3,
+      "transfer_hits": 6,
+      "status": "candidate_only_do_not_promote",
+      "needed_evidence": "Invocation flow, internal transaction rows, or trace JSON proving role."
+    },
+    {
+      "chain": "bsc",
+      "address": "0xe2588c219697f520757b82f5b0119d72bddc0e13",
+      "configured_class": "",
+      "recommendation": "protocol_or_router_candidate",
+      "transfer_distinct_alpha_tokens": 3,
+      "transfer_hits": 6,
+      "status": "candidate_only_do_not_promote",
+      "needed_evidence": "Invocation flow, internal transaction rows, or trace JSON proving role."
+    },
+    {
+      "chain": "bsc",
+      "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "configured_class": "dex_vault",
+      "recommendation": "protocol_or_router_candidate",
+      "transfer_distinct_alpha_tokens": 4,
+      "transfer_hits": 9,
+      "status": "already_configured_as_dex_vault",
+      "needed_evidence": "No action unless future trace proves a more specific infrastructure class."
+    }
+  ],
+  "representative_tx_hashes": [
+    "0x0ecc364053f10f3a257289e70027cd842ed83a75ec1ae5636fc47ab00c793ac4",
+    "0x6c3a444aa3379f502f193cedc723f4bf1cec34b887f0edb9d470c166ac6b357b",
+    "0x01e0a772f241fc297a900000a40df57812e33019937bdd84c185f050d8f6b05b",
+    "0x6ae34200c0300f0ef225e5365dba68c00134763dcd0a4e5f8ca9f945ce32333e",
+    "0x686c52030cb4cb880a12f3191f11829d435de2fc1159d75ebb02047dde1a67b5",
+    "0x498f6e32f0419d330384b4477a851f55d862a08032eb8dee6dd5d32440b10d43",
+    "0xbbcf520a73ce5c31c0c358fff4f1e44052f2a7653609a1d457aa3309cbffa754",
+    "0x3463379b5ceb6a0a908920565fd4c3c0db28307cc68f7d3212ad5c9b5f459c1f",
+    "0xe0bd3b7742928ffbd52412800b081e4ff85e8a8f816ee13d5246fb994c51ad29",
+    "0xac7954e8c5bb90fbcb58f0e40c5fe06820ee799c41b0e13841ad54de7d092dd3",
+    "0xd099a80fdcb5539d3de68fda7999627b54f7def2bec08da2f3858151126a7867",
+    "0x64f21df1669c515a38b9be5a64b7957f9b5ea472072eef25dbd89c5a6854b479",
+    "0xcc5a738c05dfe2daf6b878c0d4a43a02dd9670b508a4156756fc034ff82cf86a",
+    "0x7e8d75ff235f2a0966317319024f71c26f70481fcbcc0b8caeef1ff942974578",
+    "0x23e3735b1bbd37e76108c54f2a4578dd801efb8272fae3c92c30f9a304807aba",
+    "0xbba266fdbb5f537b170dc4c0f90ebdfe2c41ca31285ed08c08a82dd8c3cd6c72"
+  ],
+  "rules": [
+    "Receipt-only cross-token reuse can mark a candidate for review, but cannot promote an exchange_aggregator label.",
+    "Invocation flow, internal transaction rows, or trace JSON is required before a new rotated Alpha address becomes configured infrastructure.",
+    "Configured Alpha infrastructure is excluded from buyer/seller cohorts and cannot create bullish or bearish action by itself.",
+    "If a configured infrastructure address participates in a confirmed DEX sell path, classify the sell leg through quote recovery and venue context before action language."
+  ]
+}
