@@ -1,8 +1,8 @@
 # Server Runbook
 
-更新日期：2026-06-27
+更新日期：2026-07-08
 
-当前版本已经覆盖本地推文评分、O1 历史复盘、Alpha 项目级监控、Alpha 开盘首批买家回溯、Alpha 官方价格动量、Alpha 盘中大额流监控、Surf 外部市场辅助层、HertzFlow 地址包汇总、关键钱包只读监控。
+当前版本已经覆盖本地推文评分、Telegram/项目线索摄取、Alpha 项目级监控、预发布窗口、Alpha 开盘首批买家回溯、首批买家 funding source、Alpha 官方价格动量、Alpha 盘中大额流监控、holder 集中度、合约 OI/funding/盘口/强平、Surf 外部市场辅助层、外部辅助源 readiness、预测市场、日报和系统自检。
 
 ## 本地验证
 
@@ -12,11 +12,17 @@ python3 scripts/sniper_score_local.py
 python3 scripts/build_monitored_wallets.py
 MONITOR_LOOKBACK_BLOCKS=5000 python3 scripts/sniper_monitor.py
 python3 scripts/alpha_project_watch.py
+python3 scripts/alpha_prelaunch_watch.py
 python3 scripts/alpha_opening_block_watch.py
-python3 scripts/alpha_price_momentum_watch.py
+python3 scripts/review_opening_cohort_funders.py --lookback-blocks 0 --max-scan-seconds 25
 python3 scripts/alpha_intraday_flow_watch.py
 python3 scripts/perp_oi_funding_watch.py
+python3 scripts/alpha_price_momentum_watch.py
+python3 scripts/alpha_holder_concentration_watch.py
 SURF_AUX_MAX_PROJECTS=2 python3 scripts/surf_aux_market_watch.py
+python3 scripts/prediction_market_watch.py
+python3 scripts/external_aux_source_readiness.py
+python3 scripts/x_mcp_readiness.py --no-network --skip-xurl
 python3 scripts/simulate_pancake_v4_roundtrip_call.py --pin-block --sell-quote-share-bps 10000 --recovery-iterations 40
 python3 scripts/o1_address_attribution.py
 python3 scripts/build_alpha_daily_report.py
@@ -36,10 +42,29 @@ output/monitoring/alerts.md
 output/monitoring/telegram_payload.txt
 output/project_registry/project_registry.json
 output/project_registry/project_registry.md
+output/alpha_prelaunch_watch/latest.md
+output/alpha_opening_block_watch/latest.json
+output/alpha_opening_block_watch/latest.md
+output/opening_cohort_funders/latest.json
+output/opening_cohort_funders/latest.md
+output/alpha_intraday_flow_watch/latest.json
+output/alpha_intraday_flow_watch/latest.md
+output/perp_oi_funding_watch/latest.json
+output/perp_oi_funding_watch/latest.md
+output/alpha_price_momentum_watch/latest.json
+output/alpha_price_momentum_watch/latest.md
+output/alpha_holder_concentration_watch/latest.json
+output/alpha_holder_concentration_watch/latest.md
 output/o1_address_attribution/address_attribution.csv
 output/o1_address_attribution/o1_address_attribution.md
 output/surf_aux_market_watch/latest.json
 output/surf_aux_market_watch/latest.md
+output/prediction_markets/latest_prediction_markets.json
+output/prediction_markets/prediction_markets.md
+output/external_aux_sources/latest.json
+output/external_aux_sources/latest.md
+output/x_mcp_readiness/latest.json
+output/x_mcp_readiness/latest.md
 output/pancake_v4_roundtrip_call/latest.json
 output/pancake_v4_roundtrip_call/latest.md
 reports/YYYY-MM-DD_alpha_sniper_daily.md
@@ -71,14 +96,19 @@ scripts/sniper_monitor.py
 scripts/alpha_project_watch.py
 scripts/alpha_prelaunch_watch.py
 scripts/alpha_opening_sprint.sh
+scripts/review_opening_cohort_funders.py
 scripts/alpha_intraday_flow_watch.py
 scripts/perp_oi_funding_watch.py
 scripts/alpha_price_momentum_watch.py
+scripts/alpha_holder_concentration_watch.py
 scripts/surf_aux_market_watch.py
+scripts/arx_opening_sprint.sh 条件执行
+scripts/arx_launch_watch.py 条件执行
 scripts/telegram_signal_collector.py
 scripts/telegram_user_signal_collector.py
 scripts/prediction_market_watch.py
 scripts/external_aux_source_readiness.py
+scripts/o1_address_attribution.py 条件执行
 scripts/build_alpha_daily_report.py
 scripts/verify_sniper_engine.py
 ```
