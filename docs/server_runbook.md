@@ -22,6 +22,8 @@ python3 scripts/alpha_holder_concentration_watch.py
 SURF_AUX_MAX_PROJECTS=2 python3 scripts/surf_aux_market_watch.py
 python3 scripts/prediction_market_watch.py
 python3 scripts/external_aux_source_readiness.py
+python3 scripts/external_aux_live_probe.py --source surf
+python3 scripts/position_cost_watch.py
 python3 scripts/x_mcp_readiness.py --no-network --skip-xurl
 python3 scripts/simulate_pancake_v4_roundtrip_call.py --pin-block --sell-quote-share-bps 10000 --recovery-iterations 40
 python3 scripts/o1_address_attribution.py
@@ -63,6 +65,10 @@ output/prediction_markets/latest_prediction_markets.json
 output/prediction_markets/prediction_markets.md
 output/external_aux_sources/latest.json
 output/external_aux_sources/latest.md
+output/external_aux_live_probe/latest.json
+output/external_aux_live_probe/latest.md
+output/position_cost_watch/latest.json
+output/position_cost_watch/latest.md
 output/x_mcp_readiness/latest.json
 output/x_mcp_readiness/latest.md
 output/pancake_v4_roundtrip_call/latest.json
@@ -108,7 +114,9 @@ scripts/telegram_signal_collector.py
 scripts/telegram_user_signal_collector.py
 scripts/prediction_market_watch.py
 scripts/external_aux_source_readiness.py
+scripts/external_aux_live_probe.py 条件执行
 scripts/o1_address_attribution.py 条件执行
+scripts/position_cost_watch.py
 scripts/build_alpha_daily_report.py
 scripts/verify_sniper_engine.py
 ```
@@ -172,6 +180,10 @@ Surf 免费额度耗尽时，脚本会写入 `output/surf_aux_market_watch/quota
 
 `perp_oi_funding_watch.py` 读取 Binance USD-M、OKX SWAP、Bybit linear 的公开合约指标。除 OI、funding、24h volume 和趋势外，它会抓取当前永续盘口，计算默认 ±50bps 内 bid/ask 深度、点差和深度偏斜；`thin_depth`、`wide_spread`、`ask_thin`、`bid_thin` 都只作为合约风险上下文，需要和现货承接、链上流向一起判断。OKX 公开 `liquidation-orders` 可用时会补充近 60 分钟 long/short 强平金额；Binance force-orders 当前需要 API key 或已停维，Bybit liquidation 路由本地返回 404，暂不纳入自动上下文。
 
+`external_aux_live_probe.py` 是 Coinglass / CoinAnk / GMGN 的小样本验收入口。默认服务器 cron 只跑 `external_aux_source_readiness.py`，不会消耗付费 API；设置 `RUN_EXTERNAL_AUX_LIVE_PROBE=1` 后才跑 live probe。Coinglass 使用 `COINGLASS_API_KEY` 和 `CG-API-KEY` header，CoinAnk 使用 `COINANK_API_KEY` 和 `apikey` header，GMGN 默认只检查 `GMGN_API_KEY`，如有只读查询端点再配置 `GMGN_PROBE_URL` 和可选 `GMGN_API_KEY_HEADER`。probe 通过后仍需人工确认字段能和本地规则对齐，再设置对应 `AUX_SOURCE_VALIDATED_*`。
+
+`position_cost_watch.py` 是只读仓位/成本/纸面交易台账。真实文件是 `config/user_positions.json`，已加入 `.gitignore`；模板是 `config/user_positions.example.json`。脚本会合并 Alpha 价格、Surf、合约 OI/funding/盘口、盘中链上流和 holder 风险，输出仓位盈亏、止损/止盈触发、减仓观察和纸面交易入场状态。它不读取私钥，不签名，不下单。
+
 可调参数：
 
 ```bash
@@ -180,6 +192,9 @@ export SURF_AUX_SPOT_PRICE_LIMIT=3
 export SURF_AUX_SWAP_PRICE_LIMIT=2
 export SURF_AUX_LISTING_LOOKBACK_DAYS=14
 export SURF_AUX_MARKET_TIMEOUT_SECONDS=180
+export RUN_EXTERNAL_AUX_LIVE_PROBE=0
+export EXTERNAL_AUX_LIVE_PROBE_TIMEOUT_SECONDS=60
+export POSITION_COST_TIMEOUT_SECONDS=45
 ```
 
 `simulate_pancake_v4_roundtrip_call.py` 是 Pancake v4 / Infinity 可售性验证工具。它用 stateOverride 做同笔 USDT -> token -> USDT Universal Router `eth_call`，再通过提高 sell leg 的 `TAKE_ALL amountMinimum` 做二分估算，输出 quote 回收率。示例：

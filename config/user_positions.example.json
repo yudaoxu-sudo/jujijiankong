@@ -1,0 +1,41 @@
+{
+  "schema": "user_positions.v1",
+  "updated_at": "2026-07-08",
+  "rules": {
+    "mode": "read_only",
+    "no_signing": true,
+    "no_order_execution": true,
+    "default_quote": "USDT"
+  },
+  "positions": [
+    {
+      "symbol": "ARX",
+      "venue": "manual",
+      "instrument": "spot",
+      "side": "long",
+      "quantity": "1000",
+      "avg_entry": "0.20",
+      "quote": "USDT",
+      "max_position_usd": "250",
+      "stop_loss": "0.16",
+      "take_profit": "0.30",
+      "opened_at": "2026-07-08T00:00:00+08:00",
+      "status": "paper",
+      "thesis": "Example only: opening-block setup after sellability confirmation.",
+      "invalidation": "Confirmed CEX sell route, failed sellability, or buyer-stack collapse."
+    }
+  ],
+  "paper_trades": [
+    {
+      "symbol": "NES",
+      "instrument": "spot",
+      "side": "long",
+      "planned_entry": "0.20",
+      "max_slippage_bps": "50",
+      "max_loss_usd": "50",
+      "invalidation": "Opening cohort sells out or Alpha book becomes hostile.",
+      "target": "0.28",
+      "status": "planned"
+    }
+  ]
+}

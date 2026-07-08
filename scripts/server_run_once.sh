@@ -70,10 +70,16 @@ run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_si
 run_step "${TELEGRAM_USER_COLLECTOR_TIMEOUT_SECONDS:-120}" python3 scripts/telegram_user_signal_collector.py
 run_step "${PREDICTION_MARKET_TIMEOUT_SECONDS:-90}" python3 scripts/prediction_market_watch.py
 run_step "${EXTERNAL_AUX_SOURCE_TIMEOUT_SECONDS:-45}" python3 scripts/external_aux_source_readiness.py
+if [[ "${RUN_EXTERNAL_AUX_LIVE_PROBE:-0}" == "1" ]]; then
+  run_step "${EXTERNAL_AUX_LIVE_PROBE_TIMEOUT_SECONDS:-60}" python3 scripts/external_aux_live_probe.py
+else
+  echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) skipped external aux live probe; RUN_EXTERNAL_AUX_LIVE_PROBE=1 to enable"
+fi
 if [[ "${RUN_O1_ATTRIBUTION:-0}" == "1" ]]; then
   run_step "${ATTRIBUTION_TIMEOUT_SECONDS:-90}" python3 scripts/o1_address_attribution.py
 else
   echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) skipped O1 attribution; RUN_O1_ATTRIBUTION=1 to enable"
 fi
+run_step "${POSITION_COST_TIMEOUT_SECONDS:-45}" python3 scripts/position_cost_watch.py
 run_step "${DAILY_REPORT_TIMEOUT_SECONDS:-90}" python3 scripts/build_alpha_daily_report.py
 run_step "${VERIFY_TIMEOUT_SECONDS:-120}" python3 scripts/verify_sniper_engine.py

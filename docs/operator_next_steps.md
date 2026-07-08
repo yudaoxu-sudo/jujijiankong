@@ -121,7 +121,7 @@ python3 scripts/telegram_user_login.py --qr
 
 - 有 Coinglass API 就发 key 的环境变量名和额度说明，不要把长期密钥直接贴聊天；我会给你服务器 `.env.local` 写入命令。
 - 有 CoinAnk API 就发 API 文档或 key 的获取页面。
-- 有 GMGN API / Agent API 权限就发文档和 key 获取入口。
+- 有 GMGN API / Agent API 权限就发文档和 key 获取入口；如果有只读查询 endpoint，也给出 endpoint 名称，方便配置 `GMGN_PROBE_URL`。
 - 暂时没有 key 也可以继续用截图和推送，系统会把它们标成人工证据。
 
 当前检查命令：
@@ -131,6 +131,58 @@ python3 scripts/external_aux_source_readiness.py
 ```
 
 日报会显示每个外部源当前是 `needs_credentials`、`ready_for_live_probe`、`validated_for_auxiliary_signals`，避免把未验证数据写成买卖建议。
+
+拿到 key 后的验收命令：
+
+```bash
+python3 scripts/external_aux_live_probe.py --source coinglass,coinank,gmgn
+```
+
+只验证 Surf：
+
+```bash
+python3 scripts/external_aux_live_probe.py --source surf
+```
+
+## 仓位/成本台账
+
+真实仓位文件：
+
+```text
+config/user_positions.json
+```
+
+这个文件已被 git 忽略。可以先复制模板：
+
+```bash
+cp config/user_positions.example.json config/user_positions.json
+```
+
+需要你填的字段：
+
+- `symbol`：项目符号，例如 `ARX`。
+- `instrument`：`spot` 或 `perp`。
+- `side`：`long` 或 `short`。
+- `quantity`：数量。
+- `avg_entry`：平均成本。
+- `stop_loss`：失效价格。
+- `take_profit`：计划止盈价格。
+- `max_position_usd`：该标的最大暴露。
+- `thesis`：买入理由。
+- `invalidation`：什么证据出现就退出。
+
+检查命令：
+
+```bash
+python3 scripts/position_cost_watch.py
+```
+
+输出：
+
+```text
+output/position_cost_watch/latest.json
+output/position_cost_watch/latest.md
+```
 
 ## 你收到推送后怎么看
 

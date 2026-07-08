@@ -45,6 +45,8 @@ def main() -> int:
         ROOT / "scripts" / "review_pancake_v4_samples.py",
         ROOT / "scripts" / "x_mcp_readiness.py",
         ROOT / "scripts" / "external_aux_source_readiness.py",
+        ROOT / "scripts" / "external_aux_live_probe.py",
+        ROOT / "scripts" / "position_cost_watch.py",
         ROOT / "scripts" / "audit_celue_integration.py",
         ROOT / "scripts" / "decode_pancake_v4_execute.py",
         ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py",
@@ -82,6 +84,7 @@ def main() -> int:
         ROOT / "docs" / "x_mcp_setup.md",
         ROOT / "config" / "watchlist.example.json",
         ROOT / "config" / "external_aux_sources.json",
+        ROOT / "config" / "user_positions.example.json",
         ROOT / "config" / "token_aliases.json",
         ROOT / "config" / "current_alpha_watchlist.json",
         ROOT / "config" / "global_address_labels.json",
@@ -595,6 +598,8 @@ assert readback_gate['can_follow'] is False, readback_gate
         perp_run = "perp_oi_funding_watch.py"
         price_run = "alpha_price_momentum_watch.py"
         holder_run = "alpha_holder_concentration_watch.py"
+        external_live_probe_run = "external_aux_live_probe.py"
+        position_cost_run = "position_cost_watch.py"
         holder_context_order = (
             intraday_run in server_run_text
             and perp_run in server_run_text
@@ -628,6 +633,11 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "surf_aux_market_watch.py" in server_run_text
             and "EXTERNAL_AUX_SOURCE_TIMEOUT_SECONDS" in server_run_text
             and "external_aux_source_readiness.py" in server_run_text
+            and "RUN_EXTERNAL_AUX_LIVE_PROBE" in server_run_text
+            and "EXTERNAL_AUX_LIVE_PROBE_TIMEOUT_SECONDS" in server_run_text
+            and external_live_probe_run in server_run_text
+            and "POSITION_COST_TIMEOUT_SECONDS" in server_run_text
+            and position_cost_run in server_run_text
             and "alpha_opening_sprint.sh" in server_run_text
             and "ARX_OPENING_TIMEOUT_SECONDS" in server_run_text
             and "arx_opening_sprint.sh" in server_run_text
@@ -641,7 +651,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             and opening_funder_order
             and holder_context_order
         )
-        server_run_msg = "lock+timeout+continue+O1 pause+ARX refresh/launch+opening funder+perp+surf guarded+order present" if server_run_ok else "missing runtime guard"
+        server_run_msg = "lock+timeout+continue+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present" if server_run_ok else "missing runtime guard"
     except Exception as exc:
         server_run_msg = str(exc)
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
@@ -766,6 +776,8 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "review_pancake_v4_samples.py"),
         str(ROOT / "scripts" / "x_mcp_readiness.py"),
         str(ROOT / "scripts" / "external_aux_source_readiness.py"),
+        str(ROOT / "scripts" / "external_aux_live_probe.py"),
+        str(ROOT / "scripts" / "position_cost_watch.py"),
         str(ROOT / "scripts" / "decode_pancake_v4_execute.py"),
         str(ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py"),
         str(ROOT / "scripts" / "probe_pancake_v4_state_override.py"),
@@ -1162,6 +1174,100 @@ assert (out / 'latest.md').exists(), out
             "external auxiliary source readiness smoke test",
             external_aux_readiness_result.returncode == 0,
             external_aux_readiness_result.stderr.strip(),
+        )
+    )
+
+    external_aux_live_probe_code = """
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+out = Path(tempfile.mkdtemp(prefix='external_aux_live_probe_'))
+env = os.environ.copy()
+for key in ['COINGLASS_API_KEY', 'COINANK_API_KEY', 'GMGN_API_KEY']:
+    env.pop(key, None)
+result = subprocess.run(
+    [
+        sys.executable,
+        str(root / 'scripts' / 'external_aux_live_probe.py'),
+        '--out-dir',
+        str(out),
+        '--source',
+        'coinglass,coinank,gmgn,surf',
+    ],
+    cwd=root,
+    env=env,
+    capture_output=True,
+    text=True,
+)
+assert result.returncode == 0, result.stderr
+payload = json.loads((out / 'latest.json').read_text(encoding='utf-8'))
+assert payload['schema'] == 'external_aux_live_probe.v1', payload
+rows = {row['id']: row for row in payload['rows']}
+assert rows['coinglass']['status'] == 'needs_credentials', rows
+assert rows['coinank']['status'] == 'needs_credentials', rows
+assert rows['gmgn']['status'] == 'needs_credentials', rows
+assert rows['surf']['ok'] is True, rows
+assert (out / 'latest.md').exists(), out
+"""
+    external_aux_live_probe_result = subprocess.run(
+        [sys.executable, "-c", external_aux_live_probe_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "external auxiliary live probe smoke test",
+            external_aux_live_probe_result.returncode == 0,
+            external_aux_live_probe_result.stderr.strip(),
+        )
+    )
+
+    position_cost_watch_code = """
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+out = Path(tempfile.mkdtemp(prefix='position_cost_watch_'))
+result = subprocess.run(
+    [
+        sys.executable,
+        str(root / 'scripts' / 'position_cost_watch.py'),
+        '--out-dir',
+        str(out),
+        '--use-example',
+    ],
+    cwd=root,
+    capture_output=True,
+    text=True,
+)
+assert result.returncode == 0, result.stderr
+payload = json.loads((out / 'latest.json').read_text(encoding='utf-8'))
+assert payload['schema'] == 'position_cost_watch.v1', payload
+assert payload['mode'] == 'read_only_no_signing_no_execution', payload
+assert payload['position_count'] == 1 and payload['paper_trade_count'] == 1, payload
+assert payload['positions'][0]['symbol'] == 'ARX', payload
+assert (out / 'latest.md').exists(), out
+"""
+    position_cost_watch_result = subprocess.run(
+        [sys.executable, "-c", position_cost_watch_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "position cost watch smoke test",
+            position_cost_watch_result.returncode == 0,
+            position_cost_watch_result.stderr.strip(),
         )
     )
 
@@ -2872,6 +2978,7 @@ assert '## Alpha Price Momentum' in text, text
 assert '## Holder Concentration' in text, text
 assert '## Surf Auxiliary Market' in text, text
 assert '## External Auxiliary Sources' in text, text
+assert '## Position / Cost Watch' in text, text
 assert '## Prelaunch Schedule' in text, text
 assert '15m high/low/close' in text and 'Book' in text and 'Alpha 价格层' in text, text
 assert '排除托管后前十' in text or 'No holder concentration snapshot available.' in text, text

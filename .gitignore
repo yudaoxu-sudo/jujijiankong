@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+config/user_positions.json
 .deploy/
 .venv/
 venv/

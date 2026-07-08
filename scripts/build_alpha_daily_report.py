@@ -225,6 +225,8 @@ def build_report() -> str:
     perp_watch = read_json(ROOT / "output" / "perp_oi_funding_watch" / "latest.json", {"rows": []})
     surf_aux = read_json(ROOT / "output" / "surf_aux_market_watch" / "latest.json", {"rows": []})
     external_aux = read_json(ROOT / "output" / "external_aux_sources" / "latest.json", {"rows": []})
+    external_aux_probe = read_json(ROOT / "output" / "external_aux_live_probe" / "latest.json", {"rows": []})
+    position_cost = read_json(ROOT / "output" / "position_cost_watch" / "latest.json", {"positions": [], "paper_trades": []})
     prelaunch = read_json(ROOT / "output" / "alpha_prelaunch_watch" / "latest.json", {"events": []})
     arx_launch = read_json(ROOT / "output" / "arx_launch_watch" / "latest.json", {"analysis": {}})
     arx_opening = read_json(ROOT / "output" / "arx_opening_block_watch" / "latest.json", {"analysis": {}})
@@ -453,6 +455,41 @@ def build_report() -> str:
             )
     else:
         lines.append("- No external auxiliary source snapshot available.")
+
+    probe_rows = external_aux_probe.get("rows", [])
+    if probe_rows:
+        lines.extend(["", "### External Aux Live Probe", "", "| Source | Status | HTTP | Validation | Next step |", "| --- | --- | ---: | --- | --- |"])
+        for row in probe_rows[:12]:
+            lines.append(
+                f"| {row.get('name') or row.get('id', '')} | `{row.get('status', '')}` | {row.get('http_status', '')} | "
+                f"`{row.get('validation_env', '')}` | {md_cell(row.get('next_step', ''))} |"
+            )
+    else:
+        lines.append("")
+        lines.append("- External aux live probe has not run in this cycle.")
+
+    lines.extend(["", "## Position / Cost Watch", ""])
+    position_rows = position_cost.get("positions", [])
+    paper_rows = position_cost.get("paper_trades", [])
+    if position_rows:
+        lines.extend(["| Symbol | Side | Cost | Notional | PnL | State | Action |", "| --- | --- | ---: | ---: | ---: | --- | --- |"])
+        for row in position_rows[:12]:
+            lines.append(
+                f"| `{row.get('symbol', '')}` | {row.get('side', '')} | {fmt_dec(row.get('cost_usd'), 2)} | "
+                f"{fmt_dec(row.get('notional_usd'), 2)} | {fmt_dec(row.get('pnl_usd'), 2)} / {fmt_dec(row.get('pnl_pct'), 2)}% | "
+                f"{row.get('position_state', '')} / {row.get('size_state', '')} | {md_cell(row.get('action', ''))} |"
+            )
+    else:
+        lines.append("- No configured real positions. `config/user_positions.json` is git-ignored; fill it locally when needed.")
+    if paper_rows:
+        lines.extend(["", "| Paper | Side | Plan | Current | Readiness | Invalidation |", "| --- | --- | ---: | ---: | --- | --- |"])
+        for row in paper_rows[:12]:
+            lines.append(
+                f"| `{row.get('symbol', '')}` | {row.get('side', '')} | {fmt_dec(row.get('planned_entry'), 6)} | "
+                f"{fmt_dec(row.get('current_price'), 6)} | {row.get('readiness', '')} | {md_cell(row.get('invalidation', ''))} |"
+            )
+    else:
+        lines.append("- No paper trade plans configured.")
 
     lines.extend(celue_strategy_checklist())
 
