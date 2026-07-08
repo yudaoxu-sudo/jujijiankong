@@ -21,6 +21,7 @@ HISTORY_PATH = OUT_DIR / "history.jsonl"
 BINANCE_FAPI = os.environ.get("PERP_WATCH_BINANCE_FAPI", "https://fapi.binance.com")
 OKX_API = os.environ.get("PERP_WATCH_OKX_API", "https://www.okx.com")
 BYBIT_API = os.environ.get("PERP_WATCH_BYBIT_API", "https://api.bybit.com")
+DEPTH_BAND_BPS = Decimal(os.environ.get("PERP_WATCH_DEPTH_BAND_BPS", "50"))
 
 
 def now_iso() -> str:
@@ -81,6 +82,9 @@ def append_history(snapshot: dict[str, Any]) -> None:
                 "last_funding_rate": row.get("last_funding_rate", ""),
                 "quote_volume_24h": row.get("quote_volume_24h", ""),
                 "price_change_pct_24h": row.get("price_change_pct_24h", ""),
+                "depth_state": row.get("depth_state", ""),
+                "bid_depth_usd": row.get("bid_depth_usd", ""),
+                "ask_depth_usd": row.get("ask_depth_usd", ""),
             }
         )
     entry = {
@@ -218,6 +222,150 @@ def fetch_okx_symbol(inst_id: str) -> dict[str, Any]:
     }
 
 
+def depth_metrics(
+    mark_price: Any,
+    bids: list[list[Any]],
+    asks: list[list[Any]],
+    band_bps: Decimal | None = None,
+    size_multiplier: Decimal | None = None,
+) -> dict[str, Any]:
+    band = band_bps if band_bps is not None else DEPTH_BAND_BPS
+    multiplier = size_multiplier if size_multiplier is not None else Decimal(1)
+    mark = decimal_from(mark_price)
+    if mark <= 0:
+        return {"depth_status": "unavailable", "depth_state": "unknown_depth", "depth_error": "missing_mark_price"}
+    bid_floor = mark * (Decimal(1) - band / Decimal(10000))
+    ask_ceiling = mark * (Decimal(1) + band / Decimal(10000))
+
+    def notional(rows: list[list[Any]], *, side: str, limit: Decimal) -> Decimal:
+        total = Decimal(0)
+        for row in rows:
+            if len(row) < 2:
+                continue
+            price = decimal_from(row[0])
+            size = decimal_from(row[1])
+            if price <= 0 or size <= 0:
+                continue
+            if side == "bid" and price < limit:
+                continue
+            if side == "ask" and price > limit:
+                continue
+            total += price * size * multiplier
+        return total
+
+    best_bid = decimal_from(bids[0][0]) if bids and bids[0] else Decimal(0)
+    best_ask = decimal_from(asks[0][0]) if asks and asks[0] else Decimal(0)
+    bid_depth = notional(bids, side="bid", limit=bid_floor)
+    ask_depth = notional(asks, side="ask", limit=ask_ceiling)
+    total_depth = bid_depth + ask_depth
+    spread_bps = Decimal(0)
+    if best_bid > 0 and best_ask > 0:
+        spread_bps = (best_ask - best_bid) / ((best_ask + best_bid) / Decimal(2)) * Decimal(10000)
+    imbalance = Decimal(0)
+    if total_depth > 0:
+        imbalance = (bid_depth - ask_depth) / total_depth
+
+    floor = Decimal(os.environ.get("PERP_WATCH_DEPTH_USD_FLOOR", "20000"))
+    imbalance_alert = Decimal(os.environ.get("PERP_WATCH_DEPTH_IMBALANCE_ALERT", "0.35"))
+    spread_alert = Decimal(os.environ.get("PERP_WATCH_SPREAD_BPS_ALERT", "30"))
+    depth_state = "balanced_depth"
+    if bid_depth < floor or ask_depth < floor:
+        depth_state = "thin_depth"
+    elif spread_bps >= spread_alert:
+        depth_state = "wide_spread"
+    elif imbalance >= imbalance_alert:
+        depth_state = "ask_thin"
+    elif imbalance <= -imbalance_alert:
+        depth_state = "bid_thin"
+
+    return {
+        "depth_status": "ok",
+        "depth_band_bps": str(band),
+        "best_bid": str(best_bid),
+        "best_ask": str(best_ask),
+        "spread_bps": str(spread_bps),
+        "bid_depth_usd": str(bid_depth),
+        "ask_depth_usd": str(ask_depth),
+        "depth_imbalance": str(imbalance),
+        "depth_state": depth_state,
+    }
+
+
+def depth_action_note(row: dict[str, Any]) -> str:
+    state = str(row.get("depth_state") or "")
+    if row.get("depth_status") != "ok" or not state:
+        return ""
+    bid = fmt(row.get("bid_depth_usd"), "0.01")
+    ask = fmt(row.get("ask_depth_usd"), "0.01")
+    spread = fmt(row.get("spread_bps"), "0.01")
+    band = row.get("depth_band_bps") or str(DEPTH_BAND_BPS)
+    prefix = f"盘口±{band}bps bid≈{bid} ask≈{ask} spread≈{spread}bps"
+    if state == "thin_depth":
+        return prefix + "，合约盘口薄"
+    if state == "wide_spread":
+        return prefix + "，点差偏宽"
+    if state == "ask_thin":
+        return prefix + "，上方卖盘薄"
+    if state == "bid_thin":
+        return prefix + "，下方买盘薄"
+    return prefix + "，盘口厚度可用"
+
+
+def binance_depth_context(symbol: str, mark_price: Any) -> dict[str, Any]:
+    limit = int(os.environ.get("PERP_WATCH_DEPTH_LIMIT", "50"))
+    payload = http_json("/fapi/v1/depth", {"symbol": symbol, "limit": limit}, timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")))
+    return depth_metrics(mark_price, payload.get("bids") or [], payload.get("asks") or [])
+
+
+def okx_depth_context(inst_id: str, mark_price: Any, exchange_info: dict[str, Any]) -> dict[str, Any]:
+    limit = int(os.environ.get("PERP_WATCH_DEPTH_LIMIT", "50"))
+    payload = http_json_base(
+        OKX_API,
+        "/api/v5/market/books",
+        {"instId": inst_id, "sz": limit},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if str(payload.get("code")) != "0":
+        raise RuntimeError(f"OKX depth error: {payload.get('msg') or payload.get('code')}")
+    data = payload.get("data") or []
+    book = data[0] if data else {}
+    multiplier = decimal_from(exchange_info.get("ctVal") or "1")
+    if multiplier <= 0:
+        multiplier = Decimal(1)
+    return depth_metrics(mark_price, book.get("bids") or [], book.get("asks") or [], size_multiplier=multiplier)
+
+
+def bybit_orderbook(symbol: str, limit: int) -> dict[str, Any]:
+    payload = http_json_base(
+        BYBIT_API,
+        "/v5/market/orderbook",
+        {"category": "linear", "symbol": symbol, "limit": limit},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if int(payload.get("retCode", -1)) != 0:
+        raise RuntimeError(f"Bybit orderbook error: {payload.get('retMsg') or payload.get('retCode')}")
+    return payload.get("result", {})
+
+
+def bybit_depth_context(symbol: str, mark_price: Any) -> dict[str, Any]:
+    limit = int(os.environ.get("PERP_WATCH_DEPTH_LIMIT", "50"))
+    book = bybit_orderbook(symbol, limit)
+    return depth_metrics(mark_price, book.get("b") or [], book.get("a") or [])
+
+
+def attach_depth(row: dict[str, Any], fetcher: Any, *args: Any) -> dict[str, Any]:
+    try:
+        row.update(fetcher(*args))
+    except Exception as exc:
+        row["depth_status"] = "failed"
+        row["depth_state"] = "unknown_depth"
+        row["depth_error"] = str(exc)[:180]
+    note = depth_action_note(row)
+    if note:
+        row["depth_note"] = note
+    return row
+
+
 def bybit_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
     payload = http_json_base(
         BYBIT_API,
@@ -264,9 +412,12 @@ def bybit_context(symbol: str) -> dict[str, Any]:
         decision = classify_perp(metrics)
         row = dict(base, status="ok", exchange_status=instrument.get("status", ""))
         row.update(metrics)
+        attach_depth(row, bybit_depth_context, perp_symbol, row.get("mark_price"))
         row["perp_state"] = decision.get("status", "")
         row["direction_hint"] = decision.get("direction_hint", "")
         row["action"] = decision.get("action", "")
+        if row.get("depth_note"):
+            row["action"] += "；" + row["depth_note"]
         return row
     except Exception as exc:
         return dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="Bybit合约指标拉取失败")
@@ -285,9 +436,12 @@ def okx_context(symbol: str, okx_symbols: dict[str, dict[str, Any]], source_stat
         decision = classify_perp(metrics)
         row = dict(base, status="ok", exchange_status=exchange_info.get("state", ""))
         row.update(metrics)
+        attach_depth(row, okx_depth_context, inst_id, row.get("mark_price"), exchange_info)
         row["perp_state"] = decision.get("status", "")
         row["direction_hint"] = decision.get("direction_hint", "")
         row["action"] = decision.get("action", "")
+        if row.get("depth_note"):
+            row["action"] += "；" + row["depth_note"]
         return row
     except Exception as exc:
         return dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="OKX合约指标拉取失败")
@@ -568,11 +722,14 @@ def build_snapshot() -> dict[str, Any]:
             decision = classify_perp(metrics)
             row = dict(base, status="ok", exchange_status=exchange_info.get("status", ""))
             row.update(metrics)
+            attach_depth(row, binance_depth_context, symbol, row.get("mark_price"))
             trend = trend_for_symbol(history, item["symbol"], row, generated_at)
             venue_notes = venue_signal_notes(extra_venues)
             row["perp_state"] = decision.get("status", "")
             row["direction_hint"] = decision.get("direction_hint", "")
             row["action"] = decision.get("action", "")
+            if row.get("depth_note"):
+                row["action"] += "；" + row["depth_note"]
             if venue_notes:
                 row["action"] += "；其他场地 " + "；".join(venue_notes)
             row["listed_venues"] = listed_venue_names(row, extra_venues)
@@ -603,7 +760,11 @@ def build_snapshot() -> dict[str, Any]:
         row
         for row in rows
         if row.get("status") == "ok"
-        and (row.get("direction_hint") in {"拥挤", "可观察"} or bool(row.get("cross_venue_notes")))
+        and (
+            row.get("direction_hint") in {"拥挤", "可观察"}
+            or bool(row.get("cross_venue_notes"))
+            or row.get("depth_state") in {"thin_depth", "wide_spread", "ask_thin", "bid_thin"}
+        )
     ]
     return {
         "schema": "perp_oi_funding_watch.v1",
@@ -644,8 +805,8 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- item_count: `{snapshot['item_count']}`",
         f"- alert_count: `{snapshot['alert_count']}`",
         "",
-        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding | 24h Vol | 24h Chg | Trend | Action |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding | 24h Vol | 24h Chg | Depth | Trend | Action |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for row in snapshot["rows"]:
         funding_pct = decimal_from(row.get("last_funding_rate")) * Decimal(100)
@@ -654,11 +815,17 @@ def render(snapshot: dict[str, Any]) -> str:
         if row.get("trend_action"):
             combined_action += f"; {row.get('trend_action')}"
         venues = ",".join(row.get("listed_venues") or [row.get("venue", "")])
+        depth = ""
+        if row.get("depth_status") == "ok":
+            depth = (
+                f"{row.get('depth_state')} bid={fmt(row.get('bid_depth_usd'), '0.01')} "
+                f"ask={fmt(row.get('ask_depth_usd'), '0.01')} spread={fmt(row.get('spread_bps'), '0.01')}bps"
+            )
         lines.append(
             f"| `{row.get('symbol')}` | `{row.get('perp_symbol')}` | {venues} | {row.get('status')}:{row.get('perp_state', '')} / {row.get('direction_hint', '')} | "
             f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {fmt(funding_pct, '0.0001')}% | "
             f"{fmt(row.get('quote_volume_24h'), '0.01')} | {fmt(row.get('price_change_pct_24h'), '0.01')}% | "
-            f"{row.get('trend_hint', '')} | {combined_action} |"
+            f"{depth} | {row.get('trend_hint', '')} | {combined_action} |"
         )
     lines.append("")
     return "\n".join(lines)

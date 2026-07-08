@@ -647,7 +647,7 @@ assert readback_gate['can_follow'] is False, readback_gate
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
 
     perp_watch_code = """
-from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, listed_venue_names, total_open_interest, trend_for_symbol, venue_signal_notes
+from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, depth_action_note, depth_metrics, listed_venue_names, total_open_interest, trend_for_symbol, venue_signal_notes
 
 thin = classify_perp({'open_interest_usd': '1000', 'last_funding_rate': '0', 'quote_volume_24h': '0'})
 assert thin['status'] == 'thin_or_unusable', thin
@@ -692,6 +692,19 @@ assert listed_venue_names(primary, venues) == ['binance_usdm', 'okx_swap', 'bybi
 assert str(total_open_interest(primary, venues)) == '6000000'
 notes = venue_signal_notes(venues)
 assert len(notes) == 2 and 'okx_swap' in notes[0] and 'bybit_linear' in notes[1], notes
+depth = depth_metrics(
+    '1',
+    bids=[['0.999', '60000'], ['0.990', '100000']],
+    asks=[['1.001', '12000'], ['1.004', '14000'], ['1.020', '100000']],
+    band_bps=None,
+)
+assert depth['depth_status'] == 'ok', depth
+assert depth['depth_state'] == 'ask_thin', depth
+assert depth['bid_depth_usd'] == '59940.000', depth
+assert depth['ask_depth_usd'] == '26068.000', depth
+assert '上方卖盘薄' in depth_action_note(depth), depth
+thin_depth = depth_metrics('1', bids=[['0.999', '10']], asks=[['1.001', '10']], band_bps=None)
+assert thin_depth['depth_state'] == 'thin_depth', thin_depth
 """
     perp_watch_result = subprocess.run(
         [sys.executable, "-c", perp_watch_code],
