@@ -169,6 +169,27 @@
         "evidence": "2026-07-08 external exchange-wallet review: BscScan label OKX: Deposit Funder. Used as CEX destination, never as funding cluster parent."
       },
       {
+        "address": "0xde0a2c30ed6f3c0e4042077ae4aa9a250719c00f",
+        "label": "MEXC Deposit/Sweep Wallet",
+        "class": "cex_deposit",
+        "exchange": "MEXC",
+        "evidence": "2026-07-08 sweep-pattern review: 3 distinct paths to known CEX hot wallet 0x4982085c9e2f89f2ecb8131eca71afad896e89cb. Treat as pending sell / MM inventory, not confirmed DEX sell."
+      },
+      {
+        "address": "0x92c13836728db9d155ae696f73128860fdf58982",
+        "label": "Bitget Deposit/Sweep Wallet",
+        "class": "cex_deposit",
+        "exchange": "Bitget",
+        "evidence": "2026-07-08 sweep-pattern review: 3 distinct paths to known CEX hot wallet 0x0639556f03714a74a5feeaf5736a4a64ff70d206. Treat as pending sell / MM inventory, not confirmed DEX sell."
+      },
+      {
+        "address": "0x6ba7fe01eec4c6a4308c8e2b35970e0488ce9a86",
+        "label": "HTX Deposit/Sweep Wallet",
+        "class": "cex_deposit",
+        "exchange": "HTX",
+        "evidence": "2026-07-08 sweep-pattern review: 3 distinct paths to known CEX hot wallet 0xdd3cb5c974601bc3974d908ea4a86020f9999e0c. Treat as pending sell / MM inventory, not confirmed DEX sell."
+      },
+      {
         "address": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
         "label": "PancakeSwap V3 Router",
         "class": "dex_router"

@@ -1,0 +1,106 @@
+[
+  {
+    "chain": "bsc",
+    "address": "0xde0a2c30ed6f3c0e4042077ae4aa9a250719c00f",
+    "exchange": "MEXC",
+    "type": "sweep_wallet",
+    "confidence": "high",
+    "evidence": "BscScan shows repeated outbound transfers from this address to MEXC 13.",
+    "source_url": "https://bscscan.com/address/0xde0a2c30ed6f3c0e4042077ae4aa9a250719c00f",
+    "sweep_paths": [
+      {
+        "tx_hash": "0x33531bbbdcf34fda9159ed30483ffce1300430f363c77978135a7209fe719270",
+        "hot_wallet": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "notes": "BscScan row shows 0xde0a2c30... OUT to MEXC 13."
+      },
+      {
+        "tx_hash": "0x0d80d660fc5df9be592a11311539c4639c0c059fdbcefad8399e130c3bb2ae2e",
+        "hot_wallet": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "notes": "BscScan row shows 0xde0a2c30... OUT to MEXC 13."
+      },
+      {
+        "tx_hash": "0xc583228ca75297a28e68a195a33c4f90b0e2bdab9a3f4807cff354be5d9372b3",
+        "hot_wallet": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "notes": "BscScan row shows 0xde0a2c30... OUT to MEXC 13."
+      }
+    ]
+  },
+  {
+    "chain": "bsc",
+    "address": "0x92c13836728db9d155ae696f73128860fdf58982",
+    "exchange": "Bitget",
+    "type": "sweep_wallet",
+    "confidence": "high",
+    "evidence": "BscScan shows repeated outbound transfers from this address to Bitget hot wallets.",
+    "source_url": "https://bscscan.com/address/0x92c13836728db9d155ae696f73128860fdf58982",
+    "sweep_paths": [
+      {
+        "tx_hash": "0x9aa9bc3abfbbf5d9f864442c7ddcfca6c4845cc8471766ede310694bc30edd25",
+        "hot_wallet": "0x0639556f03714a74a5feeaf5736a4a64ff70d206",
+        "notes": "BscScan row shows Bitget 4 receiving from 0x92c13836..."
+      },
+      {
+        "tx_hash": "0x5d894ab5b9707faba57989f50a0a5129a0deac1e94e3d797353485390c7a0d18",
+        "hot_wallet": "0x0639556f03714a74a5feeaf5736a4a64ff70d206",
+        "notes": "BscScan row shows Bitget 4 receiving from 0x92c13836..."
+      },
+      {
+        "tx_hash": "0xfbc42640e7289bf96088dabd4b626ded21fc53f3e02e58bf15ee79c0f421bfe1",
+        "hot_wallet": "0x0639556f03714a74a5feeaf5736a4a64ff70d206",
+        "notes": "BscScan row shows Bitget 4 receiving from 0x92c13836..."
+      }
+    ]
+  },
+  {
+    "chain": "bsc",
+    "address": "0x6ba7fe01eec4c6a4308c8e2b35970e0488ce9a86",
+    "exchange": "HTX",
+    "type": "deposit_wallet",
+    "confidence": "high",
+    "evidence": "BscScan label ChangeNOW: HTX Deposit; repeated outbound transfers to HTX 72.",
+    "source_url": "https://bscscan.com/address/0x6ba7fe01eec4c6a4308c8e2b35970e0488ce9a86",
+    "sweep_paths": [
+      {
+        "tx_hash": "0xc23ac21c5a1e1416b7d472e427328efc534b37ed4d66d44d634a8c05dc4ed695",
+        "hot_wallet": "0xdd3cb5c974601bc3974d908ea4a86020f9999e0c",
+        "notes": "BscScan row shows ChangeNOW: HTX Deposit OUT to HTX 72."
+      },
+      {
+        "tx_hash": "0xb92c5e528bb16a36d5dd226b306b284f5c52dee584e7042a84c6af0c8b75fe38",
+        "hot_wallet": "0xdd3cb5c974601bc3974d908ea4a86020f9999e0c",
+        "notes": "BscScan row shows ChangeNOW: HTX Deposit OUT to HTX 72."
+      },
+      {
+        "tx_hash": "0x1b596da1853865b3119b0d376e3e1d5ce889f576f8886d0958b3b4eb67cb9efd",
+        "hot_wallet": "0xdd3cb5c974601bc3974d908ea4a86020f9999e0c",
+        "notes": "BscScan row shows ChangeNOW: HTX Deposit OUT to HTX 72."
+      }
+    ]
+  },
+  {
+    "chain": "bsc",
+    "address": "0xa1ce37506eadf62d2be3741c644aa52a009d3a8b",
+    "exchange": "KuCoin",
+    "type": "deposit_funder",
+    "confidence": "high",
+    "evidence": "BscScan label KuCoin: Deposit Funder 7; repeated outbound transfers to KuCoin: Hot Wallet 3.",
+    "source_url": "https://bscscan.com/address/0xa1ce37506eadf62d2be3741c644aa52a009d3a8b",
+    "sweep_paths": [
+      {
+        "tx_hash": "0x2afeb61fd0f3f2e13c682f9bbed66c71b7a36d05189d52a2ecd69f5bf2630231",
+        "hot_wallet": "0xcded3bb9d2dc98f6e4e772095b48051acfb84df9",
+        "notes": "BscScan row shows KuCoin: Deposit Funder 7 OUT to KuCoin: Hot Wallet 3."
+      },
+      {
+        "tx_hash": "0x0c3ea02bebca98b7bd8e9babe3a5ed27b6bcfae4514e22320f6dfe9ad7934f71",
+        "hot_wallet": "0xcded3bb9d2dc98f6e4e772095b48051acfb84df9",
+        "notes": "BscScan row shows KuCoin: Deposit Funder 7 OUT to KuCoin: Hot Wallet 3."
+      },
+      {
+        "tx_hash": "0x3e2ad75ddfdcffa3c3129bc22fb8b49c3cc6438320b7715989db533f19e727e2",
+        "hot_wallet": "0xcded3bb9d2dc98f6e4e772095b48051acfb84df9",
+        "notes": "BscScan row shows KuCoin: Deposit Funder 7 OUT to KuCoin: Hot Wallet 3."
+      }
+    ]
+  }
+]
