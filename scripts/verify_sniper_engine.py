@@ -591,6 +591,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "arx_launch_watch.py" in server_run_text
         )
         intraday_run = "alpha_intraday_flow_watch.py"
+        opening_funder_run = "review_opening_cohort_funders.py"
         perp_run = "perp_oi_funding_watch.py"
         price_run = "alpha_price_momentum_watch.py"
         holder_run = "alpha_holder_concentration_watch.py"
@@ -601,6 +602,12 @@ assert readback_gate['can_follow'] is False, readback_gate
             and holder_run in server_run_text
             and server_run_text.index(intraday_run) < server_run_text.index(perp_run) < server_run_text.index(price_run) < server_run_text.index(holder_run)
         )
+        opening_funder_order = (
+            "alpha_opening_sprint.sh" in server_run_text
+            and opening_funder_run in server_run_text
+            and intraday_run in server_run_text
+            and server_run_text.index("alpha_opening_sprint.sh") < server_run_text.index(opening_funder_run) < server_run_text.index(intraday_run)
+        )
         server_run_ok = (
             "flock -n" in server_run_text
             and "timeout" in server_run_text
@@ -609,6 +616,10 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "ALPHA_PRELAUNCH_TIMEOUT_SECONDS" in server_run_text
             and "alpha_prelaunch_watch.py" in server_run_text
             and "ALPHA_OPENING_TIMEOUT_SECONDS" in server_run_text
+            and "OPENING_COHORT_FUNDER_TIMEOUT_SECONDS" in server_run_text
+            and "OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS" in server_run_text
+            and "OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS" in server_run_text
+            and opening_funder_run in server_run_text
             and "ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS" in server_run_text
             and "alpha_price_momentum_watch.py" in server_run_text
             and "PERP_OI_FUNDING_TIMEOUT_SECONDS" in server_run_text
@@ -627,9 +638,10 @@ assert readback_gate['can_follow'] is False, readback_gate
             and arx_opening_refresh_guard
             and arx_launch_guard
             and arx_opening_before_launch
+            and opening_funder_order
             and holder_context_order
         )
-        server_run_msg = "lock+timeout+continue+O1 pause+ARX refresh/launch+perp+surf guarded+order present" if server_run_ok else "missing runtime guard"
+        server_run_msg = "lock+timeout+continue+O1 pause+ARX refresh/launch+opening funder+perp+surf guarded+order present" if server_run_ok else "missing runtime guard"
     except Exception as exc:
         server_run_msg = str(exc)
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))

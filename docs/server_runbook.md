@@ -132,6 +132,8 @@ Telegram 当前有两层控制：
 
 `MONITOR_FINALITY_BLOCKS` 默认 20，用来等待 NodeReal 的资产转账索引追上最新区块，减少 `blockNum not reached` 这类索引滞后错误。
 
+`review_opening_cohort_funders.py` 在 `alpha_opening_sprint.sh` 之后运行，用于从开盘首批买家里回查最近原生 BNB funding source，并把同源 funding cluster 写到 `output/opening_cohort_funders/latest.*`。默认 `OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS=120`，同时受 `OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS=25` 和 `OPENING_COHORT_FUNDER_TIMEOUT_SECONDS=90` 限制；CEX、router、bridge、quote token 等不安全父节点仍由 clustering guard 排除。
+
 `alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；放量收跌默认触发 `卖出/减仓观察`，空仓动作是等待止跌承接。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
 
 `surf_aux_market_watch.py` 用于外部市场辅助层，读取 watchlist 后通过 Surf 查询 CEX 现货/合约市场、CEX K 线、DEX 价格和上市事件。它补足 CAP 这类“链上 Pancake 净流不强，但 Alpha/CEX 可见价格已经拉动”的盲区，输出在 `output/surf_aux_market_watch/`。这个层的 `authority` 固定为 `auxiliary_context_only`，只能进入日报和背景判断，不能单独触发买入、卖出或开空建议。

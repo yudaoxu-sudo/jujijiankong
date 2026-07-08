@@ -50,6 +50,7 @@ run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor
 run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
 run_step "${ALPHA_PRELAUNCH_TIMEOUT_SECONDS:-60}" python3 scripts/alpha_prelaunch_watch.py
 run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_sprint.sh
+run_step "${OPENING_COHORT_FUNDER_TIMEOUT_SECONDS:-90}" python3 scripts/review_opening_cohort_funders.py --lookback-blocks "${OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS:-120}" --max-scan-seconds "${OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS:-25}"
 run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-180}" python3 scripts/alpha_intraday_flow_watch.py
 run_step "${PERP_OI_FUNDING_TIMEOUT_SECONDS:-90}" python3 scripts/perp_oi_funding_watch.py
 run_step "${ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS:-90}" python3 scripts/alpha_price_momentum_watch.py
