@@ -49,6 +49,8 @@ def main() -> int:
         ROOT / "scripts" / "position_cost_watch.py",
         ROOT / "scripts" / "runtime_health_watch.py",
         ROOT / "scripts" / "project_continuity_local.py",
+        ROOT / "scripts" / "project_continuity_acceptance.py",
+        ROOT / "scripts" / "test_project_continuity_acceptance.py",
         ROOT / "scripts" / "server_health_watchdog.sh",
         ROOT / "scripts" / "install_server_cron.sh",
         ROOT / "scripts" / "audit_celue_integration.py",
@@ -155,6 +157,11 @@ def main() -> int:
             for row in continuity.get("context_files", [])
             if isinstance(row, dict)
         }
+        acceptance = continuity.get("acceptance", {})
+        denied_globs = {str(item) for item in acceptance.get("denied_git_globs", [])}
+        denied_exceptions = {str(item) for item in acceptance.get("denied_git_exceptions", [])}
+        tracked_required = {str(item) for item in acceptance.get("tracked_required_paths", [])}
+        remote_health = acceptance.get("remote_health", {})
         continuity_config_ok = (
             continuity.get("schema") == "project_continuity_config.v1"
             and continuity.get("project_id") == "sniper-monitor"
@@ -168,11 +175,52 @@ def main() -> int:
                 "server_runbook",
             }.issubset(context_roles)
             and str(continuity.get("state_db_path", "")).endswith("state_5.sqlite")
+            and acceptance.get("schema") == "sniper_project_acceptance_policy.v1"
+            and {
+                "scripts/project_continuity_local.py",
+                "scripts/project_continuity_acceptance.py",
+                "scripts/test_project_continuity_acceptance.py",
+                "scripts/deploy_to_server.sh",
+                "docs/project_continuity.md",
+                "docs/server_runbook.md",
+                "config/current_alpha_watchlist.json",
+            }.issubset(tracked_required)
+            and {
+                ".deploy/**",
+                ".env",
+                ".env.*",
+                "**/*.session",
+                "**/*.pem",
+                "**/*.key",
+            }.issubset(denied_globs)
+            and denied_exceptions == {".env.example"}
+            and str(remote_health.get("project_root", "")).startswith("/")
+            and str(remote_health.get("identity_file", "")).startswith("../.deploy/")
+            and str(remote_health.get("known_hosts_file", "")).startswith("../.deploy/")
+            and int(remote_health.get("max_cycle_age_seconds", 0)) >= 600
         )
-        continuity_config_msg = f"pairs={metric_pairs}, roles={','.join(sorted(context_roles))}"
+        continuity_config_msg = (
+            f"pairs={metric_pairs}, roles={','.join(sorted(context_roles))}, "
+            f"acceptance_paths={len(tracked_required)}, denied_globs={len(denied_globs)}, "
+            f"denied_exceptions={','.join(sorted(denied_exceptions))}"
+        )
     except Exception as exc:
         continuity_config_msg = str(exc)
     checks.append(("project continuity config parses", continuity_config_ok, continuity_config_msg))
+
+    continuity_acceptance_test = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "test_project_continuity_acceptance.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "project continuity acceptance regression tests",
+            continuity_acceptance_test.returncode == 0,
+            continuity_acceptance_test.stderr.strip() or continuity_acceptance_test.stdout.strip(),
+        )
+    )
 
     external_aux_config_ok = False
     external_aux_config_msg = ""
@@ -726,6 +774,8 @@ assert readback_gate['can_follow'] is False, readback_gate
             and runtime_health_run in server_run_text
             and verification_run in server_run_text
             and server_run_text.index(verification_run) < server_run_text.index(runtime_health_run)
+            and "project_continuity_acceptance.py" not in server_run_text
+            and "project_continuity_local.py" not in server_run_text
             and "RUN_O1_ATTRIBUTION" in server_run_text
             and arx_opening_refresh_guard
             and arx_launch_guard
@@ -733,7 +783,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             and opening_funder_order
             and holder_context_order
         )
-        server_run_msg = "lock+timeout+failure capture+health alert+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present" if server_run_ok else "missing runtime guard"
+        server_run_msg = "lock+timeout+failure capture+health alert+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present; local continuity excluded" if server_run_ok else "missing runtime guard"
     except Exception as exc:
         server_run_msg = str(exc)
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
@@ -924,6 +974,8 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "external_aux_source_readiness.py"),
         str(ROOT / "scripts" / "external_aux_live_probe.py"),
         str(ROOT / "scripts" / "position_cost_watch.py"),
+        str(ROOT / "scripts" / "project_continuity_acceptance.py"),
+        str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "decode_pancake_v4_execute.py"),
         str(ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py"),
         str(ROOT / "scripts" / "probe_pancake_v4_state_override.py"),

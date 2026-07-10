@@ -55,6 +55,44 @@
       "required": true
     }
   ],
+  "acceptance": {
+    "schema": "sniper_project_acceptance_policy.v1",
+    "output_dir": "../output/project_continuity_acceptance",
+    "tracked_required_paths": [
+      "scripts/project_continuity_local.py",
+      "scripts/project_continuity_acceptance.py",
+      "scripts/test_project_continuity_acceptance.py",
+      "scripts/deploy_to_server.sh",
+      "docs/project_continuity.md",
+      "docs/server_runbook.md",
+      "config/current_alpha_watchlist.json"
+    ],
+    "denied_git_globs": [
+      ".deploy/**",
+      ".env",
+      ".env.*",
+      "**/*.session",
+      "**/*.session-journal",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.p12",
+      "**/*.pfx"
+    ],
+    "denied_git_exceptions": [
+      ".env.example"
+    ],
+    "external_context_roots": [
+      "/Users/xuyufan/Documents/Codex",
+      "/Users/xuyufan/.codex/skills"
+    ],
+    "remote_health": {
+      "host": "ubuntu@43.156.45.133",
+      "project_root": "/home/ubuntu/sniper",
+      "identity_file": "../.deploy/sniper_server_ed25519",
+      "known_hosts_file": "../.deploy/known_hosts",
+      "max_cycle_age_seconds": 1200
+    }
+  },
   "thresholds": {
     "log_bytes_warning": 52428800,
     "log_bytes_rotate": 104857600,
