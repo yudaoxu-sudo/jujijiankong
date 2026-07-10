@@ -54,6 +54,13 @@ python3 scripts/project_continuity_local.py register \
 
 Native Codex handoff must not be used when it would copy a large old rollout into the new conversation.
 
+## Recovery Safety
+
+- Read the files named by the resume packet and narrowly selected Git-tracked source.
+- Do not recursively search `.deploy`, `.env*`, private-key files, credential stores, or session files.
+- Use `scripts/deploy_to_server.sh` and `docs/server_runbook.md` for secret-free deployment metadata.
+- A high-confidence private-key or credential marker in an active rollout makes continuity checks fail. Rotate the credential, archive that task, and restart recovery in a fresh task.
+
 ## Data Deletion
 
 Preview conversation-scoped runtime deletion:

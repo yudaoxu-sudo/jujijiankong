@@ -159,7 +159,14 @@ def main() -> int:
             continuity.get("schema") == "project_continuity_config.v1"
             and continuity.get("project_id") == "sniper-monitor"
             and all(warning > 0 and rotate > warning for warning, rotate in metric_pairs)
-            and {"project_memory", "open_items", "agent_open_loops", "strategy_skill"}.issubset(context_roles)
+            and {
+                "project_memory",
+                "open_items",
+                "agent_open_loops",
+                "strategy_skill",
+                "deployment_entrypoint",
+                "server_runbook",
+            }.issubset(context_roles)
             and str(continuity.get("state_db_path", "")).endswith("state_5.sqlite")
         )
         continuity_config_msg = f"pairs={metric_pairs}, roles={','.join(sorted(context_roles))}"

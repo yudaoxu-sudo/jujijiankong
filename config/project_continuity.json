@@ -26,6 +26,16 @@
       "path": "/Users/xuyufan/.codex/skills/celue/SKILL.md",
       "role": "strategy_skill",
       "required": true
+    },
+    {
+      "path": "../scripts/deploy_to_server.sh",
+      "role": "deployment_entrypoint",
+      "required": true
+    },
+    {
+      "path": "../docs/server_runbook.md",
+      "role": "server_runbook",
+      "required": true
     }
   ],
   "health_files": [
