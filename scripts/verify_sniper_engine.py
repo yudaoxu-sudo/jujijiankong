@@ -48,6 +48,7 @@ def main() -> int:
         ROOT / "scripts" / "external_aux_live_probe.py",
         ROOT / "scripts" / "position_cost_watch.py",
         ROOT / "scripts" / "runtime_health_watch.py",
+        ROOT / "scripts" / "project_continuity_local.py",
         ROOT / "scripts" / "server_health_watchdog.sh",
         ROOT / "scripts" / "install_server_cron.sh",
         ROOT / "scripts" / "audit_celue_integration.py",
@@ -85,6 +86,7 @@ def main() -> int:
         ROOT / "docs" / "pancake_v4_roundtrip_implementation_prompt.md",
         ROOT / "docs" / "cex_wallet_evidence_request_prompt.md",
         ROOT / "docs" / "x_mcp_setup.md",
+        ROOT / "docs" / "project_continuity.md",
         ROOT / "cases" / "2026-07-08_alpha_rotated_address_review.md",
         ROOT / "config" / "watchlist.example.json",
         ROOT / "config" / "external_aux_sources.json",
@@ -98,6 +100,7 @@ def main() -> int:
         ROOT / "config" / "telegram_user_sources.json",
         ROOT / "config" / "monitored_wallets.json",
         ROOT / "config" / "pancake_v4_simulation_samples.json",
+        ROOT / "config" / "project_continuity.json",
         ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
@@ -137,6 +140,32 @@ def main() -> int:
     except Exception as exc:
         config_msg = str(exc)
     checks.append(("watchlist example JSON parses", config_ok, config_msg))
+
+    continuity_config_ok = False
+    continuity_config_msg = ""
+    try:
+        continuity = json.loads((ROOT / "config" / "project_continuity.json").read_text(encoding="utf-8"))
+        thresholds = continuity.get("thresholds", {})
+        metric_pairs = [
+            (int(thresholds.get(f"{metric}_warning", 0)), int(thresholds.get(f"{metric}_rotate", 0)))
+            for metric in ("log_bytes", "tokens_used", "compaction_count", "turn_count")
+        ]
+        context_roles = {
+            str(row.get("role", ""))
+            for row in continuity.get("context_files", [])
+            if isinstance(row, dict)
+        }
+        continuity_config_ok = (
+            continuity.get("schema") == "project_continuity_config.v1"
+            and continuity.get("project_id") == "sniper-monitor"
+            and all(warning > 0 and rotate > warning for warning, rotate in metric_pairs)
+            and {"project_memory", "open_items", "agent_open_loops", "strategy_skill"}.issubset(context_roles)
+            and str(continuity.get("state_db_path", "")).endswith("state_5.sqlite")
+        )
+        continuity_config_msg = f"pairs={metric_pairs}, roles={','.join(sorted(context_roles))}"
+    except Exception as exc:
+        continuity_config_msg = str(exc)
+    checks.append(("project continuity config parses", continuity_config_ok, continuity_config_msg))
 
     external_aux_config_ok = False
     external_aux_config_msg = ""

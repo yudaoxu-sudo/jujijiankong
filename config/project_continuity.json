@@ -1,0 +1,60 @@
+{
+  "schema": "project_continuity_config.v1",
+  "project_id": "sniper-monitor",
+  "name": "Alpha Sniper Monitor",
+  "project_root": "/Users/xuyufan/Documents/狙击手进程",
+  "state_db_path": "~/.codex/state_5.sqlite",
+  "runtime_root": "/Users/xuyufan/Documents/Codex/runtime/project-continuity",
+  "registry_path": "/Users/xuyufan/Documents/Codex/agent/project-continuity-projects.json",
+  "context_files": [
+    {
+      "path": "/Users/xuyufan/Documents/Codex/projects/sniper-monitor.md",
+      "role": "project_memory",
+      "required": true
+    },
+    {
+      "path": "/Users/xuyufan/Documents/Codex/TODO.md",
+      "role": "open_items",
+      "required": true
+    },
+    {
+      "path": "/Users/xuyufan/Documents/Codex/agent/open-loops.md",
+      "role": "agent_open_loops",
+      "required": true
+    },
+    {
+      "path": "/Users/xuyufan/.codex/skills/celue/SKILL.md",
+      "role": "strategy_skill",
+      "required": true
+    }
+  ],
+  "health_files": [
+    {
+      "path": "../output/runtime_health/last_cycle.json",
+      "role": "runtime_health",
+      "required": false
+    },
+    {
+      "path": "../output/sniper_engine/verification_report.md",
+      "role": "verification_report",
+      "required": false
+    },
+    {
+      "path": "current_alpha_watchlist.json",
+      "role": "active_watchlist",
+      "required": true
+    }
+  ],
+  "thresholds": {
+    "log_bytes_warning": 52428800,
+    "log_bytes_rotate": 104857600,
+    "tokens_used_warning": 150000000,
+    "tokens_used_rotate": 300000000,
+    "compaction_count_warning": 6,
+    "compaction_count_rotate": 10,
+    "turn_count_warning": 120,
+    "turn_count_rotate": 200,
+    "notification_cooldown_seconds": 43200,
+    "checkpoint_cooldown_seconds": 86400
+  }
+}
