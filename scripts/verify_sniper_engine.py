@@ -712,6 +712,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "server_health_watchdog.sh" in installer
             and "*/5 * * * *" in installer
             and "*/10 * * * *" in installer
+            and 'mkdir -p "$project_dir/logs"' in installer
             and "runtime_health_watch.py --mode watchdog" in watchdog
             and "RUNTIME_HEALTH_WATCHDOG_TIMEOUT_SECONDS" in watchdog
         )
@@ -1454,15 +1455,17 @@ fake.chmod(0o755)
 env = os.environ.copy()
 env['PATH'] = str(bin_dir) + os.pathsep + env.get('PATH', '')
 env['FAKE_CRONTAB_STORE'] = str(store)
-env['SNIPER_PROJECT_DIR'] = '/srv/sniper'
+project_dir = work / 'project'
+env['SNIPER_PROJECT_DIR'] = str(project_dir)
 cmd = ['bash', str(root / 'scripts' / 'install_server_cron.sh')]
 for _ in range(2):
     result = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr or result.stdout
 text = store.read_text(encoding='utf-8')
-assert text.count('/srv/sniper/scripts/server_run_once.sh') == 1, text
-assert text.count('/srv/sniper/scripts/server_health_watchdog.sh') == 1, text
+assert text.count(str(project_dir / 'scripts' / 'server_run_once.sh')) == 1, text
+assert text.count(str(project_dir / 'scripts' / 'server_health_watchdog.sh')) == 1, text
 assert '/usr/local/bin/unrelated-job' in text, text
+assert (project_dir / 'logs').is_dir(), project_dir
 """
     cron_installer_result = subprocess.run(
         [sys.executable, "-c", cron_installer_code],

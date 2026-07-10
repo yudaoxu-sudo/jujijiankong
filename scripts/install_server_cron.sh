@@ -6,6 +6,7 @@ current="$(mktemp)"
 next="$(mktemp)"
 trap 'rm -f "$current" "$next"' EXIT
 
+mkdir -p "$project_dir/logs"
 crontab -l >"$current" 2>/dev/null || true
 
 while IFS= read -r line || [[ -n "$line" ]]; do
