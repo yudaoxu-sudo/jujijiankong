@@ -722,7 +722,7 @@ assert readback_gate['can_follow'] is False, readback_gate
     checks.append(("server cron includes independent health watchdog", cron_watchdog_ok, cron_watchdog_msg))
 
     perp_watch_code = """
-from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, depth_action_note, depth_metrics, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, total_open_interest, trend_for_symbol, venue_signal_notes
+from scripts.perp_oi_funding_watch import best_ok_venue, cached_funding_records, canonical_funding_records, classify_perp, depth_action_note, depth_metrics, funding_history_note, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, summarize_funding_history, total_open_interest, trend_for_symbol, venue_signal_notes
 
 thin = classify_perp({'open_interest_usd': '1000', 'last_funding_rate': '0', 'quote_volume_24h': '0'})
 assert thin['status'] == 'thin_or_unusable', thin
@@ -732,6 +732,51 @@ active = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0'
 assert active['status'] == 'active_perp_market', active
 quiet = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0', 'quote_volume_24h': '1000', 'price_change_pct_24h': '1'})
 assert quiet['status'] == 'listed_quiet', quiet
+normalized_crowded = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0.0001', 'current_funding_rate_8h': '0.0008', 'quote_volume_24h': '1000', 'price_change_pct_24h': '1'})
+assert normalized_crowded['status'] == 'crowded_funding', normalized_crowded
+canonical = canonical_funding_records(
+    [
+        {'fundingTime': '1700000000000', 'fundingRate': '0.0009', 'realizedRate': '0.0004'},
+        {'fundingTime': '1700000000000', 'fundingRate': '0.0009', 'realizedRate': '0.0004'},
+        {'fundingTime': 'bad', 'fundingRate': '0.1'},
+    ],
+    timestamp_field='fundingTime',
+    rate_fields=('realizedRate', 'fundingRate'),
+)
+assert len(canonical) == 1 and canonical[0]['funding_rate'] == '0.0004' and canonical[0]['source_field'] == 'realizedRate', canonical
+base_ts = 1700000000000
+positive_history = [
+    {'timestamp_ms': base_ts + index * 4 * 60 * 60 * 1000, 'funding_rate': '0.0004'}
+    for index in range(7)
+]
+funding_summary = summarize_funding_history(positive_history, current_rate='0.0002')
+assert funding_summary['funding_interval_hours'] == '4', funding_summary
+assert funding_summary['current_funding_rate_8h'] == '0.0004', funding_summary
+assert funding_summary['funding_24h_cumulative_rate'] == '0.0024', funding_summary
+assert funding_summary['funding_history_state'] == 'sustained_long_crowding', funding_summary
+assert '持续付费' in funding_history_note(funding_summary), funding_summary
+flip_summary = summarize_funding_history(
+    [
+        {'timestamp_ms': base_ts, 'funding_rate': '-0.0002'},
+        {'timestamp_ms': base_ts + 4 * 60 * 60 * 1000, 'funding_rate': '0.0002'},
+    ],
+    current_rate='0.0002',
+)
+assert flip_summary['funding_history_state'] == 'funding_flip_positive', flip_summary
+fresh_cache = {'entries': {'binance_usdm:TESTUSDT': {'fetched_at': '2099-01-01T00:00:00+00:00', 'records': positive_history}}}
+cached_rows, cache_source, cache_error = cached_funding_records(
+    fresh_cache,
+    'binance_usdm:TESTUSDT',
+    lambda: (_ for _ in ()).throw(RuntimeError('fresh cache should bypass fetch')),
+)
+assert cached_rows == positive_history and cache_source == 'cache' and cache_error == '', (cache_source, cache_error)
+stale_cache = {'entries': {'binance_usdm:TESTUSDT': {'fetched_at': '2000-01-01T00:00:00+00:00', 'records': positive_history}}}
+stale_rows, stale_source, stale_error = cached_funding_records(
+    stale_cache,
+    'binance_usdm:TESTUSDT',
+    lambda: (_ for _ in ()).throw(RuntimeError('history endpoint unavailable')),
+)
+assert stale_rows == positive_history and stale_source == 'stale_cache' and 'endpoint unavailable' in stale_error, (stale_source, stale_error)
 history = [{
     'generated_at': '2026-06-30T00:00:00+00:00',
     'rows': [{

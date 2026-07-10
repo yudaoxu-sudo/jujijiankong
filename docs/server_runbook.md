@@ -197,7 +197,7 @@ Telegram 当前有两层控制：
 
 Surf 免费额度耗尽时，脚本会写入 `output/surf_aux_market_watch/quota_state.json`，当天后续运行直接短路成 `surf_quota_exhausted_today`，避免 5 分钟 cron 反复打失败请求。
 
-`perp_oi_funding_watch.py` 读取 Binance USD-M、OKX SWAP、Bybit linear 的公开合约指标。除 OI、funding、24h volume 和趋势外，它会抓取当前永续盘口，计算默认 ±50bps 内 bid/ask 深度、点差和深度偏斜；`thin_depth`、`wide_spread`、`ask_thin`、`bid_thin` 都只作为合约风险上下文，需要和现货承接、链上流向一起判断。OKX 公开 `liquidation-orders` 可用时会补充近 60 分钟 long/short 强平金额；Binance force-orders 当前需要 API key 或已停维，Bybit liquidation 路由本地返回 404，暂不纳入自动上下文。
+`perp_oi_funding_watch.py` 读取 Binance USD-M、OKX SWAP、Bybit linear 的公开合约指标。除 OI、funding、24h volume 和趋势外，它会抓取当前永续盘口，计算默认 ±50bps 内 bid/ask 深度、点差和深度偏斜；`thin_depth`、`wide_spread`、`ask_thin`、`bid_thin` 都只作为合约风险上下文，需要和现货承接、链上流向一起判断。历史 funding 从三家公开接口按真实结算时间差推断周期，统一为 8 小时口径，并输出当前预测费率、最新已结算费率、24 小时平均 8h 费率、24 小时累计费率、正负占比和拥挤/翻转状态。历史接口默认缓存 30 分钟，缓存文件为 `output/perp_oi_funding_watch/funding_history_cache.json`；历史费率单独不能生成买入结论。OKX 公开 `liquidation-orders` 可用时会补充近 60 分钟 long/short 强平金额；Binance force-orders 当前需要 API key 或已停维，Bybit liquidation 路由本地返回 404，暂不纳入自动上下文。
 
 `external_aux_live_probe.py` 是 Coinglass / CoinAnk / GMGN 的小样本验收入口。默认服务器 cron 只跑 `external_aux_source_readiness.py`，不会消耗付费 API；设置 `RUN_EXTERNAL_AUX_LIVE_PROBE=1` 后才跑 live probe。Coinglass 使用 `COINGLASS_API_KEY` 和 `CG-API-KEY` header，CoinAnk 使用 `COINANK_API_KEY` 和 `apikey` header，GMGN 默认只检查 `GMGN_API_KEY`，如有只读查询端点再配置 `GMGN_PROBE_URL` 和可选 `GMGN_API_KEY_HEADER`。probe 通过后仍需人工确认字段能和本地规则对齐，再设置对应 `AUX_SOURCE_VALIDATED_*`。
 
@@ -214,6 +214,11 @@ export SURF_AUX_MARKET_TIMEOUT_SECONDS=180
 export RUN_EXTERNAL_AUX_LIVE_PROBE=0
 export EXTERNAL_AUX_LIVE_PROBE_TIMEOUT_SECONDS=60
 export POSITION_COST_TIMEOUT_SECONDS=45
+export PERP_WATCH_FUNDING_HISTORY_LIMIT=30
+export PERP_WATCH_FUNDING_HISTORY_TTL_SECONDS=1800
+export PERP_WATCH_FUNDING_HISTORY_CROWDING_8H=0.0005
+export PERP_WATCH_FUNDING_HISTORY_FLIP_8H=0.0001
+export PERP_WATCH_FUNDING_HISTORY_SUSTAINED_RATIO=0.75
 ```
 
 `simulate_pancake_v4_roundtrip_call.py` 是 Pancake v4 / Infinity 可售性验证工具。它用 stateOverride 做同笔 USDT -> token -> USDT Universal Router `eth_call`，再通过提高 sell leg 的 `TAKE_ALL amountMinimum` 做二分估算，输出 quote 回收率。示例：

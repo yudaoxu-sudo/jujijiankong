@@ -349,7 +349,7 @@ def build_report() -> str:
     lines.extend(["", "## Perp / OI / Funding", ""])
     perp_rows = perp_watch.get("rows", [])
     if perp_rows:
-        lines.extend(["| Symbol | Perp | Venues | State | Main OI | Total OI | OI Δ | Price Δ | Funding | 24h Vol | 24h Chg | Trend | Action |", "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |"])
+        lines.extend(["| Symbol | Perp | Venues | State | Main OI | Total OI | OI Δ | Price Δ | Funding 8h | Funding 24h | 24h Vol | 24h Chg | Trend | Action |", "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | --- |"])
         for row in perp_rows[:12]:
             state = row.get("perp_state") or row.get("status", "")
             hint = row.get("direction_hint", "")
@@ -357,11 +357,20 @@ def build_report() -> str:
             if row.get("trend_action"):
                 action += f"; {row.get('trend_action')}"
             venues = ",".join(row.get("listed_venues") or [row.get("venue", "")])
+            funding_rate = row.get("current_funding_rate_8h")
+            if funding_rate in ("", None):
+                funding_rate = row.get("last_funding_rate")
+            funding_24h = (
+                f"{row.get('funding_history_state', '')} / avg8h {fmt_pct(row.get('funding_24h_avg_8h_rate'), 4)} / "
+                f"cum {fmt_pct(row.get('funding_24h_cumulative_rate'), 4)}"
+                if row.get("funding_history_status") in {"ok", "short_history"}
+                else row.get("funding_history_status", "")
+            )
             lines.append(
                 f"| `{row.get('symbol', '')}` | `{row.get('perp_symbol', '')}` | {venues} | {state} / {hint} | "
                 f"{fmt_dec(row.get('open_interest_usd'), 2)} | {fmt_dec(row.get('total_open_interest_usd') or row.get('open_interest_usd'), 2)} | "
                 f"{fmt_signed_pct(row.get('oi_usd_delta_pct'), 2)} | "
-                f"{fmt_signed_pct(row.get('mark_price_delta_pct'), 2)} | {fmt_pct(row.get('last_funding_rate'), 4)} | "
+                f"{fmt_signed_pct(row.get('mark_price_delta_pct'), 2)} | {fmt_pct(funding_rate, 4)} | {funding_24h} | "
                 f"{fmt_dec(row.get('quote_volume_24h'), 2)} | {fmt_dec(row.get('price_change_pct_24h'), 2)}% | "
                 f"{row.get('trend_hint', '')} | {action} |"
             )

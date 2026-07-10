@@ -331,6 +331,11 @@ def latest_perp_context(symbol: str) -> dict[str, Any]:
             "total_open_interest_usd": row.get("total_open_interest_usd", ""),
             "listed_venues": row.get("listed_venues", []),
             "last_funding_rate": row.get("last_funding_rate", ""),
+            "current_funding_rate_8h": row.get("current_funding_rate_8h", ""),
+            "funding_24h_avg_8h_rate": row.get("funding_24h_avg_8h_rate", ""),
+            "funding_24h_cumulative_rate": row.get("funding_24h_cumulative_rate", ""),
+            "funding_history_state": row.get("funding_history_state", ""),
+            "funding_history_note": row.get("funding_history_note", ""),
             "quote_volume_24h": row.get("quote_volume_24h", ""),
             "price_change_pct_24h": row.get("price_change_pct_24h", ""),
             "oi_usd_delta_pct": row.get("oi_usd_delta_pct", ""),
@@ -402,6 +407,20 @@ def perp_action_summary(perp: dict[str, Any]) -> str:
         return "合约快照过期，只作背景"
     if perp.get("status") != "ok":
         return perp.get("action") or "合约层不可用"
+
+    funding_history_state = perp.get("funding_history_state")
+    if funding_history_state == "sustained_long_crowding":
+        return "多头持续付费；持仓防回撤，空仓不追"
+    if funding_history_state == "sustained_short_crowding":
+        return "空头持续付费；防逼空，空仓等现货确认"
+    if funding_history_state == "recent_long_crowding":
+        return "最新结算多头拥挤；持仓防回撤，空仓不追"
+    if funding_history_state == "recent_short_crowding":
+        return "最新结算空头拥挤；防逼空，等现货确认"
+    if funding_history_state in {"funding_flip_positive", "funding_flip_negative"}:
+        return "结算费率翻向；只观察 OI、价格和现货是否同向"
+    if funding_history_state == "mixed_funding":
+        return "24h费率方向反复；合约层降权"
 
     trend = perp.get("trend_hint")
     if trend == "多头增量":
@@ -648,7 +667,11 @@ def perp_summary(perp: dict[str, Any]) -> str:
         return f"{perp.get('perp_symbol', '-')}: 快照过期；{perp.get('action', '')}"
     if perp.get("status") != "ok":
         return f"{perp.get('perp_symbol', '-')}: {perp.get('status', '')}；{perp.get('action', '')}"
-    funding_pct = decimal_from(perp.get("last_funding_rate")) * Decimal(100)
+    funding_rate = perp.get("current_funding_rate_8h")
+    if funding_rate in ("", None):
+        funding_rate = perp.get("last_funding_rate")
+    funding_pct = decimal_from(funding_rate) * Decimal(100)
+    funding_cumulative_pct = decimal_from(perp.get("funding_24h_cumulative_rate")) * Decimal(100)
     oi_delta_pct = decimal_from(perp.get("oi_usd_delta_pct"))
     price_delta_pct = decimal_from(perp.get("mark_price_delta_pct"))
     venues = ",".join(perp.get("listed_venues") or [perp.get("venue", "")])
@@ -658,7 +681,8 @@ def perp_summary(perp: dict[str, Any]) -> str:
         trend_tail = f"；{perp.get('baseline_age_minutes') or '?'}m OI {fmt(oi_delta_pct)}%，价格 {fmt(price_delta_pct)}%；{perp.get('trend_hint', '')}: {perp.get('trend_action')}"
     return (
         f"{perp.get('perp_symbol', '-')}: {perp.get('perp_state', '')}/{perp.get('direction_hint', '')}；"
-        f"场地 {venues or '-'}；主OI≈{fmt(perp.get('open_interest_usd'))} USDT；总OI≈{fmt(total_oi)} USDT；资金费率 {fmt(funding_pct, 4)}%；"
+        f"场地 {venues or '-'}；主OI≈{fmt(perp.get('open_interest_usd'))} USDT；总OI≈{fmt(total_oi)} USDT；"
+        f"资金费率8h {fmt(funding_pct, 4)}%；24h累计 {fmt(funding_cumulative_pct, 4)}%/{perp.get('funding_history_state', '-')}；"
         f"24h量≈{fmt(perp.get('quote_volume_24h'))}；{perp.get('action', '')}{trend_tail}"
     )
 

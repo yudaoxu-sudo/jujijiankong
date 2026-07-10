@@ -17,6 +17,7 @@ OUT_DIR = ROOT / "output" / "perp_oi_funding_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
 HISTORY_PATH = OUT_DIR / "history.jsonl"
+FUNDING_HISTORY_CACHE_PATH = OUT_DIR / "funding_history_cache.json"
 
 BINANCE_FAPI = os.environ.get("PERP_WATCH_BINANCE_FAPI", "https://fapi.binance.com")
 OKX_API = os.environ.get("PERP_WATCH_OKX_API", "https://www.okx.com")
@@ -80,6 +81,10 @@ def append_history(snapshot: dict[str, Any]) -> None:
                 "open_interest_usd": row.get("open_interest_usd", ""),
                 "total_open_interest_usd": row.get("total_open_interest_usd", ""),
                 "last_funding_rate": row.get("last_funding_rate", ""),
+                "current_funding_rate_8h": row.get("current_funding_rate_8h", ""),
+                "funding_24h_avg_8h_rate": row.get("funding_24h_avg_8h_rate", ""),
+                "funding_24h_cumulative_rate": row.get("funding_24h_cumulative_rate", ""),
+                "funding_history_state": row.get("funding_history_state", ""),
                 "quote_volume_24h": row.get("quote_volume_24h", ""),
                 "price_change_pct_24h": row.get("price_change_pct_24h", ""),
                 "depth_state": row.get("depth_state", ""),
@@ -132,6 +137,249 @@ def http_json_base(base_url: str, path: str, params: dict[str, Any] | None = Non
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def canonical_funding_records(
+    rows: list[dict[str, Any]],
+    *,
+    timestamp_field: str,
+    rate_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    by_timestamp: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            timestamp_ms = int(row.get(timestamp_field) or 0)
+        except (TypeError, ValueError):
+            continue
+        rate_value: Any = None
+        source_field = ""
+        for field in rate_fields:
+            if row.get(field) not in ("", None):
+                rate_value = row.get(field)
+                source_field = field
+                break
+        if timestamp_ms <= 0 or rate_value in ("", None):
+            continue
+        try:
+            Decimal(str(rate_value))
+        except Exception:
+            continue
+        by_timestamp[timestamp_ms] = {
+            "timestamp_ms": timestamp_ms,
+            "funding_rate": str(rate_value),
+            "source_field": source_field,
+        }
+    return [by_timestamp[key] for key in sorted(by_timestamp)]
+
+
+def funding_history_limit() -> int:
+    return max(2, min(200, int(os.environ.get("PERP_WATCH_FUNDING_HISTORY_LIMIT", "30"))))
+
+
+def fetch_binance_funding_history(symbol: str) -> list[dict[str, Any]]:
+    payload = http_json(
+        "/fapi/v1/fundingRate",
+        {"symbol": symbol, "limit": funding_history_limit()},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if not isinstance(payload, list):
+        raise RuntimeError("Binance funding history returned a non-list payload")
+    return canonical_funding_records(payload, timestamp_field="fundingTime", rate_fields=("fundingRate",))
+
+
+def fetch_okx_funding_history(inst_id: str) -> list[dict[str, Any]]:
+    payload = http_json_base(
+        OKX_API,
+        "/api/v5/public/funding-rate-history",
+        {"instId": inst_id, "limit": funding_history_limit()},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if str(payload.get("code")) != "0":
+        raise RuntimeError(f"OKX funding history error: {payload.get('msg') or payload.get('code')}")
+    return canonical_funding_records(
+        payload.get("data") or [],
+        timestamp_field="fundingTime",
+        rate_fields=("realizedRate", "fundingRate"),
+    )
+
+
+def fetch_bybit_funding_history(symbol: str) -> list[dict[str, Any]]:
+    payload = http_json_base(
+        BYBIT_API,
+        "/v5/market/funding/history",
+        {"category": "linear", "symbol": symbol, "limit": funding_history_limit()},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if int(payload.get("retCode", -1)) != 0:
+        raise RuntimeError(f"Bybit funding history error: {payload.get('retMsg') or payload.get('retCode')}")
+    return canonical_funding_records(
+        payload.get("result", {}).get("list") or [],
+        timestamp_field="fundingRateTimestamp",
+        rate_fields=("fundingRate",),
+    )
+
+
+def inferred_funding_interval_hours(records: list[dict[str, Any]], fallback: Any = "8") -> Decimal:
+    timestamps = sorted({int(row.get("timestamp_ms") or 0) for row in records if int(row.get("timestamp_ms") or 0) > 0})
+    gaps = []
+    for previous, current in zip(timestamps, timestamps[1:]):
+        gap = Decimal(current - previous) / Decimal(3_600_000)
+        if Decimal("0.5") <= gap <= Decimal(24):
+            gaps.append(gap)
+    if gaps:
+        gaps.sort()
+        middle = len(gaps) // 2
+        return gaps[middle] if len(gaps) % 2 else (gaps[middle - 1] + gaps[middle]) / Decimal(2)
+    fallback_value = decimal_from(fallback)
+    return fallback_value if fallback_value > 0 else Decimal(8)
+
+
+def funding_history_state(
+    latest_8h: Decimal,
+    previous_8h: Decimal,
+    average_8h: Decimal,
+    positive_ratio: Decimal,
+    negative_ratio: Decimal,
+    point_count: int,
+) -> str:
+    crowding = Decimal(os.environ.get("PERP_WATCH_FUNDING_HISTORY_CROWDING_8H", "0.0005"))
+    flip = Decimal(os.environ.get("PERP_WATCH_FUNDING_HISTORY_FLIP_8H", "0.0001"))
+    sustained_ratio = Decimal(os.environ.get("PERP_WATCH_FUNDING_HISTORY_SUSTAINED_RATIO", "0.75"))
+    if point_count >= 3 and average_8h >= crowding and positive_ratio >= sustained_ratio:
+        return "sustained_long_crowding"
+    if point_count >= 3 and average_8h <= -crowding and negative_ratio >= sustained_ratio:
+        return "sustained_short_crowding"
+    if previous_8h <= -flip and latest_8h >= flip:
+        return "funding_flip_positive"
+    if previous_8h >= flip and latest_8h <= -flip:
+        return "funding_flip_negative"
+    if latest_8h >= crowding:
+        return "recent_long_crowding"
+    if latest_8h <= -crowding:
+        return "recent_short_crowding"
+    if point_count >= 3 and positive_ratio >= Decimal("0.25") and negative_ratio >= Decimal("0.25"):
+        return "mixed_funding"
+    return "neutral_funding"
+
+
+def summarize_funding_history(
+    records: list[dict[str, Any]],
+    *,
+    current_rate: Any = "",
+    fallback_interval_hours: Any = "8",
+) -> dict[str, Any]:
+    canonical = canonical_funding_records(records, timestamp_field="timestamp_ms", rate_fields=("funding_rate",))
+    if not canonical:
+        return {
+            "funding_history_status": "no_history",
+            "funding_history_state": "unknown_funding_history",
+            "funding_history_points": 0,
+        }
+    interval = inferred_funding_interval_hours(canonical, fallback_interval_hours)
+    latest_timestamp = int(canonical[-1]["timestamp_ms"])
+    recent = [row for row in canonical if int(row["timestamp_ms"]) > latest_timestamp - 24 * 60 * 60 * 1000]
+    recent_rates = [decimal_from(row.get("funding_rate")) for row in recent]
+    normalized = [rate * Decimal(8) / interval for rate in recent_rates]
+    latest_8h = normalized[-1]
+    previous_8h = normalized[-2] if len(normalized) >= 2 else Decimal(0)
+    average_8h = sum(normalized, Decimal(0)) / Decimal(len(normalized))
+    cumulative = sum(recent_rates, Decimal(0))
+    positive_ratio = Decimal(sum(1 for rate in recent_rates if rate > 0)) / Decimal(len(recent_rates))
+    negative_ratio = Decimal(sum(1 for rate in recent_rates if rate < 0)) / Decimal(len(recent_rates))
+    current_raw = decimal_from(current_rate)
+    current_8h = current_raw * Decimal(8) / interval
+    state = funding_history_state(
+        latest_8h,
+        previous_8h,
+        average_8h,
+        positive_ratio,
+        negative_ratio,
+        len(recent_rates),
+    )
+    return {
+        "funding_history_status": "ok" if len(canonical) >= 2 else "short_history",
+        "funding_history_state": state,
+        "funding_history_points": len(canonical),
+        "funding_24h_points": len(recent_rates),
+        "funding_interval_hours": str(interval),
+        "current_funding_rate_8h": str(current_8h),
+        "settled_funding_rate_8h": str(latest_8h),
+        "previous_settled_funding_rate_8h": str(previous_8h),
+        "funding_24h_avg_8h_rate": str(average_8h),
+        "funding_24h_cumulative_rate": str(cumulative),
+        "funding_24h_positive_ratio": str(positive_ratio),
+        "funding_24h_negative_ratio": str(negative_ratio),
+        "funding_history_latest_timestamp": latest_timestamp,
+    }
+
+
+def cached_funding_records(
+    cache: dict[str, Any],
+    key: str,
+    fetcher: Any,
+) -> tuple[list[dict[str, Any]], str, str]:
+    entries = cache.setdefault("entries", {})
+    entry = entries.get(key) if isinstance(entries.get(key), dict) else {}
+    cached_rows = entry.get("records") if isinstance(entry.get("records"), list) else []
+    fetched_at = parse_iso(entry.get("fetched_at"))
+    ttl_seconds = int(os.environ.get("PERP_WATCH_FUNDING_HISTORY_TTL_SECONDS", "1800"))
+    age_seconds = (datetime.now(timezone.utc) - fetched_at).total_seconds() if fetched_at else None
+    if cached_rows and age_seconds is not None and age_seconds <= ttl_seconds:
+        return cached_rows, "cache", ""
+    try:
+        records = fetcher()
+        if not records:
+            raise RuntimeError("empty funding history")
+        entries[key] = {"fetched_at": now_iso(), "records": records}
+        return records, "live", ""
+    except Exception as exc:
+        if cached_rows:
+            return cached_rows, "stale_cache", str(exc)[:180]
+        raise
+
+
+def funding_history_note(row: dict[str, Any]) -> str:
+    state = str(row.get("funding_history_state") or "")
+    mapping = {
+        "sustained_long_crowding": "24h多头持续付费，防回撤",
+        "sustained_short_crowding": "24h空头持续付费，防逼空",
+        "funding_flip_positive": "结算费率由负翻正，观察多头是否开始拥挤",
+        "funding_flip_negative": "结算费率由正翻负，观察空头是否开始拥挤",
+        "recent_long_crowding": "最新结算多头拥挤",
+        "recent_short_crowding": "最新结算空头拥挤",
+        "mixed_funding": "24h费率方向反复，合约方向降权",
+    }
+    return mapping.get(state, "")
+
+
+def attach_funding_history(
+    row: dict[str, Any],
+    cache: dict[str, Any],
+    cache_key: str,
+    fetcher: Any,
+    *,
+    fallback_interval_hours: Any = "8",
+) -> dict[str, Any]:
+    try:
+        records, source, error = cached_funding_records(cache, cache_key, fetcher)
+        row.update(
+            summarize_funding_history(
+                records,
+                current_rate=row.get("last_funding_rate"),
+                fallback_interval_hours=fallback_interval_hours,
+            )
+        )
+        row["funding_history_source"] = source
+        if error:
+            row["funding_history_error"] = error
+    except Exception as exc:
+        row["funding_history_status"] = "failed"
+        row["funding_history_state"] = "unknown_funding_history"
+        row["funding_history_error"] = str(exc)[:180]
+    note = funding_history_note(row)
+    if note:
+        row["funding_history_note"] = note
+    return row
 
 
 def load_watchlist() -> list[dict[str, Any]]:
@@ -212,11 +460,15 @@ def fetch_okx_symbol(inst_id: str) -> dict[str, Any]:
     funding = okx_json("/api/v5/public/funding-rate", {"instId": inst_id})
     last = decimal_from(ticker.get("last"))
     vol_base = decimal_from(ticker.get("volCcy24h") or ticker.get("vol24h"))
+    funding_time = decimal_from(funding.get("fundingTime"))
+    next_funding_time = decimal_from(funding.get("nextFundingTime"))
+    interval_hint = (next_funding_time - funding_time) / Decimal(3_600_000) if next_funding_time > funding_time else Decimal(0)
     return {
         "mark_price": str(last),
         "index_price": "",
         "last_funding_rate": str(decimal_from(funding.get("fundingRate"))),
         "next_funding_time": funding.get("fundingTime", ""),
+        "funding_interval_hint_hours": str(interval_hint) if interval_hint > 0 else "",
         "open_interest": str(decimal_from(oi.get("oi"))),
         "open_interest_usd": str(decimal_from(oi.get("oiUsd"))),
         "price_change_pct_24h": str(percent_change(last, decimal_from(ticker.get("open24h")))),
@@ -521,7 +773,7 @@ def fetch_bybit_symbol(symbol: str) -> dict[str, Any]:
     }
 
 
-def bybit_context(symbol: str) -> dict[str, Any]:
+def bybit_context(symbol: str, funding_cache: dict[str, Any]) -> dict[str, Any]:
     perp_symbol = f"{symbol.upper()}USDT"
     base = {"venue": "bybit_linear", "perp_symbol": perp_symbol}
     try:
@@ -536,21 +788,38 @@ def bybit_context(symbol: str) -> dict[str, Any]:
         return dict(base, status="not_listed", error="", direction_hint="不开", action="Bybit未发现USDT永续")
     try:
         metrics = fetch_bybit_symbol(perp_symbol)
-        decision = classify_perp(metrics)
         row = dict(base, status="ok", exchange_status=instrument.get("status", ""))
         row.update(metrics)
+        interval_minutes = decimal_from(instrument.get("fundingInterval"))
+        interval_hint = interval_minutes / Decimal(60) if interval_minutes > 0 else Decimal(8)
+        attach_funding_history(
+            row,
+            funding_cache,
+            f"bybit_linear:{perp_symbol}",
+            lambda: fetch_bybit_funding_history(perp_symbol),
+            fallback_interval_hours=interval_hint,
+        )
+        decision = classify_perp(row)
         attach_depth(row, bybit_depth_context, perp_symbol, row.get("mark_price"))
         row["perp_state"] = decision.get("status", "")
         row["direction_hint"] = decision.get("direction_hint", "")
         row["action"] = decision.get("action", "")
         if row.get("depth_note"):
             row["action"] += "；" + row["depth_note"]
+        if row.get("funding_history_note"):
+            row["action"] += "；" + row["funding_history_note"]
         return row
     except Exception as exc:
         return dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="Bybit合约指标拉取失败")
 
 
-def okx_context(symbol: str, okx_symbols: dict[str, dict[str, Any]], source_status: str, source_error: str) -> dict[str, Any]:
+def okx_context(
+    symbol: str,
+    okx_symbols: dict[str, dict[str, Any]],
+    source_status: str,
+    source_error: str,
+    funding_cache: dict[str, Any],
+) -> dict[str, Any]:
     inst_id = f"{symbol.upper()}-USDT-SWAP"
     base = {"venue": "okx_swap", "perp_symbol": inst_id}
     if source_status != "ok":
@@ -560,9 +829,16 @@ def okx_context(symbol: str, okx_symbols: dict[str, dict[str, Any]], source_stat
         return dict(base, status="not_listed", error="", direction_hint="不开", action="OKX未发现USDT永续")
     try:
         metrics = fetch_okx_symbol(inst_id)
-        decision = classify_perp(metrics)
         row = dict(base, status="ok", exchange_status=exchange_info.get("state", ""))
         row.update(metrics)
+        attach_funding_history(
+            row,
+            funding_cache,
+            f"okx_swap:{inst_id}",
+            lambda: fetch_okx_funding_history(inst_id),
+            fallback_interval_hours=row.get("funding_interval_hint_hours") or "8",
+        )
+        decision = classify_perp(row)
         attach_depth(row, okx_depth_context, inst_id, row.get("mark_price"), exchange_info)
         attach_liquidations(row, okx_liquidation_context, inst_id, exchange_info)
         row["perp_state"] = decision.get("status", "")
@@ -572,6 +848,8 @@ def okx_context(symbol: str, okx_symbols: dict[str, dict[str, Any]], source_stat
             row["action"] += "；" + row["depth_note"]
         if row.get("liquidation_note"):
             row["action"] += "；" + row["liquidation_note"]
+        if row.get("funding_history_note"):
+            row["action"] += "；" + row["funding_history_note"]
         return row
     except Exception as exc:
         return dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="OKX合约指标拉取失败")
@@ -585,9 +863,12 @@ def venue_signal_notes(venues: list[dict[str, Any]]) -> list[str]:
         hint = venue.get("direction_hint", "")
         if hint not in {"拥挤", "可观察"}:
             continue
-        funding_pct = decimal_from(venue.get("last_funding_rate")) * Decimal(100)
+        funding_rate = venue.get("current_funding_rate_8h")
+        if funding_rate in ("", None):
+            funding_rate = venue.get("last_funding_rate")
+        funding_pct = decimal_from(funding_rate) * Decimal(100)
         notes.append(
-            f"{venue.get('venue')} {hint} OI≈{fmt(venue.get('open_interest_usd'), '0.01')} funding {fmt(funding_pct, '0.0001')}%"
+            f"{venue.get('venue')} {hint} OI≈{fmt(venue.get('open_interest_usd'), '0.01')} funding8h {fmt(funding_pct, '0.0001')}%"
         )
         if venue.get("liquidation_note"):
             notes.append(f"{venue.get('venue')} {venue.get('liquidation_note')}")
@@ -680,8 +961,8 @@ def trend_for_symbol(history: list[dict[str, Any]], symbol: str, current: dict[s
     previous_oi = decimal_from(previous.get("open_interest_usd"))
     current_price = decimal_from(current.get("mark_price"))
     base_price = decimal_from(baseline.get("mark_price"))
-    current_funding = decimal_from(current.get("last_funding_rate"))
-    base_funding = decimal_from(baseline.get("last_funding_rate"))
+    current_funding = decimal_from(current.get("current_funding_rate_8h") or current.get("last_funding_rate"))
+    base_funding = decimal_from(baseline.get("current_funding_rate_8h") or baseline.get("last_funding_rate"))
     oi_delta = current_oi - base_oi
     oi_delta_pct = percent_change(current_oi, base_oi)
     previous_oi_delta_pct = percent_change(current_oi, previous_oi)
@@ -741,7 +1022,7 @@ def fetch_symbol(symbol: str) -> dict[str, Any]:
 
 
 def classify_perp(row: dict[str, Any]) -> dict[str, Any]:
-    funding = decimal_from(row.get("last_funding_rate"))
+    funding = decimal_from(row.get("current_funding_rate_8h") or row.get("last_funding_rate"))
     oi_usd = decimal_from(row.get("open_interest_usd"))
     volume = decimal_from(row.get("quote_volume_24h"))
     price_change = decimal_from(row.get("price_change_pct_24h"))
@@ -780,6 +1061,11 @@ def build_snapshot() -> dict[str, Any]:
     rows = []
     generated_at = now_iso()
     history = read_history()
+    funding_cache = read_json(FUNDING_HISTORY_CACHE_PATH, {"schema": "perp_funding_history_cache.v1", "entries": {}})
+    if not isinstance(funding_cache, dict):
+        funding_cache = {"schema": "perp_funding_history_cache.v1", "entries": {}}
+    funding_cache.setdefault("schema", "perp_funding_history_cache.v1")
+    funding_cache.setdefault("entries", {})
     try:
         listed = exchange_symbols()
         source_status = "ok"
@@ -799,8 +1085,8 @@ def build_snapshot() -> dict[str, Any]:
 
     for item in watchlist:
         symbol = item["perp_symbol"]
-        okx = okx_context(item["symbol"], okx_listed, okx_source_status, okx_source_error)
-        bybit = bybit_context(item["symbol"])
+        okx = okx_context(item["symbol"], okx_listed, okx_source_status, okx_source_error, funding_cache)
+        bybit = bybit_context(item["symbol"], funding_cache)
         extra_venues = [okx, bybit]
         base = {
             "symbol": item["symbol"],
@@ -821,6 +1107,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M不可用；{fallback.get('venue')} {decision.get('action', '')}"
+                if row.get("funding_history_note"):
+                    row["action"] += "；" + row["funding_history_note"]
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
@@ -841,6 +1129,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M未上；{fallback.get('venue')} {decision.get('action', '')}"
+                if row.get("funding_history_note"):
+                    row["action"] += "；" + row["funding_history_note"]
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
@@ -851,9 +1141,15 @@ def build_snapshot() -> dict[str, Any]:
             continue
         try:
             metrics = fetch_symbol(symbol)
-            decision = classify_perp(metrics)
             row = dict(base, status="ok", exchange_status=exchange_info.get("status", ""))
             row.update(metrics)
+            attach_funding_history(
+                row,
+                funding_cache,
+                f"binance_usdm:{symbol}",
+                lambda: fetch_binance_funding_history(symbol),
+            )
+            decision = classify_perp(row)
             attach_depth(row, binance_depth_context, symbol, row.get("mark_price"))
             trend = trend_for_symbol(history, item["symbol"], row, generated_at)
             venue_notes = venue_signal_notes(extra_venues)
@@ -862,6 +1158,8 @@ def build_snapshot() -> dict[str, Any]:
             row["action"] = decision.get("action", "")
             if row.get("depth_note"):
                 row["action"] += "；" + row["depth_note"]
+            if row.get("funding_history_note"):
+                row["action"] += "；" + row["funding_history_note"]
             if venue_notes:
                 row["action"] += "；其他场地 " + "；".join(venue_notes)
             row["listed_venues"] = listed_venue_names(row, extra_venues)
@@ -880,6 +1178,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M指标失败；{fallback.get('venue')} {decision.get('action', '')}"
+                if row.get("funding_history_note"):
+                    row["action"] += "；" + row["funding_history_note"]
                 row["binance_error"] = str(exc)
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
@@ -889,6 +1189,14 @@ def build_snapshot() -> dict[str, Any]:
             else:
                 rows.append(dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="合约指标拉取失败"))
     alert_liquidation_states = {"long_liquidation_pressure", "short_liquidation_pressure", "two_sided_liquidation"}
+    alert_funding_history_states = {
+        "sustained_long_crowding",
+        "sustained_short_crowding",
+        "funding_flip_positive",
+        "funding_flip_negative",
+        "recent_long_crowding",
+        "recent_short_crowding",
+    }
     alerts = [
         row
         for row in rows
@@ -898,8 +1206,11 @@ def build_snapshot() -> dict[str, Any]:
             or bool(row.get("cross_venue_notes"))
             or row.get("depth_state") in {"thin_depth", "wide_spread", "ask_thin", "bid_thin"}
             or row.get("liquidation_state") in alert_liquidation_states
+            or row.get("funding_history_state") in alert_funding_history_states
         )
     ]
+    funding_cache["updated_at"] = generated_at
+    write_json(FUNDING_HISTORY_CACHE_PATH, funding_cache)
     return {
         "schema": "perp_oi_funding_watch.v1",
         "generated_at": generated_at,
@@ -939,11 +1250,20 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- item_count: `{snapshot['item_count']}`",
         f"- alert_count: `{snapshot['alert_count']}`",
         "",
-        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding | 24h Vol | 24h Chg | Depth | Liq | Trend | Action |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
+        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding 8h | Funding 24h | 24h Vol | 24h Chg | Depth | Liq | Trend | Action |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in snapshot["rows"]:
-        funding_pct = decimal_from(row.get("last_funding_rate")) * Decimal(100)
+        funding_rate = row.get("current_funding_rate_8h")
+        if funding_rate in ("", None):
+            funding_rate = row.get("last_funding_rate")
+        funding_pct = decimal_from(funding_rate) * Decimal(100)
+        funding_24h = (
+            f"{row.get('funding_history_state', '')} avg8h={fmt(decimal_from(row.get('funding_24h_avg_8h_rate')) * Decimal(100), '0.0001')}% "
+            f"cum={fmt(decimal_from(row.get('funding_24h_cumulative_rate')) * Decimal(100), '0.0001')}%"
+            if row.get("funding_history_status") in {"ok", "short_history"}
+            else row.get("funding_history_status", "")
+        )
         oi_delta_pct = decimal_from(row.get("oi_usd_delta_pct"))
         combined_action = row.get("action", "")
         if row.get("trend_action"):
@@ -963,7 +1283,7 @@ def render(snapshot: dict[str, Any]) -> str:
             )
         lines.append(
             f"| `{row.get('symbol')}` | `{row.get('perp_symbol')}` | {venues} | {row.get('status')}:{row.get('perp_state', '')} / {row.get('direction_hint', '')} | "
-            f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {fmt(funding_pct, '0.0001')}% | "
+            f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {fmt(funding_pct, '0.0001')}% | {funding_24h} | "
             f"{fmt(row.get('quote_volume_24h'), '0.01')} | {fmt(row.get('price_change_pct_24h'), '0.01')}% | "
             f"{depth} | {liquidation} | {row.get('trend_hint', '')} | {combined_action} |"
         )

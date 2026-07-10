@@ -27,6 +27,7 @@ REQUIRED_SYSTEM_LOGIC_PHRASES = [
     "Project Runtime Evidence",
     "output/runtime_health/last_cycle.json",
     "Treat monitor silence as healthy only",
+    "24h cumulative funding",
     "ElonKely-Derived Checks",
     "LAB-Derived Checks",
     "aLiiDeez-Derived Checks",

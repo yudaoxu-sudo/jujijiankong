@@ -121,10 +121,12 @@ def risk_notes(symbol: str, context: dict[str, Any]) -> list[str]:
         if value and value != "无价格异动":
             notes.append(f"alpha_price {field}: {short(value)}")
     perp = context["perp"].get(symbol, {})
-    for field in ("direction_hint", "trend_hint", "depth_state", "liquidation_state"):
+    for field in ("direction_hint", "trend_hint", "depth_state", "liquidation_state", "funding_history_state"):
         value = perp.get(field)
         if value:
             notes.append(f"perp {field}: {value}")
+    if perp.get("funding_history_note"):
+        notes.append(f"perp funding_history: {short(perp.get('funding_history_note'))}")
     holder = context["holder"].get(symbol, {})
     signal = holder.get("signal") or {}
     if signal.get("action"):
