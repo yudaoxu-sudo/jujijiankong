@@ -20,3 +20,5 @@ Runtime outputs are intentionally excluded from git:
 - Telegram sessions, databases, private keys, and logs
 
 For a new machine, copy `.env.example` to `.env.local`, fill the required keys locally, then follow `docs/server_runbook.md`.
+
+Production cron is installed with `bash scripts/install_server_cron.sh`. It runs the monitor every five minutes and a separate failure-only health watchdog every ten minutes.

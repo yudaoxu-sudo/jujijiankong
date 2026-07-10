@@ -19,6 +19,9 @@ set -a
 set +a
 
 export MONITOR_DISABLED_PROJECTS="${MONITOR_DISABLED_PROJECTS:-O1}"
+RUNTIME_HEALTH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUNTIME_HEALTH_FAILURE_FILE="$(mktemp /tmp/sniper_runtime_failures.XXXXXX)"
+trap 'rm -f "$RUNTIME_HEALTH_FAILURE_FILE"' EXIT
 
 if [[ "${DISABLE_TELEGRAM:-0}" == "1" ]]; then
   export SNIPER_MONITOR_TELEGRAM=0
@@ -33,16 +36,17 @@ fi
 
 run_step() {
   local seconds="$1"
+  local status=0
   shift
   echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"
   if command -v timeout >/dev/null 2>&1; then
-    if ! timeout "$seconds" "$@"; then
-      echo "step failed or timed out after ${seconds}s: $*" >&2
-    fi
+    timeout "$seconds" "$@" || status=$?
   else
-    if ! "$@"; then
-      echo "step failed: $*" >&2
-    fi
+    "$@" || status=$?
+  fi
+  if (( status != 0 )); then
+    echo "step failed with status ${status} or timed out after ${seconds}s: $*" >&2
+    printf '%s\t%s\t%s\n' "$status" "$seconds" "$*" >>"$RUNTIME_HEALTH_FAILURE_FILE"
   fi
 }
 
@@ -83,3 +87,4 @@ fi
 run_step "${POSITION_COST_TIMEOUT_SECONDS:-45}" python3 scripts/position_cost_watch.py
 run_step "${DAILY_REPORT_TIMEOUT_SECONDS:-90}" python3 scripts/build_alpha_daily_report.py
 run_step "${VERIFY_TIMEOUT_SECONDS:-120}" python3 scripts/verify_sniper_engine.py
+python3 scripts/runtime_health_watch.py --mode cycle --failure-file "$RUNTIME_HEALTH_FAILURE_FILE" --started-at "$RUNTIME_HEALTH_STARTED_AT"

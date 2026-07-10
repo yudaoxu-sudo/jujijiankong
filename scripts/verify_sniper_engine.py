@@ -47,6 +47,9 @@ def main() -> int:
         ROOT / "scripts" / "external_aux_source_readiness.py",
         ROOT / "scripts" / "external_aux_live_probe.py",
         ROOT / "scripts" / "position_cost_watch.py",
+        ROOT / "scripts" / "runtime_health_watch.py",
+        ROOT / "scripts" / "server_health_watchdog.sh",
+        ROOT / "scripts" / "install_server_cron.sh",
         ROOT / "scripts" / "audit_celue_integration.py",
         ROOT / "scripts" / "decode_pancake_v4_execute.py",
         ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py",
@@ -637,6 +640,8 @@ assert readback_gate['can_follow'] is False, readback_gate
         holder_run = "alpha_holder_concentration_watch.py"
         external_live_probe_run = "external_aux_live_probe.py"
         position_cost_run = "position_cost_watch.py"
+        verification_run = "verify_sniper_engine.py"
+        runtime_health_run = "runtime_health_watch.py --mode cycle"
         holder_context_order = (
             intraday_run in server_run_text
             and perp_run in server_run_text
@@ -680,7 +685,11 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "arx_opening_sprint.sh" in server_run_text
             and "DISABLE_TELEGRAM" in server_run_text
             and "MONITOR_DISABLED_PROJECTS" in server_run_text
-            and "step failed or timed out" in server_run_text
+            and "step failed with status" in server_run_text
+            and "RUNTIME_HEALTH_FAILURE_FILE" in server_run_text
+            and runtime_health_run in server_run_text
+            and verification_run in server_run_text
+            and server_run_text.index(verification_run) < server_run_text.index(runtime_health_run)
             and "RUN_O1_ATTRIBUTION" in server_run_text
             and arx_opening_refresh_guard
             and arx_launch_guard
@@ -688,10 +697,28 @@ assert readback_gate['can_follow'] is False, readback_gate
             and opening_funder_order
             and holder_context_order
         )
-        server_run_msg = "lock+timeout+continue+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present" if server_run_ok else "missing runtime guard"
+        server_run_msg = "lock+timeout+failure capture+health alert+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present" if server_run_ok else "missing runtime guard"
     except Exception as exc:
         server_run_msg = str(exc)
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
+
+    cron_watchdog_ok = False
+    cron_watchdog_msg = ""
+    try:
+        installer = (ROOT / "scripts" / "install_server_cron.sh").read_text(encoding="utf-8")
+        watchdog = (ROOT / "scripts" / "server_health_watchdog.sh").read_text(encoding="utf-8")
+        cron_watchdog_ok = (
+            "server_run_once.sh" in installer
+            and "server_health_watchdog.sh" in installer
+            and "*/5 * * * *" in installer
+            and "*/10 * * * *" in installer
+            and "runtime_health_watch.py --mode watchdog" in watchdog
+            and "RUNTIME_HEALTH_WATCHDOG_TIMEOUT_SECONDS" in watchdog
+        )
+        cron_watchdog_msg = "main cron plus independent stale-cycle watchdog present" if cron_watchdog_ok else "missing watchdog cron guard"
+    except Exception as exc:
+        cron_watchdog_msg = str(exc)
+    checks.append(("server cron includes independent health watchdog", cron_watchdog_ok, cron_watchdog_msg))
 
     perp_watch_code = """
 from scripts.perp_oi_funding_watch import best_ok_venue, classify_perp, depth_action_note, depth_metrics, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, total_open_interest, trend_for_symbol, venue_signal_notes
@@ -1305,6 +1332,149 @@ assert (out / 'latest.md').exists(), out
             "position cost watch smoke test",
             position_cost_watch_result.returncode == 0,
             position_cost_watch_result.stderr.strip(),
+        )
+    )
+
+    runtime_health_watch_code = """
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from scripts.runtime_health_watch import CRITICAL_OUTPUTS, apply_notification, write_json
+
+root = Path.cwd()
+work = Path(tempfile.mkdtemp(prefix='runtime_health_watch_'))
+fake_root = work / 'root'
+out = work / 'out'
+for _, relative in CRITICAL_OUTPUTS:
+    path = fake_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('# verification has no failures\\n' if path.suffix == '.md' else '{}\\n', encoding='utf-8')
+daily = fake_root / 'reports' / '2026-07-10_alpha_sniper_daily.md'
+daily.parent.mkdir(parents=True, exist_ok=True)
+daily.write_text('# Daily report\\n', encoding='utf-8')
+failure_file = out / 'failures.tsv'
+out.mkdir(parents=True, exist_ok=True)
+failure_file.write_text('', encoding='utf-8')
+base_cmd = [
+    sys.executable,
+    str(root / 'scripts' / 'runtime_health_watch.py'),
+    '--root',
+    str(fake_root),
+    '--out-dir',
+    str(out),
+    '--max-output-age-seconds',
+    '999999999',
+    '--max-cycle-age-seconds',
+    '999999999',
+    '--no-telegram',
+]
+healthy = subprocess.run(base_cmd + ['--mode', 'cycle', '--failure-file', str(failure_file)], cwd=root, capture_output=True, text=True)
+assert healthy.returncode == 0, healthy.stderr or healthy.stdout
+payload = json.loads((out / 'last_cycle.json').read_text(encoding='utf-8'))
+assert payload['schema'] == 'runtime_health.v1', payload
+assert payload['status'] == 'healthy' and payload['issue_count'] == 0, payload
+
+failure_file.write_text('124\\t30\\tpython3 scripts/example_timeout.py\\n', encoding='utf-8')
+failed = subprocess.run(base_cmd + ['--mode', 'cycle', '--failure-file', str(failure_file)], cwd=root, capture_output=True, text=True)
+assert failed.returncode == 0, failed.stderr or failed.stdout
+payload = json.loads((out / 'last_cycle.json').read_text(encoding='utf-8'))
+assert payload['status'] == 'unhealthy', payload
+assert payload['failed_steps'][0]['exit_status'] == 124, payload
+assert any(row['kind'] == 'step_failed' for row in payload['issues']), payload
+
+watchdog = subprocess.run(base_cmd + ['--mode', 'watchdog'], cwd=root, capture_output=True, text=True)
+assert watchdog.returncode == 0, watchdog.stderr or watchdog.stdout
+payload = json.loads((out / 'latest_watchdog.json').read_text(encoding='utf-8'))
+assert payload['status'] == 'unhealthy', payload
+assert any(row['kind'] == 'step_failed' for row in payload['issues']), payload
+assert (out / 'latest.md').exists(), out
+
+write_json(
+    out / 'state.json',
+    {
+        'last_status': 'unhealthy',
+        'last_signature': payload['signature'],
+        'last_alert_sent_at': payload['generated_at'],
+    },
+)
+suppressed = apply_notification(
+    payload,
+    out,
+    SimpleNamespace(repeat_minutes=360, no_telegram=True, telegram_timeout=1),
+)
+assert suppressed['status'] == 'suppressed', suppressed
+
+last_cycle = out / 'last_cycle.json'
+os.utime(last_cycle, (1, 1))
+stale = subprocess.run(base_cmd + ['--mode', 'watchdog', '--max-cycle-age-seconds', '1'], cwd=root, capture_output=True, text=True)
+assert stale.returncode == 0, stale.stderr or stale.stdout
+payload = json.loads((out / 'latest_watchdog.json').read_text(encoding='utf-8'))
+assert any(row['kind'] == 'stale_heartbeat' for row in payload['issues']), payload
+"""
+    runtime_health_watch_result = subprocess.run(
+        [sys.executable, "-c", runtime_health_watch_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "runtime health failure and watchdog smoke test",
+            runtime_health_watch_result.returncode == 0,
+            runtime_health_watch_result.stderr.strip(),
+        )
+    )
+
+    cron_installer_code = """
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+work = Path(tempfile.mkdtemp(prefix='cron_installer_'))
+bin_dir = work / 'bin'
+bin_dir.mkdir()
+store = work / 'crontab.txt'
+store.write_text('17 3 * * * /usr/local/bin/unrelated-job\\n', encoding='utf-8')
+fake = bin_dir / 'crontab'
+fake.write_text(
+    '#!/usr/bin/env bash\\n'
+    'set -euo pipefail\\n'
+    'store="${FAKE_CRONTAB_STORE:?}"\\n'
+    'if [[ "${1:-}" == "-l" ]]; then cat "$store"; exit 0; fi\\n'
+    'cp "$1" "$store"\\n',
+    encoding='utf-8',
+)
+fake.chmod(0o755)
+env = os.environ.copy()
+env['PATH'] = str(bin_dir) + os.pathsep + env.get('PATH', '')
+env['FAKE_CRONTAB_STORE'] = str(store)
+env['SNIPER_PROJECT_DIR'] = '/srv/sniper'
+cmd = ['bash', str(root / 'scripts' / 'install_server_cron.sh')]
+for _ in range(2):
+    result = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr or result.stdout
+text = store.read_text(encoding='utf-8')
+assert text.count('/srv/sniper/scripts/server_run_once.sh') == 1, text
+assert text.count('/srv/sniper/scripts/server_health_watchdog.sh') == 1, text
+assert '/usr/local/bin/unrelated-job' in text, text
+"""
+    cron_installer_result = subprocess.run(
+        [sys.executable, "-c", cron_installer_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "server cron installer is idempotent and preserves unrelated jobs",
+            cron_installer_result.returncode == 0,
+            cron_installer_result.stderr.strip(),
         )
     )
 

@@ -25,6 +25,8 @@ REQUIRED_REFERENCES = [
 REQUIRED_SYSTEM_LOGIC_PHRASES = [
     "Unified Rule Stack",
     "Project Runtime Evidence",
+    "output/runtime_health/last_cycle.json",
+    "Treat monitor silence as healthy only",
     "ElonKely-Derived Checks",
     "LAB-Derived Checks",
     "aLiiDeez-Derived Checks",
@@ -48,6 +50,7 @@ REQUIRED_PROJECT_FILES = [
     "docs/kol_strategy_intake_prompt.md",
     "scripts/build_alpha_daily_report.py",
     "scripts/verify_sniper_engine.py",
+    "scripts/runtime_health_watch.py",
     "output/aliideez_x_research/analysis/method_index.csv",
     "output/0xcrypto_max_x_research/analysis/method_index.csv",
 ]

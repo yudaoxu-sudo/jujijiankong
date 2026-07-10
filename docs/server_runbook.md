@@ -1,8 +1,8 @@
 # Server Runbook
 
-更新日期：2026-07-08
+更新日期：2026-07-10
 
-当前版本已经覆盖本地推文评分、Telegram/项目线索摄取、Alpha 项目级监控、预发布窗口、Alpha 开盘首批买家回溯、首批买家 funding source、Alpha 官方价格动量、Alpha 盘中大额流监控、holder 集中度、合约 OI/funding/盘口/强平、Surf 外部市场辅助层、外部辅助源 readiness、预测市场、日报和系统自检。
+当前版本已经覆盖本地推文评分、Telegram/项目线索摄取、Alpha 项目级监控、预发布窗口、Alpha 开盘首批买家回溯、首批买家 funding source、Alpha 官方价格动量、Alpha 盘中大额流监控、holder 集中度、合约 OI/funding/盘口/强平、Surf 外部市场辅助层、外部辅助源 readiness、预测市场、日报、系统自检和失败才推送的运行健康告警。
 
 ## 本地验证
 
@@ -24,6 +24,7 @@ python3 scripts/prediction_market_watch.py
 python3 scripts/external_aux_source_readiness.py
 python3 scripts/external_aux_live_probe.py --source surf
 python3 scripts/position_cost_watch.py
+python3 scripts/runtime_health_watch.py --mode cycle --no-telegram
 python3 scripts/x_mcp_readiness.py --no-network --skip-xurl
 python3 scripts/simulate_pancake_v4_roundtrip_call.py --pin-block --sell-quote-share-bps 10000 --recovery-iterations 40
 python3 scripts/o1_address_attribution.py
@@ -69,6 +70,9 @@ output/external_aux_live_probe/latest.json
 output/external_aux_live_probe/latest.md
 output/position_cost_watch/latest.json
 output/position_cost_watch/latest.md
+output/runtime_health/latest.json
+output/runtime_health/latest.md
+output/runtime_health/last_cycle.json
 output/x_mcp_readiness/latest.json
 output/x_mcp_readiness/latest.md
 output/pancake_v4_roundtrip_call/latest.json
@@ -119,7 +123,17 @@ scripts/o1_address_attribution.py 条件执行
 scripts/position_cost_watch.py
 scripts/build_alpha_daily_report.py
 scripts/verify_sniper_engine.py
+scripts/runtime_health_watch.py
 ```
+
+服务器 cron 通过幂等安装脚本维护：
+
+```bash
+cd /home/ubuntu/sniper
+bash scripts/install_server_cron.sh
+```
+
+安装后有两条独立任务：主循环每 5 分钟运行；watchdog 每 10 分钟检查 `output/runtime_health/last_cycle.json`。主循环会把每个步骤的非零退出码写入本轮临时失败清单，最后检查核心产物新鲜度和 `verification_report.md`。健康状态不发消息；首次故障、故障类型变化、持续故障到提醒周期和故障恢复才发 Telegram。watchdog 可发现主脚本在健康检查前异常退出或主循环心跳超过默认 20 分钟未更新。服务器或 crond 整体离线仍需要外部主机级监控。
 
 ## 环境变量
 
@@ -161,6 +175,11 @@ export ALPHA_OPENING_INFINITY_RECOVERY_ESTIMATE=1
 export ALPHA_OPENING_INFINITY_RECOVERY_ITERATIONS=20
 export ALPHA_OPENING_INFINITY_MIN_RECOVERY_RATE=0.80
 export ALPHA_OPENING_INFINITY_ROUNDTRIP_SELL_SHARE_BPS=10000
+export RUNTIME_HEALTH_TELEGRAM=1
+export RUNTIME_HEALTH_SEND_RECOVERY=1
+export RUNTIME_HEALTH_MAX_OUTPUT_AGE_SECONDS=1800
+export RUNTIME_HEALTH_MAX_CYCLE_AGE_SECONDS=1200
+export RUNTIME_HEALTH_REPEAT_MINUTES=360
 ```
 
 Telegram 当前有两层控制：
