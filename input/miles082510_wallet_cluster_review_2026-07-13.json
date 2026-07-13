@@ -1,0 +1,150 @@
+{
+  "schema": "kol_wallet_cluster_review.v1",
+  "updated_at": "2026-07-13",
+  "account": "Miles082510",
+  "source_url": "https://x.com/miles082510",
+  "source_scope": {
+    "post_count_raw": 400,
+    "post_count_deduped": 393,
+    "dropped_retweets": 7,
+    "time_range_start_utc": "2025-07-30T03:23:40+00:00",
+    "time_range_end_utc": "2026-07-13T09:53:13+00:00",
+    "media_post_count": 190,
+    "media_item_count": 211,
+    "selected_media_reviewed": 17,
+    "full_media_ocr_completed": false,
+    "raw_output_path": "output/miles082510_x_research"
+  },
+  "evidence_boundary": {
+    "social": "All KOL posts, screenshots, personal entries, profit descriptions, role labels, and dashboard claims.",
+    "onchain": "Surf BSC transfer queries and wallet-label results for the resolved token contracts.",
+    "market": "Surf DEX-pool-weighted OHLCV with zero-volume future carry-forward bars excluded.",
+    "inference": "The strategy gates and proposed runtime fields derived from separated social, on-chain, and market evidence.",
+    "official": "No official source was required to promote a live trade action; no live trade action was promoted."
+  },
+  "adopted_rules": [
+    {
+      "rule_id": "MILES-R02",
+      "name": "equal_tranche_fresh_wallet_fanout",
+      "rule": "Near-equal, same-source, short-window CEX withdrawals into many recipients raise common-control confidence. Direction remains unknown until next-hop evidence resolves it.",
+      "fields": [
+        "source_exchange",
+        "exchange_label_quality",
+        "outflow_usd",
+        "outflow_pct_mc",
+        "recipient_count",
+        "fresh_wallet_count",
+        "equal_tranche_cv",
+        "common_gas_source_ratio",
+        "public_signal_lag"
+      ],
+      "default_action": "Observe"
+    },
+    {
+      "rule_id": "MILES-R03",
+      "name": "operator_cluster_conflict_gate",
+      "rule": "Active distribution in any verified sibling cluster blocks follow language produced by a separate accumulation cluster. Mixed flow remains Observe; held exposure enters Reduce watch.",
+      "fields": [
+        "cluster_role",
+        "cluster_balance_delta",
+        "operator_phase",
+        "phase_changed_at",
+        "conflicting_cluster_count",
+        "cluster_conflict"
+      ],
+      "default_action": "Observe"
+    }
+  ],
+  "verified_cases": [
+    {
+      "case_id": "MILES-C01",
+      "symbol": "PARTI",
+      "chain": "bsc",
+      "contract": "0x59264f02d301281f3393e1385c0aefd446eb0f00",
+      "source_post": "https://x.com/Miles082510/status/2074772990227865911",
+      "signal_time_utc": "2026-07-08T08:30:02Z",
+      "onchain": {
+        "source_address": "0xa0420c29b214d09b9ec751aa1f592c7b1fa77da3",
+        "source_label": "OKX Hot Wallet",
+        "pre_post_transfer_count": 34,
+        "pre_post_recipient_count": 34,
+        "rows_between_20k_and_35k_usd": 24,
+        "priced_outflow_usd": 609604.52,
+        "fresh_wallet_count_verified": false
+      },
+      "market_replay": {
+        "base_open": 0.0474095504993,
+        "max_return_pct": 7.2402497622,
+        "max_drawdown_pct": -36.4966586272,
+        "last_real_close_return_pct": -33.9176719567
+      },
+      "lesson": "Fan-out is a valid discovery signal. Cluster-distribution conflict and next-hop evidence decide the action."
+    },
+    {
+      "case_id": "MILES-C02",
+      "symbol": "BLUAI",
+      "chain": "bsc",
+      "contract": "0xed9ae3def8d6f052971bb8b6d1975ff267cf9aad",
+      "source_post": "https://x.com/Miles082510/status/2067242926292504858",
+      "signal_time_utc": "2026-06-17T13:48:15Z",
+      "onchain": {
+        "source_address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "source_label": "Gate Hot Wallet",
+        "recipient": "0x84f3054cd3a30f3c1436c24c6db38c5bcfa48fce",
+        "test_transfer_time_utc": "2026-06-17T09:06:10Z",
+        "test_transfer_token": 963.2,
+        "large_transfer_time_utc": "2026-06-17T13:00:13Z",
+        "large_transfer_token": 86815347.6572,
+        "large_transfer_usd": 1306515.026861312,
+        "public_signal_lag_minutes": 48
+      },
+      "market_replay": {
+        "base_open": 0.0137261544915,
+        "max_return_pct": 29.8847482406,
+        "max_drawdown_pct": -1.6968847156,
+        "last_real_close_return_pct": 13.4824340659
+      },
+      "lesson": "A small test followed by a same-route large withdrawal is a high-quality discovery pattern."
+    },
+    {
+      "case_id": "MILES-C06",
+      "symbol": "B2",
+      "chain": "bsc",
+      "contract": "0x783c3f003f172c6ac5ac700218a357d2d66ee2a2",
+      "source_post": "https://x.com/Miles082510/status/2076605860793770334",
+      "signal_time_utc": "2026-07-13T09:53:13Z",
+      "warehouse_freshness_boundary": "2026-07-12",
+      "onchain_partial": {
+        "source_address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "source_label": "Gate Hot Wallet",
+        "transfer_count": 28,
+        "recipient_count": 13,
+        "token_total": 1680697.74,
+        "priced_row_count": 10,
+        "priced_row_usd_total": 234054.93
+      },
+      "market_replay": {
+        "real_hourly_bars_after_post": 5,
+        "last_real_close_return_pct": -1.5700134643
+      },
+      "status": "forward_case_pending"
+    }
+  ],
+  "reference_only": [
+    "Fixed 10-20 percent exit targets.",
+    "One-to-two-month incubation duration.",
+    "Automatic operator-role attribution from a bubble chart.",
+    "Inventory hedging fields before a real project position requires them.",
+    "Unverified SIREN control-rate and exchange-account-count claims."
+  ],
+  "runtime_gap": {
+    "current": "alpha_intraday_flow_watch covers CEX deposit candidates and gas priming; holder concentration lacks a persistent role-weighted cluster inventory timeline.",
+    "next_safe_unit": "Add a read-only cex_withdrawal_cluster object with equal-tranche, recipient-freshness, label-quality, next-hop, and conflict fixtures.",
+    "required_fixtures": [
+      "equal-tranche CEX fan-out",
+      "ordinary retail withdrawals",
+      "exchange internal routing",
+      "CEX outflow concurrent with verified cluster distribution"
+    ]
+  }
+}

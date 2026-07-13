@@ -18,6 +18,7 @@ REQUIRED_REFERENCES = [
     "lab-native-address-review-2026-07-07.md",
     "aliideez-alpha-opening-review-2026-07-07.md",
     "crypto-max-market-structure-review-2026-07-07.md",
+    "miles082510-wallet-cluster-review-2026-07-13.md",
     "system-logic.md",
     "update-protocol.md",
 ]
@@ -32,6 +33,7 @@ REQUIRED_SYSTEM_LOGIC_PHRASES = [
     "LAB-Derived Checks",
     "aLiiDeez-Derived Checks",
     "0xcrypto_max-Derived Checks",
+    "Miles082510-Derived Checks",
     "official",
     "On-chain source",
     "market",
@@ -54,6 +56,8 @@ REQUIRED_PROJECT_FILES = [
     "scripts/runtime_health_watch.py",
     "output/aliideez_x_research/analysis/method_index.csv",
     "output/0xcrypto_max_x_research/analysis/method_index.csv",
+    "input/miles082510_wallet_cluster_review_2026-07-13.json",
+    "cases/2026-07-13_miles082510_wallet_cluster_review.md",
 ]
 
 REQUIRED_DAILY_FIELDS = [
