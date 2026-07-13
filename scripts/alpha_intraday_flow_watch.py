@@ -249,7 +249,182 @@ def known_cex_destination_class(event: dict[str, Any], address: str) -> str:
     return class_name if class_name in {"cex_deposit", "cex_hot_wallet"} else ""
 
 
-def runtime_cex_deposit_candidates(event: dict[str, Any], from_block: int, to_block: int) -> dict[str, dict[str, Any]]:
+def recipient_amount_stats(amounts: list[Decimal]) -> tuple[Decimal, Decimal]:
+    ordered = sorted(value for value in amounts if value > 0)
+    if not ordered:
+        return Decimal(0), Decimal(0)
+    count = Decimal(len(ordered))
+    mean = sum(ordered, Decimal(0)) / count
+    variance = sum(((value - mean) ** 2 for value in ordered), Decimal(0)) / count
+    cv = variance.sqrt() / mean if mean > 0 else Decimal(0)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / Decimal(2)
+    return median, cv
+
+
+def cex_withdrawal_cluster(
+    event: dict[str, Any],
+    transfers: list[dict[str, Any]],
+    from_block: int,
+    to_block: int,
+) -> dict[str, Any]:
+    min_recipients = 8
+    max_cv = Decimal("0.20")
+    max_block_span = 1200
+    min_token = Decimal("100000")
+    min_quote = Decimal("10000")
+    token_address = norm(event["token"]["address"])
+    excluded = opening.excluded_addresses(event)
+    labels = opening.global_address_labels(event["chain"])
+    hot_sources = {
+        address: row
+        for address, row in labels.items()
+        if str(row.get("class") or "") == "cex_hot_wallet"
+    }
+    known_recipients = excluded | set(labels)
+    for source in (event, event.get("market_context", {})):
+        for values in source.values():
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                address = norm(item.get("address") if isinstance(item, dict) else item)
+                if opening.is_address(address):
+                    known_recipients.add(address)
+    groups: dict[str, dict[str, Any]] = {}
+    for row in transfers:
+        if norm(row.get("token")) != token_address:
+            continue
+        source_address = norm(row.get("from"))
+        source = hot_sources.get(source_address)
+        if not source:
+            continue
+        group = groups.setdefault(
+            source_address,
+            {"source": dict(source, address=source_address), "transfers": [], "excluded_known_infrastructure_transfer_count": 0},
+        )
+        recipient = norm(row.get("to"))
+        amount = decimal_from(row.get("amount"))
+        if not opening.is_address(recipient) or recipient in known_recipients or amount <= 0:
+            group["excluded_known_infrastructure_transfer_count"] += 1
+            continue
+        group["transfers"].append(
+            {
+                "recipient": recipient,
+                "amount": amount,
+                "block": int(row.get("block") or 0),
+                "log_index": int(row.get("log_index") or 0),
+                "tx": str(row.get("tx") or ""),
+            }
+        )
+
+    price = context_price_usdt(event)
+    clusters: list[dict[str, Any]] = []
+    for group in groups.values():
+        recipient_totals: dict[str, Decimal] = {}
+        for row in group["transfers"]:
+            recipient_totals[row["recipient"]] = recipient_totals.get(row["recipient"], Decimal(0)) + row["amount"]
+        if len(recipient_totals) < min_recipients:
+            continue
+        median, cv = recipient_amount_stats(list(recipient_totals.values()))
+        total_token = sum(recipient_totals.values(), Decimal(0))
+        total_quote = total_token * price if price > 0 else Decimal(0)
+        if (price > 0 and total_quote < min_quote) or (price <= 0 and total_token < min_token):
+            continue
+        if cv > max_cv:
+            continue
+        first_block = min(row["block"] for row in group["transfers"])
+        last_block = max(row["block"] for row in group["transfers"])
+        if last_block - first_block > max_block_span:
+            continue
+        clusters.append(
+            {
+                "type": "cex_withdrawal_cluster_candidate",
+                "status": "candidate",
+                "direction": "unknown",
+                "action": "Observe",
+                "alert_policy": "report_only",
+                "common_control_state": "coordination_candidate_unverified",
+                "source_address": group["source"]["address"],
+                "source_exchange": str(group["source"].get("exchange") or "unknown"),
+                "source_class": "cex_hot_wallet",
+                "exchange_label_quality": "tracked_global_label",
+                "transfer_count": len(group["transfers"]),
+                "recipient_count": len(recipient_totals),
+                "fresh_recipient_count": None,
+                "total_token": opening.decimal_str(total_token),
+                "total_quote_estimate": opening.decimal_str(total_quote),
+                "outflow_pct_mc": None,
+                "median_recipient_token": opening.decimal_str(median),
+                "equal_tranche_cv": opening.decimal_str(cv),
+                "window_blocks": f"{first_block}->{last_block}",
+                "window_seconds": None,
+                "common_gas_source_ratio": None,
+                "next_hop_state": "unknown",
+                "cex_redeposit_state": "unknown",
+                "quote_recovery_state": "unknown",
+                "recipient_contract_state": "unknown_for_unlabeled_addresses",
+                "excluded_known_infrastructure_transfer_count": group["excluded_known_infrastructure_transfer_count"],
+                "unresolved_gates": [
+                    "recipient_freshness",
+                    "unknown_contract_filter",
+                    "exact_time_window",
+                    "log_window_completeness",
+                    "common_gas_source",
+                    "next_hop",
+                    "cex_redeposit",
+                    "dex_execution",
+                    "quote_recovery",
+                ],
+                "sample_transfers": [
+                    {
+                        "recipient": row["recipient"],
+                        "amount": opening.decimal_str(row["amount"]),
+                        "block": row["block"],
+                        "log_index": row["log_index"],
+                        "tx": row["tx"],
+                    }
+                    for row in group["transfers"][:20]
+                ],
+            }
+        )
+    clusters.sort(key=lambda row: (-decimal_from(row["total_quote_estimate"]), -decimal_from(row["total_token"]), row["source_address"]))
+    return {
+        "type": "cex_withdrawal_cluster",
+        "status": "candidate" if clusters else "none",
+        "direction": "unknown",
+        "action": "Observe" if clusters else "",
+        "alert_policy": "report_only",
+        "evidence_scope": "fetched_token_transfer_logs",
+        "coverage_state": "max_log_limit_reached"
+        if len(transfers) >= int(os.environ.get("ALPHA_INTRADAY_MAX_LOGS", "12000"))
+        else "fetched_window_unverified",
+        "scan_window_blocks": f"{from_block}->{to_block}",
+        "input_transfer_count": len(transfers),
+        "tracked_hot_source_count": len(groups),
+        "candidate_count": len(clusters),
+        "rejected_known_infrastructure_transfer_count": sum(
+            int(group["excluded_known_infrastructure_transfer_count"]) for group in groups.values()
+        ),
+        "criteria": {
+            "source_class": "tracked_global_cex_hot_wallet",
+            "min_recipient_count": min_recipients,
+            "max_equal_tranche_cv": opening.decimal_str(max_cv),
+            "max_block_span": max_block_span,
+            "min_token_or_quote": {
+                "token": opening.decimal_str(min_token),
+                "quote": opening.decimal_str(min_quote),
+            },
+        },
+        "clusters": clusters,
+    }
+
+
+def runtime_cex_deposit_candidates(
+    event: dict[str, Any],
+    from_block: int,
+    to_block: int,
+    transfers: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     if os.environ.get("ALPHA_INTRADAY_RUNTIME_CEX_DEPOSIT_CANDIDATES", "1") != "1":
         return {}
     min_out = Decimal(os.environ.get("ALPHA_INTRADAY_RUNTIME_CEX_SWEEP_MIN_TOKEN", "1000"))
@@ -257,7 +432,7 @@ def runtime_cex_deposit_candidates(event: dict[str, Any], from_block: int, to_bl
     excluded = opening.excluded_addresses(event)
     inflow: dict[str, dict[str, Any]] = {}
     outflow: dict[str, dict[str, Any]] = {}
-    for row in token_transfer_logs(event, from_block, to_block):
+    for row in transfers if transfers is not None else token_transfer_logs(event, from_block, to_block):
         from_addr = norm(row.get("from"))
         to_addr = norm(row.get("to"))
         amount = row.get("amount", Decimal(0))
@@ -567,7 +742,9 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         from_block = max(int(event["opening_block"]), latest - window)
         to_block = latest
     tx_hashes, logs, txs = aggregate_candidate_txs(event, from_block, to_block)
-    runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block)
+    transfer_rows = token_transfer_logs(event, from_block, to_block)
+    runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
+    withdrawal_cluster = cex_withdrawal_cluster(event, transfer_rows, from_block, to_block)
     rows: list[dict[str, Any]] = []
     scan_limited = False
     timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "20"))
@@ -583,6 +760,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         if row:
             rows.append(row)
     analysis = analyze_rows(event, rows, from_block, to_block, logs, txs)
+    analysis["cex_withdrawal_cluster"] = withdrawal_cluster
     analysis["scan_limited"] = scan_limited
     analysis["sampled_receipts"] = len(rows)
     return {
@@ -802,6 +980,7 @@ def render(snapshot: dict[str, Any]) -> str:
     ]
     for event in snapshot.get("events", []):
         analysis = event.get("analysis", {})
+        withdrawal = analysis.get("cex_withdrawal_cluster", {}) or {}
         lines.extend(
             [
                 f"## {event['symbol']}",
@@ -826,6 +1005,9 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- runtime_cex_deposit_candidate_count: `{analysis.get('runtime_cex_deposit_candidate_count')}`",
                 f"- cex_gas_priming_bnb: `{analysis.get('cex_gas_priming_bnb')}`",
                 f"- cex_gas_priming_count: `{analysis.get('cex_gas_priming_count')}`",
+                f"- cex_withdrawal_cluster_status: `{withdrawal.get('status')}`",
+                f"- cex_withdrawal_cluster_candidates: `{withdrawal.get('candidate_count', 0)}`",
+                f"- cex_withdrawal_alert_policy: `{withdrawal.get('alert_policy', 'report_only')}`",
                 "",
                 "### Top Net Buyers",
                 "",
@@ -836,6 +1018,17 @@ def render(snapshot: dict[str, Any]) -> str:
         lines.extend(["", "### Top Net Sellers", ""])
         for row in analysis.get("top_net_sellers", []):
             lines.append(f"- {short_addr(row.get('address', ''))}: {opening.format_amount(row.get('quote'))} {event['quote']['symbol']}")
+        clusters = withdrawal.get("clusters", []) or []
+        if clusters:
+            lines.extend(["", "### CEX Withdrawal Cluster Candidates", "", "Report-only evidence. Direction stays `unknown`; action stays `Observe`.", ""])
+            for cluster in clusters:
+                lines.append(
+                    f"- {cluster.get('source_exchange', 'unknown')} {short_addr(cluster.get('source_address', ''))}: "
+                    f"recipients={cluster.get('recipient_count', 0)}, transfers={cluster.get('transfer_count', 0)}, "
+                    f"token={opening.format_amount(cluster.get('total_token'))}, quote≈{opening.format_amount(cluster.get('total_quote_estimate'))}, "
+                    f"CV={cluster.get('equal_tranche_cv')}, window={cluster.get('window_blocks')}; unresolved="
+                    + ",".join(cluster.get("unresolved_gates", []) or [])
+                )
         rows = event.get("rows", [])
         if rows:
             lines.extend(["", "| block | buy quote | sell quote | CEX token | CEX quote est | CEX class | CEX gas BNB | buyer | seller |", "| ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |"])

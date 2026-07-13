@@ -27,7 +27,7 @@ The reusable evidence is preserved in `input/miles082510_wallet_cluster_review_2
 - `onchain`: BSC transfer rows, token-contract resolution, and wallet-label results from Surf.
 - `market`: DEX-pool-weighted OHLCV; zero-volume future carry-forward bars were excluded.
 - `social`: KOL posts, screenshots, cluster-role claims, personal entries, and profit descriptions.
-- `inference`: the two durable controls, field proposals, and runtime gap.
+- `inference`: the two durable controls, field proposals, and runtime integration constraints.
 
 ## Verified Cases
 
@@ -70,11 +70,11 @@ The screenshot provides a useful evidence layout:
 
 Every cell needs a source pointer and confidence. Visual role names remain `unknown` until address linkage and behavior validate them.
 
-## Runtime Gap
+## Runtime Integration
 
-`scripts/alpha_intraday_flow_watch.py` currently emits CEX deposit candidates and gas priming. It lacks a symmetric CEX-withdrawal-to-fresh-wallet cluster object. `scripts/alpha_holder_concentration_watch.py` lacks persistent role-weighted cluster inventory history. `scripts/position_cost_watch.py` does not derive holding duration or time-stop state from the tracked `opened_at` field.
+`scripts/alpha_intraday_flow_watch.py` now emits a report-only `cex_withdrawal_cluster` object from the fetched full-window token-transfer logs. The first gate accepts only tracked global `cex_hot_wallet` sources, at least eight unlabeled recipients, a maximum 1,200-block span, recipient-total CV no greater than 0.20, and an estimated 10,000 quote units when context price exists; 100,000 token units is used only when price is unavailable. The object fixes `direction=unknown`, `action=Observe`, leaves freshness, exact elapsed time, log-window completeness, common gas, next hop, redeposit, DEX execution, quote recovery, and operator conflict unresolved, and does not enter the existing trade-signal or Telegram-alert path.
 
-The next safe implementation unit is a read-only `cex_withdrawal_cluster` object with four fixture classes: equal-tranche fan-out, ordinary retail withdrawals, exchange internal routing, and concurrent outflow/distribution conflict.
+Regression fixtures cover equal-tranche fan-out, ordinary unequal retail withdrawals, known exchange/router internal routing, `cex_deposit` source exclusion, and preservation of an existing bearish CEX-inflow signal when both paths appear. Remaining runtime gaps are persistent role-weighted cluster inventory in `scripts/alpha_holder_concentration_watch.py`, position holding/time-stop derivation, exact block-time enrichment, unknown-contract filtering, and independently verified coverage for additional CEX hot-wallet labels.
 
 ## Rejected Shortcuts
 

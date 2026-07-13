@@ -1162,6 +1162,96 @@ event = {
     'known_contracts': [],
 }
 module.opening.has_contract_code = lambda chain, address: False
+hot = '0x' + '9' * 40
+deposit = '0x' + '8' * 40
+real_global_labels = module.opening.global_address_labels
+def fake_global_labels(chain):
+    rows = real_global_labels(chain)
+    rows[hot] = {'address': hot, 'class': 'cex_hot_wallet', 'exchange': 'FixtureEx', 'label': 'Fixture Hot'}
+    rows[deposit] = {'address': deposit, 'class': 'cex_deposit', 'exchange': 'FixtureEx', 'label': 'Fixture Deposit'}
+    return rows
+module.opening.global_address_labels = fake_global_labels
+
+equal_withdrawals = [
+    {
+        'token': event['token']['address'],
+        'from': hot,
+        'to': f"0x{index:040x}",
+        'amount': module.Decimal(str(amount)),
+        'block': 100 + index,
+        'tx': f"0x{index:064x}",
+    }
+    for index, amount in enumerate([30000, 30300, 29700, 30150, 29850, 30075, 29925, 30000], 1)
+]
+withdrawal = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
+assert withdrawal['candidate_count'] == 1, withdrawal
+withdrawal_row = withdrawal['clusters'][0]
+assert withdrawal_row['recipient_count'] == 8 and withdrawal_row['transfer_count'] == 8, withdrawal_row
+assert withdrawal_row['direction'] == 'unknown' and withdrawal_row['action'] == 'Observe', withdrawal_row
+assert withdrawal_row['alert_policy'] == 'report_only', withdrawal_row
+assert withdrawal_row['fresh_recipient_count'] is None, withdrawal_row
+assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
+assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
+assert module.Decimal(withdrawal_row['equal_tranche_cv']) <= module.Decimal('0.20'), withdrawal_row
+withdrawal_analysis = module.analyze_rows(event, [], 100, 200, 8, 8)
+withdrawal_analysis['cex_withdrawal_cluster'] = withdrawal
+withdrawal_event = {**event, 'analysis': withdrawal_analysis}
+assert withdrawal_analysis['direction'] == '观察', withdrawal_analysis
+assert module.event_alert_keys(withdrawal_event) == [], withdrawal_event
+assert module.action_marker(withdrawal_analysis) == '', withdrawal_analysis
+withdrawal_report = module.render({'generated_at': 'fixture', 'event_count': 1, 'alert_count': 0, 'new_alert_count': 0, 'events': [withdrawal_event]})
+assert 'CEX Withdrawal Cluster Candidates' in withdrawal_report and 'Report-only evidence' in withdrawal_report, withdrawal_report
+
+low_quote = module.cex_withdrawal_cluster(
+    event,
+    [{**row, 'amount': module.Decimal('20000')} for row in equal_withdrawals],
+    100,
+    200,
+)
+assert low_quote['candidate_count'] == 0, low_quote
+long_window = module.cex_withdrawal_cluster(
+    event,
+    [{**row, 'block': 100 + index * 200} for index, row in enumerate(equal_withdrawals)],
+    100,
+    1800,
+)
+assert long_window['candidate_count'] == 0, long_window
+
+retail_withdrawals = [
+    {**row, 'to': f"0x{index + 20:040x}", 'amount': module.Decimal(str(amount))}
+    for index, (row, amount) in enumerate(zip(equal_withdrawals, [1000, 3000, 8000, 20000, 50000, 100000, 250000, 600000]))
+]
+retail = module.cex_withdrawal_cluster(event, retail_withdrawals, 100, 200)
+assert retail['candidate_count'] == 0, retail
+
+infrastructure = [
+    {'address': f"0x{index + 40:040x}", 'class': 'dex_router' if index % 2 else 'cex_hot_wallet'}
+    for index in range(8)
+]
+infrastructure_event = {**event, 'known_contracts': infrastructure}
+internal_transfers = [
+    {**row, 'to': infrastructure[index]['address']}
+    for index, row in enumerate(equal_withdrawals)
+]
+internal = module.cex_withdrawal_cluster(infrastructure_event, internal_transfers, 100, 200)
+assert internal['candidate_count'] == 0, internal
+assert internal['rejected_known_infrastructure_transfer_count'] == 8, internal
+
+deposit_source_transfers = [{**row, 'from': deposit} for row in equal_withdrawals]
+deposit_source = module.cex_withdrawal_cluster(event, deposit_source_transfers, 100, 200)
+assert deposit_source['tracked_hot_source_count'] == 0 and deposit_source['candidate_count'] == 0, deposit_source
+
+withdrawal_with_cex_pressure = module.analyze_rows(
+    event,
+    [{'cex_token_deposit': '300000', 'cex_quote_estimate': '15000', 'cex_deposit_count': 1}],
+    100,
+    200,
+    8,
+    8,
+)
+withdrawal_with_cex_pressure['cex_withdrawal_cluster'] = withdrawal
+assert withdrawal_with_cex_pressure['direction'] == '偏空', withdrawal_with_cex_pressure
+assert withdrawal_with_cex_pressure['cex_withdrawal_cluster']['candidate_count'] == 1, withdrawal_with_cex_pressure
 transfers = [
     {'token': event['token']['address'], 'from': '0x' + '1' * 40, 'to': '0x' + 'c' * 40, 'amount': module.Decimal('300000')},
     {'token': event['token']['address'], 'from': '0x' + '2' * 40, 'to': '0x' + '3' * 40, 'amount': module.Decimal('1')},
@@ -1279,7 +1369,7 @@ assert 'CEX打gas≈0.002 BNB / 1 次' in gas_text and '买卖信号: ❗' in ga
     )
     checks.append(
         (
-            "alpha intraday CEX pending-sell detection and dedupe",
+            "alpha intraday CEX flow and withdrawal cluster safeguards",
             alpha_intraday_cex_result.returncode == 0,
             alpha_intraday_cex_result.stderr.strip(),
         )
