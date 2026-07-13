@@ -887,7 +887,9 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
     if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_HOLDER_FORCE_TELEGRAM") != "1":
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    text = telegram_text(snapshot)
+    text = telegram_text(
+        {**snapshot, "new_alert_count": len(new_keys), "_telegram_new_alert_keys": new_keys}
+    )
     payload = {"chat_id": chat_id, "text": text[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -901,62 +903,100 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
 
 
 def telegram_text(snapshot: dict[str, Any]) -> str:
-    active = [item for item in snapshot.get("projects", []) if item.get("signal", {}).get("level") in {"HIGH", "CRITICAL"}]
-    projects = active or snapshot.get("projects", [])[:3]
-    shown_projects = projects[:4]
-    lines = [
-        "Alpha 前十持仓监控",
-        f"有效总结: {holder_effective_summary(shown_projects)}",
-        "口径说明: App Top10 是全量并包含交易所/Alpha托管/池子；本推送是链上日志重建，窗口口径不能直接对比 App Top10。",
-        f"时间: {snapshot.get('generated_at')}",
-        "",
-    ]
-    for project in shown_projects:
+    new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    active = sorted(
+        (
+            item
+            for item in snapshot.get("projects", [])
+            if item.get("signal", {}).get("level") in {"HIGH", "CRITICAL"}
+        ),
+        key=lambda project: (
+            0 if new_keys.intersection(alert_keys({"projects": [project]})) else 1,
+            *holder_telegram_risk_key(project),
+        ),
+    )
+    shown_projects = active[:2]
+    trigger_count = int(snapshot.get("alert_count", len(active)) or 0)
+    header = f"Alpha 前十持仓｜触发{trigger_count}"
+    if "new_alert_count" in snapshot:
+        header += f"｜新增{int(snapshot.get('new_alert_count') or 0)}"
+    lines = [header]
+    if not shown_projects:
+        lines.append("无触发项目")
+        return "\n".join(lines)
+    for index, project in enumerate(shown_projects):
         signal = project.get("signal", {})
         metrics = project.get("metrics", {})
         decision = project_decision_context(project)
+        effective_level = holder_effective_level(project)
+        marker = "🚨" if effective_level == "CRITICAL" else "❗"
+        coverage = "全量" if project.get("complete_holder_reconstruction") else "窗口/增量"
+        if index:
+            lines.append("")
         lines.extend(
             [
-                f"{project.get('symbol')} | {project.get('priority')}",
-                f"动作: {signal.get('action', '')}",
-                f"原因: {signal.get('reason', '')}",
-                f"联动判断: {decision.get('action', '')}",
-                f"排除托管后前十: {format_user_pct(metrics.get('effective_top10_pct'))}，{format_point_change(metrics.get('effective_top10_delta_pct'))}",
-                f"窗口重建前十: {format_user_pct(metrics.get('raw_top10_pct'))}，{format_point_change(metrics.get('raw_top10_delta_pct'))}",
-                f"其中交易所/Alpha托管/池子: {format_user_pct(metrics.get('raw_top10_infra_pct'))}",
-                f"外部全量Top10: {project.get('full_holder_source', {}).get('summary', '未接入；当前显示窗口重建口径')}",
-                f"数据覆盖: {holder_coverage_text(project)}，logs={project.get('log_count')}",
-                "",
+                f"{marker}{project.get('symbol')} {project.get('priority')}｜{holder_direction_label(signal.get('direction'))}｜{effective_level}",
+                f"动作：{decision.get('action') or signal.get('action') or '观察'}",
+                (
+                    f"排托管Top10 {format_user_pct(metrics.get('effective_top10_pct'))}"
+                    f"（{compact_point_delta(metrics.get('effective_top10_delta_pct'))}）｜"
+                    f"窗口Top10 {format_user_pct(metrics.get('raw_top10_pct'))}｜"
+                    f"基础设施 {format_user_pct(metrics.get('raw_top10_infra_pct'))}｜{coverage}｜"
+                    f"外部 {holder_external_summary(project)}"
+                ),
             ]
         )
-    lines.append("项目总结汇总:")
-    for project in shown_projects:
-        lines.append(holder_project_summary(project))
+    remaining = len(active) - len(shown_projects)
+    if remaining > 0:
+        lines.extend(["", f"另有{remaining}项｜详情已归档"])
     return "\n".join(lines).strip()
 
 
-def holder_coverage_text(project: dict[str, Any]) -> str:
-    if project.get("complete_holder_reconstruction"):
-        return "全量重建，可和区块浏览器全量持仓方向对照"
-    return "窗口/增量重建，只看本系统追踪到的变化，不能当 App 全量 Top10"
-
-
-def holder_effective_summary(projects: list[dict[str, Any]]) -> str:
-    if not projects:
-        return "没有可用持仓快照"
-    return f"扫描 {len(projects)} 个项目；逐项明细在上方，统一结论在文末"
-
-
-def holder_project_summary(project: dict[str, Any]) -> str:
+def holder_telegram_risk_key(project: dict[str, Any]) -> tuple[int, int, Decimal, str]:
+    level_rank = {"CRITICAL": 2, "HIGH": 1}
     signal = project.get("signal", {})
-    metrics = project.get("metrics", {})
     decision = project_decision_context(project)
+    delta = abs(decimal_from(project.get("metrics", {}).get("effective_top10_delta_pct")))
     return (
-        f"- {project.get('symbol')}: {decision.get('action') or signal.get('action', '观察')}；"
-        f"排除托管后前十 {format_user_pct(metrics.get('effective_top10_pct'))}，"
-        f"{format_point_change(metrics.get('effective_top10_delta_pct'))}；"
-        f"{compact_full_holder_summary(project)}"
+        -level_rank.get(str(signal.get("level")), 0),
+        -level_rank.get(str(decision.get("level")), 0),
+        -delta,
+        str(project.get("symbol") or ""),
     )
+
+
+def holder_effective_level(project: dict[str, Any]) -> str:
+    ranks = {"INFO": 0, "HIGH": 1, "CRITICAL": 2}
+    signal_level = str(project.get("signal", {}).get("level") or "INFO")
+    decision_level = str(project_decision_context(project).get("level") or "INFO")
+    return max((signal_level, decision_level), key=lambda level: ranks.get(level, 0))
+
+
+def holder_direction_label(value: Any) -> str:
+    return {
+        "effective_top10_down": "排托管前十分散",
+        "effective_top10_up": "排托管前十集中",
+        "infra_top10_up": "基础设施归集",
+        "flat": "持仓平稳",
+        "baseline": "基线",
+    }.get(str(value or ""), str(value or "未知"))
+
+
+def compact_point_delta(value: Any) -> str:
+    amount = decimal_from(value).quantize(Decimal("0.01"))
+    prefix = "+" if amount > 0 else ""
+    return f"{prefix}{amount:f}pp"
+
+
+def holder_external_summary(project: dict[str, Any]) -> str:
+    summary = str(project.get("full_holder_source", {}).get("summary") or "")
+    if summary.startswith("Surf全量Top10"):
+        return summary.split("；", 1)[0]
+    if "Surf免费额度已用完" in summary:
+        return "Surf额度用完"
+    if not summary or "未接入" in summary:
+        return "未接入"
+    return summary[:28]
 
 
 def project_decision_context(project: dict[str, Any]) -> dict[str, str]:
@@ -964,25 +1004,6 @@ def project_decision_context(project: dict[str, Any]) -> dict[str, str]:
     if isinstance(decision, dict) and decision.get("action"):
         return decision
     return holder_decision_context(project, {})
-
-
-def compact_full_holder_summary(project: dict[str, Any]) -> str:
-    summary = project.get("full_holder_source", {}).get("summary", "")
-    if not summary:
-        return "外部全量未接入"
-    if "Surf免费额度已用完" in summary:
-        return "Surf额度用完"
-    if "未接入" in summary:
-        return "外部全量未接入"
-    if summary.startswith("Surf全量Top10"):
-        return summary.split("；", 1)[0]
-    return (
-        summary[:42] + "..."
-        if len(summary) > 45
-        else summary
-    )
-
-
 def render(snapshot: dict[str, Any]) -> str:
     lines = [
         "# Alpha Holder Concentration Watch",

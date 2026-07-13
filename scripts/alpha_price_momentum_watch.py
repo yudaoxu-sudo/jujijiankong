@@ -687,82 +687,132 @@ def perp_summary(perp: dict[str, Any]) -> str:
     )
 
 
-def event_effective_summary(event: dict[str, Any]) -> str:
-    a = event.get("analysis", {})
-    perp = a.get("perp_context", {})
-    symbol = event.get("symbol", "-")
-    if (
-        a.get("trade_signal") == "无价格异动"
-        and perp.get("snapshot_status", "ok") == "ok"
-        and perp.get("trend_hint") in {"多头增量", "空头增量", "降杠杆"}
-    ):
-        return f"{symbol}: 合约{perp.get('trend_hint')}；{a.get('perp_action', '')}"
-    reason = a.get("reason") or ""
-    if reason:
-        return f"{symbol}: {a.get('trade_signal', '观察')}；{reason}"
-    return f"{symbol}: {a.get('trade_signal', '观察')}"
-
-
-def effective_summary(events: list[dict[str, Any]]) -> str:
-    if not events:
-        return "没有 Alpha 价格扫描项目"
-    return f"扫描 {min(len(events), 4)} 个项目；所有项目总结在文末"
-
-
-def project_summary_lines(events: list[dict[str, Any]]) -> list[str]:
-    if not events:
-        return []
-    lines = ["项目总结汇总:"]
-    for event in events:
-        a = event.get("analysis", {})
-        symbol = str(event.get("symbol", "-"))
-        summary = event_effective_summary(event)
-        prefix = f"{symbol}: "
-        if summary.startswith(prefix):
-            summary = summary[len(prefix) :]
-        lines.extend(
-            [
-                f"- {symbol}: {summary}",
-                f"  方向: {a.get('direction')}；信号: {a.get('trade_signal')}；现货: {a.get('spot_action')}；合约: {a.get('perp_action')}",
-            ]
-        )
-    return lines
-
-
-def depth_line(depth: dict[str, Any]) -> str:
-    if not depth_amounts_reliable(depth):
-        return "盘口: 交叉/过期快照，深度金额不采用"
-    return f"盘口: +5%卖盘≈{fmt(depth.get('ask_5pct_usdt'))} USDT；-5%买盘≈{fmt(depth.get('bid_5pct_usdt'))} USDT"
-
-
 def telegram_text(snapshot: dict[str, Any]) -> str:
-    events = snapshot.get("events", [])[:4]
-    lines = [
-        "Alpha 价格动量监控",
-        f"新增告警: {snapshot.get('new_alert_count', 0)}",
-        f"有效总结: {effective_summary(events)}",
-        "",
-    ]
-    for event in events:
+    new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    active = sorted(
+        (event for event in snapshot.get("events", []) if event_alert_keys(event)),
+        key=lambda event: (
+            0 if new_keys.intersection(event_alert_keys(event)) else 1,
+            *price_telegram_risk_key(event),
+        ),
+    )
+    shown_events = active[:2]
+    trigger_count = int(snapshot.get("alert_count", sum(len(event_alert_keys(event)) for event in active)) or 0)
+    new_count = int(snapshot.get("new_alert_count", trigger_count) or 0)
+    lines = [f"Alpha 价格动量｜新增{new_count}｜触发{trigger_count}"]
+    if not shown_events:
+        lines.append("无触发项目")
+        return "\n".join(lines)
+    for index, event in enumerate(shown_events):
         a = event.get("analysis", {})
-        w15 = a.get("window_15m", {})
-        depth = a.get("depth", {})
         venue = a.get("venue", {})
-        perp = a.get("perp_context", {})
+        direction = str(a.get("direction") or "观察")
+        marker = "🚨" if direction in {"放量走弱", "放量下插", "冲高回落"} else "❗"
+        if index:
+            lines.append("")
         lines.extend(
             [
-                f"{event['symbol']} | {event.get('priority')}",
-                f"成交场地: {venue.get('venue_class', 'UNKNOWN')}；覆盖: {venue.get('coverage', '')}",
-                f"15m: 开 {w15.get('open')} 高 {w15.get('high')} 低 {w15.get('low')} 收 {w15.get('close')}；成交≈{fmt(w15.get('quote_volume'))} USDT",
-                depth_line(depth),
-                f"盘口结构: {'；'.join(depth.get('microstructure_notes') or ['无明显重复梯队'])}",
-                f"合约层: {perp_summary(perp)}",
-                "说明: Alpha主导时，链上缺失类证据不得用于偏多；链上确认卖出仍算偏空证据",
-                "",
+                f"{marker}{event.get('symbol')} {event.get('priority')}｜{direction}｜{venue.get('venue_class', 'UNKNOWN')}",
+                f"动作：{price_telegram_action(event)}",
+                price_telegram_trigger_line(event),
             ]
         )
-    lines.extend(project_summary_lines(events))
+    remaining = len(active) - len(shown_events)
+    if remaining > 0:
+        lines.extend(["", f"另有{remaining}项｜详情已归档"])
     return "\n".join(lines).strip()
+
+
+def price_telegram_risk_key(event: dict[str, Any]) -> tuple[int, Decimal, Decimal, str]:
+    analysis = event.get("analysis", {})
+    direction_rank = {
+        "放量走弱": 5,
+        "放量下插": 5,
+        "冲高回落": 4,
+        "Alpha主导/观察": 3,
+        "观察偏多": 2,
+        "观察": 1,
+    }
+    trend_rank = {"空头增量": 4, "降杠杆": 3, "多头增量": 2}
+    perp = analysis.get("perp_context", {})
+    w15 = analysis.get("window_15m", {})
+    severity = max(
+        direction_rank.get(str(analysis.get("direction") or ""), 0),
+        trend_rank.get(str(perp.get("trend_hint") or ""), 0),
+    )
+    magnitude = max(
+        abs(decimal_from(w15.get("high_pct"))),
+        abs(decimal_from(w15.get("low_pct"))),
+        abs(decimal_from(w15.get("close_pct"))),
+        abs(decimal_from(perp.get("oi_usd_delta_pct"))),
+    )
+    return (-severity, -magnitude, -decimal_from(w15.get("quote_volume")), str(event.get("symbol") or ""))
+
+
+def compact_amount(value: Any) -> str:
+    amount = decimal_from(value)
+    absolute = abs(amount)
+    if absolute >= Decimal("1000000"):
+        scaled, suffix = amount / Decimal("1000000"), "M"
+    elif absolute >= Decimal("1000"):
+        scaled, suffix = amount / Decimal("1000"), "K"
+    else:
+        scaled, suffix = amount, ""
+    shown = scaled.quantize(Decimal("0.1")).normalize()
+    return f"{shown:f}{suffix}"
+
+
+def compact_signed_pct(value: Any) -> str:
+    amount = decimal_from(value).quantize(Decimal("0.01")).normalize()
+    prefix = "+" if amount > 0 else ""
+    return f"{prefix}{amount:f}%"
+
+
+def price_telegram_action(event: dict[str, Any]) -> str:
+    analysis = event.get("analysis", {})
+    keys = event_alert_keys(event)
+    has_price = any(key.startswith("alpha_price|") for key in keys)
+    has_perp = any(key.startswith("perp_trend|") for key in keys)
+    perp = analysis.get("perp_context", {})
+    perp_action = str(perp.get("trend_action") or analysis.get("perp_action") or "观察")
+    if has_price and has_perp:
+        return f"现货 {analysis.get('spot_action') or '观察'}｜合约 {perp_action}"
+    if keys and all(key.startswith("perp_trend|") for key in keys):
+        return perp_action
+    return str(analysis.get("spot_action") or "观察")
+
+
+def price_telegram_trigger_line(event: dict[str, Any]) -> str:
+    analysis = event.get("analysis", {})
+    keys = event_alert_keys(event)
+    parts: list[str] = []
+    if any(key.startswith("alpha_price|") for key in keys):
+        w15 = analysis.get("window_15m", {})
+        price_part = (
+            f"15m 高{compact_signed_pct(w15.get('high_pct'))}/"
+            f"低{compact_signed_pct(w15.get('low_pct'))}/"
+            f"收{compact_signed_pct(w15.get('close_pct'))}｜量{compact_amount(w15.get('quote_volume'))} USDT"
+        )
+        depth = analysis.get("depth", {})
+        if depth_amounts_reliable(depth):
+            price_part += (
+                f"｜5%深度 卖{compact_amount(depth.get('ask_5pct_usdt'))}/"
+                f"买{compact_amount(depth.get('bid_5pct_usdt'))}"
+            )
+            micro_notes = depth.get("microstructure_notes") or []
+            if micro_notes:
+                price_part += f"｜盘口提示:{micro_notes[0]}"
+        elif depth:
+            price_part += "｜深度金额不采用"
+        parts.append(price_part)
+    if any(key.startswith("perp_trend|") for key in keys):
+        perp = analysis.get("perp_context", {})
+        total_oi = perp.get("total_open_interest_usd") or perp.get("open_interest_usd")
+        parts.append(
+            f"OI {perp.get('trend_hint') or '趋势'} {compact_signed_pct(perp.get('oi_usd_delta_pct'))}｜"
+            f"价格{compact_signed_pct(perp.get('mark_price_delta_pct'))}｜总OI {compact_amount(total_oi)} USDT"
+        )
+    return "；".join(parts) or "触发详情已归档"
 
 
 def push_signature(snapshot: dict[str, Any]) -> str:
@@ -803,7 +853,8 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
     if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_PRICE_FORCE_TELEGRAM") != "1":
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    payload = {"chat_id": chat_id, "text": telegram_text(snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
+    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

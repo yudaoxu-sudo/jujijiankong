@@ -846,59 +846,133 @@ def action_marker(analysis: dict[str, Any]) -> str:
     return ""
 
 
-def effective_summary(events: list[dict[str, Any]]) -> str:
-    if not events:
-        return "没有盘中扫描项目"
-    parts = []
-    for event in events[:3]:
-        analysis = event.get("analysis", {})
-        marker = action_marker(analysis)
-        limited = "；样本受限" if analysis.get("scan_limited") else ""
-        parts.append(
-            f"{marker}{event['symbol']}: {analysis.get('trade_signal', '观察')}；"
-            f"净买≈{opening.format_amount(analysis.get('net_buy_quote'))} {event['quote']['symbol']}；"
-            f"净卖≈{opening.format_amount(analysis.get('net_sell_quote'))} {event['quote']['symbol']}；"
-            f"CEX预出货≈{opening.format_amount(analysis.get('cex_quote_estimate'))} {event['quote']['symbol']}；"
-            f"候选充值路径={analysis.get('runtime_cex_deposit_candidate_count', 0)}；"
-            f"CEX打gas≈{opening.format_amount(analysis.get('cex_gas_priming_bnb'))} BNB"
-            f"{limited}"
-        )
-    return " / ".join(parts)
+def telegram_amount(value: Any) -> str:
+    amount = decimal_from(value)
+    absolute = abs(amount)
+    suffix = ""
+    if absolute >= Decimal("1000000"):
+        amount /= Decimal("1000000")
+        suffix = "M"
+    elif absolute >= Decimal("1000"):
+        amount /= Decimal("1000")
+        suffix = "K"
+    text = opening.format_amount(amount)
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
+def telegram_risk_key(event: dict[str, Any]) -> tuple[Any, ...]:
+    analysis = event.get("analysis", {})
+    direction_rank = {
+        "冲高派发风险": 0,
+        "偏空": 1,
+        "分歧": 2,
+        "观察偏多": 3,
+    }.get(str(analysis.get("direction") or ""), 4)
+    priority = str(event.get("priority") or "")
+    priority_rank = 0 if priority.startswith("P0") else 1 if priority.startswith("P1") else 2
+    return (
+        direction_rank,
+        priority_rank,
+        -int(analysis.get("cex_gas_priming_count") or 0),
+        -decimal_from(analysis.get("cex_quote_estimate")),
+        -decimal_from(analysis.get("net_sell_quote")),
+        -decimal_from(analysis.get("net_buy_quote")),
+        str(event.get("symbol") or ""),
+    )
+
+
+def telegram_event_metrics(event: dict[str, Any]) -> str:
+    analysis = event.get("analysis", {})
+    quote_symbol = event["quote"]["symbol"]
+    token_symbol = event["token"]["symbol"]
+    metrics: list[str] = []
+    net_buy = decimal_from(analysis.get("net_buy_quote"))
+    net_sell = decimal_from(analysis.get("net_sell_quote"))
+    if net_buy > 0:
+        metrics.append(f"净买≈{telegram_amount(net_buy)} {quote_symbol}")
+    if net_sell > 0:
+        metrics.append(f"净卖≈{telegram_amount(net_sell)} {quote_symbol}")
+
+    cex_quote = decimal_from(analysis.get("cex_quote_estimate"))
+    cex_token = decimal_from(analysis.get("cex_token_deposit"))
+    if cex_quote > 0 or cex_token > 0:
+        amounts = []
+        if cex_quote > 0:
+            amounts.append(f"{telegram_amount(cex_quote)} {quote_symbol}")
+        if cex_token > 0:
+            amounts.append(f"{telegram_amount(cex_token)} {token_symbol}")
+        cex_text = f"CEX预出货≈{' / '.join(amounts)}"
+        cex_classes = str(analysis.get("cex_destination_classes") or "")
+        if cex_classes:
+            cex_text += f" [{cex_classes}]"
+        metrics.append(cex_text)
+    runtime_candidates = int(analysis.get("runtime_cex_deposit_candidate_count") or 0)
+    if runtime_candidates:
+        metrics.append(f"候选充值路径={runtime_candidates}")
+
+    gas_bnb = decimal_from(analysis.get("cex_gas_priming_bnb"))
+    gas_count = int(analysis.get("cex_gas_priming_count") or 0)
+    if gas_bnb > 0 or gas_count:
+        metrics.append(f"CEX打gas≈{telegram_amount(gas_bnb)} BNB / {gas_count} 次")
+
+    withdrawal = analysis.get("cex_withdrawal_cluster") or {}
+    withdrawal_count = int(withdrawal.get("candidate_count") or 0)
+    if withdrawal_count:
+        cluster = (withdrawal.get("clusters") or [{}])[0]
+        cluster_parts = [f"提现簇候选×{withdrawal_count}"]
+        recipient_count = int(cluster.get("recipient_count") or 0)
+        if recipient_count:
+            cluster_parts.append(f"{recipient_count}地址")
+        cluster_quote = decimal_from(cluster.get("total_quote_estimate"))
+        cluster_token = decimal_from(cluster.get("total_token"))
+        if cluster_quote > 0:
+            cluster_parts.append(f"≈{telegram_amount(cluster_quote)} {quote_symbol}")
+        elif cluster_token > 0:
+            cluster_parts.append(f"≈{telegram_amount(cluster_token)} {token_symbol}")
+        cluster_parts.append("方向未知/仅观察")
+        metrics.append(" ".join(cluster_parts))
+
+    sampled = analysis.get("sampled_receipts", analysis.get("sampled_rows", 0))
+    candidates = analysis.get("candidate_txs", 0)
+    scan_state = "扫描受限" if analysis.get("scan_limited") else "扫描完成"
+    metrics.append(f"{scan_state} {sampled}/{candidates}")
+    return "｜".join(metrics)
 
 
 def telegram_text(snapshot: dict[str, Any]) -> str:
-    lines = [
-        "Alpha 盘中大额流监控",
-        f"有效总结: {effective_summary(snapshot.get('events', []))}",
-        f"新增告警: {snapshot.get('new_alert_count', snapshot.get('alert_count', 0))}",
-        "",
-    ]
-    for event in snapshot.get("events", [])[:4]:
+    alert_events = [event for event in snapshot.get("events", []) if event_alert_keys(event)]
+    new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    alert_events.sort(
+        key=lambda event: (
+            0 if new_keys.intersection(event_alert_keys(event)) else 1,
+            *telegram_risk_key(event),
+        )
+    )
+    displayed_events = alert_events[:2]
+    new_alert_count = snapshot.get("new_alert_count", snapshot.get("alert_count", len(alert_events)))
+    header = f"Alpha盘中大额流｜新增告警: {new_alert_count}"
+    if len(alert_events) > len(displayed_events):
+        header += f"｜显示 {len(displayed_events)}/{len(alert_events)}"
+    lines = [header]
+    for event in displayed_events:
         analysis = event.get("analysis", {})
         marker = action_marker(analysis)
         lines.extend(
             [
-                f"{marker}{event['symbol']} | {event.get('priority')}",
-                f"方向判断: {analysis.get('direction', '观察')}",
-                f"买卖信号: {marker}{analysis.get('trade_signal', '观察')}",
-                f"现货动作: {analysis.get('spot_action', '')}",
-                f"合约动作: {analysis.get('perp_action', '')}",
                 (
-                    f"窗口: {analysis.get('window_blocks')}；"
-                    f"净买≈{opening.format_amount(analysis.get('net_buy_quote'))} {event['quote']['symbol']}；"
-                    f"净卖≈{opening.format_amount(analysis.get('net_sell_quote'))} {event['quote']['symbol']}；"
-                    f"CEX预出货≈{opening.format_amount(analysis.get('cex_quote_estimate'))} {event['quote']['symbol']} / "
-                    f"{opening.format_amount(analysis.get('cex_token_deposit'))} {event['token']['symbol']}；"
-                    f"候选充值路径={analysis.get('runtime_cex_deposit_candidate_count', 0)}；"
-                    f"CEX打gas≈{opening.format_amount(analysis.get('cex_gas_priming_bnb'))} BNB / "
-                    f"{analysis.get('cex_gas_priming_count', 0)} 次"
+                    f"{marker}{event['symbol']} {event.get('priority') or '-'}｜"
+                    f"{analysis.get('direction', '观察')}｜"
+                    f"买卖信号: {marker}{analysis.get('trade_signal', '观察')}"
                 ),
-                f"扫描状态: {'样本受限' if analysis.get('scan_limited') else '完整窗口内抽样完成'}；样本={analysis.get('sampled_receipts', analysis.get('sampled_rows', 0))}/{analysis.get('candidate_txs', 0)}",
-                f"CEX分类: {analysis.get('cex_destination_classes') or '-'}",
-                "细节: 地址、tx、区块已归档，需要时再查",
-                "",
+                f"现货动作: {analysis.get('spot_action', '')}",
+                telegram_event_metrics(event),
             ]
         )
+    if not displayed_events:
+        lines.append("本轮无可推送告警")
+    lines.append("合约边界：仅在真实可交易且深度足够时参考")
     return "\n".join(lines).strip()
 
 
@@ -952,7 +1026,8 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
     if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_INTRADAY_FORCE_TELEGRAM") != "1":
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    payload = {"chat_id": chat_id, "text": telegram_text(snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
+    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

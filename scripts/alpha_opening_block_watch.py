@@ -2674,60 +2674,138 @@ def alert_key_seen(key: str, seen: set[str]) -> bool:
     return False
 
 
+def telegram_compact_amount(value: Any) -> str:
+    amount = decimal_from(value)
+    if amount == 0:
+        return "0"
+    absolute = abs(amount)
+    if absolute >= Decimal("1000000"):
+        scaled, suffix = amount / Decimal("1000000"), "M"
+    elif absolute >= Decimal("1000"):
+        scaled, suffix = amount / Decimal("1000"), "K"
+    else:
+        scaled, suffix = amount, ""
+    if abs(scaled) < Decimal("1"):
+        places = Decimal("0.0001")
+    elif abs(scaled) < Decimal("100"):
+        places = Decimal("0.1")
+    else:
+        places = Decimal("1")
+    text = f"{scaled.quantize(places):f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text + suffix
+
+
+def telegram_event_rank(event: dict[str, Any]) -> tuple[int, int, str]:
+    analysis = event.get("analysis", {})
+    signal = str(analysis.get("trade_signal") or "")
+    liquidity_risk = str(analysis.get("liquidity_flow_risk") or "none")
+    confirmed_sell = decimal_from(analysis.get("cohort_confirmed_sell_quote"))
+    confirmed_sell_threshold = Decimal(os.environ.get("ALPHA_OPENING_CONFIRMED_SELL_MIN_QUOTE", "10000"))
+    keys = event_alert_keys(event)
+    if confirmed_sell >= confirmed_sell_threshold or liquidity_risk == "lp_remove" or "卖出" in signal or "减仓" in signal:
+        risk_rank = 0
+    elif liquidity_risk not in {"", "none", "skipped_old_opening"} or "偏空" in str(analysis.get("direction")):
+        risk_rank = 1
+    elif any(key.startswith("trace|") for key in keys):
+        risk_rank = 2
+    elif any(key.startswith("buy|") for key in keys):
+        risk_rank = 3
+    else:
+        risk_rank = 4
+    priority = str(event.get("priority", ""))
+    priority_rank = int(priority[1]) if len(priority) > 1 and priority[1].isdigit() else 9
+    return risk_rank, priority_rank, str(event.get("symbol", ""))
+
+
+def telegram_event_evidence(event: dict[str, Any]) -> str:
+    if event.get("status") != "opened":
+        seconds = max(int(event.get("seconds_until_start") or 0), 0)
+        return f"开盘 {event.get('start_time_utc8', '')}｜剩余{seconds // 60}m"
+    analysis = event.get("analysis", {})
+    quote_symbol = event.get("quote", {}).get("symbol", "")
+    parts = []
+    confirmed_sell = decimal_from(analysis.get("cohort_confirmed_sell_quote"))
+    confirmed_sell_threshold = Decimal(os.environ.get("ALPHA_OPENING_CONFIRMED_SELL_MIN_QUOTE", "10000"))
+    if confirmed_sell > 0:
+        if confirmed_sell >= confirmed_sell_threshold:
+            parts.append(f"确认卖出{telegram_compact_amount(confirmed_sell)} {quote_symbol}")
+        else:
+            parts.append(f"小额确认换出{telegram_compact_amount(confirmed_sell)} {quote_symbol}/未达阈值")
+    liquidity_risk = str(analysis.get("liquidity_flow_risk") or "none")
+    if liquidity_risk not in {"", "none", "skipped_old_opening"}:
+        parts.append(f"流动性{liquidity_risk}")
+    safety_gate = str(analysis.get("can_sell_gate") or "")
+    safety_status = str(analysis.get("sell_safety_status") or "")
+    if safety_gate.startswith("blocked"):
+        parts.append("可售性未通过")
+    elif "合约权限/暂停能力未完整验证" in safety_status:
+        parts.append("可售性动态已验/合约权限未验")
+    elif safety_gate == "router_sell_verified_tax_uncertain":
+        parts.append("可售性路由已验证/税费待验")
+    elif safety_gate == "infinity_recovery_rate_verified_tax_uncertain":
+        parts.append("可售性v4回收已验证/规则待验")
+    elif analysis.get("sell_safety_status"):
+        parts.append("可售性待验")
+    keys = event_alert_keys(event)
+    if any(key.startswith("trace|") for key in keys):
+        trace_summary = telegram_trace_summary(str(analysis.get("buyer_trace_summary") or ""))
+        if trace_summary:
+            parts.append(trace_summary)
+    total_spent = decimal_from(analysis.get("total_spent_quote"))
+    if total_spent > 0:
+        parts.append(f"首批{telegram_compact_amount(total_spent)} {quote_symbol}")
+    max_bribe = decimal_from(analysis.get("max_bribe_native"))
+    if max_bribe > 0 and len(parts) < 3:
+        parts.append(f"bribe {telegram_compact_amount(max_bribe)} BNB")
+    return "｜".join(parts[:3]) or f"触发{len(event_alert_keys(event))}条告警"
+
+
+def telegram_trace_summary(summary: str) -> str:
+    if not summary:
+        return ""
+    if "cex_deposit" in summary or "cex_hot_wallet" in summary:
+        return "买后去向CEX"
+    if "余额接近0" in summary:
+        return "买后去向原钱包近0/待追下一跳"
+    if "已清仓转出" in summary:
+        return "买后去向已清仓外转"
+    if "已外转" in summary:
+        return "买后去向已外转"
+    if "暂未发现转出" in summary:
+        return "买后去向仍持有/增持"
+    return f"买后去向{summary[:24]}"
+
+
 def telegram_text(snapshot: dict[str, Any]) -> str:
-    events = snapshot.get("events", [])
-    lines = [
-        "Alpha 开盘块监控",
-        f"有效总结: {effective_summary(events)}",
-        f"新增告警: {snapshot.get('new_alert_count', snapshot.get('alert_count', 0))}",
-        "",
-    ]
-    for event in events[:4]:
+    new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    events = sorted(
+        (event for event in snapshot.get("events", []) if event_alert_keys(event)),
+        key=lambda event: (
+            0 if new_keys.intersection(event_alert_keys(event)) else 1,
+            *telegram_event_rank(event),
+        ),
+    )
+    new_count = snapshot.get("new_alert_count", snapshot.get("alert_count", 0))
+    lines = [f"Alpha开盘｜新增{new_count}｜触发{len(events)}"]
+    for event in events[:2]:
         analysis = event.get("analysis", {})
-        flow = analysis.get("liquidity_flow_summary", "")
-        attention = analysis.get("attention", "")
-        if flow:
-            attention = attention.replace(f" 池/做市流向: {flow}。", "")
+        rank = telegram_event_rank(event)[0]
+        marker = "🔴" if rank == 0 else "🟠" if rank <= 2 else "🟡"
         lines.extend(
             [
-                f"{event.get('symbol')} | {event.get('priority')}",
-                f"方向判断: {analysis.get('direction', '观察')}",
-                f"买卖信号: {analysis.get('trade_signal', '观察')}",
-                f"结论: {analysis.get('conclusion', '')}",
-                f"现货动作: {analysis.get('spot_action', '')}",
-                f"合约动作: {analysis.get('perp_action', '')}",
-                f"可售性: {analysis.get('sell_safety_status', '')}",
-                f"注意: {attention}",
-                f"池/做市流向: {flow}",
-                f"仓位口径: {analysis.get('cohort_status_summary', '')}",
-                f"买后去向: {analysis.get('buyer_trace_summary', '')}",
-                "细节: 地址、tx、区块已归档，需要时再查",
-                "",
+                f"{marker} {event.get('symbol')} {event.get('priority')}｜{analysis.get('trade_signal', '观察')}",
+                f"关键：{telegram_event_evidence(event)}",
+                f"动作：{analysis.get('spot_action', '')}",
             ]
         )
-    return "\n".join(lines).strip()
-
-
-def effective_summary(events: list[dict[str, Any]]) -> str:
-    if not events:
-        return "没有开盘窗口项目"
-    event = events[0]
-    analysis = event.get("analysis", {})
-    historical = format_amount(analysis.get("total_spent_quote"))
-    current = format_amount(analysis.get("current_cohort_quote_est"))
-    net_out = format_price(analysis.get("cohort_net_out_pct"))
-    bribe = format_amount(analysis.get("max_bribe_native"))
-    risk = analysis.get("liquidity_flow_risk", "")
-    risk_display = "none" if risk in {"", "none", "skipped_old_opening"} else str(risk)
-    return (
-        f"{event.get('symbol')}: {analysis.get('trade_signal') or analysis.get('direction', '观察')}；"
-        f"现货={analysis.get('spot_action', '')}；"
-        f"首批历史={historical} {event.get('quote', {}).get('symbol', '')}；"
-        f"当前剩余成本≈{current} {event.get('quote', {}).get('symbol', '')}；"
-        f"净流出={net_out}%；"
-        f"最大bribe={bribe} BNB；"
-        f"LP={risk_display}"
-    )
+    overflow = len(events) - 2
+    if overflow > 0:
+        lines.append(f"另有{overflow}项｜详情已归档")
+    elif events:
+        lines.append("详情已归档")
+    return "\n".join(lines)
 
 
 def render(snapshot: dict[str, Any]) -> str:
@@ -2834,7 +2912,8 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
     if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_OPENING_FORCE_TELEGRAM") != "1":
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    payload = {"chat_id": chat_id, "text": telegram_text(snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
+    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

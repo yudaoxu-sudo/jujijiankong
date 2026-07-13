@@ -1116,19 +1116,38 @@ text = module.telegram_text({
     'alert_count': 1,
     'projects': [holder_project],
 })
-assert '有效总结' in text, text
-assert '统一结论在文末' in text, text
-assert '联动判断: 偏空确认；持仓减仓/离场，空仓不接' in text, text
-assert '排除托管后前十' in text, text
-assert '窗口重建前十' in text, text
-assert '外部全量Top10' in text, text
+assert text.startswith('Alpha 前十持仓｜触发1'), text
+assert '🚨TEST P1_MONITOR｜排托管前十分散｜CRITICAL' in text, text
+assert '动作：偏空确认；持仓减仓/离场，空仓不接' in text, text
+assert '排托管Top10 60.00%（-2.00pp）' in text, text
+assert '窗口Top10 100.00%' in text and '基础设施 40.00%' in text, text
 assert 'Surf全量Top10 100.00%' in text, text
-assert '较上次减少 2.00 个百分点' in text, text
-summary_idx = text.rfind('项目总结汇总:')
-assert summary_idx > text.find('外部全量Top10'), text
-assert text.count('项目总结汇总:') == 1, text
-assert 'TEST: 偏空确认；持仓减仓/离场，空仓不接' in text[summary_idx:], text
-assert '有效前十' not in text and '原始前十' not in text, text
+assert '有效总结' not in text and '项目总结汇总' not in text, text
+assert len(text) <= 320 and len(text.splitlines()) <= 4, (len(text), text)
+many_text = module.telegram_text({
+    'alert_count': 3,
+    'projects': [
+        holder_project,
+        {**up_project, 'symbol': 'UP'},
+        {**up_project, 'symbol': 'THIRD'},
+        {**up_project, 'symbol': 'LOW', 'signal': {'direction': 'flat', 'action': '观察', 'level': 'INFO'}},
+    ],
+})
+assert many_text.count('动作：') == 2 and '另有1项｜详情已归档' in many_text, many_text
+assert 'LOW' not in many_text, many_text
+assert len(many_text) <= 650 and len(many_text.splitlines()) <= 10, (len(many_text), many_text)
+third_project = {**up_project, 'symbol': 'THIRD'}
+third_key = module.alert_keys({'projects': [third_project]})[0]
+new_first_text = module.telegram_text({
+    'alert_count': 3,
+    '_telegram_new_alert_keys': [third_key],
+    'projects': [holder_project, {**up_project, 'symbol': 'UP'}, third_project],
+})
+assert 'THIRD' in new_first_text and 'TEST' in new_first_text and 'UP ' not in new_first_text, new_first_text
+same_bucket = {**holder_project, 'metrics': {**holder_project['metrics'], 'effective_top10_delta_pct': '-2.4'}}
+next_bucket = {**holder_project, 'metrics': {**holder_project['metrics'], 'effective_top10_delta_pct': '-2.6'}}
+assert module.alert_keys({'projects': [holder_project]}) == module.alert_keys({'projects': [same_bucket]}), (holder_project, same_bucket)
+assert module.alert_keys({'projects': [holder_project]}) != module.alert_keys({'projects': [next_bucket]}), (holder_project, next_bucket)
 print(f"raw={module.pct_sum(raw_rows)} effective={module.pct_sum(effective_rows)} signal={signal['direction']}")
 """
     holder_watch = subprocess.run(
@@ -1323,6 +1342,40 @@ event_b = {**event, 'from_block': 120, 'to_block': 220, 'analysis': analysis}
 assert module.event_alert_keys(event_a) == module.event_alert_keys(event_b), (module.event_alert_keys(event_a), module.event_alert_keys(event_b))
 text = module.telegram_text({'events': [event_a], 'new_alert_count': 1})
 assert 'CEX预出货' in text and '持仓降风险' in text and '❗TEST' in text and '买卖信号: ❗' in text, text
+assert '有效总结' not in text and len(text) <= 320 and len(text.splitlines()) <= 5, (len(text), text)
+many_text = module.telegram_text({
+    'events': [event_a, {**event_a, 'symbol': 'SECOND'}, {**event_a, 'symbol': 'THIRD'}],
+    'new_alert_count': 3,
+})
+assert many_text.count('现货动作:') == 2 and '显示 2/3' in many_text and 'THIRD' not in many_text, many_text
+assert len(many_text) <= 650 and len(many_text.splitlines()) <= 8, (len(many_text), many_text)
+third_event = {**event_a, 'symbol': 'THIRD'}
+new_first_text = module.telegram_text({
+    'events': [event_a, {**event_a, 'symbol': 'SECOND'}, third_event],
+    'new_alert_count': 1,
+    '_telegram_new_alert_keys': module.event_alert_keys(third_event),
+})
+assert 'THIRD' in new_first_text and new_first_text.count('现货动作:') == 2, new_first_text
+quiet_analysis = {
+    'direction': '观察',
+    'trade_signal': '无盘中大额流',
+    'spot_action': '观察',
+    'net_buy_quote': '0',
+    'net_sell_quote': '0',
+    'cex_quote_estimate': '0',
+    'cex_token_deposit': '0',
+    'cex_deposit_count': 0,
+    'cex_gas_priming_count': 0,
+}
+quiet_event = {**event, 'symbol': 'QUIET', 'analysis': quiet_analysis}
+mixed_text = module.telegram_text({'events': [event_a, quiet_event], 'new_alert_count': 1})
+assert 'QUIET' not in mixed_text and module.event_alert_keys(quiet_event) == [], mixed_text
+at_buy = {**quiet_event, 'analysis': {**quiet_analysis, 'net_buy_quote': '20000'}}
+below_buy = {**quiet_event, 'analysis': {**quiet_analysis, 'net_buy_quote': '19999'}}
+at_cex = {**quiet_event, 'analysis': {**quiet_analysis, 'cex_quote_estimate': '10000', 'cex_deposit_count': 1}}
+below_cex = {**quiet_event, 'analysis': {**quiet_analysis, 'cex_quote_estimate': '9999', 'cex_deposit_count': 1}}
+assert module.event_alert_keys(at_buy) and not module.event_alert_keys(below_buy), (at_buy, below_buy)
+assert module.event_alert_keys(at_cex) and not module.event_alert_keys(below_cex), (at_cex, below_cex)
 buy_analysis = module.analyze_rows(
     event,
     [{'buyer': '0x' + '4' * 40, 'spent_quote': '25000', 'cex_token_deposit': '0', 'cex_quote_estimate': '0', 'cex_deposit_count': 0}],
@@ -1334,6 +1387,17 @@ buy_analysis = module.analyze_rows(
 buy_text = module.telegram_text({'events': [{**event, 'analysis': buy_analysis}], 'new_alert_count': 1})
 assert buy_analysis['direction'] == '观察偏多', buy_analysis
 assert '❗TEST' in buy_text and '买卖信号: ❗盘中大额净买入' in buy_text, buy_text
+withdrawal_analysis = {
+    **buy_analysis,
+    'cex_withdrawal_cluster': {
+        'candidate_count': 1,
+        'clusters': [{'recipient_count': 9, 'total_quote_estimate': '12000', 'total_token': '240000'}],
+    },
+}
+withdrawal_text = module.telegram_text({'events': [{**event, 'analysis': withdrawal_analysis}], 'new_alert_count': 1})
+assert '提现簇候选×1 9地址 ≈12K USDT 方向未知/仅观察' in withdrawal_text, withdrawal_text
+candidate_only = {**quiet_event, 'analysis': {**quiet_analysis, 'cex_withdrawal_cluster': withdrawal_analysis['cex_withdrawal_cluster']}}
+assert module.event_alert_keys(candidate_only) == [], module.event_alert_keys(candidate_only)
 module.BLOCK_TX_CACHE.clear()
 real_quick_rpc = module.opening.quick_rpc_call
 def fake_quick_rpc(chain, method, params, timeout):
@@ -2626,6 +2690,44 @@ assert module.alert_keys([small_a]) != module.alert_keys([large]), (module.alert
 snapshot_a = {'projects': [{'symbol': 'CAP', 'analysis': {'spot_action': '观察', 'perp_action': '不开仓'}, 'alerts': [small_a]}]}
 snapshot_b = {'projects': [{'symbol': 'CAP', 'analysis': {'spot_action': '观察', 'perp_action': '不开仓'}, 'alerts': [small_b]}]}
 assert module.project_push_signature(snapshot_a) == module.project_push_signature(snapshot_b), (module.project_push_signature(snapshot_a), module.project_push_signature(snapshot_b))
+compact_projects = [
+    {'symbol': 'QUIET', 'priority': 'P0', 'analysis': {'conclusion': '安静', 'spot_action': '观察'}, 'alerts': []},
+    {'symbol': 'LOWER', 'priority': 'P2', 'analysis': {'conclusion': '次要', 'spot_action': '观察'}, 'alerts': [{**small_a, 'symbol': 'LOWER', 'token': 'LOWER'}]},
+    {'symbol': 'RISK', 'priority': 'P0', 'analysis': {'conclusion': '风险结论', 'spot_action': '减仓'}, 'alerts': [{**large, 'symbol': 'RISK', 'token': 'RISK', 'level': 'CRITICAL'}]},
+    {'symbol': 'WATCH', 'priority': 'P1', 'analysis': {'conclusion': '观察结论', 'spot_action': '等待'}, 'alerts': [{**small_a, 'symbol': 'WATCH', 'token': 'WATCH'}]},
+]
+compact_text = module.telegram_text({'alert_count': 3, 'new_alert_count': 1, 'projects': compact_projects})
+assert compact_text.startswith('Alpha项目｜新增1｜触发3'), compact_text
+assert 'RISK P0' in compact_text and 'WATCH P1' in compact_text, compact_text
+assert 'CRITICAL RISK流入650K' in compact_text, compact_text
+assert 'QUIET' not in compact_text and 'LOWER P2' not in compact_text, compact_text
+assert compact_text.count('动作：') == 2 and '另有1项｜详情已归档' in compact_text, compact_text
+assert '有效总结' not in compact_text and '0x' not in compact_text, compact_text
+assert len(compact_text) <= 600 and len(compact_text.splitlines()) <= 8, (len(compact_text), compact_text)
+lower_key = module.alert_keys(compact_projects[1]['alerts'])[0]
+new_first_text = module.telegram_text({
+    'alert_count': 3,
+    'new_alert_count': 1,
+    '_telegram_new_alert_keys': [lower_key],
+    'projects': compact_projects,
+})
+assert 'LOWER P2' in new_first_text and 'RISK P0' in new_first_text and 'WATCH P1' not in new_first_text, new_first_text
+old_critical = {**large, 'symbol': 'MIX', 'token': 'OLD', 'level': 'CRITICAL'}
+new_high = {**small_a, 'symbol': 'MIX', 'token': 'NEW', 'level': 'HIGH'}
+mixed_project = {
+    'symbol': 'MIX',
+    'priority': 'P0',
+    'analysis': {'conclusion': '混合告警', 'spot_action': '核查新增证据'},
+    'alerts': [old_critical, new_high],
+}
+new_evidence_text = module.telegram_text({
+    'alert_count': 2,
+    'new_alert_count': 1,
+    '_telegram_new_alert_keys': module.alert_keys([new_high]),
+    'projects': [mixed_project],
+})
+assert '🔴 MIX P0｜HIGH NEW流入156K｜另1条' in new_evidence_text, new_evidence_text
+assert module.telegram_compact_amount('0.002') == '0.002', module.telegram_compact_amount('0.002')
 print(module.alert_keys([small_a])[0])
 """
     alpha_project_dedupe = subprocess.run(
@@ -2672,11 +2774,16 @@ snapshot = json.loads((root / 'output' / 'alpha_opening_block_watch' / 'latest.j
 text = module.telegram_text(snapshot)
 for forbidden in ['0x', 'opening_block', 'scan_to_block']:
     assert forbidden not in text, text
-assert len(text) <= 1800, len(text)
-if snapshot.get('events'):
-    assert '有效总结:' in text and '方向判断:' in text and '买卖信号:' in text and '现货动作:' in text and '合约动作:' in text and '仓位口径:' in text and '细节: 地址、tx、区块已归档' in text, text
+assert text.startswith('Alpha开盘｜新增'), text
+assert module.telegram_compact_amount('0.002') == '0.002', module.telegram_compact_amount('0.002')
+assert '有效总结:' not in text and '合约动作:' not in text and '仓位口径:' not in text, text
+active = [event for event in snapshot.get('events', []) if module.event_alert_keys(event)]
+assert text.count('动作：') == min(2, len(active)), text
+if active:
+    assert '详情已归档' in text, text
 else:
-    assert '有效总结: 没有开盘窗口项目' in text and '新增告警: 0' in text, text
+    assert '触发0' in text, text
+assert len(text) <= 700 and len(text.splitlines()) <= 8, (len(text), text)
 print(len(text))
 """
     alpha_opening_telegram = subprocess.run(
@@ -3049,7 +3156,70 @@ combined_router_safety = module.sell_safety_summary([
     {'buyer_trace': {'transfer_safety_status': 'transfer_verified', 'dex_quote_status': 'dex_quote_verified', 'router_sell_status': 'router_sell_verified', 'router_sell_detail': 'router ok'}}
 ])
 assert combined_router_safety['gate'] == 'router_sell_verified_tax_uncertain', combined_router_safety
-assert '可售性' in module.telegram_text({'events': [{'symbol': 'TEST', 'priority': 'P0', 'analysis': follow}]}), follow
+assert '可售性' in module.telegram_text({'events': [{'symbol': 'TEST', 'priority': 'P0', 'status': 'opened', 'analysis': follow}]}), follow
+small_sell_analysis = {
+    **follow,
+    'direction': '观察',
+    'trade_signal': '观察',
+    'cohort_confirmed_sell_quote': '1',
+}
+small_sell_event = {**event, 'symbol': 'SMALL', 'priority': 'P2', 'status': 'opened', 'analysis': small_sell_analysis}
+assert module.telegram_event_rank(small_sell_event)[0] != 0, module.telegram_event_rank(small_sell_event)
+assert '小额确认换出1 USDT/未达阈值' in module.telegram_text({'events': [small_sell_event]}), small_sell_event
+static_limited = {
+    **follow,
+    'can_sell_gate': 'router_sell_verified_tax_uncertain',
+    'sell_safety_status': '首批钱包可转出、DEX报价和Router卖出模拟均可用；合约权限/暂停能力未完整验证；禁止放大仓位',
+}
+static_text = module.telegram_text({'events': [{**event, 'symbol': 'STATIC', 'priority': 'P1', 'status': 'opened', 'analysis': static_limited}]})
+assert '可售性动态已验/合约权限未验' in static_text, static_text
+blocked_static = {
+    **static_limited,
+    'can_sell_gate': 'blocked_router_sell_failed',
+    'sell_safety_status': 'Router卖出模拟失败；禁止跟随；合约权限/暂停能力未完整验证；禁止放大仓位',
+}
+blocked_static_text = module.telegram_text({'events': [{**event, 'symbol': 'BLOCKED', 'priority': 'P0', 'status': 'opened', 'analysis': blocked_static}]})
+assert '可售性未通过' in blocked_static_text and '动态已验' not in blocked_static_text, blocked_static_text
+combined_safety_event = {
+    **event,
+    'symbol': 'COMBINED',
+    'priority': 'P0',
+    'status': 'opened',
+    'analysis': {
+        **static_limited,
+        'cohort_confirmed_sell_quote': '12000',
+        'liquidity_flow_risk': 'lp_remove',
+        'buyer_trace_summary': '已清仓转出，去向=cex_deposit',
+    },
+    'rows': [dict(base, buyer='0x' + '5' * 40, buyer_trace={'status': 'mostly_exited_or_transferred', 'out_destination_classes': 'cex_deposit'})],
+}
+combined_safety_text = module.telegram_text({'events': [combined_safety_event]})
+assert '确认卖出12K USDT' in combined_safety_text and '流动性lp_remove' in combined_safety_text, combined_safety_text
+assert '可售性动态已验/合约权限未验' in combined_safety_text, combined_safety_text
+trace_event = {
+    **event,
+    'symbol': 'TRACE',
+    'priority': 'P1',
+    'status': 'opened',
+    'analysis': cex_transfer,
+    'rows': [dict(base, buyer='0x' + '6' * 40, buyer_trace={'status': 'mostly_exited_or_transferred', 'out_destination_classes': 'cex_deposit', 'confirmed_sell_quote_received': '0'})],
+}
+trace_text = module.telegram_text({'events': [trace_event]})
+assert '买后去向CEX' in trace_text, trace_text
+sell_event = {**event, 'symbol': 'SELL', 'priority': 'P0', 'status': 'opened', 'analysis': sell_confirmed}
+lp_event = {**event, 'symbol': 'LP', 'priority': 'P0', 'status': 'opened', 'analysis': lp_remove}
+follow_event = {**event, 'symbol': 'FOLLOW', 'priority': 'P2', 'status': 'opened', 'analysis': follow}
+quiet_event = {**event, 'symbol': 'QUIET', 'priority': 'P0', 'status': 'opened', 'analysis': {'spot_action': '观察'}}
+risk_text = module.telegram_text({'events': [sell_event, lp_event]})
+assert '确认卖出12K USDT' in risk_text and '流动性lp_remove' in risk_text, risk_text
+new_first_text = module.telegram_text({
+    'events': [sell_event, lp_event, follow_event, quiet_event],
+    'new_alert_count': 1,
+    '_telegram_new_alert_keys': module.event_alert_keys(follow_event),
+})
+assert 'FOLLOW P2' in new_first_text and 'QUIET' not in new_first_text, new_first_text
+assert new_first_text.count('动作：') == 2 and '另有1项｜详情已归档' in new_first_text, new_first_text
+assert len(new_first_text) <= 700 and len(new_first_text.splitlines()) <= 8, (len(new_first_text), new_first_text)
 print(follow['trade_signal'] + ' / ' + transfer_unknown['trade_signal'] + ' / ' + sell_confirmed['trade_signal'] + ' / ' + hot['trade_signal'])
 """
     alpha_opening_trade_rules = subprocess.run(
@@ -3260,7 +3430,7 @@ snapshot = {
             'trade_signal': 'Alpha 收盘价放量走强；等待链上确认',
             'spot_action': '小仓只等回踩，不追市价',
             'perp_action': module.perp_action_summary(perp_context),
-            'window_15m': {'open': '0.01', 'high': '0.04', 'low': '0.009', 'close': '0.03', 'quote_volume': '300000'},
+            'window_15m': {'open': '0.01', 'high': '0.04', 'low': '0.009', 'close': '0.03', 'high_pct': '18', 'low_pct': '-10', 'close_pct': '9', 'quote_volume': '300000'},
             'depth': {'ask_5pct_usdt': '120000', 'bid_5pct_usdt': '90000'},
             'venue': {'venue_class': 'ALPHA_DOMINANT', 'coverage': 'ONCHAIN_NETFLOW_UNRELIABLE'},
             'perp_context': perp_context,
@@ -3268,12 +3438,12 @@ snapshot = {
     }]
 }
 text = module.telegram_text(snapshot)
-assert '合约层:' in text and 'CAPUSDT' in text and 'OI≈' in text, text
-assert '60m OI' in text and '多头增量' in text, text
-summary_idx = text.rfind('项目总结汇总:')
-assert summary_idx > text.find('合约层:'), text
-assert text.count('项目总结汇总:') == 1, text
-assert '现货: 小仓只等回踩，不追市价' in text and '合约: 偏多观察' in text, text
+assert text.startswith('Alpha 价格动量｜新增'), text
+assert '15m 高+18%/低-10%/收+9%｜量300K USDT' in text, text
+assert 'OI 多头增量 +12%｜价格+6%｜总OI 3.4M USDT' in text, text
+assert '动作：现货 小仓只等回踩，不追市价｜合约 OI扩张且价格上涨' in text, text
+assert '有效总结' not in text and '项目总结汇总' not in text and '合约层:' not in text, text
+assert len(text) <= 520 and len(text.splitlines()) <= 4, (len(text), text)
 quiet_price_event = {
     'symbol': 'CAP',
     'analysis': {
@@ -3286,6 +3456,8 @@ quiet_price_event = {
 }
 quiet_keys = module.event_alert_keys(quiet_price_event)
 assert quiet_keys and quiet_keys[0].startswith('perp_trend|CAP|多头增量'), quiet_keys
+perp_only_text = module.telegram_text({'events': [quiet_price_event], 'new_alert_count': 1})
+assert '动作：OI扩张且价格上涨，重点等现货承接和链上净流确认' in perp_only_text, perp_only_text
 quiet_price_event_later = {
     'symbol': 'CAP',
     'analysis': {
@@ -3321,6 +3493,26 @@ down_price_event_later = {
 }
 assert module.event_alert_keys(down_price_event_later) == down_keys, (module.event_alert_keys(down_price_event_later), down_keys)
 assert '2026-07-02 15:45' not in down_keys[0], down_keys
+new_perp_event = {**quiet_price_event, 'symbol': 'NEW'}
+silent_event = {
+    'symbol': 'SILENT',
+    'priority': 'P0',
+    'analysis': {
+        'direction': '观察',
+        'trade_signal': '无价格异动',
+        'spot_action': '观察',
+        'window_15m': {'high_pct': '1', 'low_pct': '-1', 'close_pct': '0', 'quote_volume': '1000'},
+        'perp_context': {},
+    },
+}
+new_first_text = module.telegram_text({
+    'events': [snapshot['events'][0], down_price_event, new_perp_event, silent_event],
+    'new_alert_count': 1,
+    '_telegram_new_alert_keys': module.event_alert_keys(new_perp_event),
+})
+assert 'NEW' in new_first_text and 'SILENT' not in new_first_text, new_first_text
+assert new_first_text.count('动作：') == 2 and '另有1项｜详情已归档' in new_first_text, new_first_text
+assert len(new_first_text) <= 700 and len(new_first_text.splitlines()) <= 10, (len(new_first_text), new_first_text)
 crossed = module.depth_stats({'bids': [['1.2', '10']], 'asks': [['1.0', '10']]}, module.Decimal('1.1'))
 assert crossed.get('orderbook_status') == 'crossed_or_stale', crossed
 assert '盘口结构不下方向' in ''.join(crossed.get('microstructure_notes') or []), crossed
@@ -3333,7 +3525,7 @@ crossed_text = module.telegram_text({'events': [{
         'trade_signal': '无价格异动',
         'spot_action': '观察',
         'perp_action': '不开仓',
-        'window_15m': {'open': '1', 'high': '1', 'low': '1', 'close': '1', 'quote_volume': '1'},
+        'window_15m': {'open': '1', 'high': '1', 'low': '1', 'close': '1', 'high_pct': '20', 'low_pct': '0', 'close_pct': '10', 'quote_volume': '300000'},
         'depth': crossed,
         'venue': {},
         'perp_context': {},
@@ -3343,7 +3535,26 @@ crossed_text = module.telegram_text({'events': [{
 assert '深度金额不采用' in crossed_text and '+5%卖盘≈' not in crossed_text, crossed_text
 normal_depth = module.depth_stats({'bids': [['0.9', '10']], 'asks': [['1.0', '10']]}, module.Decimal('0.95'))
 assert module.depth_amounts_reliable(normal_depth) is True, normal_depth
-assert len(text) <= 2200, len(text)
+noted_depth = {
+    'orderbook_status': 'normal',
+    'ask_5pct_usdt': '10000',
+    'bid_5pct_usdt': '9000',
+    'microstructure_notes': ['价差偏宽(1.20%)'],
+}
+noted_text = module.telegram_text({'events': [{
+    'symbol': 'NOTE',
+    'priority': 'P1',
+    'analysis': {
+        'direction': '放量走弱',
+        'trade_signal': 'Alpha 放量收跌；卖出/减仓观察',
+        'spot_action': '减仓',
+        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000'},
+        'depth': noted_depth,
+        'venue': {},
+        'perp_context': {},
+    },
+}]})
+assert '盘口提示:价差偏宽(1.20%)' in noted_text, noted_text
 print(len(text))
 """
     alpha_price_perp_text = subprocess.run(

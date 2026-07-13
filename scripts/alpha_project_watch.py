@@ -838,7 +838,9 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
     if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_PROJECT_WATCH_FORCE_TELEGRAM") != "1":
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    text = telegram_text(snapshot)
+    text = telegram_text(
+        {**snapshot, "new_alert_count": len(new_keys), "_telegram_new_alert_keys": new_keys}
+    )
     payload = {"chat_id": chat_id, "text": text[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -906,46 +908,96 @@ def record_push(snapshot: dict[str, Any]) -> None:
     write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": project_push_signature(snapshot)})
 
 
+def telegram_compact_amount(value: Any) -> str:
+    try:
+        amount = Decimal(str(value or 0))
+    except InvalidOperation:
+        return str(value or "0")
+    if amount == 0:
+        return "0"
+    absolute = abs(amount)
+    if absolute >= Decimal("1000000"):
+        scaled, suffix = amount / Decimal("1000000"), "M"
+    elif absolute >= Decimal("1000"):
+        scaled, suffix = amount / Decimal("1000"), "K"
+    else:
+        scaled, suffix = amount, ""
+    if abs(scaled) < Decimal("1"):
+        places = Decimal("0.0001")
+    elif abs(scaled) < Decimal("100"):
+        places = Decimal("0.1")
+    else:
+        places = Decimal("1")
+    text = f"{scaled.quantize(places):f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text + suffix
+
+
+def telegram_alert_rank(project: dict[str, Any]) -> tuple[int, int, str]:
+    levels = {str(alert.get("level", "")).upper() for alert in project.get("alerts", [])}
+    level_rank = 0 if "CRITICAL" in levels else 1 if "HIGH" in levels else 2
+    priority = str(project.get("priority", ""))
+    priority_rank = int(priority[1]) if len(priority) > 1 and priority[1].isdigit() else 9
+    return level_rank, priority_rank, str(project.get("symbol", ""))
+
+
+def telegram_alert_summary(alert: dict[str, Any]) -> str:
+    kind = alert.get("type")
+    level = str(alert.get("level") or "ALERT").upper()
+    if kind == "TOKEN_TRANSFER":
+        return f"{level} {alert.get('symbol', '')}转移{telegram_compact_amount(alert.get('amount'))}"
+    if kind == "BALANCE_CHANGE":
+        try:
+            delta = Decimal(str(alert.get("delta") or 0))
+        except InvalidOperation:
+            delta = Decimal(0)
+        direction = "流入" if delta > 0 else "流出"
+        token = alert.get("token") or alert.get("symbol", "")
+        return f"{level} {token}{direction}{telegram_compact_amount(abs(delta))}"
+    if kind == "LAUNCH_WINDOW":
+        return f"{level} {alert.get('stage', '')}上线窗口"
+    return level
+
+
 def telegram_text(snapshot: dict[str, Any]) -> str:
-    alert_projects = [project for project in snapshot.get("projects", []) if project.get("alerts")]
-    projects = alert_projects or snapshot.get("projects", [])[:3]
-    lines = [
-        "Alpha 项目监控",
-        f"有效总结: {alpha_effective_summary(projects)}",
-        f"时间: {snapshot.get('generated_at')}",
-        f"项目: {snapshot.get('project_count')}，新增告警: {snapshot.get('alert_count')}",
-        "",
-    ]
-    for project in projects[:5]:
+    new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    projects = sorted(
+        (project for project in snapshot.get("projects", []) if project.get("alerts")),
+        key=lambda project: (
+            0 if new_keys.intersection(alert_keys(project.get("alerts", []))) else 1,
+            *telegram_alert_rank(project),
+        ),
+    )
+    new_count = snapshot.get("new_alert_count", snapshot.get("alert_count", 0))
+    lines = [f"Alpha项目｜新增{new_count}｜触发{len(projects)}"]
+    for project in projects[:2]:
         analysis = project.get("analysis", {})
+        alerts = sorted(
+            project.get("alerts", []),
+            key=lambda row: (
+                0 if new_keys.intersection(alert_keys([row])) else 1,
+                0 if str(row.get("level") or "").upper() == "CRITICAL" else 1,
+            ),
+        )
+        project_levels = {str(row.get("level") or "").upper() for row in alerts}
+        marker = "🔴" if "CRITICAL" in project_levels else "🟠"
+        evidence = telegram_alert_summary(alerts[0])
+        if len(alerts) > 1:
+            evidence += f"｜另{len(alerts) - 1}条"
         lines.extend(
             [
-                f"{project.get('symbol')} | {project.get('priority')}",
-                f"结论: {analysis.get('conclusion', '')}",
-                f"现货动作: {analysis.get('spot_action', '')}",
-                f"合约动作: {analysis.get('perp_action', '')}",
-                f"注意: {analysis.get('attention', '')}",
-                f"庄家行为: {analysis.get('operator_behavior', '')}",
-                f"狙击手行为: {analysis.get('sniper_behavior', '')}",
+                f"{marker} {project.get('symbol')} {project.get('priority')}｜{evidence}",
+                f"判断：{analysis.get('conclusion', '')}",
+                f"动作：{analysis.get('spot_action', '')}",
             ]
         )
-        if project.get("alerts"):
-            lines.append("新增证据:")
-            for alert in project["alerts"][:6]:
-                lines.append("- " + format_alert(alert))
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-def alpha_effective_summary(projects: list[dict[str, Any]]) -> str:
-    if not projects:
-        return "无项目需要动作"
-    project = projects[0]
-    analysis = project.get("analysis", {})
-    symbol = project.get("symbol", "UNKNOWN")
-    return f"{symbol}: {analysis.get('spot_action', '观察')}；{analysis.get('perp_action', '不开仓')}"
-
-
+    overflow = len(projects) - 2
+    if overflow > 0:
+        lines.append(f"另有{overflow}项｜详情已归档")
+    elif projects:
+        lines.append("详情已归档")
+    return "\n".join(lines)
 def render(snapshot: dict[str, Any]) -> str:
     lines = [
         "# Alpha Project Watch",
