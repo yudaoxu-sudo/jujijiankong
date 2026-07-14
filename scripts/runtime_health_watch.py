@@ -86,10 +86,20 @@ def parse_failure_file(path: Path | None) -> list[dict[str, Any]]:
             {
                 "exit_status": status,
                 "timeout_seconds": int(timeout_text) if timeout_text.isdigit() else 0,
+                "timed_out": status == 124,
                 "command": command[:500],
             }
         )
     return rows
+
+
+def failed_step_detail(row: dict[str, Any]) -> str:
+    command = str(row.get("command") or "")
+    timeout_seconds = int(row.get("timeout_seconds") or 0)
+    if row.get("timed_out"):
+        return f"步骤超时 {timeout_seconds}s · {command}"
+    timeout_limit = f" · 超时上限 {timeout_seconds}s" if timeout_seconds else ""
+    return f"步骤失败 exit={row.get('exit_status')}{timeout_limit} · {command}"
 
 
 def issue(kind: str, name: str, detail: str, fingerprint: str | None = None) -> dict[str, str]:
@@ -172,7 +182,7 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
         issue(
             "step_failed",
             row["command"],
-            f"exit={row['exit_status']} timeout={row['timeout_seconds']}s command={row['command']}",
+            failed_step_detail(row),
             f"step_failed:{row['exit_status']}:{row['command']}",
         )
         for row in failed_steps
@@ -287,29 +297,68 @@ def recovery_text(snapshot: dict[str, Any]) -> str:
     )
 
 
+def clear_active_incident(state: dict[str, Any]) -> None:
+    for key in ("active_incident_signature", "incident_alert_attempted_at", "incident_alert_sent_at"):
+        state.pop(key, None)
+
+
 def apply_notification(snapshot: dict[str, Any], out_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     state_path = out_dir / "state.json"
     state = read_json(state_path, {})
     previous_status = state.get("last_status", "unknown")
     previous_signature = state.get("last_signature", "")
-    previous_alert_at = parse_time(state.get("last_alert_sent_at"))
-    repeat_due = previous_alert_at is None or (
-        datetime.now(timezone.utc) - previous_alert_at
-    ).total_seconds() >= args.repeat_minutes * 60
 
     notification: dict[str, Any] = {"status": "not_needed"}
     if snapshot["status"] == "unhealthy":
-        should_send = previous_status != "unhealthy" or previous_signature != snapshot["signature"] or repeat_due
+        if (
+            previous_status == "unhealthy"
+            and previous_signature == snapshot["signature"]
+            and not state.get("active_incident_signature")
+        ):
+            state["active_incident_signature"] = snapshot["signature"]
+            legacy_alert_at = state.get("last_alert_sent_at") or state.get("last_alert_attempted_at")
+            if legacy_alert_at:
+                state["incident_alert_attempted_at"] = legacy_alert_at
+                if state.get("last_alert_sent_at"):
+                    state["incident_alert_sent_at"] = state["last_alert_sent_at"]
+        new_incident = (
+            previous_status != "unhealthy"
+            or previous_signature != snapshot["signature"]
+            or state.get("active_incident_signature") != snapshot["signature"]
+        )
+        if new_incident:
+            clear_active_incident(state)
+            state["active_incident_signature"] = snapshot["signature"]
+        previous_alert_at = parse_time(state.get("incident_alert_attempted_at"))
+        repeat_due = previous_alert_at is None or (
+            datetime.now(timezone.utc) - previous_alert_at
+        ).total_seconds() >= args.repeat_minutes * 60
+        should_send = new_incident or repeat_due
         if should_send:
-            notification = send_telegram(alert_text(snapshot), args.telegram_timeout) if telegram_enabled(args) else {"status": "disabled"}
+            if telegram_enabled(args):
+                state["last_alert_attempted_at"] = snapshot["generated_at"]
+                state["incident_alert_attempted_at"] = snapshot["generated_at"]
+                notification = send_telegram(alert_text(snapshot), args.telegram_timeout)
+            else:
+                notification = {"status": "disabled"}
             if notification.get("status") == "sent":
                 state["last_alert_sent_at"] = snapshot["generated_at"]
+                state["incident_alert_sent_at"] = snapshot["generated_at"]
         else:
             notification = {"status": "suppressed", "reason": "same issue signature inside repeat window"}
-    elif previous_status == "unhealthy" and state.get("last_alert_sent_at") and os.environ.get("RUNTIME_HEALTH_SEND_RECOVERY", "1") == "1":
-        notification = send_telegram(recovery_text(snapshot), args.telegram_timeout) if telegram_enabled(args) else {"status": "disabled"}
-        if notification.get("status") == "sent":
-            state["last_recovery_sent_at"] = snapshot["generated_at"]
+    elif state.get("active_incident_signature"):
+        if not state.get("incident_alert_attempted_at"):
+            clear_active_incident(state)
+        elif os.environ.get("RUNTIME_HEALTH_SEND_RECOVERY", "1") != "1":
+            clear_active_incident(state)
+        elif telegram_enabled(args):
+            state["last_recovery_attempted_at"] = snapshot["generated_at"]
+            notification = send_telegram(recovery_text(snapshot), args.telegram_timeout)
+            if notification.get("status") == "sent":
+                state["last_recovery_sent_at"] = snapshot["generated_at"]
+                clear_active_incident(state)
+        else:
+            notification = {"status": "disabled"}
 
     state.update(
         {

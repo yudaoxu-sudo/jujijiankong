@@ -1952,6 +1952,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+import scripts.runtime_health_watch as health
 from scripts.runtime_health_watch import CRITICAL_OUTPUTS, apply_notification, write_json
 
 root = Path.cwd()
@@ -1993,7 +1994,16 @@ assert failed.returncode == 0, failed.stderr or failed.stdout
 payload = json.loads((out / 'last_cycle.json').read_text(encoding='utf-8'))
 assert payload['status'] == 'unhealthy', payload
 assert payload['failed_steps'][0]['exit_status'] == 124, payload
+assert payload['failed_steps'][0]['timed_out'] is True, payload
+assert payload['issues'][0]['detail'] == '步骤超时 30s · python3 scripts/example_timeout.py', payload
 assert any(row['kind'] == 'step_failed' for row in payload['issues']), payload
+
+failure_file.write_text('1\\t30\\tpython3 scripts/example_failure.py\\n', encoding='utf-8')
+failed = subprocess.run(base_cmd + ['--mode', 'cycle', '--failure-file', str(failure_file)], cwd=root, capture_output=True, text=True)
+assert failed.returncode == 0, failed.stderr or failed.stdout
+payload = json.loads((out / 'last_cycle.json').read_text(encoding='utf-8'))
+assert payload['failed_steps'][0]['timed_out'] is False, payload
+assert payload['issues'][0]['detail'] == '步骤失败 exit=1 · 超时上限 30s · python3 scripts/example_failure.py', payload
 
 watchdog = subprocess.run(base_cmd + ['--mode', 'watchdog'], cwd=root, capture_output=True, text=True)
 assert watchdog.returncode == 0, watchdog.stderr or watchdog.stdout
@@ -2023,6 +2033,92 @@ stale = subprocess.run(base_cmd + ['--mode', 'watchdog', '--max-cycle-age-second
 assert stale.returncode == 0, stale.stderr or stale.stdout
 payload = json.loads((out / 'latest_watchdog.json').read_text(encoding='utf-8'))
 assert any(row['kind'] == 'stale_heartbeat' for row in payload['issues']), payload
+
+recovery_snapshot = {
+    'status': 'healthy',
+    'signature': 'healthy',
+    'generated_at': '2026-07-14T02:00:00+00:00',
+}
+incident_snapshot = {
+    'status': 'unhealthy',
+    'signature': 'collector-timeout',
+    'generated_at': '2026-07-14T01:30:00+00:00',
+    'issue_count': 1,
+    'mode': 'cycle',
+    'issues': [{'detail': '步骤失败 exit=1 · 超时上限 90s · python3 scripts/telegram_signal_collector.py'}],
+}
+write_json(
+    out / 'state.json',
+    {
+        'last_status': 'healthy',
+        'last_signature': 'healthy',
+        'last_alert_sent_at': '2026-07-13T01:00:00+00:00',
+    },
+)
+os.environ['DISABLE_TELEGRAM'] = '0'
+os.environ['RUNTIME_HEALTH_TELEGRAM'] = '1'
+health.send_telegram = lambda text, timeout: {'status': 'failed', 'reason': 'fixture'}
+recovery_args = SimpleNamespace(repeat_minutes=360, no_telegram=False, telegram_timeout=1)
+failed_alert = health.apply_notification(incident_snapshot, out, recovery_args)
+assert failed_alert['status'] == 'failed', failed_alert
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert state['last_status'] == 'unhealthy', state
+assert state['incident_alert_attempted_at'] == incident_snapshot['generated_at'], state
+assert state['last_alert_sent_at'] == '2026-07-13T01:00:00+00:00', state
+health.send_telegram = lambda text, timeout: {'status': 'failed', 'reason': 'fixture recovery'}
+failed_recovery = health.apply_notification(recovery_snapshot, out, recovery_args)
+assert failed_recovery['status'] == 'failed', failed_recovery
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert state['last_status'] == 'healthy' and state['active_incident_signature'] == incident_snapshot['signature'], state
+assert state['incident_alert_attempted_at'] == incident_snapshot['generated_at'], state
+health.send_telegram = lambda text, timeout: {'status': 'sent', 'message_id': 1}
+retry_recovery_snapshot = {**recovery_snapshot, 'generated_at': '2026-07-14T02:05:00+00:00'}
+sent_recovery = health.apply_notification(retry_recovery_snapshot, out, recovery_args)
+assert sent_recovery['status'] == 'sent', sent_recovery
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert 'incident_alert_attempted_at' not in state, state
+assert 'active_incident_signature' not in state, state
+assert state['last_recovery_attempted_at'] == retry_recovery_snapshot['generated_at'], state
+assert state['last_recovery_sent_at'] == retry_recovery_snapshot['generated_at'], state
+
+write_json(
+    out / 'state.json',
+    {
+        'last_status': 'unhealthy',
+        'last_signature': 'collector-timeout',
+        'last_alert_sent_at': '2026-07-13T01:00:00+00:00',
+    },
+)
+disabled_args = SimpleNamespace(repeat_minutes=360, no_telegram=True, telegram_timeout=1)
+no_ghost_recovery = health.apply_notification(recovery_snapshot, out, disabled_args)
+assert no_ghost_recovery['status'] == 'not_needed', no_ghost_recovery
+
+write_json(
+    out / 'state.json',
+    {
+        'last_status': 'healthy',
+        'last_signature': 'healthy',
+        'last_alert_sent_at': '2026-07-13T01:00:00+00:00',
+    },
+)
+disabled_alert = health.apply_notification(incident_snapshot, out, disabled_args)
+assert disabled_alert['status'] == 'disabled', disabled_alert
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert state['active_incident_signature'] == incident_snapshot['signature'], state
+assert 'incident_alert_attempted_at' not in state, state
+health.send_telegram = lambda text, timeout: {'status': 'sent', 'message_id': 2}
+enabled_alert = health.apply_notification(incident_snapshot, out, recovery_args)
+assert enabled_alert['status'] == 'sent', enabled_alert
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert state['incident_alert_sent_at'] == incident_snapshot['generated_at'], state
+disabled_recovery = health.apply_notification(recovery_snapshot, out, disabled_args)
+assert disabled_recovery['status'] == 'disabled', disabled_recovery
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert state['active_incident_signature'] == incident_snapshot['signature'], state
+sent_after_disabled = health.apply_notification(retry_recovery_snapshot, out, recovery_args)
+assert sent_after_disabled['status'] == 'sent', sent_after_disabled
+state = json.loads((out / 'state.json').read_text(encoding='utf-8'))
+assert 'active_incident_signature' not in state, state
 """
     runtime_health_watch_result = subprocess.run(
         [sys.executable, "-c", runtime_health_watch_code],
@@ -2845,6 +2941,108 @@ with tempfile.TemporaryDirectory() as tmp:
             "alpha swap tx collect-and-review wrapper",
             alpha_swap_tx_review_result.returncode == 0,
             alpha_swap_tx_review_result.stderr.strip() or alpha_swap_tx_review_result.stdout.strip(),
+        )
+    )
+
+    telegram_collector_retry_code = """
+import json
+import os
+import urllib.error
+import scripts.telegram_signal_collector as module
+
+assert (
+    module.GET_UPDATES_ATTEMPTS * module.GET_UPDATES_TIMEOUT_SECONDS
+    + module.GET_UPDATES_MAX_RETRY_DELAY_SECONDS
+) < 90
+server_run_source = open('scripts/server_run_once.sh', encoding='utf-8').read()
+assert 'TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90' in server_run_source, server_run_source
+
+calls = []
+sleeps = []
+def flaky_get_updates(token, method, payload=None, timeout_seconds=20):
+    calls.append((method, payload, timeout_seconds))
+    if len(calls) == 1:
+        raise TimeoutError('fixture read timeout')
+    return {'ok': True, 'result': [{'update_id': 7}]}
+module.telegram_api = flaky_get_updates
+module.time.sleep = sleeps.append
+updates = module.get_updates('fixture-token', 42)
+assert updates == [{'update_id': 7}], updates
+assert len(calls) == 2 and all(row[0] == 'getUpdates' for row in calls), calls
+assert all(row[1]['offset'] == 42 and row[2] == module.GET_UPDATES_TIMEOUT_SECONDS for row in calls), calls
+assert sleeps == [1], sleeps
+
+calls = []
+def persistent_timeout(*args, **kwargs):
+    calls.append(1)
+    raise TimeoutError('fixture persistent timeout')
+module.telegram_api = persistent_timeout
+try:
+    module.get_updates('fixture-token', 42)
+except TimeoutError:
+    pass
+else:
+    raise AssertionError('persistent getUpdates timeout must surface')
+assert len(calls) == module.GET_UPDATES_ATTEMPTS, calls
+
+http_503 = urllib.error.HTTPError('https://example.invalid', 503, 'fixture', {}, None)
+http_401 = urllib.error.HTTPError('https://example.invalid', 401, 'fixture', {}, None)
+assert module.get_updates_exception_retry_delay(http_503) == 1
+assert module.get_updates_exception_retry_delay(http_401) is None
+assert module.get_updates_response_retry_delay({'error_code': 429, 'parameters': {'retry_after': 5}}) == 5
+assert module.get_updates_response_retry_delay({'error_code': 429, 'parameters': {'retry_after': 6}}) is None
+assert module.get_updates_response_retry_delay({'error_code': 429, 'parameters': 'invalid'}) == 1
+assert module.get_updates_response_retry_delay({'error_code': 409}) is None
+assert module.get_updates_exception_retry_delay(json.JSONDecodeError('fixture', '', 0)) == 1
+
+calls = []
+def transient_http(*args, **kwargs):
+    calls.append(1)
+    if len(calls) == 1:
+        raise urllib.error.HTTPError('https://example.invalid', 503, 'fixture', {}, None)
+    return {'ok': True, 'result': []}
+module.telegram_api = transient_http
+assert module.get_updates('fixture-token', 42) == []
+assert len(calls) == 2, calls
+
+calls = []
+def api_conflict(*args, **kwargs):
+    calls.append(1)
+    return {'ok': False, 'error_code': 409, 'description': 'fixture conflict'}
+module.telegram_api = api_conflict
+try:
+    module.get_updates('fixture-token', 42)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('API 409 must fail without retry')
+assert len(calls) == 1, calls
+
+send_calls = []
+def failed_send(*args, **kwargs):
+    send_calls.append(1)
+    raise TimeoutError('fixture send timeout')
+module.telegram_api = failed_send
+os.environ['DISABLE_TELEGRAM'] = '0'
+try:
+    module.send_message('fixture-token', 'fixture-chat', 'fixture')
+except TimeoutError:
+    pass
+else:
+    raise AssertionError('sendMessage timeout must surface without retry')
+assert len(send_calls) == 1, send_calls
+"""
+    telegram_collector_retry_result = subprocess.run(
+        [sys.executable, "-c", telegram_collector_retry_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "Telegram Bot getUpdates bounded retry keeps sendMessage single-shot",
+            telegram_collector_retry_result.returncode == 0,
+            telegram_collector_retry_result.stderr.strip(),
         )
     )
 

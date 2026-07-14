@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import os
 import argparse
+import http.client
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import time
 from typing import Any
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -26,6 +29,10 @@ SIGNAL_DIR = ROOT / "input" / "signals" / "telegram"
 QUOTE_SYMBOLS = {"USDT", "USDC", "BUSD", "FDUSD", "BNB", "WBNB", "ETH", "WETH", "BTCB"}
 GENERIC_SYMBOLS = {"", "UNKNOWN", "LP", "POOL", "TOKEN", "V3", "V4", "BN", "BSC", "ALPHA"}
 TELEGRAM_LIMIT = 3900
+GET_UPDATES_ATTEMPTS = 2
+GET_UPDATES_TIMEOUT_SECONDS = 15
+GET_UPDATES_MAX_RETRY_DELAY_SECONDS = 5
+GET_UPDATES_TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def now_iso() -> str:
@@ -38,15 +45,56 @@ def read_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def telegram_api(token: str, method: str, payload: dict[str, Any] | None = None) -> Any:
+def telegram_api(
+    token: str,
+    method: str,
+    payload: dict[str, Any] | None = None,
+    timeout_seconds: int = 20,
+) -> Any:
     url = f"https://api.telegram.org/bot{token}/{method}"
     data = None
     headers = {"Content-Type": "application/json"}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers)
-    with urllib.request.urlopen(req, timeout=20) as response:
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def bounded_get_updates_retry_delay(value: Any = None) -> int | None:
+    if value in (None, ""):
+        return 1
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if 0 <= seconds <= GET_UPDATES_MAX_RETRY_DELAY_SECONDS else None
+
+
+def get_updates_exception_retry_delay(exc: BaseException) -> int | None:
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code not in GET_UPDATES_TRANSIENT_HTTP_CODES:
+            return None
+        retry_after = exc.headers.get("Retry-After") if exc.code == 429 and exc.headers else None
+        return bounded_get_updates_retry_delay(retry_after)
+    if isinstance(
+        exc,
+        (TimeoutError, ConnectionError, urllib.error.URLError, http.client.HTTPException, json.JSONDecodeError),
+    ):
+        return 1
+    return None
+
+
+def get_updates_response_retry_delay(data: dict[str, Any]) -> int | None:
+    try:
+        error_code = int(data.get("error_code") or 0)
+    except (TypeError, ValueError):
+        return None
+    if error_code not in GET_UPDATES_TRANSIENT_HTTP_CODES:
+        return None
+    parameters = data.get("parameters")
+    retry_after = parameters.get("retry_after") if error_code == 429 and isinstance(parameters, dict) else None
+    return bounded_get_updates_retry_delay(retry_after)
 
 
 def get_updates(token: str, offset: int | None) -> list[dict[str, Any]]:
@@ -57,10 +105,34 @@ def get_updates(token: str, offset: int | None) -> list[dict[str, Any]]:
     }
     if offset is not None:
         payload["offset"] = offset
-    data = telegram_api(token, "getUpdates", payload)
-    if not data.get("ok"):
-        raise RuntimeError(data)
-    return data.get("result", [])
+    for attempt in range(GET_UPDATES_ATTEMPTS):
+        try:
+            data = telegram_api(
+                token,
+                "getUpdates",
+                payload,
+                timeout_seconds=GET_UPDATES_TIMEOUT_SECONDS,
+            )
+        except (
+            TimeoutError,
+            ConnectionError,
+            urllib.error.URLError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+        ) as exc:
+            delay = get_updates_exception_retry_delay(exc)
+            if delay is None or attempt + 1 >= GET_UPDATES_ATTEMPTS:
+                raise
+            time.sleep(delay)
+            continue
+        if isinstance(data, dict) and data.get("ok"):
+            return data.get("result", [])
+        error = RuntimeError(data if isinstance(data, dict) else "Telegram getUpdates returned a non-object response")
+        delay = get_updates_response_retry_delay(data) if isinstance(data, dict) else 1
+        if delay is None or attempt + 1 >= GET_UPDATES_ATTEMPTS:
+            raise error
+        time.sleep(delay)
+    raise RuntimeError("Telegram getUpdates retry budget exhausted")
 
 
 def send_message(token: str, chat_id: str, text: str) -> dict[str, Any]:
