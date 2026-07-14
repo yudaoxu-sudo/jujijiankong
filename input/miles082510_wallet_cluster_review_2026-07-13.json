@@ -116,11 +116,15 @@
       "initial_warehouse_freshness_boundary": "2026-07-12",
       "onchain_partial": {
         "snapshot_role": "initial_pre_refresh_baseline",
+        "evidence_status": "historical_superseded_baseline",
+        "superseded_by": "forward_refresh_2026_07_14.onchain_pre_signal",
         "source_address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
         "source_label": "Gate Hot Wallet",
         "transfer_count": 28,
         "recipient_count": 13,
         "token_total": 1680697.74,
+        "token_total_reliable": false,
+        "token_amount_quality": "unusable_due_to_decimal_normalization",
         "priced_row_count": 10,
         "priced_row_usd_total": 234054.93
       },

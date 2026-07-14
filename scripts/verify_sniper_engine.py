@@ -152,6 +152,7 @@ def main() -> int:
             (ROOT / "input" / "miles082510_wallet_cluster_review_2026-07-13.json").read_text(encoding="utf-8")
         )
         b2_case = next(row for row in miles_review.get("verified_cases", []) if row.get("case_id") == "MILES-C06")
+        initial = b2_case.get("onchain_partial", {})
         refresh = b2_case.get("forward_refresh_2026_07_14", {})
         social_claim = refresh.get("social_claim", {})
         pre_signal = refresh.get("onchain_pre_signal", {})
@@ -159,7 +160,11 @@ def main() -> int:
         market = b2_case.get("market_replay", {})
         unresolved = set(refresh.get("unresolved_gates", []))
         b2_forward_ok = (
-            social_claim.get("evidence_layer") == "social"
+            initial.get("evidence_status") == "historical_superseded_baseline"
+            and initial.get("superseded_by") == "forward_refresh_2026_07_14.onchain_pre_signal"
+            and initial.get("token_total_reliable") is False
+            and initial.get("token_amount_quality") == "unusable_due_to_decimal_normalization"
+            and social_claim.get("evidence_layer") == "social"
             and pre_signal.get("recipient_count") == 28
             and pre_signal.get("pricing_completeness") == "partial"
             and pre_signal.get("window_total_usd_known") is False
