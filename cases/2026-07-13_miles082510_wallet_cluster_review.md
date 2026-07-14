@@ -49,13 +49,17 @@ The verified Gate hot wallet sent `963.2 BLUAI` to the posted address at 09:06 U
 
 Operating lesson: a tiny route test followed by a much larger same-route withdrawal is a strong discovery pattern. Recipient freshness and next hop still decide promotion.
 
-### B2: frozen forward case
+### B2: forward case, interim refresh
 
 Source: `https://x.com/Miles082510/status/2076605860793770334`.
 
-Warehouse data through July 12 shows `28` Gate-hot transfer rows into `13` recipients and `1,680,697.74 B2` total. The live screenshot contains July 13 activity outside that warehouse freshness boundary. Five real hourly bars after the post ended `-1.57%`.
+The frozen social post claims about `$1.4M` of B2 withdrawals to `28` addresses during the recent week, including `19` new wallets. A pre-signal Surf warehouse query from July 7 through `2026-07-13T09:53:13Z` independently finds `44` Gate-hot transfer rows into exactly `28` recipients. Pricing covers only `9` rows and `7` recipients for `$232,961.29`; warehouse token amounts have unusable decimal normalization. The pre-signal window total is unknown. The full claimed dollar amount and full-wallet freshness count remain unverified.
 
-Operating lesson: preserve B2 as a forward case. Do not infer success from the post or screenshot.
+As a post-signal follow-up, the July 13 full-day cohort contains `18` recipients with individually priced B2 receipts of at least `$20K`, totaling `$1,279,979.34`. All `18` had no earlier B2 receipt in the queried June 1-July 12 window, which supports only a `new-to-B2` label. No B2 outbound from that cohort appears in the queried daily warehouse through July 14. This is a coverage-window non-observation and does not establish holding, accumulation, or unsold status. The shared Gate-hot first hop verifies only a common source address; common control, entity linkage, operator identity, full wallet freshness, and live next hop remain unresolved.
+
+The first `18` closed, nonzero-volume hourly bars after the post reached `+0.36%`, drew down `-4.70%`, and ended `-2.11%` on `$976,718.51` aggregate volume. This is an under-24-hour interim replay without price confirmation.
+
+Operating lesson: the fan-out count is independently supported while the strategy remains `Observe`. Preserve `forward_case_pending` until the 24-hour replay and later next-hop evidence mature.
 
 ## Dashboard Fields Worth Reusing
 

@@ -1,6 +1,6 @@
 {
   "schema": "kol_wallet_cluster_review.v1",
-  "updated_at": "2026-07-13",
+  "updated_at": "2026-07-14",
   "account": "Miles082510",
   "source_url": "https://x.com/miles082510",
   "source_scope": {
@@ -113,8 +113,9 @@
       "contract": "0x783c3f003f172c6ac5ac700218a357d2d66ee2a2",
       "source_post": "https://x.com/Miles082510/status/2076605860793770334",
       "signal_time_utc": "2026-07-13T09:53:13Z",
-      "warehouse_freshness_boundary": "2026-07-12",
+      "initial_warehouse_freshness_boundary": "2026-07-12",
       "onchain_partial": {
+        "snapshot_role": "initial_pre_refresh_baseline",
         "source_address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
         "source_label": "Gate Hot Wallet",
         "transfer_count": 28,
@@ -124,8 +125,73 @@
         "priced_row_usd_total": 234054.93
       },
       "market_replay": {
-        "real_hourly_bars_after_post": 5,
-        "last_real_close_return_pct": -1.5700134643
+        "real_hourly_bars_after_post": 18,
+        "first_closed_bar_utc": "2026-07-13T10:00:00Z",
+        "last_closed_bar_utc": "2026-07-14T03:00:00Z",
+        "base_open": 0.535302384486,
+        "max_return_pct": 0.3649134918,
+        "max_drawdown_pct": -4.6956875431,
+        "last_real_close": 0.523981584964,
+        "last_real_close_return_pct": -2.1148419753,
+        "volume_usd": 976718.514459725,
+        "bar_filter": "closed_nonzero_volume_only",
+        "maturity": "interim_under_24h"
+      },
+      "forward_refresh_2026_07_14": {
+        "as_of_utc": "2026-07-14T04:02:48Z",
+        "social_claim": {
+          "recent_week_recipient_count": 28,
+          "claimed_fresh_wallet_count": 19,
+          "claimed_usd": 1400000,
+          "evidence_layer": "social"
+        },
+        "onchain_pre_signal": {
+          "data_source": "Surf agent.bsc_transfers",
+          "window_start_utc": "2026-07-07T00:00:00Z",
+          "window_end_utc": "2026-07-13T09:53:13Z",
+          "transfer_count": 44,
+          "recipient_count": 28,
+          "priced_row_count": 9,
+          "priced_recipient_count": 7,
+          "priced_usd_total": 232961.29459769,
+          "pricing_completeness": "partial",
+          "window_total_usd_known": false,
+          "claimed_usd_independently_verified": false,
+          "token_amount_quality": "unusable_due_to_decimal_normalization"
+        },
+        "onchain_forward": {
+          "data_source": "Surf agent.bsc_transfers",
+          "cohort_role": "post_signal_follow_up",
+          "cohort_definition": "2026-07-13 full-day Gate-hot recipients with individually priced B2 receipts of at least 20000 USD",
+          "cohort_includes_post_signal_transfers": true,
+          "recipient_count": 18,
+          "received_usd_total": 1279979.3438192448,
+          "min_received_usd": 32004.34094610226,
+          "max_received_usd": 104016.11267192119,
+          "no_prior_b2_receipt_count": 18,
+          "prior_b2_window_start_utc": "2026-06-01T00:00:00Z",
+          "prior_b2_window_end_utc": "2026-07-12T23:59:59Z",
+          "recipient_freshness_scope": "new_to_B2_within_prior_window_only",
+          "full_wallet_freshness_verified": false,
+          "shared_first_hop_source_verified": true,
+          "common_control_verified": false,
+          "entity_linkage_verified": false,
+          "operator_identity_verified": false,
+          "recipient_with_b2_outbound_count": 0,
+          "next_hop_warehouse_end": "2026-07-14",
+          "next_hop_state": "no_b2_outbound_observed_in_queried_daily_warehouse",
+          "next_hop_interpretation": "coverage_window_non_observation_only",
+          "holding_or_accumulation_inferred": false
+        },
+        "inference": "gate_hot_first_hop_fan_out_verified_without_price_confirmation",
+        "action": "Observe",
+        "unresolved_gates": [
+          "full_usd_reconstruction",
+          "full_wallet_freshness",
+          "entity_linkage",
+          "live_next_hop",
+          "24h_market_replay"
+        ]
       },
       "status": "forward_case_pending"
     }
@@ -138,13 +204,20 @@
     "Unverified SIREN control-rate and exchange-account-count claims."
   ],
   "runtime_gap": {
-    "current": "alpha_intraday_flow_watch covers CEX deposit candidates and gas priming; holder concentration lacks a persistent role-weighted cluster inventory timeline.",
-    "next_safe_unit": "Add a read-only cex_withdrawal_cluster object with equal-tranche, recipient-freshness, label-quality, next-hop, and conflict fixtures.",
-    "required_fixtures": [
+    "current": "alpha_intraday_flow_watch emits a report-only cex_withdrawal_cluster candidate with unresolved freshness, next-hop, entity-linkage, and operator-conflict gates; holder concentration still lacks a persistent role-weighted cluster inventory timeline.",
+    "next_safe_unit": "Collect the first natural cex_withdrawal_cluster candidate and label its read-only next-hop evidence without changing direction or action.",
+    "covered_fixtures": [
       "equal-tranche CEX fan-out",
       "ordinary retail withdrawals",
       "exchange internal routing",
       "CEX outflow concurrent with verified cluster distribution"
+    ],
+    "remaining_evidence": [
+      "first natural report-only cex_withdrawal_cluster candidate",
+      "recipient freshness",
+      "next-hop and redeposit observation",
+      "entity linkage before operator-phase inference",
+      "persistent role-weighted holder inventory history"
     ]
   }
 }

@@ -104,6 +104,8 @@ def main() -> int:
         ROOT / "config" / "pancake_v4_simulation_samples.json",
         ROOT / "config" / "project_continuity.json",
         ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json",
+        ROOT / "input" / "miles082510_wallet_cluster_review_2026-07-13.json",
+        ROOT / "cases" / "2026-07-13_miles082510_wallet_cluster_review.md",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_swaps.csv",
@@ -142,6 +144,60 @@ def main() -> int:
     except Exception as exc:
         config_msg = str(exc)
     checks.append(("watchlist example JSON parses", config_ok, config_msg))
+
+    b2_forward_ok = False
+    b2_forward_msg = ""
+    try:
+        miles_review = json.loads(
+            (ROOT / "input" / "miles082510_wallet_cluster_review_2026-07-13.json").read_text(encoding="utf-8")
+        )
+        b2_case = next(row for row in miles_review.get("verified_cases", []) if row.get("case_id") == "MILES-C06")
+        refresh = b2_case.get("forward_refresh_2026_07_14", {})
+        social_claim = refresh.get("social_claim", {})
+        pre_signal = refresh.get("onchain_pre_signal", {})
+        forward = refresh.get("onchain_forward", {})
+        market = b2_case.get("market_replay", {})
+        unresolved = set(refresh.get("unresolved_gates", []))
+        b2_forward_ok = (
+            social_claim.get("evidence_layer") == "social"
+            and pre_signal.get("recipient_count") == 28
+            and pre_signal.get("pricing_completeness") == "partial"
+            and pre_signal.get("window_total_usd_known") is False
+            and pre_signal.get("claimed_usd_independently_verified") is False
+            and forward.get("recipient_count") == 18
+            and forward.get("no_prior_b2_receipt_count") == 18
+            and forward.get("cohort_role") == "post_signal_follow_up"
+            and forward.get("cohort_includes_post_signal_transfers") is True
+            and forward.get("recipient_freshness_scope") == "new_to_B2_within_prior_window_only"
+            and forward.get("full_wallet_freshness_verified") is False
+            and forward.get("shared_first_hop_source_verified") is True
+            and forward.get("common_control_verified") is False
+            and forward.get("entity_linkage_verified") is False
+            and forward.get("operator_identity_verified") is False
+            and forward.get("next_hop_state") == "no_b2_outbound_observed_in_queried_daily_warehouse"
+            and forward.get("next_hop_interpretation") == "coverage_window_non_observation_only"
+            and forward.get("holding_or_accumulation_inferred") is False
+            and market.get("real_hourly_bars_after_post") == 18
+            and market.get("maturity") == "interim_under_24h"
+            and refresh.get("action") == "Observe"
+            and {
+                "full_usd_reconstruction",
+                "full_wallet_freshness",
+                "entity_linkage",
+                "live_next_hop",
+                "24h_market_replay",
+            } <= unresolved
+            and b2_case.get("status") == "forward_case_pending"
+        )
+        b2_forward_msg = (
+            f"pre_signal_recipients={pre_signal.get('recipient_count')} "
+            f"forward_recipients={forward.get('recipient_count')} "
+            f"bars={market.get('real_hourly_bars_after_post')} "
+            f"action={refresh.get('action')} status={b2_case.get('status')}"
+        )
+    except Exception as exc:
+        b2_forward_msg = str(exc)
+    checks.append(("B2 forward case remains scoped and pending", b2_forward_ok, b2_forward_msg))
 
     continuity_config_ok = False
     continuity_config_msg = ""
