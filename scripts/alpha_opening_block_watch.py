@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label, global_address_labels
 from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call, rpc_call_url, rpc_urls
+from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 from scripts.build_pancake_v4_roundtrip_fixture import build_fixture
 
 
@@ -2913,16 +2914,17 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
     push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
-    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    text = telegram_text(push_snapshot)[:TELEGRAM_LIMIT]
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=20):
-        pass
+    with urllib.request.urlopen(req, timeout=20) as response:
+        receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
-    record_push(snapshot)
+    record_push(snapshot, text, receipt)
 
 
 def push_signature(snapshot: dict[str, Any]) -> str:
@@ -2988,8 +2990,14 @@ def suppress_repeat_push(snapshot: dict[str, Any]) -> bool:
     return now_utc() - sent_at.astimezone(timezone.utc) < timedelta(minutes=ttl_minutes)
 
 
-def record_push(snapshot: dict[str, Any]) -> None:
-    write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": push_signature(snapshot)})
+def record_push(snapshot: dict[str, Any], text: str, receipt: dict[str, Any]) -> None:
+    record_telegram_send_receipt(
+        LAST_PUSH_PATH,
+        sent_at=now_iso(),
+        signature=push_signature(snapshot),
+        text=text,
+        receipt=receipt,
+    )
 
 
 def format_amount(value: Any) -> str:

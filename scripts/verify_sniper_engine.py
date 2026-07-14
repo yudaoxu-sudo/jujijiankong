@@ -953,6 +953,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "sniper_engine" / "scoring.py"),
         str(ROOT / "sniper_engine" / "local_sources.py"),
         str(ROOT / "sniper_engine" / "rpc.py"),
+        str(ROOT / "sniper_engine" / "telegram_send_receipt.py"),
         str(ROOT / "sniper_engine" / "project_registry.py"),
         str(ROOT / "sniper_engine" / "address_labels.py"),
         str(ROOT / "sniper_engine" / "entity_clustering.py"),
@@ -1002,6 +1003,127 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
     compile_env["PYTHONPYCACHEPREFIX"] = str(PYCACHE_DIR)
     compile_result = subprocess.run(compile_cmd, cwd=ROOT, env=compile_env, capture_output=True, text=True)
     checks.append(("python files compile", compile_result.returncode == 0, compile_result.stderr.strip()))
+
+    telegram_send_receipt_code = """
+import hashlib
+import importlib.util
+import json
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+spec = importlib.util.spec_from_file_location('telegram_send_receipt', root / 'sniper_engine' / 'telegram_send_receipt.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class AcceptedResponse:
+    status = 200
+    def read(self):
+        return json.dumps({
+            'ok': True,
+            'result': {
+                'message_id': 123,
+                'date': 1783987200,
+                'chat': {'id': 456, 'username': 'must_not_persist'},
+                'from': {'id': 789, 'username': 'must_not_persist'},
+                'text': 'server echo must not persist',
+            },
+        }).encode('utf-8')
+
+receipt = module.read_telegram_send_receipt(AcceptedResponse())
+assert receipt == {
+    'api_ok': True,
+    'http_status': 200,
+    'message_id': 123,
+    'message_date': 1783987200,
+}, receipt
+text = 'line 1\\nline 2'
+out = Path(tempfile.mkdtemp(prefix='telegram_receipt_')) / 'last_push.json'
+module.record_telegram_send_receipt(
+    out,
+    sent_at='2026-07-14T00:00:00+00:00',
+    signature='fixture',
+    text=text,
+    receipt=receipt,
+)
+saved = json.loads(out.read_text(encoding='utf-8'))
+assert set(saved) == {
+    'sent_at', 'signature', 'text', 'text_chars', 'text_lines', 'text_sha256',
+    'api_ok', 'http_status', 'message_id', 'message_date',
+}, saved
+assert saved['text'] == text and saved['text_chars'] == len(text) and saved['text_lines'] == 2, saved
+assert saved['text_sha256'] == hashlib.sha256(text.encode('utf-8')).hexdigest(), saved
+assert 'must_not_persist' not in out.read_text(encoding='utf-8'), saved
+
+class RejectedResponse:
+    status = 200
+    def read(self):
+        return b'{"ok": false, "description": "fixture rejection"}'
+
+try:
+    module.read_telegram_send_receipt(RejectedResponse())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('Telegram ok=false response must fail closed')
+
+class MalformedResponse:
+    status = 200
+    def read(self):
+        return b'not-json'
+
+try:
+    module.read_telegram_send_receipt(MalformedResponse())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('Malformed Telegram response must fail closed')
+
+class AcceptedWithoutMessageId:
+    def getcode(self):
+        return 200
+    def read(self):
+        return b'{"ok": true, "result": {"date": 1783987201}}'
+
+partial_receipt = module.read_telegram_send_receipt(AcceptedWithoutMessageId())
+assert partial_receipt == {
+    'api_ok': True,
+    'http_status': 200,
+    'message_id': None,
+    'message_date': 1783987201,
+}, partial_receipt
+
+for relative_path in [
+    'scripts/alpha_project_watch.py',
+    'scripts/alpha_opening_block_watch.py',
+    'scripts/alpha_holder_concentration_watch.py',
+    'scripts/alpha_price_momentum_watch.py',
+    'scripts/alpha_intraday_flow_watch.py',
+]:
+    source = (root / relative_path).read_text(encoding='utf-8')
+    assert 'read_telegram_send_receipt(response)' in source, relative_path
+    assert 'record_telegram_send_receipt(' in source, relative_path
+    assert 'text=text' in source, relative_path
+    send_block = source.split('def maybe_send_telegram', 1)[1].split('\\ndef ', 1)[0]
+    receipt_index = send_block.index('receipt = read_telegram_send_receipt(response)')
+    seen_index = send_block.rindex('write_json(SEEN_PATH')
+    record_call = 'record_telegram_send_receipt(' if 'record_telegram_send_receipt(' in send_block else 'record_push('
+    record_index = send_block.index(record_call)
+    assert receipt_index < seen_index < record_index, relative_path
+"""
+    telegram_send_receipt_result = subprocess.run(
+        [sys.executable, "-c", telegram_send_receipt_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "Telegram accepted-send receipts retain exact compact text safely",
+            telegram_send_receipt_result.returncode == 0,
+            telegram_send_receipt_result.stderr.strip(),
+        )
+    )
 
     holder_watch_code = """
 import importlib.util
@@ -1162,6 +1284,8 @@ print(f"raw={module.pct_sum(raw_rows)} effective={module.pct_sum(effective_rows)
 
     alpha_intraday_cex_code = """
 import importlib.util
+import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1206,12 +1330,32 @@ withdrawal = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
 assert withdrawal['candidate_count'] == 1, withdrawal
 withdrawal_row = withdrawal['clusters'][0]
 assert withdrawal_row['recipient_count'] == 8 and withdrawal_row['transfer_count'] == 8, withdrawal_row
+assert withdrawal_row['first_block'] == 101 and withdrawal_row['last_block'] == 108, withdrawal_row
 assert withdrawal_row['direction'] == 'unknown' and withdrawal_row['action'] == 'Observe', withdrawal_row
 assert withdrawal_row['alert_policy'] == 'report_only', withdrawal_row
 assert withdrawal_row['fresh_recipient_count'] is None, withdrawal_row
 assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
 assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
 assert module.Decimal(withdrawal_row['equal_tranche_cv']) <= module.Decimal('0.20'), withdrawal_row
+wide_withdrawals = [
+    {
+        'token': event['token']['address'],
+        'from': hot,
+        'to': f"0x{index + 100:040x}",
+        'amount': module.Decimal('30000'),
+        'block': 100 + index,
+        'log_index': 30 - index,
+        'tx': f"0x{index + 100:064x}",
+    }
+    for index in range(1, 26)
+]
+wide_withdrawal = module.cex_withdrawal_cluster(event, list(reversed(wide_withdrawals)), 100, 200)
+assert wide_withdrawal['candidate_count'] == 1, wide_withdrawal
+wide_row = wide_withdrawal['clusters'][0]
+assert wide_row['first_block'] == 101 and wide_row['last_block'] == 125, wide_row
+assert len(wide_row['sample_transfers']) == 20, wide_row
+wide_anchors = [(row['block'], row['log_index'], row['tx'], row['recipient']) for row in wide_row['sample_transfers']]
+assert wide_anchors == sorted(wide_anchors), wide_anchors
 withdrawal_analysis = module.analyze_rows(event, [], 100, 200, 8, 8)
 withdrawal_analysis['cex_withdrawal_cluster'] = withdrawal
 withdrawal_event = {**event, 'analysis': withdrawal_analysis}
@@ -1220,6 +1364,183 @@ assert module.event_alert_keys(withdrawal_event) == [], withdrawal_event
 assert module.action_marker(withdrawal_analysis) == '', withdrawal_analysis
 withdrawal_report = module.render({'generated_at': 'fixture', 'event_count': 1, 'alert_count': 0, 'new_alert_count': 0, 'events': [withdrawal_event]})
 assert 'CEX Withdrawal Cluster Candidates' in withdrawal_report and 'Report-only evidence' in withdrawal_report, withdrawal_report
+
+history_path = Path(tempfile.mkdtemp(prefix='withdrawal_history_')) / 'withdrawal_candidate_history.json'
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = history_path
+history_snapshot = {'generated_at': '2026-07-14T00:00:00+00:00', 'events': [withdrawal_event]}
+alert_keys_before = module.event_alert_keys(withdrawal_event)
+telegram_before = module.telegram_text({'events': [withdrawal_event], 'new_alert_count': 0})
+signature_before = module.push_signature(history_snapshot)
+trade_signal_before = withdrawal_event['analysis']['trade_signal']
+assert module.record_withdrawal_candidate_history(history_snapshot) == 1
+history = json.loads(history_path.read_text(encoding='utf-8'))
+assert history['schema_version'] == 1 and history['max_entries'] == 200, history
+assert history['candidate_count'] == 1 and len(history['candidates']) == 1, history
+assert history['last_scan_at'] == history_snapshot['generated_at'], history
+assert len(history['active_candidate_ids']) == 1, history
+history_row = history['candidates'][0]
+assert history['active_candidate_ids'] == [history_row['candidate_id']], history
+assert history_row['observation_count'] == 1, history_row
+assert history_row['first_observed_at'] == history_snapshot['generated_at'], history_row
+assert history_row['last_observed_at'] == history_snapshot['generated_at'], history_row
+assert history_row['first_observation'] == history_row['latest_observation'], history_row
+latest_observation = history_row['latest_observation']
+assert latest_observation['cluster']['direction'] == 'unknown', latest_observation
+assert latest_observation['cluster']['action'] == 'Observe', latest_observation
+assert latest_observation['cluster']['alert_policy'] == 'report_only', latest_observation
+assert latest_observation['cluster']['unresolved_gates'] == withdrawal_row['unresolved_gates'], latest_observation
+assert latest_observation['cluster']['sample_transfers'] == withdrawal_row['sample_transfers'], latest_observation
+assert latest_observation['scan_coverage']['criteria'] == withdrawal['criteria'], latest_observation
+assert module.event_alert_keys(withdrawal_event) == alert_keys_before == [], withdrawal_event
+assert module.telegram_text({'events': [withdrawal_event], 'new_alert_count': 0}) == telegram_before
+assert module.push_signature(history_snapshot) == signature_before
+assert withdrawal_event['analysis']['trade_signal'] == trade_signal_before
+
+reordered_cluster = {**withdrawal_row, 'sample_transfers': list(reversed(withdrawal_row['sample_transfers']))}
+reordered_withdrawal = {**withdrawal, 'clusters': [reordered_cluster]}
+reordered_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': reordered_withdrawal}}
+base_candidate_id = module.withdrawal_candidate_id(withdrawal_event, withdrawal_row)
+assert base_candidate_id == module.withdrawal_candidate_id(reordered_event, reordered_cluster)
+different_anchor_cluster = {
+    **withdrawal_row,
+    'sample_transfers': [
+        {**withdrawal_row['sample_transfers'][0], 'tx': '0x' + 'e' * 64},
+        *withdrawal_row['sample_transfers'][1:],
+    ],
+}
+assert base_candidate_id != module.withdrawal_candidate_id(withdrawal_event, different_anchor_cluster)
+fallback_a = {**withdrawal_row, 'sample_transfers': [], 'first_block': None, 'window_blocks': '100->200'}
+fallback_b = {**fallback_a, 'window_blocks': '201->300'}
+assert module.withdrawal_candidate_id(withdrawal_event, fallback_a) != module.withdrawal_candidate_id(withdrawal_event, fallback_b)
+repeat_snapshot = {'generated_at': '2026-07-14T00:05:00+00:00', 'events': [withdrawal_event, reordered_event]}
+assert module.record_withdrawal_candidate_history(repeat_snapshot) == 1
+repeated_history = json.loads(history_path.read_text(encoding='utf-8'))
+repeated_row = next(row for row in repeated_history['candidates'] if row['candidate_id'] == base_candidate_id)
+assert repeated_row['observation_count'] == 2, repeated_row
+assert repeated_row['first_observed_at'] == history_snapshot['generated_at'], repeated_row
+assert repeated_row['last_observed_at'] == repeat_snapshot['generated_at'], repeated_row
+assert repeated_row['first_observation'] == history_row['first_observation'], repeated_row
+
+later_cluster = {
+    **withdrawal_row,
+    'last_block': withdrawal_row['last_block'] + 1,
+    'window_blocks': f"{withdrawal_row['first_block']}->{withdrawal_row['last_block'] + 1}",
+    'sample_transfers': withdrawal_row['sample_transfers'] + [{
+        **withdrawal_row['sample_transfers'][-1],
+        'block': withdrawal_row['last_block'] + 1,
+        'log_index': 99,
+        'tx': '0x' + 'f' * 64,
+    }],
+}
+assert base_candidate_id == module.withdrawal_candidate_id(withdrawal_event, later_cluster)
+
+slid_cluster = {
+    **withdrawal_row,
+    'first_block': withdrawal_row['sample_transfers'][2]['block'],
+    'sample_transfers': withdrawal_row['sample_transfers'][2:],
+}
+slid_id = module.withdrawal_candidate_id(withdrawal_event, slid_cluster)
+assert slid_id != base_candidate_id
+slid_withdrawal = {**withdrawal, 'clusters': [slid_cluster]}
+slid_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': slid_withdrawal}}
+slid_at = '2026-07-14T00:10:00+00:00'
+assert module.record_withdrawal_candidate_history({'generated_at': slid_at, 'events': [slid_event]}) == 1
+slid_history = json.loads(history_path.read_text(encoding='utf-8'))
+assert slid_history['active_candidate_ids'] == [base_candidate_id], slid_history
+slid_row = next(row for row in slid_history['candidates'] if row['candidate_id'] == base_candidate_id)
+assert slid_row['observation_count'] == 3 and slid_row['last_observed_at'] == slid_at, slid_row
+
+disjoint_cluster = {
+    **withdrawal_row,
+    'first_block': 500,
+    'last_block': 507,
+    'window_blocks': '500->507',
+    'sample_transfers': [
+        {**row, 'block': 500 + index, 'log_index': index, 'tx': f"0x{index + 900:064x}"}
+        for index, row in enumerate(withdrawal_row['sample_transfers'])
+    ],
+}
+disjoint_id = module.withdrawal_candidate_id(withdrawal_event, disjoint_cluster)
+disjoint_withdrawal = {**withdrawal, 'clusters': [disjoint_cluster]}
+disjoint_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': disjoint_withdrawal}}
+assert module.record_withdrawal_candidate_history({'generated_at': '2026-07-14T00:15:00+00:00', 'events': [disjoint_event]}) == 1
+disjoint_history = json.loads(history_path.read_text(encoding='utf-8'))
+assert disjoint_history['active_candidate_ids'] == [disjoint_id], disjoint_history
+assert disjoint_history['candidate_count'] == 2, disjoint_history
+
+returned_anchor_cluster = {
+    **withdrawal_row,
+    'sample_transfers': [withdrawal_row['sample_transfers'][0]],
+}
+assert module.withdrawal_candidate_id(withdrawal_event, returned_anchor_cluster) == base_candidate_id
+returned_withdrawal = {**withdrawal, 'clusters': [returned_anchor_cluster]}
+returned_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': returned_withdrawal}}
+assert module.record_withdrawal_candidate_history({'generated_at': '2026-07-14T00:20:00+00:00', 'events': [returned_event]}) == 1
+collision_history = json.loads(history_path.read_text(encoding='utf-8'))
+collision_id = collision_history['active_candidate_ids'][0]
+assert collision_id != base_candidate_id, collision_history
+assert module.record_withdrawal_candidate_history({'generated_at': '2026-07-14T00:25:00+00:00', 'events': [returned_event]}) == 1
+collision_repeat = json.loads(history_path.read_text(encoding='utf-8'))
+collision_row = next(row for row in collision_repeat['candidates'] if row['candidate_id'] == collision_id)
+assert collision_repeat['active_candidate_ids'] == [collision_id], collision_repeat
+assert collision_row['observation_count'] == 2, collision_row
+
+inactive_at = '2026-07-14T00:30:00+00:00'
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = history_path
+assert module.record_withdrawal_candidate_history({'generated_at': inactive_at, 'events': []}) == 0
+inactive_history = json.loads(history_path.read_text(encoding='utf-8'))
+assert inactive_history['last_scan_at'] == inactive_at, inactive_history
+assert inactive_history['active_candidate_ids'] == [], inactive_history
+assert inactive_history['candidate_count'] == 3, inactive_history
+
+claimed_path = Path(tempfile.mkdtemp(prefix='withdrawal_history_claimed_')) / 'withdrawal_candidate_history.json'
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = claimed_path
+assert module.record_withdrawal_candidate_history(history_snapshot) == 1
+claim_clusters = [
+    {**withdrawal_row, 'sample_transfers': [withdrawal_row['sample_transfers'][index]]}
+    for index in (1, 2)
+]
+claim_withdrawal = {**withdrawal, 'candidate_count': 2, 'clusters': claim_clusters}
+claim_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': claim_withdrawal}}
+assert module.record_withdrawal_candidate_history({'generated_at': '2026-07-14T00:05:00+00:00', 'events': [claim_event]}) == 2
+claimed_history = json.loads(claimed_path.read_text(encoding='utf-8'))
+assert claimed_history['candidate_count'] == 2, claimed_history
+assert len(claimed_history['active_candidate_ids']) == 2, claimed_history
+assert len(set(claimed_history['active_candidate_ids'])) == 2, claimed_history
+assert base_candidate_id in claimed_history['active_candidate_ids'], claimed_history
+
+bounded_path = Path(tempfile.mkdtemp(prefix='withdrawal_history_bounded_')) / 'withdrawal_candidate_history.json'
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = bounded_path
+module.WITHDRAWAL_CANDIDATE_HISTORY_MAX = 2
+bounded_clusters = [
+    {
+        **withdrawal_row,
+        'source_address': f"0x{index + 500:040x}",
+        'first_block': withdrawal_row['first_block'] + index,
+        'last_block': withdrawal_row['last_block'] + index,
+    }
+    for index in range(3)
+]
+bounded_withdrawal = {**withdrawal, 'candidate_count': 3, 'clusters': bounded_clusters}
+bounded_event = {**withdrawal_event, 'analysis': {**withdrawal_analysis, 'cex_withdrawal_cluster': bounded_withdrawal}}
+assert module.record_withdrawal_candidate_history({'generated_at': '2026-07-14T00:15:00+00:00', 'events': [bounded_event]}) == 3
+bounded_history = json.loads(bounded_path.read_text(encoding='utf-8'))
+bounded_candidate_ids = {row['candidate_id'] for row in bounded_history['candidates']}
+assert bounded_history['candidate_count'] == 2 and len(bounded_history['active_candidate_ids']) == 2, bounded_history
+assert set(bounded_history['active_candidate_ids']) <= bounded_candidate_ids, bounded_history
+module.WITHDRAWAL_CANDIDATE_HISTORY_MAX = 200
+
+corrupt_path = Path(tempfile.mkdtemp(prefix='withdrawal_history_corrupt_')) / 'withdrawal_candidate_history.json'
+corrupt_path.write_text('{bad json', encoding='utf-8')
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = corrupt_path
+assert module.record_withdrawal_candidate_history(history_snapshot) == 1
+recovered_history = json.loads(corrupt_path.read_text(encoding='utf-8'))
+assert recovered_history['candidate_count'] == 1, recovered_history
+
+empty_history_path = Path(tempfile.mkdtemp(prefix='withdrawal_history_empty_')) / 'withdrawal_candidate_history.json'
+module.WITHDRAWAL_CANDIDATE_HISTORY_PATH = empty_history_path
+assert module.record_withdrawal_candidate_history({'generated_at': 'fixture', 'events': []}) == 0
+assert not empty_history_path.exists(), empty_history_path
 
 low_quote = module.cex_withdrawal_cluster(
     event,

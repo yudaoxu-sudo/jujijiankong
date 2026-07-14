@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import scripts.alpha_opening_block_watch as opening
+from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 
 
 CHAIN = "bsc"
@@ -25,6 +27,8 @@ LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
 SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
+WITHDRAWAL_CANDIDATE_HISTORY_PATH = OUT_DIR / "withdrawal_candidate_history.json"
+WITHDRAWAL_CANDIDATE_HISTORY_MAX = 200
 TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
 
@@ -53,6 +57,192 @@ def read_json(path: Path, default: Any) -> Any:
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def withdrawal_candidate_id(event: dict[str, Any], cluster: dict[str, Any]) -> str:
+    transfer_anchors = sorted(
+        (
+            int(row.get("block") or 0),
+            int(row.get("log_index") or 0),
+            str(row.get("tx") or "").lower(),
+        )
+        for row in cluster.get("sample_transfers", []) or []
+        if isinstance(row, dict)
+    )
+    if transfer_anchors:
+        anchor: Any = transfer_anchors[0]
+    else:
+        first_block = cluster.get("first_block")
+        anchor = (
+            {"first_block": int(first_block)}
+            if first_block not in (None, "")
+            else str(cluster.get("window_blocks") or "")
+        )
+    token = event.get("token", {}) or {}
+    identity = {
+        "chain": str(event.get("chain") or CHAIN).lower(),
+        "token_address": norm(token.get("address")),
+        "source_address": norm(cluster.get("source_address")),
+        "anchor": anchor,
+    }
+    encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"cex_withdrawal_{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def withdrawal_observation_identity(observation: dict[str, Any]) -> tuple[str, str, str]:
+    event = observation.get("event", {}) or {}
+    token = event.get("token", {}) or {}
+    cluster = observation.get("cluster", {}) or {}
+    return (
+        str(event.get("chain") or CHAIN).lower(),
+        norm(token.get("address")),
+        norm(cluster.get("source_address")),
+    )
+
+
+def withdrawal_observation_sample_anchors(observation: dict[str, Any]) -> set[tuple[str, int]]:
+    cluster = observation.get("cluster", {}) or {}
+    anchors: set[tuple[str, int]] = set()
+    for row in cluster.get("sample_transfers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        tx_hash = str(row.get("tx") or "").strip().lower()
+        if not tx_hash:
+            continue
+        try:
+            log_index = int(row.get("log_index") or 0)
+        except (TypeError, ValueError):
+            continue
+        anchors.add((tx_hash, log_index))
+    return anchors
+
+
+def withdrawal_collision_candidate_id(
+    provisional_id: str,
+    observation: dict[str, Any],
+    observed_at: str,
+) -> str:
+    identity = {
+        "provisional_id": provisional_id,
+        "observation_identity": withdrawal_observation_identity(observation),
+        "sample_anchors": sorted(withdrawal_observation_sample_anchors(observation)),
+        "observed_at": observed_at,
+    }
+    encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"cex_withdrawal_{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def record_withdrawal_candidate_history(snapshot: dict[str, Any]) -> int:
+    observed_at = str(snapshot.get("generated_at") or now_iso())
+    provisional_observations: dict[str, dict[str, Any]] = {}
+    for event in snapshot.get("events", []) or []:
+        analysis = event.get("analysis", {}) or {}
+        withdrawal = analysis.get("cex_withdrawal_cluster", {}) or {}
+        clusters = withdrawal.get("clusters", []) or []
+        if not clusters:
+            continue
+        scan_coverage = {key: value for key, value in withdrawal.items() if key != "clusters"}
+        scan_coverage.update(
+            {
+                "scan_limited": bool(analysis.get("scan_limited")),
+                "sampled_receipts": int(analysis.get("sampled_receipts") or 0),
+            }
+        )
+        token = event.get("token", {}) or {}
+        quote = event.get("quote", {}) or {}
+        event_context = {
+            "symbol": str(event.get("symbol") or token.get("symbol") or "UNKNOWN"),
+            "priority": str(event.get("priority") or ""),
+            "chain": str(event.get("chain") or CHAIN),
+            "token": {
+                "address": norm(token.get("address")),
+                "symbol": str(token.get("symbol") or event.get("symbol") or "UNKNOWN"),
+                "decimals": token.get("decimals"),
+            },
+            "quote": {
+                "address": norm(quote.get("address")),
+                "symbol": str(quote.get("symbol") or ""),
+                "decimals": quote.get("decimals"),
+            },
+        }
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            provisional_id = withdrawal_candidate_id(event, cluster)
+            provisional_observations[provisional_id] = {
+                "event": event_context,
+                "cluster": cluster,
+                "scan_coverage": scan_coverage,
+            }
+
+    if not provisional_observations and not WITHDRAWAL_CANDIDATE_HISTORY_PATH.exists():
+        return 0
+
+    history = read_json(WITHDRAWAL_CANDIDATE_HISTORY_PATH, {})
+    existing_rows = history.get("candidates", []) if isinstance(history, dict) else []
+    by_id = {
+        str(row.get("candidate_id")): row
+        for row in existing_rows
+        if isinstance(row, dict) and row.get("candidate_id")
+    }
+    observations: dict[str, dict[str, Any]] = {}
+    claimed_existing_ids: set[str] = set()
+    for provisional_id, observation in sorted(provisional_observations.items()):
+        identity = withdrawal_observation_identity(observation)
+        anchors = withdrawal_observation_sample_anchors(observation)
+        matches: list[tuple[int, str]] = []
+        if anchors:
+            for row in existing_rows:
+                existing_id = str(row.get("candidate_id") or "") if isinstance(row, dict) else ""
+                if not existing_id or existing_id in claimed_existing_ids:
+                    continue
+                latest_observation = row.get("latest_observation", {}) or {}
+                if withdrawal_observation_identity(latest_observation) != identity:
+                    continue
+                overlap_count = len(anchors & withdrawal_observation_sample_anchors(latest_observation))
+                if overlap_count:
+                    matches.append((-overlap_count, existing_id))
+        resolved_id = sorted(matches)[0][1] if matches else provisional_id
+        if matches:
+            claimed_existing_ids.add(resolved_id)
+        elif resolved_id in by_id or resolved_id in observations:
+            resolved_id = withdrawal_collision_candidate_id(provisional_id, observation, observed_at)
+        observations.setdefault(resolved_id, observation)
+
+    for candidate_id, observation in observations.items():
+        previous = by_id.get(candidate_id, {})
+        try:
+            previous_observation_count = int(previous.get("observation_count") or 0)
+        except (TypeError, ValueError):
+            previous_observation_count = 0
+        by_id[candidate_id] = {
+            "candidate_id": candidate_id,
+            "first_observed_at": str(previous.get("first_observed_at") or observed_at),
+            "last_observed_at": observed_at,
+            "observation_count": previous_observation_count + 1,
+            "first_observation": previous.get("first_observation") or observation,
+            "latest_observation": observation,
+        }
+
+    candidates = sorted(
+        by_id.values(),
+        key=lambda row: (str(row.get("last_observed_at") or ""), str(row.get("candidate_id") or "")),
+        reverse=True,
+    )[:WITHDRAWAL_CANDIDATE_HISTORY_MAX]
+    retained_ids = {str(row.get("candidate_id") or "") for row in candidates}
+    write_json(
+        WITHDRAWAL_CANDIDATE_HISTORY_PATH,
+        {
+            "schema_version": 1,
+            "updated_at": observed_at,
+            "last_scan_at": observed_at,
+            "active_candidate_ids": sorted(candidate_id for candidate_id in observations if candidate_id in retained_ids),
+            "max_entries": WITHDRAWAL_CANDIDATE_HISTORY_MAX,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        },
+    )
+    return len(observations)
 
 
 def decimal_from(value: Any) -> Decimal:
@@ -336,6 +526,10 @@ def cex_withdrawal_cluster(
         last_block = max(row["block"] for row in group["transfers"])
         if last_block - first_block > max_block_span:
             continue
+        sample_transfers = sorted(
+            group["transfers"],
+            key=lambda row: (row["block"], row["log_index"], row["tx"], row["recipient"]),
+        )[:20]
         clusters.append(
             {
                 "type": "cex_withdrawal_cluster_candidate",
@@ -356,6 +550,8 @@ def cex_withdrawal_cluster(
                 "outflow_pct_mc": None,
                 "median_recipient_token": opening.decimal_str(median),
                 "equal_tranche_cv": opening.decimal_str(cv),
+                "first_block": first_block,
+                "last_block": last_block,
                 "window_blocks": f"{first_block}->{last_block}",
                 "window_seconds": None,
                 "common_gas_source_ratio": None,
@@ -383,7 +579,7 @@ def cex_withdrawal_cluster(
                         "log_index": row["log_index"],
                         "tx": row["tx"],
                     }
-                    for row in group["transfers"][:20]
+                    for row in sample_transfers
                 ],
             }
         )
@@ -1027,16 +1223,23 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
     push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
-    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    text = telegram_text(push_snapshot)[:TELEGRAM_LIMIT]
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=20):
-        pass
+    with urllib.request.urlopen(req, timeout=20) as response:
+        receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
-    write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": push_signature(snapshot)})
+    record_telegram_send_receipt(
+        LAST_PUSH_PATH,
+        sent_at=now_iso(),
+        signature=push_signature(snapshot),
+        text=text,
+        receipt=receipt,
+    )
 
 
 def short_addr(value: str) -> str:
@@ -1133,6 +1336,7 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     snapshot = build_snapshot()
     write_json(LATEST_PATH, snapshot)
+    record_withdrawal_candidate_history(snapshot)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)
     print(LATEST_PATH)

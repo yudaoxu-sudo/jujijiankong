@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sniper_engine.rpc import rpc_call
+from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 
 
 getcontext().prec = 80
@@ -840,17 +841,17 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         return
     text = telegram_text(
         {**snapshot, "new_alert_count": len(new_keys), "_telegram_new_alert_keys": new_keys}
-    )
-    payload = {"chat_id": chat_id, "text": text[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    )[:TELEGRAM_LIMIT]
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=20):
-        pass
+    with urllib.request.urlopen(req, timeout=20) as response:
+        receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
-    record_push(snapshot)
+    record_push(snapshot, text, receipt)
 
 
 def project_push_signature(snapshot: dict[str, Any]) -> str:
@@ -904,8 +905,14 @@ def suppress_repeat_push(snapshot: dict[str, Any]) -> bool:
     return now_utc() - sent_at.astimezone(timezone.utc) < timedelta(minutes=ttl_minutes)
 
 
-def record_push(snapshot: dict[str, Any]) -> None:
-    write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": project_push_signature(snapshot)})
+def record_push(snapshot: dict[str, Any], text: str, receipt: dict[str, Any]) -> None:
+    record_telegram_send_receipt(
+        LAST_PUSH_PATH,
+        sent_at=now_iso(),
+        signature=project_push_signature(snapshot),
+        text=text,
+        receipt=receipt,
+    )
 
 
 def telegram_compact_amount(value: Any) -> str:

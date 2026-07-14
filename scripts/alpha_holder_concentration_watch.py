@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label
 from sniper_engine.rpc import rpc_call
+from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 
 
 getcontext().prec = 80
@@ -889,17 +890,23 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         return
     text = telegram_text(
         {**snapshot, "new_alert_count": len(new_keys), "_telegram_new_alert_keys": new_keys}
-    )
-    payload = {"chat_id": chat_id, "text": text[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    )[:TELEGRAM_LIMIT]
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=20):
-        pass
+    with urllib.request.urlopen(req, timeout=20) as response:
+        receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
-    write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": "\n".join(keys)})
+    record_telegram_send_receipt(
+        LAST_PUSH_PATH,
+        sent_at=now_iso(),
+        signature="\n".join(keys),
+        text=text,
+        receipt=receipt,
+    )
 
 
 def telegram_text(snapshot: dict[str, Any]) -> str:

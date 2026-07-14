@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
+
+
 CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
 OUT_DIR = ROOT / "output" / "alpha_price_momentum_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
@@ -854,16 +860,23 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
     push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
-    payload = {"chat_id": chat_id, "text": telegram_text(push_snapshot)[:TELEGRAM_LIMIT], "disable_web_page_preview": True}
+    text = telegram_text(push_snapshot)[:TELEGRAM_LIMIT]
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=20):
-        pass
+    with urllib.request.urlopen(req, timeout=20) as response:
+        receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
-    write_json(LAST_PUSH_PATH, {"sent_at": now_iso(), "signature": push_signature(snapshot)})
+    record_telegram_send_receipt(
+        LAST_PUSH_PATH,
+        sent_at=now_iso(),
+        signature=push_signature(snapshot),
+        text=text,
+        receipt=receipt,
+    )
 
 
 def render(snapshot: dict[str, Any]) -> str:
