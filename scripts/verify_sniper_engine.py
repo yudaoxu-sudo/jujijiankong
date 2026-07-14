@@ -1336,6 +1336,7 @@ assert withdrawal_row['alert_policy'] == 'report_only', withdrawal_row
 assert withdrawal_row['fresh_recipient_count'] is None, withdrawal_row
 assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
 assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
+assert {'entity_linkage', 'operator_conflict'} <= set(withdrawal_row['unresolved_gates']), withdrawal_row
 assert module.Decimal(withdrawal_row['equal_tranche_cv']) <= module.Decimal('0.20'), withdrawal_row
 wide_withdrawals = [
     {
@@ -1906,7 +1907,60 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
+import scripts.position_cost_watch as module
+
+as_of = datetime(2026, 7, 14, 0, 0, tzinfo=timezone.utc)
+active = module.position_time_fields(
+    {'opened_at': '2026-07-08T08:00:00+08:00', 'time_stop_days': '30'},
+    as_of,
+)
+assert active['holding_days'] == 6 and active['time_stop_state'] == 'active', active
+same_instant = module.position_time_fields(
+    {'opened_at': '2026-07-08T00:00:00Z', 'time_stop_days': '30'},
+    as_of,
+)
+assert same_instant['holding_days'] == active['holding_days'], (same_instant, active)
+assert same_instant['time_stop_state'] == active['time_stop_state'], (same_instant, active)
+before_due = module.position_time_fields(
+    {'opened_at': '2026-06-14T00:00:01+00:00', 'time_stop_days': '30'},
+    as_of,
+)
+assert before_due['holding_days'] == 29 and before_due['time_stop_state'] == 'active', before_due
+due = module.position_time_fields(
+    {'opened_at': '2026-06-14T00:00:00+00:00', 'time_stop_days': '30'},
+    as_of,
+)
+assert due['holding_days'] == 30 and due['time_stop_state'] == 'due', due
+empty_context = {key: {} for key in ('alpha_price', 'perp', 'surf', 'intraday', 'opening', 'holder')}
+due_position = module.position_row(
+    {
+        'symbol': 'TEST',
+        'side': 'long',
+        'quantity': '1',
+        'avg_entry': '1',
+        'current_price': '1',
+        'opened_at': '2026-06-14T00:00:00Z',
+        'time_stop_days': '30',
+    },
+    empty_context,
+    as_of,
+)
+assert due_position['time_stop_state'] == 'due', due_position
+assert due_position['position_state'] == 'hold_watch', due_position
+assert due_position['action'] == '持仓观察；按失效条件管理', due_position
+assert module.position_time_fields({'opened_at': '2026-07-08T00:00:00Z'}, as_of)['time_stop_state'] == 'not_configured'
+assert module.position_time_fields({'time_stop_days': '30'}, as_of)['time_stop_state'] == 'missing_opened_at'
+assert module.position_time_fields({'opened_at': 'invalid', 'time_stop_days': '30'}, as_of)['time_stop_state'] == 'invalid_opened_at'
+assert module.position_time_fields({'opened_at': '2026-07-08T00:00:00', 'time_stop_days': '30'}, as_of)['time_stop_state'] == 'invalid_opened_at'
+assert module.position_time_fields({'opened_at': '2026-07-15T00:00:00Z', 'time_stop_days': '30'}, as_of)['time_stop_state'] == 'future_opened_at'
+for invalid_limit in ('0', 0, '-1', 'NaN', 'Infinity', 'invalid'):
+    invalid = module.position_time_fields(
+        {'opened_at': '2026-07-08T00:00:00Z', 'time_stop_days': invalid_limit},
+        as_of,
+    )
+    assert invalid['time_stop_state'] == 'invalid_time_stop_days', invalid
 
 root = Path.cwd()
 out = Path(tempfile.mkdtemp(prefix='position_cost_watch_'))
@@ -1928,6 +1982,8 @@ assert payload['schema'] == 'position_cost_watch.v1', payload
 assert payload['mode'] == 'read_only_no_signing_no_execution', payload
 assert payload['position_count'] == 1 and payload['paper_trade_count'] == 1, payload
 assert payload['positions'][0]['symbol'] == 'ARX', payload
+assert {'opened_at', 'holding_days', 'time_stop_days', 'time_stop_state'} <= set(payload['positions'][0]), payload
+assert 'Held / Time stop' in (out / 'latest.md').read_text(encoding='utf-8')
 assert (out / 'latest.md').exists(), out
 """
     position_cost_watch_result = subprocess.run(

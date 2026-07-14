@@ -167,6 +167,8 @@ cp config/user_positions.example.json config/user_positions.json
 - `avg_entry`：平均成本。
 - `stop_loss`：失效价格。
 - `take_profit`：计划止盈价格。
+- `opened_at`：带时区的 ISO-8601 开仓时间。
+- `time_stop_days`：该仓位的复核期限；到期只标记 `due`，不会自动交易。
 - `max_position_usd`：该标的最大暴露。
 - `thesis`：买入理由。
 - `invalidation`：什么证据出现就退出。

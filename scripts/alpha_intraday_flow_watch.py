@@ -570,6 +570,8 @@ def cex_withdrawal_cluster(
                     "cex_redeposit",
                     "dex_execution",
                     "quote_recovery",
+                    "entity_linkage",
+                    "operator_conflict",
                 ],
                 "sample_transfers": [
                     {

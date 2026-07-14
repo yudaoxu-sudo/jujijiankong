@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "user_positions.json"
 EXAMPLE_CONFIG = ROOT / "config" / "user_positions.example.json"
 OUT_DIR = ROOT / "output" / "position_cost_watch"
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -52,6 +48,46 @@ def fmt(value: Any, places: str = "0.0000") -> str:
 def short(text: str, limit: int = 140) -> str:
     value = str(text or "").replace("\n", " ").strip()
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def position_time_fields(position: dict[str, Any], as_of: datetime) -> dict[str, Any]:
+    opened_at_text = str(position.get("opened_at") or "").strip()
+    raw_time_stop = position.get("time_stop_days")
+    time_stop_text = "" if raw_time_stop in (None, "") else str(raw_time_stop).strip()
+    result = {
+        "opened_at": opened_at_text,
+        "holding_days": None,
+        "time_stop_days": time_stop_text,
+        "time_stop_state": "missing_opened_at",
+    }
+    if not opened_at_text:
+        return result
+    try:
+        opened_at = datetime.fromisoformat(opened_at_text.replace("Z", "+00:00"))
+    except ValueError:
+        result["time_stop_state"] = "invalid_opened_at"
+        return result
+    if opened_at.tzinfo is None or opened_at.utcoffset() is None:
+        result["time_stop_state"] = "invalid_opened_at"
+        return result
+    elapsed_seconds = Decimal(str((as_of.astimezone(timezone.utc) - opened_at.astimezone(timezone.utc)).total_seconds()))
+    if elapsed_seconds < 0:
+        result["time_stop_state"] = "future_opened_at"
+        return result
+    result["holding_days"] = int(elapsed_seconds // Decimal(86400))
+    if not time_stop_text:
+        result["time_stop_state"] = "not_configured"
+        return result
+    try:
+        time_stop_days = Decimal(time_stop_text)
+    except (InvalidOperation, ValueError):
+        result["time_stop_state"] = "invalid_time_stop_days"
+        return result
+    if not time_stop_days.is_finite() or time_stop_days <= 0:
+        result["time_stop_state"] = "invalid_time_stop_days"
+        return result
+    result["time_stop_state"] = "due" if elapsed_seconds >= time_stop_days * Decimal(86400) else "active"
+    return result
 
 
 def by_symbol(rows: list[dict[str, Any]], key: str = "symbol") -> dict[str, dict[str, Any]]:
@@ -159,7 +195,7 @@ def classify_position(position: dict[str, Any], current_price: Decimal, notes: l
     return {"state": "unknown_side", "action": "仓位方向未知；补 side 字段"}
 
 
-def position_row(position: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def position_row(position: dict[str, Any], context: dict[str, Any], as_of: datetime) -> dict[str, Any]:
     symbol = str(position.get("symbol") or "").upper()
     instrument = str(position.get("instrument") or "spot").lower()
     price = price_from_context(symbol, instrument, position, context)
@@ -202,6 +238,7 @@ def position_row(position: dict[str, Any], context: dict[str, Any]) -> dict[str,
         "thesis": position.get("thesis", ""),
         "invalidation": position.get("invalidation", ""),
         "risk_notes": notes[:8],
+        **position_time_fields(position, as_of),
     }
 
 
@@ -238,11 +275,12 @@ def paper_trade_row(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, 
 
 def build_snapshot(config: dict[str, Any], config_path: Path, use_example: bool) -> dict[str, Any]:
     context = load_context()
-    positions = [position_row(row, context) for row in config.get("positions", []) if isinstance(row, dict)]
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0)
+    positions = [position_row(row, context, generated_at) for row in config.get("positions", []) if isinstance(row, dict)]
     paper_trades = [paper_trade_row(row, context) for row in config.get("paper_trades", []) if isinstance(row, dict)]
     return {
         "schema": "position_cost_watch.v1",
-        "generated_at": now_iso(),
+        "generated_at": generated_at.isoformat(),
         "mode": "read_only_no_signing_no_execution",
         "config_path": str(config_path),
         "using_example_config": use_example,
@@ -274,20 +312,23 @@ def render(snapshot: dict[str, Any]) -> str:
     if snapshot["positions"]:
         lines.extend(
             [
-                "| Symbol | Side | Qty | Avg | Current | Cost | Notional | PnL | State | Action |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                "| Symbol | Side | Held / Time stop | Qty | Avg | Current | Cost | Notional | PnL | State | Action |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ]
         )
         for row in snapshot["positions"]:
+            held = f"{row['holding_days']}d" if row.get("holding_days") is not None else "-"
+            time_limit = f" · {row['time_stop_days']}d" if row.get("time_stop_days") else ""
+            time_summary = f"{held} / {row['time_stop_state']}{time_limit}"
             lines.append(
-                f"| `{row['symbol']}` | {row['side']} | {fmt(row['quantity'], '0.01')} | "
+                f"| `{row['symbol']}` | {row['side']} | {md_cell(time_summary)} | {fmt(row['quantity'], '0.01')} | "
                 f"{fmt(row['avg_entry'], '0.000001')} | {fmt(row['current_price'], '0.000001')} | "
                 f"{fmt(row['cost_usd'], '0.01')} | {fmt(row['notional_usd'], '0.01')} | "
                 f"{fmt(row['pnl_usd'], '0.01')} ({fmt(row['pnl_pct'], '0.01')}%) | "
                 f"{row['position_state']} / {row['size_state']} | {md_cell(row['action'])} |"
             )
             if row.get("risk_notes"):
-                lines.append(f"|  |  |  |  |  |  |  |  | notes | {md_cell('；'.join(row['risk_notes'][:3]))} |")
+                lines.append(f"|  |  |  |  |  |  |  |  |  | notes | {md_cell('；'.join(row['risk_notes'][:3]))} |")
     else:
         lines.append("- No configured positions. Copy `config/user_positions.example.json` to `config/user_positions.json` and fill positions locally.")
     lines.extend(["", "## Paper Trades", ""])

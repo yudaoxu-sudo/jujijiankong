@@ -201,7 +201,7 @@ Surf 免费额度耗尽时，脚本会写入 `output/surf_aux_market_watch/quota
 
 `external_aux_live_probe.py` 是 Coinglass / CoinAnk / GMGN 的小样本验收入口。默认服务器 cron 只跑 `external_aux_source_readiness.py`，不会消耗付费 API；设置 `RUN_EXTERNAL_AUX_LIVE_PROBE=1` 后才跑 live probe。Coinglass 使用 `COINGLASS_API_KEY` 和 `CG-API-KEY` header，CoinAnk 使用 `COINANK_API_KEY` 和 `apikey` header，GMGN 默认只检查 `GMGN_API_KEY`，如有只读查询端点再配置 `GMGN_PROBE_URL` 和可选 `GMGN_API_KEY_HEADER`。probe 通过后仍需人工确认字段能和本地规则对齐，再设置对应 `AUX_SOURCE_VALIDATED_*`。
 
-`position_cost_watch.py` 是只读仓位/成本/纸面交易台账。真实文件是 `config/user_positions.json`，已加入 `.gitignore`；模板是 `config/user_positions.example.json`。脚本会合并 Alpha 价格、Surf、合约 OI/funding/盘口、盘中链上流和 holder 风险，输出仓位盈亏、止损/止盈触发、减仓观察和纸面交易入场状态。它不读取私钥，不签名，不下单。
+`position_cost_watch.py` 是只读仓位/成本/纸面交易台账。真实文件是 `config/user_positions.json`，已加入 `.gitignore`；模板是 `config/user_positions.example.json`。脚本会合并 Alpha 价格、Surf、合约 OI/funding/盘口、盘中链上流和 holder 风险，输出仓位盈亏、止损/止盈触发、减仓观察、持仓天数、独立时间止损状态和纸面交易入场状态。时间止损由每仓位 `opened_at` 与 `time_stop_days` 派生，只提示复核，不改写价格/流向动作。它不读取私钥，不签名，不下单。
 
 可调参数：
 
