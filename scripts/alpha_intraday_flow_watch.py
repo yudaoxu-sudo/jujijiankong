@@ -29,6 +29,15 @@ SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 WITHDRAWAL_CANDIDATE_HISTORY_PATH = OUT_DIR / "withdrawal_candidate_history.json"
 WITHDRAWAL_CANDIDATE_HISTORY_MAX = 200
+WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS = max(
+    1,
+    min(int(os.environ.get("ALPHA_INTRADAY_WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS", "2")), 3),
+)
+WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS = max(
+    0,
+    min(int(os.environ.get("ALPHA_INTRADAY_WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS", "4")), 4),
+)
+WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
 TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
 
@@ -452,6 +461,53 @@ def recipient_amount_stats(amounts: list[Decimal]) -> tuple[Decimal, Decimal]:
     return median, cv
 
 
+def withdrawal_block_timestamp(chain: str, block_number: int) -> int:
+    global WITHDRAWAL_TIME_RPC_ATTEMPTS_USED
+    last_error: Exception | None = None
+    for url in opening.rpc_urls(chain)[:2]:
+        if WITHDRAWAL_TIME_RPC_ATTEMPTS_USED >= WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS:
+            break
+        WITHDRAWAL_TIME_RPC_ATTEMPTS_USED += 1
+        try:
+            block = opening.rpc_call_url(
+                url,
+                "eth_getBlockByNumber",
+                [hex(block_number), False],
+                timeout=WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS,
+            )
+            if not block:
+                raise RuntimeError(f"block not found: {chain} {block_number}")
+            return int(block.get("timestamp") or "0x0", 16)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError("withdrawal block-time RPC attempt budget exhausted")
+
+
+def withdrawal_time_window_evidence(chain: str, first_block: int, last_block: int) -> dict[str, Any]:
+    try:
+        first_timestamp = withdrawal_block_timestamp(chain, first_block)
+        last_timestamp = first_timestamp if last_block == first_block else withdrawal_block_timestamp(chain, last_block)
+        if first_timestamp <= 0 or last_timestamp < first_timestamp:
+            raise ValueError("invalid block timestamp order")
+        first_utc = datetime.fromtimestamp(first_timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+        last_utc = datetime.fromtimestamp(last_timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return {
+            "first_block_time_utc": None,
+            "last_block_time_utc": None,
+            "window_seconds": None,
+            "time_window_evidence": "rpc_block_header_unavailable",
+        }
+    return {
+        "first_block_time_utc": first_utc,
+        "last_block_time_utc": last_utc,
+        "window_seconds": last_timestamp - first_timestamp,
+        "time_window_evidence": "rpc_block_header",
+    }
+
+
 def cex_withdrawal_cluster(
     event: dict[str, Any],
     transfers: list[dict[str, Any]],
@@ -530,6 +586,21 @@ def cex_withdrawal_cluster(
             group["transfers"],
             key=lambda row: (row["block"], row["log_index"], row["tx"], row["recipient"]),
         )[:20]
+        time_window = withdrawal_time_window_evidence(event["chain"], first_block, last_block)
+        unresolved_gates = [
+            "recipient_freshness",
+            "unknown_contract_filter",
+            "log_window_completeness",
+            "common_gas_source",
+            "next_hop",
+            "cex_redeposit",
+            "dex_execution",
+            "quote_recovery",
+            "entity_linkage",
+            "operator_conflict",
+        ]
+        if time_window["time_window_evidence"] != "rpc_block_header":
+            unresolved_gates.insert(2, "exact_time_window")
         clusters.append(
             {
                 "type": "cex_withdrawal_cluster_candidate",
@@ -553,26 +624,14 @@ def cex_withdrawal_cluster(
                 "first_block": first_block,
                 "last_block": last_block,
                 "window_blocks": f"{first_block}->{last_block}",
-                "window_seconds": None,
+                **time_window,
                 "common_gas_source_ratio": None,
                 "next_hop_state": "unknown",
                 "cex_redeposit_state": "unknown",
                 "quote_recovery_state": "unknown",
                 "recipient_contract_state": "unknown_for_unlabeled_addresses",
                 "excluded_known_infrastructure_transfer_count": group["excluded_known_infrastructure_transfer_count"],
-                "unresolved_gates": [
-                    "recipient_freshness",
-                    "unknown_contract_filter",
-                    "exact_time_window",
-                    "log_window_completeness",
-                    "common_gas_source",
-                    "next_hop",
-                    "cex_redeposit",
-                    "dex_execution",
-                    "quote_recovery",
-                    "entity_linkage",
-                    "operator_conflict",
-                ],
+                "unresolved_gates": unresolved_gates,
                 "sample_transfers": [
                     {
                         "recipient": row["recipient"],

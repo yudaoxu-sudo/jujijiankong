@@ -1397,6 +1397,17 @@ def fake_global_labels(chain):
     rows[deposit] = {'address': deposit, 'class': 'cex_deposit', 'exchange': 'FixtureEx', 'label': 'Fixture Deposit'}
     return rows
 module.opening.global_address_labels = fake_global_labels
+module.WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS = 2
+module.WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS = 4
+module.WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
+module.opening.rpc_urls = lambda chain: ['fixture://primary', 'fixture://fallback', 'fixture://ignored']
+
+def block_header_success(url, method, params, timeout):
+    assert method == 'eth_getBlockByNumber' and timeout == 2, (method, timeout)
+    block = int(params[0], 16)
+    return {'timestamp': hex(1700000000 + block * 3)}
+
+module.opening.rpc_call_url = block_header_success
 
 equal_withdrawals = [
     {
@@ -1414,13 +1425,56 @@ assert withdrawal['candidate_count'] == 1, withdrawal
 withdrawal_row = withdrawal['clusters'][0]
 assert withdrawal_row['recipient_count'] == 8 and withdrawal_row['transfer_count'] == 8, withdrawal_row
 assert withdrawal_row['first_block'] == 101 and withdrawal_row['last_block'] == 108, withdrawal_row
+assert withdrawal_row['first_block_time_utc'].endswith('Z') and withdrawal_row['last_block_time_utc'].endswith('Z'), withdrawal_row
+assert withdrawal_row['window_seconds'] == 21, withdrawal_row
+assert withdrawal_row['time_window_evidence'] == 'rpc_block_header', withdrawal_row
 assert withdrawal_row['direction'] == 'unknown' and withdrawal_row['action'] == 'Observe', withdrawal_row
 assert withdrawal_row['alert_policy'] == 'report_only', withdrawal_row
 assert withdrawal_row['fresh_recipient_count'] is None, withdrawal_row
 assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
 assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
 assert {'entity_linkage', 'operator_conflict'} <= set(withdrawal_row['unresolved_gates']), withdrawal_row
+assert 'exact_time_window' not in withdrawal_row['unresolved_gates'], withdrawal_row
 assert module.Decimal(withdrawal_row['equal_tranche_cv']) <= module.Decimal('0.20'), withdrawal_row
+
+timeout_calls = []
+def fail_block_header(url, method, params, timeout):
+    timeout_calls.append((url, timeout))
+    raise TimeoutError('fixture RPC timeout')
+
+module.WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS = 2
+module.WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
+module.opening.rpc_call_url = fail_block_header
+unavailable_time = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
+assert unavailable_time['candidate_count'] == 1, unavailable_time
+unavailable_row = unavailable_time['clusters'][0]
+assert unavailable_row['first_block_time_utc'] is None and unavailable_row['last_block_time_utc'] is None, unavailable_row
+assert unavailable_row['window_seconds'] is None, unavailable_row
+assert unavailable_row['time_window_evidence'] == 'rpc_block_header_unavailable', unavailable_row
+assert 'exact_time_window' in unavailable_row['unresolved_gates'], unavailable_row
+assert unavailable_row['direction'] == 'unknown' and unavailable_row['action'] == 'Observe', unavailable_row
+assert timeout_calls == [('fixture://primary', 2), ('fixture://fallback', 2)], timeout_calls
+budget_exhausted_time = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
+assert budget_exhausted_time['candidate_count'] == 1, budget_exhausted_time
+assert len(timeout_calls) == 2, timeout_calls
+assert 'exact_time_window' in budget_exhausted_time['clusters'][0]['unresolved_gates'], budget_exhausted_time
+
+def reversed_block_header(url, method, params, timeout):
+    block = int(params[0], 16)
+    return {'timestamp': hex(2000 - block)}
+
+module.WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS = 4
+module.WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
+module.opening.rpc_call_url = reversed_block_header
+reversed_time = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
+reversed_row = reversed_time['clusters'][0]
+assert reversed_row['first_block_time_utc'] is None and reversed_row['last_block_time_utc'] is None, reversed_row
+assert reversed_row['window_seconds'] is None, reversed_row
+assert reversed_row['time_window_evidence'] == 'rpc_block_header_unavailable', reversed_row
+assert 'exact_time_window' in reversed_row['unresolved_gates'], reversed_row
+module.WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
+module.opening.rpc_call_url = block_header_success
+
 wide_withdrawals = [
     {
         'token': event['token']['address'],
@@ -1474,6 +1528,8 @@ assert latest_observation['cluster']['action'] == 'Observe', latest_observation
 assert latest_observation['cluster']['alert_policy'] == 'report_only', latest_observation
 assert latest_observation['cluster']['unresolved_gates'] == withdrawal_row['unresolved_gates'], latest_observation
 assert latest_observation['cluster']['sample_transfers'] == withdrawal_row['sample_transfers'], latest_observation
+assert latest_observation['cluster']['window_seconds'] == 21, latest_observation
+assert latest_observation['cluster']['time_window_evidence'] == 'rpc_block_header', latest_observation
 assert latest_observation['scan_coverage']['criteria'] == withdrawal['criteria'], latest_observation
 assert module.event_alert_keys(withdrawal_event) == alert_keys_before == [], withdrawal_event
 assert module.telegram_text({'events': [withdrawal_event], 'new_alert_count': 0}) == telegram_before

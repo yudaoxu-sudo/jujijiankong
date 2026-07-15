@@ -234,6 +234,8 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 
 `alpha_intraday_flow_watch.py` 用于开盘后链上盘中大额流监控。它不推送长地址和 tx，Telegram 只给方向、买卖信号、现货动作、合约动作、净买/净卖；完整地址和 tx 保存在 `output/alpha_intraday_flow_watch/latest.json` 和 `latest.md`。它按地址净额聚合，避免同一地址来回交易被误读为单边买入或单边卖出。
 
+其中 `cex_withdrawal_cluster` 只生成 `report_only` 候选。候选通过热钱包来源、收款地址数、金额离散度、价值和区块跨度门槛后，程序读取首末块公共 RPC header，记录 `first_block_time_utc`、`last_block_time_utc`、`window_seconds` 和 `time_window_evidence`。该可选富化在单次进程内最多尝试四次 RPC，每次超时被限制在一至三秒。RPC 不可用、预算耗尽、时间戳无效或顺序异常时，这些时间字段保持空值，`exact_time_window` 继续列在 `unresolved_gates`；该富化不改变 `direction=unknown`、`action=Observe`、交易信号或 Telegram 路径。
+
 `sniper_engine/exchange_aggregator.py` 固化 Binance Alpha 托管/聚合器识别边界。交易所聚合器候选必须命中机制指纹：跨 token 复用、稳定币腿/山寨币腿配对结构、共享 Binance Wallet DEX Router。双向高频、合约直连 pool 只作为辅助信号，单独出现时归入 `mm_or_project_suspect`，进入下一跳和资金来源追踪。`confirmed_dex_sell` 对任何主体都保留市场偏空效果；交易所/项目标签只影响 cohort 归类，不能豁免真实 DEX 卖出。
 
 `ONCHAIN_NETFLOW_RELIABLE_WHEN_ALPHA_DOMINANT` 默认 `0`。在 Binance Alpha 成交额远高于 Pancake 链上成交时，`alpha_price_momentum_watch.py` 会把覆盖标记为 `ONCHAIN_NETFLOW_UNRELIABLE`，链上净流层只作注意力背景，不能用“买后持有 / 未见卖出 / 买卖平衡”生成偏多判断。开盘监控也会把 `ALPHA_DOMINANT` 场景降级为观察，直到真实 trace 证明聚合器和再平衡地址可以稳定剔除。
