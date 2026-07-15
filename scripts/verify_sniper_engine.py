@@ -153,46 +153,68 @@ def main() -> int:
         )
         b2_case = next(row for row in miles_review.get("verified_cases", []) if row.get("case_id") == "MILES-C06")
         initial = b2_case.get("onchain_partial", {})
-        refresh = b2_case.get("forward_refresh_2026_07_14", {})
-        social_claim = refresh.get("social_claim", {})
-        pre_signal = refresh.get("onchain_pre_signal", {})
+        prior_refresh = b2_case.get("forward_refresh_2026_07_14", {})
+        refresh = b2_case.get("forward_refresh_2026_07_15", {})
+        social_claim = prior_refresh.get("social_claim", {})
+        pre_signal = prior_refresh.get("onchain_pre_signal", {})
         forward = refresh.get("onchain_forward", {})
         market = b2_case.get("market_replay", {})
+        resolved = set(refresh.get("resolved_gates", []))
         unresolved = set(refresh.get("unresolved_gates", []))
         b2_forward_ok = (
             initial.get("evidence_status") == "historical_superseded_baseline"
             and initial.get("superseded_by") == "forward_refresh_2026_07_14.onchain_pre_signal"
             and initial.get("token_total_reliable") is False
             and initial.get("token_amount_quality") == "unusable_due_to_decimal_normalization"
+            and prior_refresh.get("evidence_status") == "superseded_by_forward_refresh_2026_07_15"
+            and prior_refresh.get("onchain_forward", {}).get("received_usd_scope")
+            == "test_plus_qualifying_large_combined"
             and social_claim.get("evidence_layer") == "social"
             and pre_signal.get("recipient_count") == 28
             and pre_signal.get("pricing_completeness") == "partial"
             and pre_signal.get("window_total_usd_known") is False
             and pre_signal.get("claimed_usd_independently_verified") is False
             and forward.get("recipient_count") == 18
+            and forward.get("large_transfer_count") == 18
+            and forward.get("route_test_transfer_count") == 18
+            and forward.get("combined_test_and_large_transfer_count") == 36
+            and abs(float(forward.get("large_received_usd_total", 0)) - 1279028.0872881992) < 0.01
+            and abs(float(forward.get("route_test_received_usd_total", 0)) - 951.2565310452987) < 0.01
+            and abs(float(forward.get("combined_test_and_large_received_usd_total", 0)) - 1279979.3438192448) < 0.01
             and forward.get("no_prior_b2_receipt_count") == 18
             and forward.get("cohort_role") == "post_signal_follow_up"
-            and forward.get("cohort_includes_post_signal_transfers") is True
+            and forward.get("all_qualifying_large_transfers_post_signal") is True
+            and forward.get("all_route_tests_post_signal") is True
+            and forward.get("route_test_window_start_utc") == "2026-07-13T15:12:08Z"
+            and forward.get("route_test_window_end_utc") == "2026-07-13T18:30:35Z"
             and forward.get("recipient_freshness_scope") == "new_to_B2_within_prior_window_only"
             and forward.get("full_wallet_freshness_verified") is False
             and forward.get("shared_first_hop_source_verified") is True
             and forward.get("common_control_verified") is False
             and forward.get("entity_linkage_verified") is False
             and forward.get("operator_identity_verified") is False
-            and forward.get("next_hop_state") == "no_b2_outbound_observed_in_queried_daily_warehouse"
+            and forward.get("outbound_transfer_count") == 0
+            and forward.get("next_hop_state")
+            == "no_b2_outbound_observed_after_each_qualifying_receipt_in_queried_daily_warehouse"
             and forward.get("next_hop_interpretation") == "coverage_window_non_observation_only"
             and forward.get("holding_or_accumulation_inferred") is False
-            and market.get("real_hourly_bars_after_post") == 18
-            and market.get("maturity") == "interim_under_24h"
+            and market.get("real_hourly_bars_after_post") == 24
+            and market.get("first_closed_bar_utc") == "2026-07-13T10:00:00Z"
+            and market.get("last_closed_bar_utc") == "2026-07-14T09:00:00Z"
+            and market.get("maturity") == "closed_24h_no_price_confirmation"
+            and refresh.get("direction") == "unknown"
             and refresh.get("action") == "Observe"
+            and {"24h_market_replay", "same_source_test_then_large_path"} <= resolved
             and {
                 "full_usd_reconstruction",
                 "full_wallet_freshness",
+                "common_control",
                 "entity_linkage",
+                "operator_identity",
                 "live_next_hop",
-                "24h_market_replay",
             } <= unresolved
-            and b2_case.get("status") == "forward_case_pending"
+            and "24h_market_replay" not in unresolved
+            and b2_case.get("status") == "forward_case_24h_closed_next_hop_pending"
         )
         b2_forward_msg = (
             f"pre_signal_recipients={pre_signal.get('recipient_count')} "
@@ -202,7 +224,7 @@ def main() -> int:
         )
     except Exception as exc:
         b2_forward_msg = str(exc)
-    checks.append(("B2 forward case remains scoped and pending", b2_forward_ok, b2_forward_msg))
+    checks.append(("B2 forward case closes 24h without action promotion", b2_forward_ok, b2_forward_msg))
 
     continuity_config_ok = False
     continuity_config_msg = ""
