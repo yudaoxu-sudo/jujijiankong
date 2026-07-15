@@ -234,7 +234,13 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 
 `alpha_intraday_flow_watch.py` 用于开盘后链上盘中大额流监控。它不推送长地址和 tx，Telegram 只给方向、买卖信号、现货动作、合约动作、净买/净卖；完整地址和 tx 保存在 `output/alpha_intraday_flow_watch/latest.json` 和 `latest.md`。它按地址净额聚合，避免同一地址来回交易被误读为单边买入或单边卖出。
 
-其中 `cex_withdrawal_cluster` 只生成 `report_only` 候选。候选通过热钱包来源、收款地址数、金额离散度、价值和区块跨度门槛后，程序读取首末块公共 RPC header，记录 `first_block_time_utc`、`last_block_time_utc`、`window_seconds` 和 `time_window_evidence`。该可选富化在单次进程内最多尝试四次 RPC，每次超时被限制在一至三秒。RPC 不可用、预算耗尽、时间戳无效或顺序异常时，这些时间字段保持空值，`exact_time_window` 继续列在 `unresolved_gates`；该富化不改变 `direction=unknown`、`action=Observe`、交易信号或 Telegram 路径。
+其中 `cex_withdrawal_cluster` 只生成 `report_only` 候选。提款集群与 runtime CEX 候选链路共用一轮带 coverage 的 Token Transfer 分段抓取；模块原有的主交易抽样查询仍是独立读取。coverage 记录请求区间、完成分段数、最后覆盖块、返回日志数和上限。只有请求区间完整覆盖且未触发日志上限时才移除 `log_window_completeness`。同一批日志会计算每个候选收款地址在首次集群入账前的同币种入账次数；`new_to_token_in_window` 只表示完整扫描窗口内未见更早的同币种入账，不代表新钱包或全链历史完整。
+
+候选通过热钱包来源、收款地址数、金额离散度、价值和区块跨度门槛后，程序读取首末块公共 RPC header，记录 `first_block_time_utc`、`last_block_time_utc`、`window_seconds` 和 `time_window_evidence`。单次进程最多尝试四次 RPC，每次超时限制在一至三秒。RPC 不可用、预算耗尽、时间戳无效或顺序异常时，`exact_time_window` 继续列在 `unresolved_gates`。
+
+`output/alpha_intraday_flow_watch/withdrawal_candidate_history.json` 会复用当轮已经抓取的日志和抽样 receipt，跟踪样本地址在 anchor 之后的普通下一跳、已配置 CEX 回充、已配置 DEX 路径、同 receipt 卖出及 quote 回收。空窗口只记录为有限范围内未观察，不会清除历史正证据。样本收款地址还会在最后一个抽样 anchor block 执行历史 `eth_getCode` 三态核验：`eoa_at_anchor_block`、`contract_at_anchor_block`、`rpc_unresolved`。单进程固定最多四次 RPC、单地址最多两个 endpoint、每次一秒；成功状态跨轮保留，未决地址按历史尝试次数优先级渐进重试。抽样地址全部为 EOA 时，`unknown_contract_filter` 仍保持未决。
+
+上述增强保持 `direction=unknown`、`action=Observe`、交易信号和 Telegram 路径不变。共同原生 Gas 来源仍需低延迟索引数据，实体关联和 operator conflict 仍需独立证据，不能通过逐块原生转账扫描在线推断。
 
 `sniper_engine/exchange_aggregator.py` 固化 Binance Alpha 托管/聚合器识别边界。交易所聚合器候选必须命中机制指纹：跨 token 复用、稳定币腿/山寨币腿配对结构、共享 Binance Wallet DEX Router。双向高频、合约直连 pool 只作为辅助信号，单独出现时归入 `mm_or_project_suspect`，进入下一跳和资金来源追踪。`confirmed_dex_sell` 对任何主体都保留市场偏空效果；交易所/项目标签只影响 cohort 归类，不能豁免真实 DEX 卖出。
 

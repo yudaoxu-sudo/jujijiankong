@@ -39,7 +39,7 @@ def confidence(row: dict[str, Any]) -> str:
 
 
 def sweep_paths(row: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = row.get("sweep_paths") or row.get("sweep_txs") or row.get("paths") or []
+    raw = row.get("sweep_paths") or row.get("sweep_txs") or row.get("paths") or row.get("observed_paths") or []
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, dict)]
@@ -87,6 +87,14 @@ def target_address(path: dict[str, Any]) -> str:
     return ""
 
 
+def manual_target_address(path: dict[str, Any]) -> str:
+    target = target_address(path)
+    if target:
+        return target
+    counterparty = norm(path.get("counterparty"))
+    return counterparty if is_address(counterparty) else ""
+
+
 def path_tx_hash(path: dict[str, Any]) -> str:
     text = str(path.get("tx_hash") or path.get("tx") or "").strip().lower()
     if len(text) == 66 and text.startswith("0x") and all(ch in "0123456789abcdef" for ch in text[2:]):
@@ -109,19 +117,49 @@ def classify_row(row: dict[str, Any]) -> dict[str, Any]:
     address = norm(row.get("address"))
     wallet_type = row_type(row)
     current = global_address_label(chain, address) or {}
+    manual_review_only = wallet_type == "manual_review_only"
 
     if chain not in SUPPORTED_CHAINS:
         return {"status": "rejected", "reason": "unsupported_chain", "current_class": current.get("class", "")}
     if not is_address(address):
         return {"status": "rejected", "reason": "invalid_address", "current_class": current.get("class", "")}
-    if current.get("class"):
+    if current.get("class") and not manual_review_only:
         return {"status": "already_configured", "reason": "address_already_labeled", "current_class": current.get("class", "")}
-    if wallet_type not in {"deposit", "deposit_wallet", "deposit_funder", "sweep_wallet"}:
+    if not manual_review_only and wallet_type not in {"deposit", "deposit_wallet", "deposit_funder", "sweep_wallet"}:
         return {"status": "rejected", "reason": "unsupported_wallet_type", "current_class": current.get("class", "")}
-    if confidence(row) not in {"high", "medium"}:
+    if not manual_review_only and confidence(row) not in {"high", "medium"}:
         return {"status": "rejected", "reason": "confidence_too_low", "current_class": current.get("class", "")}
 
     raw_paths = sweep_paths(row)
+    if manual_review_only:
+        direction_counts = Counter(str(path.get("direction") or "unknown").strip().lower() for path in raw_paths)
+        tx_hashes = {path_tx_hash(path) for path in raw_paths if path_tx_hash(path)}
+        hot_targets = [
+            manual_target_address(path)
+            for path in raw_paths
+            if str(path.get("direction") or "").strip().lower() in OUTBOUND_SWEEP_DIRECTIONS
+            and target_class(chain, manual_target_address(path)) == "cex_hot_wallet"
+        ]
+        hot_target_counts = Counter(target for target in hot_targets if target)
+        best_target, best_count = hot_target_counts.most_common(1)[0] if hot_target_counts else ("", 0)
+        return {
+            "status": "needs_manual_review",
+            "reason": "manual_review_only_policy",
+            "current_class": current.get("class", ""),
+            "promotion_eligible": False,
+            "auto_promote_blocked": True,
+            "observed_path_count": len(raw_paths),
+            "distinct_tx_count": len(tx_hashes),
+            "inbound_cex_count": int(direction_counts.get("in_from_cex_hot_wallet", 0)),
+            "outbound_hot_count": sum(hot_target_counts.values()),
+            "router_path_count": int(direction_counts.get("out_to_router", 0) + direction_counts.get("out_to_dex_router", 0)),
+            "listed_paths_native_only": native_asset_only(row, raw_paths),
+            "direction_counts": dict(sorted(direction_counts.items())),
+            "sweep_target": best_target,
+            "sweep_target_class": "cex_hot_wallet" if best_target else "",
+            "sweep_tx_count": best_count,
+            "source_reason": str(row.get("reason") or ""),
+        }
     if native_asset_only(row, raw_paths):
         return {"status": "needs_manual_review", "reason": "native_asset_only", "current_class": ""}
 
@@ -221,6 +259,19 @@ def build_review(path: Path) -> dict[str, Any]:
             "sweep_tx_count": result.get("sweep_tx_count", 0),
             "distinct_tx_count": result.get("distinct_tx_count", 0),
         }
+        for key in (
+            "promotion_eligible",
+            "auto_promote_blocked",
+            "observed_path_count",
+            "inbound_cex_count",
+            "outbound_hot_count",
+            "router_path_count",
+            "listed_paths_native_only",
+            "direction_counts",
+            "source_reason",
+        ):
+            if key in result:
+                item[key] = result[key]
         reviewed.append(item)
         if candidate := proposal(row, result):
             proposals.append(candidate)

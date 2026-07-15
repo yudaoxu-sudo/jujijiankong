@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from bisect import bisect_left
 import hashlib
 import json
 import os
@@ -38,8 +39,11 @@ WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS = max(
     min(int(os.environ.get("ALPHA_INTRADAY_WITHDRAWAL_TIME_RPC_MAX_ATTEMPTS", "4")), 4),
 )
 WITHDRAWAL_TIME_RPC_ATTEMPTS_USED = 0
+WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS = 4
+WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
 TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
+WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
 
 
 def now_utc() -> datetime:
@@ -126,6 +130,269 @@ def withdrawal_observation_sample_anchors(observation: dict[str, Any]) -> set[tu
     return anchors
 
 
+def withdrawal_contract_code_state(chain: str, address: str, block: int) -> tuple[str, int]:
+    global WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED
+    attempts = 0
+    for url in opening.rpc_urls(chain)[:2]:
+        if WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED >= WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS:
+            break
+        WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED += 1
+        attempts += 1
+        try:
+            code = opening.rpc_call_url(url, "eth_getCode", [address, hex(block)], timeout=1)
+            if code in {"0x", "0x0"}:
+                return "eoa_at_anchor_block", attempts
+            if isinstance(code, str) and code.startswith("0x") and len(code) > 2:
+                return "contract_at_anchor_block", attempts
+        except Exception:
+            pass
+    return "rpc_unresolved", attempts
+
+
+def review_withdrawal_recipient_contracts(
+    event: dict[str, Any],
+    cluster: dict[str, Any],
+    previous: dict[str, Any],
+    observed_at: str,
+    resolve_rpc: bool = True,
+) -> dict[str, Any]:
+    anchors: dict[str, int] = {}
+    for row in cluster.get("sample_transfers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        recipient = norm(row.get("recipient"))
+        block = int(row.get("block") or 0)
+        if opening.is_address(recipient) and block > anchors.get(recipient, 0):
+            anchors[recipient] = block
+    previous_rows = {
+        (norm(row.get("recipient")), int(row.get("anchor_block") or 0)): row
+        for row in previous.get("recipients", []) or []
+        if isinstance(row, dict)
+    }
+    recipients = []
+    for recipient, block in sorted(anchors.items()):
+        old = previous_rows.get((recipient, block), {})
+        state = str(old.get("state") or "rpc_unresolved")
+        recipients.append(
+            {
+                "recipient": recipient,
+                "anchor_block": block,
+                "state": state if state in {"eoa_at_anchor_block", "contract_at_anchor_block"} else "rpc_unresolved",
+                "attempt_count": int(old.get("attempt_count") or 0),
+                **({"resolved_at": old["resolved_at"]} if old.get("resolved_at") else {}),
+                **({"last_attempted_at": old["last_attempted_at"]} if old.get("last_attempted_at") else {}),
+            }
+        )
+    if resolve_rpc:
+        unresolved = sorted(
+            (row for row in recipients if row["state"] == "rpc_unresolved"),
+            key=lambda row: (row["attempt_count"], row["recipient"]),
+        )
+        chain = str(event.get("chain") or CHAIN).lower()
+        for row in unresolved:
+            if WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED >= WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS:
+                break
+            state, attempts = withdrawal_contract_code_state(chain, row["recipient"], row["anchor_block"])
+            row["attempt_count"] += attempts
+            if attempts:
+                row["last_attempted_at"] = observed_at
+            row["state"] = state
+            if state != "rpc_unresolved":
+                row["resolved_at"] = observed_at
+    counts = {state: sum(row["state"] == state for row in recipients) for state in ("eoa_at_anchor_block", "contract_at_anchor_block", "rpc_unresolved")}
+    return {
+        "evidence_scope": "unique_sample_recipients_at_last_anchor_block",
+        "last_reviewed_at": observed_at,
+        "rpc_attempt_budget": WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS,
+        "rpc_timeout_seconds": 1,
+        "endpoint_limit_per_recipient": 2,
+        "sample_recipient_count": len(recipients),
+        **{f"{state}_count": count for state, count in counts.items()},
+        "review_state": "all_sample_eoa_at_anchor_block" if recipients and counts["eoa_at_anchor_block"] == len(recipients) else "partial_or_contract_observed",
+        "recipients": recipients,
+    }
+
+
+def resolve_withdrawal_contract_reviews(
+    jobs: list[tuple[str, dict[str, Any], dict[str, Any]]],
+    observed_at: str,
+) -> None:
+    scheduled: set[tuple[str, str, int]] = set()
+    while WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED < WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS:
+        candidates = []
+        for candidate_id, event, review in jobs:
+            unresolved = [
+                row
+                for row in review.get("recipients", [])
+                if row.get("state") == "rpc_unresolved"
+                and (candidate_id, str(row.get("recipient") or ""), int(row.get("anchor_block") or 0)) not in scheduled
+            ]
+            if not unresolved:
+                continue
+            next_row = min(unresolved, key=lambda row: (int(row.get("attempt_count") or 0), str(row.get("recipient") or "")))
+            candidates.append(
+                (
+                    int(next_row.get("attempt_count") or 0),
+                    sum(int(row.get("attempt_count") or 0) for row in review.get("recipients", [])),
+                    candidate_id,
+                    str(event.get("chain") or CHAIN).lower(),
+                    next_row,
+                    review,
+                )
+            )
+        if not candidates:
+            break
+        _attempts, _candidate_attempts, _candidate_id, chain, row, _review = min(candidates, key=lambda item: item[:3])
+        scheduled.add((_candidate_id, str(row.get("recipient") or ""), int(row.get("anchor_block") or 0)))
+        state, attempts = withdrawal_contract_code_state(chain, row["recipient"], row["anchor_block"])
+        row["attempt_count"] += attempts
+        if attempts:
+            row["last_attempted_at"] = observed_at
+        row["state"] = state
+        if state != "rpc_unresolved":
+            row["resolved_at"] = observed_at
+        if not attempts:
+            break
+
+    for _candidate_id, _event, review in jobs:
+        recipients = review.get("recipients", [])
+        for state in ("eoa_at_anchor_block", "contract_at_anchor_block", "rpc_unresolved"):
+            review[f"{state}_count"] = sum(row.get("state") == state for row in recipients)
+        review["review_state"] = (
+            "all_sample_eoa_at_anchor_block"
+            if recipients and review["eoa_at_anchor_block_count"] == len(recipients)
+            else "partial_or_contract_observed"
+        )
+
+
+def withdrawal_forward_evidence(scan: dict[str, Any], cluster: dict[str, Any]) -> dict[str, Any]:
+    event = scan.get("event", {}) or {}
+    token_address = norm((event.get("token", {}) or {}).get("address"))
+    recipient_anchors: dict[str, tuple[int, int, str]] = {}
+    for row in cluster.get("sample_transfers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        recipient = norm(row.get("recipient"))
+        if not opening.is_address(recipient):
+            continue
+        order = transfer_order(row)
+        if recipient not in recipient_anchors or order > recipient_anchors[recipient]:
+            recipient_anchors[recipient] = order
+
+    receipt_rows = {
+        str(row.get("tx") or "").lower(): row
+        for row in scan.get("receipt_rows", []) or []
+        if isinstance(row, dict) and row.get("tx")
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    seen_transfers: set[tuple[str, int, str, str]] = set()
+    confirmed_quote_by_tx: dict[str, Decimal] = {}
+    for row in scan.get("transfer_rows", []) or []:
+        if not isinstance(row, dict) or norm(row.get("token")) != token_address:
+            continue
+        recipient = norm(row.get("from"))
+        anchor = recipient_anchors.get(recipient)
+        if anchor is None or transfer_order(row)[:2] <= anchor[:2]:
+            continue
+        destination = norm(row.get("to"))
+        amount = decimal_from(row.get("amount"))
+        if (
+            amount <= 0
+            or not opening.is_address(destination)
+            or destination in {recipient, opening.ZERO, "0x000000000000000000000000000000000000dead"}
+        ):
+            continue
+        tx_hash = str(row.get("tx") or "").lower()
+        transfer_key = (tx_hash, int(row.get("log_index") or 0), recipient, destination)
+        if transfer_key in seen_transfers:
+            continue
+        seen_transfers.add(transfer_key)
+        destination_class = opening.configured_address_class(event, destination) or "unlabeled"
+        cex_redeposit = destination_class in {"cex_deposit", "cex_hot_wallet"}
+        dex_route = destination_class in WITHDRAWAL_FORWARD_DEX_CLASSES
+        receipt_row = receipt_rows.get(tx_hash, {})
+        quote_recovered = decimal_from(receipt_row.get("got_quote"))
+        dex_execution = bool(
+            dex_route
+            and norm(receipt_row.get("seller")) == recipient
+            and quote_recovered > 0
+        )
+        if dex_execution:
+            confirmed_quote_by_tx[tx_hash] = quote_recovered
+        evidence_rows.append(
+            {
+                "recipient": recipient,
+                "destination": destination,
+                "destination_class": destination_class,
+                "amount": opening.decimal_str(amount),
+                "block": int(row.get("block") or 0),
+                "log_index": int(row.get("log_index") or 0),
+                "tx": tx_hash,
+                "cex_redeposit": cex_redeposit,
+                "dex_route": dex_route,
+                "dex_execution": dex_execution,
+                "quote_recovered": opening.decimal_str(quote_recovered if dex_execution else Decimal(0)),
+            }
+        )
+
+    evidence_rows.sort(key=lambda row: (row["block"], row["log_index"], row["tx"], row["recipient"]))
+    cex_rows = [row for row in evidence_rows if row["cex_redeposit"]]
+    dex_rows = [row for row in evidence_rows if row["dex_route"]]
+    confirmed_rows = [row for row in evidence_rows if row["dex_execution"]]
+    window = f"{int(scan.get('from_block') or 0)}->{int(scan.get('to_block') or 0)}"
+    positive_evidence: dict[str, Any] = {}
+    for name, rows in (("next_hop", evidence_rows), ("cex_redeposit", cex_rows), ("dex_route", dex_rows), ("dex_execution", confirmed_rows)):
+        if rows:
+            positive_evidence[name] = {"scan_window_blocks": window, "sample": rows[:5]}
+    if confirmed_quote_by_tx:
+        positive_evidence["quote_recovery"] = {
+            "scan_window_blocks": window,
+            "quote_recovered": opening.decimal_str(sum(confirmed_quote_by_tx.values(), Decimal(0))),
+            "tx_count": len(confirmed_quote_by_tx),
+        }
+    coverage = scan.get("transfer_coverage", {}) or {}
+    return {
+        "evidence_scope": "sample_transfer_recipients_in_current_fetched_window",
+        "scan_window_blocks": window,
+        "coverage_state": str(coverage.get("state") or "unknown"),
+        "scan_limited": bool(scan.get("scan_limited")),
+        "sampled_receipt_count": len(receipt_rows),
+        "tracked_sample_recipient_count": len(recipient_anchors),
+        "next_hop_state": "observed_in_fetched_window" if evidence_rows else "not_observed_in_fetched_window",
+        "next_hop_recipient_count": len({row["recipient"] for row in evidence_rows}),
+        "next_hop_transfer_count": len(evidence_rows),
+        "cex_redeposit_state": "observed_to_tracked_cex" if cex_rows else "not_observed_in_fetched_window",
+        "cex_redeposit_transfer_count": len(cex_rows),
+        "dex_route_state": "observed_to_tracked_dex" if dex_rows else "not_observed_in_fetched_window",
+        "dex_route_transfer_count": len(dex_rows),
+        "dex_execution_state": "confirmed_dex_route_token_out_quote_in_same_receipt" if confirmed_rows else "not_observed_in_sampled_receipts",
+        "dex_execution_tx_count": len(confirmed_quote_by_tx),
+        "quote_recovery_state": "confirmed_in_same_receipt" if confirmed_quote_by_tx else "not_observed_in_sampled_receipts",
+        "quote_recovered": opening.decimal_str(sum(confirmed_quote_by_tx.values(), Decimal(0))),
+        "sample_transfers": evidence_rows[:20],
+        "positive_evidence": positive_evidence,
+    }
+
+
+def merge_withdrawal_forward_tracking(previous: dict[str, Any], current: dict[str, Any], observed_at: str) -> dict[str, Any]:
+    latest_scan = dict(current)
+    positive_updates = latest_scan.pop("positive_evidence", {})
+    latest_positive_evidence = dict(
+        previous.get("latest_positive_evidence", {})
+        or previous.get("positive_evidence", {})
+        or {}
+    )
+    for name, evidence in positive_updates.items():
+        latest_positive_evidence[name] = {"observed_at": observed_at, **evidence}
+    return {
+        "first_scanned_at": str(previous.get("first_scanned_at") or observed_at),
+        "last_scanned_at": observed_at,
+        "scan_count": int(previous.get("scan_count") or 0) + 1,
+        "latest_scan": latest_scan,
+        "latest_positive_evidence": latest_positive_evidence,
+    }
+
+
 def withdrawal_collision_candidate_id(
     provisional_id: str,
     observation: dict[str, Any],
@@ -141,7 +408,7 @@ def withdrawal_collision_candidate_id(
     return f"cex_withdrawal_{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
-def record_withdrawal_candidate_history(snapshot: dict[str, Any]) -> int:
+def record_withdrawal_candidate_history(snapshot: dict[str, Any], forward_scans: list[dict[str, Any]] | None = None) -> int:
     observed_at = str(snapshot.get("generated_at") or now_iso())
     provisional_observations: dict[str, dict[str, Any]] = {}
     for event in snapshot.get("events", []) or []:
@@ -224,7 +491,7 @@ def record_withdrawal_candidate_history(snapshot: dict[str, Any]) -> int:
             previous_observation_count = int(previous.get("observation_count") or 0)
         except (TypeError, ValueError):
             previous_observation_count = 0
-        by_id[candidate_id] = {
+        updated_row = {
             "candidate_id": candidate_id,
             "first_observed_at": str(previous.get("first_observed_at") or observed_at),
             "last_observed_at": observed_at,
@@ -232,6 +499,38 @@ def record_withdrawal_candidate_history(snapshot: dict[str, Any]) -> int:
             "first_observation": previous.get("first_observation") or observation,
             "latest_observation": observation,
         }
+        for field in ("forward_tracking", "recipient_contract_review"):
+            if isinstance(previous.get(field), dict):
+                updated_row[field] = previous[field]
+        by_id[candidate_id] = updated_row
+
+    contract_review_jobs: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {}
+    for scan in forward_scans or []:
+        event = scan.get("event", {}) or {}
+        scan_identity = (str(event.get("chain") or CHAIN).lower(), norm((event.get("token", {}) or {}).get("address")))
+        for row in by_id.values():
+            latest_observation = row.get("latest_observation", {}) or {}
+            identity = withdrawal_observation_identity(latest_observation)
+            if identity[:2] != scan_identity:
+                continue
+            cluster = latest_observation.get("cluster", {}) or {}
+            evidence = withdrawal_forward_evidence(scan, cluster)
+            if evidence["tracked_sample_recipient_count"]:
+                row["forward_tracking"] = merge_withdrawal_forward_tracking(
+                    row.get("forward_tracking", {}) or {},
+                    evidence,
+                    observed_at,
+                )
+            row["recipient_contract_review"] = review_withdrawal_recipient_contracts(
+                event,
+                cluster,
+                row.get("recipient_contract_review", {}) or {},
+                observed_at,
+                resolve_rpc=False,
+            )
+            candidate_id = str(row.get("candidate_id") or "")
+            contract_review_jobs[candidate_id] = (candidate_id, event, row["recipient_contract_review"])
+    resolve_withdrawal_contract_reviews(list(contract_review_jobs.values()), observed_at)
 
     candidates = sorted(
         by_id.values(),
@@ -425,22 +724,66 @@ def aggregate_candidate_txs(event: dict[str, Any], from_block: int, to_block: in
     return selected, len(logs), len(aggregate)
 
 
-def token_transfer_logs(event: dict[str, Any], from_block: int, to_block: int) -> list[dict[str, Any]]:
+def token_transfer_logs_with_coverage(
+    event: dict[str, Any],
+    from_block: int,
+    to_block: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    chunk_blocks = int(os.environ.get("ALPHA_INTRADAY_LOG_CHUNK_BLOCKS", "1000"))
+    max_logs = int(os.environ.get("ALPHA_INTRADAY_MAX_LOGS", "12000"))
+    timeout = int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6"))
     query = {
         "address": event["token"]["address"],
         "fromBlock": hex(from_block),
         "toBlock": hex(to_block),
         "topics": [opening.TRANSFER_TOPIC],
     }
-    logs = opening.get_logs_quick(
-        event["chain"],
-        query,
-        int(os.environ.get("ALPHA_INTRADAY_LOG_CHUNK_BLOCKS", "1000")),
-        int(os.environ.get("ALPHA_INTRADAY_MAX_LOGS", "12000")),
-        int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")),
+    logs: list[dict[str, Any]] = []
+    start = from_block
+    covered_through_block: int | None = None
+    completed_chunk_count = 0
+    rpc_failed = False
+    while start <= to_block and len(logs) < max_logs:
+        end = min(to_block, start + chunk_blocks - 1)
+        chunk_query = dict(query)
+        chunk_query["fromBlock"] = hex(start)
+        chunk_query["toBlock"] = hex(end)
+        try:
+            logs.extend(opening.quick_rpc_call(event["chain"], "eth_getLogs", [chunk_query], timeout) or [])
+        except Exception:
+            rpc_failed = True
+            break
+        completed_chunk_count += 1
+        covered_through_block = end
+        start = end + 1
+
+    retained_logs = logs[:max_logs]
+    max_log_limit_reached = len(logs) >= max_logs
+    complete = (
+        not rpc_failed
+        and covered_through_block == to_block
+        and not max_log_limit_reached
     )
+    if complete:
+        coverage_state = "requested_window_complete"
+    elif max_log_limit_reached:
+        coverage_state = "max_log_limit_reached"
+    elif rpc_failed:
+        coverage_state = "partial_rpc_error" if completed_chunk_count else "rpc_error_no_coverage"
+    else:
+        coverage_state = "unknown"
     decimals = int(event["token"]["decimals"])
-    return [opening.transfer_log(log, decimals) for log in logs]
+    return [opening.transfer_log(log, decimals) for log in retained_logs], {
+        "state": coverage_state,
+        "requested_from_block": from_block,
+        "requested_to_block": to_block,
+        "covered_through_block": covered_through_block,
+        "completed_chunk_count": completed_chunk_count,
+        "chunk_blocks": chunk_blocks,
+        "max_logs": max_logs,
+        "returned_log_count": len(retained_logs),
+        "complete": complete,
+    }
 
 
 def known_cex_destination_class(event: dict[str, Any], address: str) -> str:
@@ -459,6 +802,54 @@ def recipient_amount_stats(amounts: list[Decimal]) -> tuple[Decimal, Decimal]:
     middle = len(ordered) // 2
     median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / Decimal(2)
     return median, cv
+
+
+def transfer_order(row: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        int(row.get("block") or 0),
+        int(row.get("log_index") or 0),
+        str(row.get("tx") or "").lower(),
+    )
+
+
+def bounded_recipient_history(
+    cluster_transfers: list[dict[str, Any]],
+    inbound_orders: dict[str, list[tuple[int, int, str]]],
+    from_block: int,
+    coverage_complete: bool,
+) -> dict[str, Any]:
+    first_cluster_order: dict[str, tuple[int, int, str]] = {}
+    for row in cluster_transfers:
+        recipient = str(row["recipient"])
+        order = transfer_order(row)
+        if recipient not in first_cluster_order or order < first_cluster_order[recipient]:
+            first_cluster_order[recipient] = order
+
+    ordered = sorted(first_cluster_order.items(), key=lambda item: (item[1], item[0]))
+    prior_counts = {
+        recipient: bisect_left(inbound_orders.get(recipient, []), first_order)
+        for recipient, first_order in ordered
+    }
+    rows = [
+        {
+            "recipient": recipient,
+            "first_cluster_block": first_order[0],
+            "first_cluster_log_index": first_order[1],
+            "prior_token_inbound_count": prior_counts[recipient],
+            "new_to_token_in_window": False if prior_counts[recipient] else (True if coverage_complete else None),
+        }
+        for recipient, first_order in ordered
+    ]
+    prior_recipient_count = sum(bool(count) for count in prior_counts.values())
+
+    return {
+        "recipient_history_scope": "same_token_inbound_before_each_first_cluster_receipt_within_scan_window",
+        "recipient_history_from_block": from_block,
+        "prior_token_inbound_recipient_count": prior_recipient_count,
+        "new_to_token_in_window_recipient_count": len(rows) - prior_recipient_count if coverage_complete else None,
+        "recipient_freshness_state": "bounded_same_token_window" if coverage_complete else "partial_log_window",
+        "recipient_history_sample": rows[:20],
+    }
 
 
 def withdrawal_block_timestamp(chain: str, block_number: int) -> int:
@@ -513,6 +904,7 @@ def cex_withdrawal_cluster(
     transfers: list[dict[str, Any]],
     from_block: int,
     to_block: int,
+    log_window_coverage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     min_recipients = 8
     max_cv = Decimal("0.20")
@@ -536,6 +928,23 @@ def cex_withdrawal_cluster(
                 address = norm(item.get("address") if isinstance(item, dict) else item)
                 if opening.is_address(address):
                     known_recipients.add(address)
+    log_window_coverage = dict(log_window_coverage or {})
+    coverage_state = str(
+        log_window_coverage.get("state")
+        or (
+            "max_log_limit_reached"
+            if len(transfers) >= int(os.environ.get("ALPHA_INTRADAY_MAX_LOGS", "12000"))
+            else "fetched_window_unverified"
+        )
+    )
+    coverage_complete = bool(
+        log_window_coverage.get("state") == "requested_window_complete"
+        and log_window_coverage.get("complete") is True
+        and log_window_coverage.get("requested_from_block") == from_block
+        and log_window_coverage.get("requested_to_block") == to_block
+        and log_window_coverage.get("covered_through_block") == to_block
+        and int(log_window_coverage.get("returned_log_count", 0)) < int(log_window_coverage.get("max_logs", 0))
+    )
     groups: dict[str, dict[str, Any]] = {}
     for row in transfers:
         if norm(row.get("token")) != token_address:
@@ -565,6 +974,7 @@ def cex_withdrawal_cluster(
 
     price = context_price_usdt(event)
     clusters: list[dict[str, Any]] = []
+    inbound_orders: dict[str, list[tuple[int, int, str]]] | None = None
     for group in groups.values():
         recipient_totals: dict[str, Decimal] = {}
         for row in group["transfers"]:
@@ -586,11 +996,27 @@ def cex_withdrawal_cluster(
             group["transfers"],
             key=lambda row: (row["block"], row["log_index"], row["tx"], row["recipient"]),
         )[:20]
+        if inbound_orders is None:
+            inbound_orders = {}
+            for row in transfers:
+                if norm(row.get("token")) != token_address:
+                    continue
+                recipient = norm(row.get("to"))
+                if not opening.is_address(recipient):
+                    continue
+                inbound_orders.setdefault(recipient, []).append(transfer_order(row))
+            for orders in inbound_orders.values():
+                orders.sort()
+        recipient_history = bounded_recipient_history(
+            group["transfers"],
+            inbound_orders,
+            from_block,
+            coverage_complete,
+        )
         time_window = withdrawal_time_window_evidence(event["chain"], first_block, last_block)
         unresolved_gates = [
             "recipient_freshness",
             "unknown_contract_filter",
-            "log_window_completeness",
             "common_gas_source",
             "next_hop",
             "cex_redeposit",
@@ -599,6 +1025,8 @@ def cex_withdrawal_cluster(
             "entity_linkage",
             "operator_conflict",
         ]
+        if not coverage_complete:
+            unresolved_gates.insert(2, "log_window_completeness")
         if time_window["time_window_evidence"] != "rpc_block_header":
             unresolved_gates.insert(2, "exact_time_window")
         clusters.append(
@@ -616,6 +1044,7 @@ def cex_withdrawal_cluster(
                 "transfer_count": len(group["transfers"]),
                 "recipient_count": len(recipient_totals),
                 "fresh_recipient_count": None,
+                **recipient_history,
                 "total_token": opening.decimal_str(total_token),
                 "total_quote_estimate": opening.decimal_str(total_quote),
                 "outflow_pct_mc": None,
@@ -652,9 +1081,8 @@ def cex_withdrawal_cluster(
         "action": "Observe" if clusters else "",
         "alert_policy": "report_only",
         "evidence_scope": "fetched_token_transfer_logs",
-        "coverage_state": "max_log_limit_reached"
-        if len(transfers) >= int(os.environ.get("ALPHA_INTRADAY_MAX_LOGS", "12000"))
-        else "fetched_window_unverified",
+        "coverage_state": coverage_state,
+        "log_window_coverage": log_window_coverage,
         "scan_window_blocks": f"{from_block}->{to_block}",
         "input_transfer_count": len(transfers),
         "tracked_hot_source_count": len(groups),
@@ -689,7 +1117,9 @@ def runtime_cex_deposit_candidates(
     excluded = opening.excluded_addresses(event)
     inflow: dict[str, dict[str, Any]] = {}
     outflow: dict[str, dict[str, Any]] = {}
-    for row in transfers if transfers is not None else token_transfer_logs(event, from_block, to_block):
+    if transfers is None:
+        transfers, _coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
+    for row in transfers:
         from_addr = norm(row.get("from"))
         to_addr = norm(row.get("to"))
         amount = row.get("amount", Decimal(0))
@@ -999,9 +1429,15 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         from_block = max(int(event["opening_block"]), latest - window)
         to_block = latest
     tx_hashes, logs, txs = aggregate_candidate_txs(event, from_block, to_block)
-    transfer_rows = token_transfer_logs(event, from_block, to_block)
+    transfer_rows, transfer_coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
     runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
-    withdrawal_cluster = cex_withdrawal_cluster(event, transfer_rows, from_block, to_block)
+    withdrawal_cluster = cex_withdrawal_cluster(
+        event,
+        transfer_rows,
+        from_block,
+        to_block,
+        transfer_coverage,
+    )
     rows: list[dict[str, Any]] = []
     scan_limited = False
     timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "20"))
@@ -1028,11 +1464,26 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         "runtime_cex_deposit_candidates": list(runtime_candidates.values())[:20],
         "rows": rows,
         "analysis": analysis,
+        "_withdrawal_forward_scan": {
+            "event": event,
+            "transfer_rows": transfer_rows,
+            "receipt_rows": rows,
+            "from_block": from_block,
+            "to_block": to_block,
+            "transfer_coverage": transfer_coverage,
+            "scan_limited": scan_limited,
+        },
     }
 
 
-def build_snapshot() -> dict[str, Any]:
-    events = [scan_event(event) for event in build_events()]
+def build_snapshot(forward_scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    events = []
+    for event in build_events():
+        scanned = scan_event(event)
+        forward_scan = scanned.pop("_withdrawal_forward_scan", None)
+        if forward_scans is not None and forward_scan:
+            forward_scans.append(forward_scan)
+        events.append(scanned)
     keys = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))
     new_keys = [key for key in keys if key not in seen]
@@ -1395,9 +1846,10 @@ def render(snapshot: dict[str, Any]) -> str:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    snapshot = build_snapshot()
+    forward_scans: list[dict[str, Any]] = []
+    snapshot = build_snapshot(forward_scans)
     write_json(LATEST_PATH, snapshot)
-    record_withdrawal_candidate_history(snapshot)
+    record_withdrawal_candidate_history(snapshot, forward_scans)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)
     print(LATEST_PATH)

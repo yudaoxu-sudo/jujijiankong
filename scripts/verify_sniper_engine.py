@@ -365,6 +365,8 @@ def main() -> int:
         }
         configured = alpha_review.get("current_configured_infrastructure", [])
         candidates = alpha_review.get("manual_review_candidates", [])
+        rpc_review = alpha_review.get("rpc_review", {})
+        rpc_candidates = rpc_review.get("candidate_reviews", [])
         configured_addresses = {str(row.get("address", "")).lower() for row in configured if isinstance(row, dict)}
         candidate_statuses = {str(row.get("status", "")) for row in candidates if isinstance(row, dict)}
         missing_or_wrong = [
@@ -378,10 +380,22 @@ def main() -> int:
             and not missing_or_wrong
             and len(alpha_review.get("representative_tx_hashes", [])) >= 10
             and "candidate_only_do_not_promote" in candidate_statuses
+            and rpc_review.get("representative_only") is True
+            and rpc_review.get("representative_tx_count") == 16
+            and rpc_review.get("transaction_found_count") == 16
+            and rpc_review.get("receipt_found_count") == 16
+            and rpc_review.get("internal_trace_complete") is False
+            and rpc_review.get("address_history_complete") is False
+            and rpc_review.get("entity_ownership_verified") is False
+            and sorted(row.get("indexed_receipt_occurrence_count") for row in rpc_candidates if row.get("indexed_receipt_occurrence_count") is not None) == [6, 6, 9]
+            and all(row.get("decision") in {"do_not_promote", "keep_dex_vault"} for row in rpc_candidates)
+            and any(row.get("proxy_type") == "eip1967" and row.get("implementation_matches_configured_infrastructure") is False for row in rpc_candidates)
         )
         alpha_rotated_msg = (
             f"configured={len(configured)}, candidates={len(candidates)}, "
-            f"txs={len(alpha_review.get('representative_tx_hashes', []))}, wrong={missing_or_wrong}"
+            f"txs={len(alpha_review.get('representative_tx_hashes', []))}, "
+            f"rpc_found={rpc_review.get('transaction_found_count')}/{rpc_review.get('representative_tx_count')}, "
+            f"wrong={missing_or_wrong}"
         )
     except Exception as exc:
         alpha_rotated_msg = str(exc)
@@ -558,6 +572,31 @@ rows = [
             {'tx_hash': '0x' + '9' * 64, 'hot_wallet': binance_hot, 'direction': 'in_from_cex_hot_wallet'},
         ],
     },
+    {
+        'chain': 'bsc',
+        'address': '0x7777777777777777777777777777777777777777',
+        'exchange': 'Binance',
+        'candidate_type': 'manual_review_only',
+        'confidence': 'high',
+        'asset_type': 'bep20',
+        'observed_paths': [
+            {'tx_hash': '0x' + '0' * 64, 'counterparty': binance_hot, 'direction': 'out_to_cex_hot_wallet', 'asset': 'USDT'},
+            {'tx_hash': '0x' + 'e' * 64, 'counterparty': binance_hot, 'direction': 'out_to_cex_hot_wallet', 'asset': 'USDT'},
+            {'tx_hash': '0x' + 'f' * 64, 'counterparty': binance_hot, 'direction': 'out_to_cex_hot_wallet', 'asset': 'USDT'},
+        ],
+    },
+    {
+        'chain': 'bsc',
+        'address': '0x8888888888888888888888888888888888888888',
+        'exchange': 'Binance',
+        'type': 'deposit_wallet',
+        'confidence': 'high',
+        'sweep_paths': [
+            {'tx_hash': '0x' + '6' * 64, 'counterparty': binance_hot},
+            {'tx_hash': '0x' + '7' * 64, 'counterparty': binance_hot},
+            {'tx_hash': '0x' + '8' * 64, 'counterparty': binance_hot},
+        ],
+    },
 ]
 source.write_text(json.dumps(rows), encoding='utf-8')
 result = subprocess.run(
@@ -569,13 +608,52 @@ result = subprocess.run(
 assert result.returncode == 0, result.stderr
 review = json.loads((out_dir / 'latest.json').read_text(encoding='utf-8'))
 assert review['counts']['accepted_candidate'] == 1, review
-assert review['counts']['needs_manual_review'] == 4, review
+assert review['counts']['needs_manual_review'] == 6, review
 assert any(item['reason'] == 'native_asset_only' for item in review['reviewed']), review
 assert any(item['reason'] == 'missing_sweep_target' and item['address'] == '0x6666666666666666666666666666666666666666' for item in review['reviewed']), review
 proposal = review['label_proposals'][0]
 assert proposal['class'] == 'cex_deposit', proposal
 assert proposal['exchange'] == 'Binance', proposal
 assert proposal['address'] == '0x1111111111111111111111111111111111111111', proposal
+manual = next(item for item in review['reviewed'] if item['address'] == '0x7777777777777777777777777777777777777777')
+assert manual['status'] == 'needs_manual_review', manual
+assert manual['observed_path_count'] == 3 and manual['outbound_hot_count'] == 3, manual
+assert manual['promotion_eligible'] is False and manual['auto_promote_blocked'] is True, manual
+assert all(item['address'] != manual['address'] for item in review['label_proposals']), review['label_proposals']
+counterparty_only = next(item for item in review['reviewed'] if item['address'] == '0x8888888888888888888888888888888888888888')
+assert counterparty_only['status'] == 'needs_manual_review' and counterparty_only['reason'] == 'missing_sweep_target', counterparty_only
+assert all(item['address'] != counterparty_only['address'] for item in review['label_proposals']), review['label_proposals']
+
+tracked_source = root / 'input' / 'cex_sweep_manual_review_2026-07-08.json'
+tracked_out = work / 'tracked_out'
+tracked_result = subprocess.run(
+    [sys.executable, str(root / 'scripts' / 'review_cex_sweep_patterns.py'), '--input', str(tracked_source), '--out-dir', str(tracked_out)],
+    cwd=root,
+    capture_output=True,
+    text=True,
+)
+assert tracked_result.returncode == 0, tracked_result.stderr
+tracked_review = json.loads((tracked_out / 'latest.json').read_text(encoding='utf-8'))
+tracked_rows = tracked_review['reviewed']
+assert tracked_review['counts'] == {'needs_manual_review': 4}, tracked_review
+assert [item['observed_path_count'] for item in tracked_rows] == [4, 3, 6, 5], tracked_rows
+assert sum(item['observed_path_count'] for item in tracked_rows) == 18, tracked_rows
+assert tracked_review['label_proposals'] == [], tracked_review['label_proposals']
+assert all(item['promotion_eligible'] is False and item['auto_promote_blocked'] is True for item in tracked_rows), tracked_rows
+
+tracked_input = json.loads(tracked_source.read_text(encoding='utf-8'))
+rpc_reviews = [item['rpc_review'] for item in tracked_input]
+for key in ('listed_path_count', 'tx_found_count', 'receipt_success_count', 'direct_path_match_count'):
+    assert sum(int(item.get(key) or 0) for item in rpc_reviews) == 18, (key, rpc_reviews)
+assert all(
+    item.get('evidence_scope') == 'listed_transactions_only'
+    and item.get('address_history_complete') is False
+    and item.get('entity_ownership_verified') is False
+    and item.get('auto_promote_allowed') is False
+    for item in rpc_reviews
+), rpc_reviews
+tracked_case = (root / 'cases' / '2026-07-15_cex_sweep_manual_rpc_review.md').read_text(encoding='utf-8')
+assert '18/18' in tracked_case and 'auto_promote_allowed=false' in tracked_case, tracked_case
 """
     cex_sweep_review_result = subprocess.run(
         [sys.executable, "-c", cex_sweep_review_code],
@@ -1368,6 +1446,7 @@ print(f"raw={module.pct_sum(raw_rows)} effective={module.pct_sum(effective_rows)
     alpha_intraday_cex_code = """
 import importlib.util
 import json
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1416,12 +1495,41 @@ equal_withdrawals = [
         'to': f"0x{index:040x}",
         'amount': module.Decimal(str(amount)),
         'block': 100 + index,
+        'log_index': 10,
         'tx': f"0x{index:064x}",
     }
     for index, amount in enumerate([30000, 30300, 29700, 30150, 29850, 30075, 29925, 30000], 1)
 ]
-withdrawal = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
+def prior_transfer(recipient, block, log_index, marker):
+    return {
+        **equal_withdrawals[0],
+        'from': '0x' + marker * 40,
+        'to': recipient,
+        'amount': module.Decimal('1'),
+        'block': block,
+        'log_index': log_index,
+        'tx': '0x' + marker * 64,
+    }
+
+recipient_history_transfers = equal_withdrawals + [
+    prior_transfer(equal_withdrawals[0]['to'], equal_withdrawals[0]['block'], 9, 'a'),
+    prior_transfer(equal_withdrawals[1]['to'], equal_withdrawals[1]['block'], 11, 'b'),
+]
+complete_coverage = {
+    'state': 'requested_window_complete',
+    'requested_from_block': 100,
+    'requested_to_block': 200,
+    'covered_through_block': 200,
+    'completed_chunk_count': 1,
+    'chunk_blocks': 1000,
+    'max_logs': 12000,
+    'returned_log_count': len(recipient_history_transfers),
+    'complete': True,
+}
+withdrawal = module.cex_withdrawal_cluster(event, recipient_history_transfers, 100, 200, complete_coverage)
 assert withdrawal['candidate_count'] == 1, withdrawal
+assert withdrawal['coverage_state'] == 'requested_window_complete', withdrawal
+assert withdrawal['log_window_coverage'] == complete_coverage, withdrawal
 withdrawal_row = withdrawal['clusters'][0]
 assert withdrawal_row['recipient_count'] == 8 and withdrawal_row['transfer_count'] == 8, withdrawal_row
 assert withdrawal_row['first_block'] == 101 and withdrawal_row['last_block'] == 108, withdrawal_row
@@ -1431,11 +1539,91 @@ assert withdrawal_row['time_window_evidence'] == 'rpc_block_header', withdrawal_
 assert withdrawal_row['direction'] == 'unknown' and withdrawal_row['action'] == 'Observe', withdrawal_row
 assert withdrawal_row['alert_policy'] == 'report_only', withdrawal_row
 assert withdrawal_row['fresh_recipient_count'] is None, withdrawal_row
+assert withdrawal_row['recipient_freshness_state'] == 'bounded_same_token_window', withdrawal_row
+assert withdrawal_row['prior_token_inbound_recipient_count'] == 1, withdrawal_row
+assert withdrawal_row['new_to_token_in_window_recipient_count'] == 7, withdrawal_row
+history_by_recipient = {row['recipient']: row for row in withdrawal_row['recipient_history_sample']}
+assert history_by_recipient[equal_withdrawals[0]['to']]['new_to_token_in_window'] is False, history_by_recipient
+assert history_by_recipient[equal_withdrawals[1]['to']]['new_to_token_in_window'] is True, history_by_recipient
 assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
 assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
 assert {'entity_linkage', 'operator_conflict'} <= set(withdrawal_row['unresolved_gates']), withdrawal_row
+assert 'recipient_freshness' in withdrawal_row['unresolved_gates'], withdrawal_row
+assert 'log_window_completeness' not in withdrawal_row['unresolved_gates'], withdrawal_row
 assert 'exact_time_window' not in withdrawal_row['unresolved_gates'], withdrawal_row
 assert module.Decimal(withdrawal_row['equal_tranche_cv']) <= module.Decimal('0.20'), withdrawal_row
+
+def raw_transfer_log(block, log_index, recipient):
+    return {
+        'address': event['token']['address'],
+        'blockNumber': hex(block),
+        'transactionHash': f"0x{block:064x}",
+        'logIndex': hex(log_index),
+        'topics': [
+            module.opening.TRANSFER_TOPIC,
+            module.opening.address_topic('0x' + '7' * 40),
+            module.opening.address_topic(recipient),
+        ],
+        'data': hex(10**18),
+    }
+
+real_quick_rpc = module.opening.quick_rpc_call
+transfer_env = {
+    key: os.environ.get(key)
+    for key in ('ALPHA_INTRADAY_LOG_CHUNK_BLOCKS', 'ALPHA_INTRADAY_MAX_LOGS', 'ALPHA_INTRADAY_RPC_TIMEOUT')
+}
+os.environ.update({'ALPHA_INTRADAY_LOG_CHUNK_BLOCKS': '1000', 'ALPHA_INTRADAY_MAX_LOGS': '12000', 'ALPHA_INTRADAY_RPC_TIMEOUT': '6'})
+fetch_fixture = {'mode': 'complete', 'calls': []}
+def fixture_log_fetch(chain, method, params, timeout):
+    start = int(params[0]['fromBlock'], 16)
+    fetch_fixture['calls'].append(start)
+    if fetch_fixture['mode'] == 'partial' and start > 100:
+        raise TimeoutError('fixture partial transfer-log timeout')
+    if fetch_fixture['mode'] == 'cap':
+        return [raw_transfer_log(101, 1, equal_withdrawals[0]['to']), raw_transfer_log(102, 2, equal_withdrawals[1]['to'])]
+    return [raw_transfer_log(101, 1, equal_withdrawals[0]['to'])] if start == 100 else []
+
+module.opening.quick_rpc_call = fixture_log_fetch
+complete_rows, fetched_complete_coverage = module.token_transfer_logs_with_coverage(event, 100, 1200)
+assert len(complete_rows) == 1 and fetch_fixture['calls'] == [100, 1100], fetch_fixture
+assert fetched_complete_coverage['state'] == 'requested_window_complete' and fetched_complete_coverage['covered_through_block'] == 1200, fetched_complete_coverage
+fetch_fixture.update(mode='partial', calls=[])
+_, partial_coverage = module.token_transfer_logs_with_coverage(event, 100, 1200)
+assert partial_coverage['state'] == 'partial_rpc_error' and partial_coverage['covered_through_block'] == 1099, partial_coverage
+fetch_fixture.update(mode='cap', calls=[])
+os.environ['ALPHA_INTRADAY_MAX_LOGS'] = '2'
+_, capped_fetch_coverage = module.token_transfer_logs_with_coverage(event, 100, 200)
+module.opening.quick_rpc_call = real_quick_rpc
+for key, value in transfer_env.items():
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+assert capped_fetch_coverage['state'] == 'max_log_limit_reached' and capped_fetch_coverage['complete'] is False, capped_fetch_coverage
+
+real_aggregate_candidate_txs = module.aggregate_candidate_txs
+real_transfer_logs_with_coverage = module.token_transfer_logs_with_coverage
+transfer_fetch_calls = []
+module.aggregate_candidate_txs = lambda event_arg, from_arg, to_arg: ([], 0, 0)
+def one_transfer_fetch(event_arg, from_arg, to_arg):
+    transfer_fetch_calls.append((from_arg, to_arg))
+    return [], complete_coverage
+module.token_transfer_logs_with_coverage = one_transfer_fetch
+scanned_once = module.scan_event({**event, 'opening_block': 100, 'latest_block': 200})
+module.aggregate_candidate_txs = real_aggregate_candidate_txs
+module.token_transfer_logs_with_coverage = real_transfer_logs_with_coverage
+assert transfer_fetch_calls == [(100, 200)], transfer_fetch_calls
+assert scanned_once['analysis']['cex_withdrawal_cluster']['coverage_state'] == 'requested_window_complete', scanned_once
+real_build_events = module.build_events
+real_scan_event = module.scan_event
+module.build_events = lambda: [event]
+module.scan_event = lambda event_arg: dict(scanned_once)
+collected_forward_scans = []
+collected_snapshot = module.build_snapshot(collected_forward_scans)
+module.build_events = real_build_events
+module.scan_event = real_scan_event
+assert len(collected_forward_scans) == 1, collected_forward_scans
+assert '_withdrawal_forward_scan' not in collected_snapshot['events'][0], collected_snapshot
 
 timeout_calls = []
 def fail_block_header(url, method, params, timeout):
@@ -1452,12 +1640,30 @@ assert unavailable_row['first_block_time_utc'] is None and unavailable_row['last
 assert unavailable_row['window_seconds'] is None, unavailable_row
 assert unavailable_row['time_window_evidence'] == 'rpc_block_header_unavailable', unavailable_row
 assert 'exact_time_window' in unavailable_row['unresolved_gates'], unavailable_row
+assert {'recipient_freshness', 'log_window_completeness'} <= set(unavailable_row['unresolved_gates']), unavailable_row
+assert unavailable_row['recipient_freshness_state'] == 'partial_log_window' and unavailable_row['new_to_token_in_window_recipient_count'] is None, unavailable_row
+assert all(row['new_to_token_in_window'] is None for row in unavailable_row['recipient_history_sample']), unavailable_row
 assert unavailable_row['direction'] == 'unknown' and unavailable_row['action'] == 'Observe', unavailable_row
 assert timeout_calls == [('fixture://primary', 2), ('fixture://fallback', 2)], timeout_calls
 budget_exhausted_time = module.cex_withdrawal_cluster(event, equal_withdrawals, 100, 200)
 assert budget_exhausted_time['candidate_count'] == 1, budget_exhausted_time
 assert len(timeout_calls) == 2, timeout_calls
 assert 'exact_time_window' in budget_exhausted_time['clusters'][0]['unresolved_gates'], budget_exhausted_time
+
+capped_withdrawal = module.cex_withdrawal_cluster(
+    event,
+    recipient_history_transfers,
+    100,
+    200,
+    capped_fetch_coverage,
+)
+capped_row = capped_withdrawal['clusters'][0]
+assert capped_withdrawal['coverage_state'] == 'max_log_limit_reached', capped_withdrawal
+assert {'recipient_freshness', 'log_window_completeness'} <= set(capped_row['unresolved_gates']), capped_row
+assert capped_row['prior_token_inbound_recipient_count'] == 1 and capped_row['new_to_token_in_window_recipient_count'] is None, capped_row
+capped_history_by_recipient = {row['recipient']: row for row in capped_row['recipient_history_sample']}
+assert capped_history_by_recipient[equal_withdrawals[0]['to']]['new_to_token_in_window'] is False, capped_history_by_recipient
+assert capped_history_by_recipient[equal_withdrawals[1]['to']]['new_to_token_in_window'] is None, capped_history_by_recipient
 
 def reversed_block_header(url, method, params, timeout):
     block = int(params[0], 16)
@@ -1530,11 +1736,243 @@ assert latest_observation['cluster']['unresolved_gates'] == withdrawal_row['unre
 assert latest_observation['cluster']['sample_transfers'] == withdrawal_row['sample_transfers'], latest_observation
 assert latest_observation['cluster']['window_seconds'] == 21, latest_observation
 assert latest_observation['cluster']['time_window_evidence'] == 'rpc_block_header', latest_observation
+assert latest_observation['cluster']['fresh_recipient_count'] is None and latest_observation['cluster']['recipient_freshness_state'] == 'bounded_same_token_window', latest_observation
+assert latest_observation['cluster']['prior_token_inbound_recipient_count'] == 1 and latest_observation['cluster']['new_to_token_in_window_recipient_count'] == 7, latest_observation
 assert latest_observation['scan_coverage']['criteria'] == withdrawal['criteria'], latest_observation
+assert latest_observation['scan_coverage']['coverage_state'] == 'requested_window_complete' and latest_observation['scan_coverage']['log_window_coverage'] == complete_coverage, latest_observation
 assert module.event_alert_keys(withdrawal_event) == alert_keys_before == [], withdrawal_event
 assert module.telegram_text({'events': [withdrawal_event], 'new_alert_count': 0}) == telegram_before
 assert module.push_signature(history_snapshot) == signature_before
 assert withdrawal_event['analysis']['trade_signal'] == trade_signal_before
+
+forward_dex = '0x' + '7' * 40
+forward_plain = '0x' + '6' * 40
+forward_dead = '0x000000000000000000000000000000000000dead'
+forward_zero_amount = '0x' + '2' * 40
+forward_tx = '0x' + 'd' * 64
+def forward_transfer(recipient, destination, block, log_index, tx_hash):
+    return {
+        'token': event['token']['address'],
+        'from': recipient,
+        'to': destination,
+        'amount': module.Decimal('1000'),
+        'block': block,
+        'log_index': log_index,
+        'tx': tx_hash,
+    }
+
+forward_rows = [
+    forward_transfer(equal_withdrawals[0]['to'], forward_plain, 101, 10, '0x' + '5' * 64),
+    forward_transfer(equal_withdrawals[0]['to'], forward_plain, 120, 1, '0x' + '6' * 64),
+    forward_transfer(equal_withdrawals[1]['to'], deposit, 121, 1, '0x' + '7' * 64),
+    forward_transfer(equal_withdrawals[2]['to'], forward_dex, 122, 1, forward_tx),
+    forward_transfer(equal_withdrawals[3]['to'], equal_withdrawals[3]['to'], 123, 1, '0x' + '1' * 64),
+    forward_transfer(equal_withdrawals[3]['to'], module.opening.ZERO, 123, 2, '0x' + '2' * 64),
+    forward_transfer(equal_withdrawals[3]['to'], forward_dead, 123, 3, '0x' + '3' * 64),
+    forward_transfer(equal_withdrawals[3]['to'], 'not-an-address', 123, 4, '0x' + '4' * 64),
+    {**forward_transfer(equal_withdrawals[3]['to'], forward_zero_amount, 123, 5, '0x' + '5' * 64), 'amount': module.Decimal('0')},
+]
+forward_scan = {
+    'event': {
+        **event,
+        'known_contracts': [
+            {'address': deposit, 'class': 'cex_deposit'},
+            {'address': forward_dex, 'class': 'dex_router'},
+        ],
+    },
+    'transfer_rows': forward_rows,
+    'receipt_rows': [{'tx': forward_tx, 'seller': equal_withdrawals[2]['to'], 'got_quote': '2500'}],
+    'from_block': 100,
+    'to_block': 200,
+    'transfer_coverage': complete_coverage,
+    'scan_limited': False,
+}
+no_current_withdrawal = {**withdrawal, 'status': 'none', 'action': '', 'candidate_count': 0, 'clusters': []}
+forward_analysis = {**withdrawal_analysis, 'cex_withdrawal_cluster': no_current_withdrawal}
+forward_event = {**withdrawal_event, 'analysis': forward_analysis}
+forward_snapshot = {'generated_at': '2026-07-14T00:02:00+00:00', 'events': [forward_event]}
+contract_round = {'value': 1}
+contract_calls = []
+def fixture_contract_code(url, method, params, timeout):
+    assert method == 'eth_getCode' and timeout == 1, (method, timeout)
+    recipient, block = params
+    expected_block = next(row['block'] for row in equal_withdrawals if row['to'] == recipient)
+    assert block == hex(expected_block), (recipient, block, expected_block)
+    contract_calls.append((contract_round['value'], recipient, url))
+    if contract_round['value'] == 2:
+        if recipient == equal_withdrawals[2]['to']:
+            return '0x6000'
+        if recipient == equal_withdrawals[3]['to']:
+            return '0x'
+    if contract_round['value'] == 3 and recipient in {
+        equal_withdrawals[0]['to'], equal_withdrawals[5]['to'], equal_withdrawals[6]['to'], equal_withdrawals[7]['to'],
+    }:
+        return '0x'
+    if contract_round['value'] == 4:
+        return '0x'
+    if contract_round['value'] == 6:
+        return '0x'
+    raise TimeoutError('fixture eth_getCode timeout')
+
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+module.opening.rpc_call_url = fixture_contract_code
+assert module.record_withdrawal_candidate_history(forward_snapshot, [forward_scan]) == 0
+forward_history = json.loads(history_path.read_text(encoding='utf-8'))
+forward_history_row = forward_history['candidates'][0]
+tracking = forward_history_row['forward_tracking']
+contract_review = forward_history_row['recipient_contract_review']
+latest_forward = tracking['latest_scan']
+assert forward_history['active_candidate_ids'] == [], forward_history
+assert forward_history_row['last_observed_at'] == history_snapshot['generated_at'], forward_history_row
+assert tracking['scan_count'] == 1 and latest_forward['tracked_sample_recipient_count'] == 8, tracking
+assert latest_forward['next_hop_transfer_count'] == 3 and latest_forward['next_hop_recipient_count'] == 3, latest_forward
+assert latest_forward['cex_redeposit_transfer_count'] == 1 and latest_forward['dex_route_transfer_count'] == 1, latest_forward
+assert latest_forward['dex_execution_tx_count'] == 1 and latest_forward['quote_recovered'] == '2500', latest_forward
+positive_names = {'next_hop', 'cex_redeposit', 'dex_route', 'dex_execution', 'quote_recovery'}
+assert set(tracking['latest_positive_evidence']) == positive_names and 'positive_evidence' not in tracking, tracking
+assert contract_review['sample_recipient_count'] == 8 and contract_review['rpc_unresolved_count'] == 8, contract_review
+assert [row['attempt_count'] for row in contract_review['recipients']] == [2, 2, 0, 0, 0, 0, 0, 0], contract_review
+assert len(contract_calls) == module.WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS == 4, contract_calls
+assert not {
+    equal_withdrawals[3]['to'], module.opening.ZERO, forward_dead, 'not-an-address', forward_zero_amount,
+} & {row['destination'] for row in latest_forward['sample_transfers']}, latest_forward
+assert forward_history_row['latest_observation'] == latest_observation, forward_history_row
+assert forward_history_row['latest_observation']['cluster']['unresolved_gates'] == withdrawal_row['unresolved_gates'], forward_history_row
+assert module.event_alert_keys(forward_event) == alert_keys_before == [], forward_event
+assert module.telegram_text({'events': [forward_event], 'new_alert_count': 0}) == telegram_before
+assert module.push_signature(forward_snapshot) == signature_before
+assert forward_event['analysis']['trade_signal'] == trade_signal_before
+
+legacy_tracking = forward_history['candidates'][0]['forward_tracking']
+legacy_tracking['positive_evidence'] = legacy_tracking.pop('latest_positive_evidence')
+history_path.write_text(json.dumps(forward_history), encoding='utf-8')
+positive_again_scan = {
+    **forward_scan,
+    'transfer_rows': [forward_transfer(equal_withdrawals[3]['to'], '0x' + '4' * 40, 124, 1, '0x' + 'e' * 64)],
+    'receipt_rows': [],
+}
+positive_again_at = '2026-07-14T00:02:30+00:00'
+contract_round['value'] = 2
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+assert module.record_withdrawal_candidate_history(
+    {'generated_at': positive_again_at, 'events': [forward_event]},
+    [positive_again_scan],
+) == 0
+positive_again_history = json.loads(history_path.read_text(encoding='utf-8'))
+positive_again_tracking = positive_again_history['candidates'][0]['forward_tracking']
+positive_again_contract = positive_again_history['candidates'][0]['recipient_contract_review']
+assert positive_again_tracking['scan_count'] == 2 and 'positive_evidence' not in positive_again_tracking, positive_again_tracking
+assert set(positive_again_tracking['latest_positive_evidence']) == positive_names, positive_again_tracking
+assert positive_again_tracking['latest_positive_evidence']['next_hop']['observed_at'] == positive_again_at, positive_again_tracking
+assert positive_again_tracking['latest_positive_evidence']['cex_redeposit']['observed_at'] == forward_snapshot['generated_at'], positive_again_tracking
+assert positive_again_contract['contract_at_anchor_block_count'] == 1, positive_again_contract
+assert positive_again_contract['eoa_at_anchor_block_count'] == 1, positive_again_contract
+round_two_addresses = [address for round_value, address, _url in contract_calls if round_value == 2]
+assert round_two_addresses[:2] == [equal_withdrawals[2]['to'], equal_withdrawals[3]['to']], round_two_addresses
+assert equal_withdrawals[0]['to'] not in round_two_addresses and equal_withdrawals[1]['to'] not in round_two_addresses, round_two_addresses
+
+negative_scan = {**forward_scan, 'transfer_rows': forward_rows[:1], 'receipt_rows': [], 'scan_limited': True}
+negative_snapshot = {'generated_at': '2026-07-14T00:03:00+00:00', 'events': [forward_event]}
+contract_round['value'] = 3
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+assert module.record_withdrawal_candidate_history(negative_snapshot, [negative_scan]) == 0
+negative_history = json.loads(history_path.read_text(encoding='utf-8'))
+negative_tracking = negative_history['candidates'][0]['forward_tracking']
+negative_contract = negative_history['candidates'][0]['recipient_contract_review']
+assert negative_tracking['scan_count'] == 3, negative_tracking
+assert negative_tracking['latest_scan']['next_hop_state'] == 'not_observed_in_fetched_window', negative_tracking
+assert negative_tracking['latest_scan']['scan_limited'] is True, negative_tracking
+assert set(negative_tracking['latest_positive_evidence']) == positive_names, negative_tracking
+assert negative_contract['eoa_at_anchor_block_count'] == 5 and negative_contract['contract_at_anchor_block_count'] == 1, negative_contract
+round_three_addresses = [address for round_value, address, _url in contract_calls if round_value == 3]
+assert equal_withdrawals[2]['to'] not in round_three_addresses and equal_withdrawals[3]['to'] not in round_three_addresses, round_three_addresses
+
+contract_round['value'] = 4
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+all_eoa_review = module.review_withdrawal_recipient_contracts(
+    event,
+    {**withdrawal_row, 'sample_transfers': withdrawal_row['sample_transfers'][:4]},
+    {},
+    '2026-07-14T00:04:00+00:00',
+)
+module.opening.rpc_call_url = block_header_success
+assert all_eoa_review['review_state'] == 'all_sample_eoa_at_anchor_block' and all_eoa_review['eoa_at_anchor_block_count'] == 4, all_eoa_review
+assert 'unknown_contract_filter' in withdrawal_row['unresolved_gates'], withdrawal_row
+
+multi_candidate_reviews = []
+for candidate_id, sample_rows in (
+    ('candidate-a', equal_withdrawals[:2]),
+    ('candidate-b', equal_withdrawals[2:4]),
+):
+    multi_candidate_reviews.append((
+        candidate_id,
+        event,
+        {
+            'recipients': [
+                {
+                    'recipient': row['to'],
+                    'anchor_block': row['block'],
+                    'state': 'rpc_unresolved',
+                    'attempt_count': 0,
+                }
+                for row in sample_rows
+            ],
+        },
+    ))
+contract_round['value'] = 5
+module.opening.rpc_call_url = fixture_contract_code
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+module.resolve_withdrawal_contract_reviews(multi_candidate_reviews, '2026-07-14T00:04:30+00:00')
+assert [sum(row['attempt_count'] for row in review['recipients']) for _candidate, _event, review in multi_candidate_reviews] == [2, 2], multi_candidate_reviews
+assert len([call for call in contract_calls if call[0] == 5]) == module.WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS, contract_calls
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+module.resolve_withdrawal_contract_reviews(multi_candidate_reviews, '2026-07-14T00:04:45+00:00')
+assert [sorted(row['attempt_count'] for row in review['recipients']) for _candidate, _event, review in multi_candidate_reviews] == [[2, 2], [2, 2]], multi_candidate_reviews
+
+successful_candidate_reviews = []
+for candidate_id, sample_rows in (
+    ('candidate-a', equal_withdrawals[:3]),
+    ('candidate-b', equal_withdrawals[3:6]),
+):
+    successful_candidate_reviews.append((
+        candidate_id,
+        event,
+        {
+            'recipients': [
+                {
+                    'recipient': row['to'],
+                    'anchor_block': row['block'],
+                    'state': 'rpc_unresolved',
+                    'attempt_count': 0,
+                }
+                for row in sample_rows
+            ],
+        },
+    ))
+contract_round['value'] = 6
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+module.resolve_withdrawal_contract_reviews(successful_candidate_reviews, '2026-07-14T00:04:50+00:00')
+assert [review['eoa_at_anchor_block_count'] for _candidate, _event, review in successful_candidate_reviews] == [2, 2], successful_candidate_reviews
+assert [review['rpc_unresolved_count'] for _candidate, _event, review in successful_candidate_reviews] == [1, 1], successful_candidate_reviews
+
+single_unresolved_review = {
+    'recipients': [{
+        'recipient': equal_withdrawals[0]['to'],
+        'anchor_block': equal_withdrawals[0]['block'],
+        'state': 'rpc_unresolved',
+        'attempt_count': 0,
+    }],
+}
+contract_round['value'] = 7
+single_call_start = len(contract_calls)
+module.WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
+module.resolve_withdrawal_contract_reviews(
+    [('single-candidate', event, single_unresolved_review)],
+    '2026-07-14T00:04:55+00:00',
+)
+assert len(contract_calls) - single_call_start == 2, contract_calls[single_call_start:]
+assert single_unresolved_review['recipients'][0]['attempt_count'] == 2, single_unresolved_review
+module.opening.rpc_call_url = block_header_success
 
 reordered_cluster = {**withdrawal_row, 'sample_transfers': list(reversed(withdrawal_row['sample_transfers']))}
 reordered_withdrawal = {**withdrawal, 'clusters': [reordered_cluster]}
@@ -1560,6 +1998,8 @@ assert repeated_row['observation_count'] == 2, repeated_row
 assert repeated_row['first_observed_at'] == history_snapshot['generated_at'], repeated_row
 assert repeated_row['last_observed_at'] == repeat_snapshot['generated_at'], repeated_row
 assert repeated_row['first_observation'] == history_row['first_observation'], repeated_row
+assert repeated_row['forward_tracking'] == negative_tracking, repeated_row
+assert repeated_row['recipient_contract_review'] == negative_contract, repeated_row
 
 later_cluster = {
     **withdrawal_row,
@@ -1756,7 +2196,6 @@ runtime_analysis = module.analyze_rows(
 assert runtime_analysis['runtime_cex_deposit_candidate_count'] == 1, runtime_analysis
 assert runtime_analysis['cex_destination_classes'] == 'cex_deposit_candidate', runtime_analysis
 assert '候选CEX充值路径' in runtime_analysis['trade_signal'], runtime_analysis
-real_get_logs = module.opening.get_logs_quick
 def fake_get_logs(chain, query, chunk_blocks, max_logs, timeout):
     user = '0x' + '7' * 40
     hot = '0x' + 'd' * 40
@@ -1781,9 +2220,16 @@ def fake_get_logs(chain, query, chunk_blocks, max_logs, timeout):
             'transactionHash': '0x' + 'b' * 64,
         },
     ]
-module.opening.get_logs_quick = fake_get_logs
+real_runtime_log_rpc = module.opening.quick_rpc_call
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: fake_get_logs(
+    chain,
+    params[0],
+    0,
+    0,
+    timeout,
+)
 runtime_candidates = module.runtime_cex_deposit_candidates(event, 100, 200)
-module.opening.get_logs_quick = real_get_logs
+module.opening.quick_rpc_call = real_runtime_log_rpc
 assert candidate in runtime_candidates, runtime_candidates
 assert runtime_candidates[candidate]['destination_classes'] == ['cex_deposit'], runtime_candidates
 analysis = module.analyze_rows(

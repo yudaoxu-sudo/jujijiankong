@@ -1,6 +1,6 @@
 {
   "schema": "alpha_rotated_address_review.v1",
-  "updated_at": "2026-07-08",
+  "updated_at": "2026-07-15",
   "scope": "Reuse old local Manus and tx_review Binance Alpha swap samples as the rotated Alpha infrastructure evidence pool.",
   "source_outputs": [
     {
@@ -110,6 +110,49 @@
       "needed_evidence": "No action unless future trace proves a more specific infrastructure class."
     }
   ],
+  "rpc_review": {
+    "checked_on": "2026-07-15",
+    "evidence_scope": "representative_transactions_only",
+    "representative_only": true,
+    "representative_tx_count": 16,
+    "transaction_found_count": 16,
+    "receipt_found_count": 16,
+    "candidate_reviews": [
+      {
+        "candidate": 1,
+        "address": "0x1905dbf18c916bf8ec659545de0858d9f20eaeab",
+        "code_state": "contract",
+        "indexed_receipt_occurrence_count": 9,
+        "decision": "do_not_promote"
+      },
+      {
+        "candidate": 2,
+        "address": "0x7977f3e8e063a4ee95b5f396d63485dbdea4515d",
+        "code_state": "contract",
+        "indexed_receipt_occurrence_count": 6,
+        "decision": "do_not_promote"
+      },
+      {
+        "candidate": 3,
+        "address": "0xe2588c219697f520757b82f5b0119d72bddc0e13",
+        "code_state": "contract",
+        "indexed_receipt_occurrence_count": 6,
+        "proxy_type": "eip1967",
+        "implementation_matches_configured_infrastructure": false,
+        "decision": "do_not_promote"
+      },
+      {
+        "candidate": 4,
+        "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "configured_class": "dex_vault",
+        "decision": "keep_dex_vault"
+      }
+    ],
+    "trace_status": "unavailable",
+    "internal_trace_complete": false,
+    "address_history_complete": false,
+    "entity_ownership_verified": false
+  },
   "representative_tx_hashes": [
     "0x0ecc364053f10f3a257289e70027cd842ed83a75ec1ae5636fc47ab00c793ac4",
     "0x6c3a444aa3379f502f193cedc723f4bf1cec34b887f0edb9d470c166ac6b357b",

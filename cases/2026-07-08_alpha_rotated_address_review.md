@@ -39,6 +39,19 @@ The strong rerun also surfaced protocol/router candidates with cross-token trans
 
 These candidates stay out of config promotion until invocation flow, internal transaction rows, or trace JSON proves the role.
 
+## 2026-07-15 RPC Refresh
+
+This refresh covers the `16` representative transaction hashes listed in the tracked input. Transaction and receipt records were found for all `16/16` samples.
+
+| Candidate | Contract check | Indexed receipt occurrences | Decision |
+| --- | --- | ---: | --- |
+| `0x1905dbf18c916bf8ec659545de0858d9f20eaeab` | contract | 9 | `do_not_promote` |
+| `0x7977f3e8e063a4ee95b5f396d63485dbdea4515d` | contract | 6 | `do_not_promote` |
+| `0xe2588c219697f520757b82f5b0119d72bddc0e13` | EIP-1967 proxy; implementation does not match configured infrastructure | 6 | `do_not_promote` |
+| `0x238a358808379702088667322f80ac48bad5e6c4` | existing configured label retained | - | keep `dex_vault` |
+
+The refresh is representative-only. It does not establish complete address history, internal call flow, or entity ownership. Internal trace evidence was unavailable, so candidates 1-3 remain outside config promotion and candidate 4 keeps its existing `dex_vault` class.
+
 ## Operating Rule
 
 Configured Alpha infrastructure is removed from buyer, seller, whale, smart-money, and project/MM cohorts. These labels only clean the evidence; they do not create buy/sell direction. For market action, the system still needs sellability, opening cohort, quote recovery, venue context, OI/funding, and holder flow.
