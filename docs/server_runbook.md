@@ -242,6 +242,8 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 
 上述增强保持 `direction=unknown`、`action=Observe`、交易信号和 Telegram 路径不变。共同原生 Gas 来源仍需低延迟索引数据，实体关联和 operator conflict 仍需独立证据，不能通过逐块原生转账扫描在线推断。
 
+无凭证 BSC 原生历史数据源的验收记录在 `cases/2026-07-15_bsc_native_history_source_review.md`。当前 Etherscan V2 的 chain 56 历史接口需要付费 key，Routescan 官方接口不支持 chain 56，Blockscout PRO 支持表和 Chainscout registry 探针未核实到 BSC mainnet 官方实例。满足带区块边界的完整分页、约四秒总预算及明确成功状态之前，`common_gas_source_ratio` 保持空值，`common_gas_source` 保持未决；禁止用逐块扫描替代索引覆盖。
+
 `sniper_engine/exchange_aggregator.py` 固化 Binance Alpha 托管/聚合器识别边界。交易所聚合器候选必须命中机制指纹：跨 token 复用、稳定币腿/山寨币腿配对结构、共享 Binance Wallet DEX Router。双向高频、合约直连 pool 只作为辅助信号，单独出现时归入 `mm_or_project_suspect`，进入下一跳和资金来源追踪。`confirmed_dex_sell` 对任何主体都保留市场偏空效果；交易所/项目标签只影响 cohort 归类，不能豁免真实 DEX 卖出。
 
 `ONCHAIN_NETFLOW_RELIABLE_WHEN_ALPHA_DOMINANT` 默认 `0`。在 Binance Alpha 成交额远高于 Pancake 链上成交时，`alpha_price_momentum_watch.py` 会把覆盖标记为 `ONCHAIN_NETFLOW_UNRELIABLE`，链上净流层只作注意力背景，不能用“买后持有 / 未见卖出 / 买卖平衡”生成偏多判断。开盘监控也会把 `ALPHA_DOMINANT` 场景降级为观察，直到真实 trace 证明聚合器和再平衡地址可以稳定剔除。

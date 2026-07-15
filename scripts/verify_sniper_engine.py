@@ -106,6 +106,7 @@ def main() -> int:
         ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json",
         ROOT / "input" / "miles082510_wallet_cluster_review_2026-07-13.json",
         ROOT / "cases" / "2026-07-13_miles082510_wallet_cluster_review.md",
+        ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_swaps.csv",
@@ -400,6 +401,26 @@ def main() -> int:
     except Exception as exc:
         alpha_rotated_msg = str(exc)
     checks.append(("alpha rotated address review parses", alpha_rotated_ok, alpha_rotated_msg))
+
+    native_history_review = (ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md").read_text(encoding="utf-8")
+    native_history_review_ok = all(
+        marker in native_history_review
+        for marker in (
+            "blocked_paid_api_key",
+            "blocked_chain_56_unsupported",
+            "blocked_no_verified_official_bsc_instance",
+            "common_gas_source_ratio=null",
+            "direction=unknown",
+            "action=Observe",
+        )
+    )
+    checks.append(
+        (
+            "BSC native history review preserves unresolved common-gas boundary",
+            native_history_review_ok,
+            "credential-free chain-56 sources remain blocked",
+        )
+    )
 
     cex_labels_ok = False
     cex_labels_msg = ""
@@ -1546,6 +1567,7 @@ history_by_recipient = {row['recipient']: row for row in withdrawal_row['recipie
 assert history_by_recipient[equal_withdrawals[0]['to']]['new_to_token_in_window'] is False, history_by_recipient
 assert history_by_recipient[equal_withdrawals[1]['to']]['new_to_token_in_window'] is True, history_by_recipient
 assert withdrawal_row['common_gas_source_ratio'] is None, withdrawal_row
+assert 'common_gas_source' in withdrawal_row['unresolved_gates'], withdrawal_row
 assert withdrawal_row['next_hop_state'] == 'unknown', withdrawal_row
 assert {'entity_linkage', 'operator_conflict'} <= set(withdrawal_row['unresolved_gates']), withdrawal_row
 assert 'recipient_freshness' in withdrawal_row['unresolved_gates'], withdrawal_row
