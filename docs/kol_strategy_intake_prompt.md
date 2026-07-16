@@ -17,7 +17,7 @@
 3. 记录抓取时间、账号、帖子数量、时间覆盖范围、原始文件路径或下载包路径。
 4. 不要抓取私信、cookie、验证码、非公开内容、付费墙内容或任何敏感凭证。
 
-输出必须包含四个文件或四个清晰分区：
+输出必须包含五个文件或五个清晰分区：
 
 第一部分：raw source manifest
 - account / source url
@@ -52,13 +52,29 @@
 - missing_verification
 - why_it_matters
 
-第四部分：integration proposal
+第四部分：outcome ledger
+每个原始信号使用唯一 `root_signal_id`，把同作者的 quote、自我跟进和结果帖归并到该信号。字段：
+- root_signal_id
+- related_update_post_urls
+- signal_time_utc
+- source_published_at_utc
+- claimed_event_at_utc
+- event_time_sanity: pass / mismatch / unknown
+- entry_window_definition
+- invalidation
+- evaluation_horizons: 24h / 72h / 7d
+- mfe / mae / end_return
+- exit_path_verified
+- outcome_status: won / lost / mixed / unresolved
+
+第五部分：integration proposal
 请明确建议如何进入系统：
 - 是否需要新增 `$celue` reference 文件。
 - 是否需要更新 `references/system-logic.md` 的全局规则。
 - 是否需要更新项目脚本、日报字段、watchlist 字段或只做案例留档。
 - 哪些内容只能作为 discovery，不能进入动作规则。
 - 哪些链上/RPC/market/official 检查能验证或否定这些经验。
+- 当前市场的 `regime_expectancy`：流动性、MC/FDV、全场 OI、场所政策、资金集中度、目标区间、分段止盈和 time stop；历史妖币倍数不能直接作为当前目标。
 
 硬性要求：
 - 按 official / onchain / market / social / inference 分层。
@@ -66,6 +82,9 @@
 - 利润截图、喊单、情绪词、单次成功案例不能直接作为 durable rule。
 - 如果没有原始链接、时间、上下文或可复核路径，请标记为 low_confidence。
 - 不要把外部 AI 的推断写成事实。
+- quote、自我跟进和庆祝帖不能重复计入胜率分母；`unresolved` 必须留在分母中。
+- 帖子发布时间与文中事件时间不一致时，标记 `event_time_sanity=mismatch`，暂停事实升级。
+- “刷量”先记为 `wash_volume_candidate`；只有本地 gross buy/sell、net-to-gross、往返地址和 quote recovery 验证后才能升级。
 ```
 
 本地接收后的处理步骤：

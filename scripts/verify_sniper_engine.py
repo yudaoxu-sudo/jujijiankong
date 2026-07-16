@@ -106,6 +106,8 @@ def main() -> int:
         ROOT / "input" / "alpha_rotated_address_review_2026-07-08.json",
         ROOT / "input" / "miles082510_wallet_cluster_review_2026-07-13.json",
         ROOT / "cases" / "2026-07-13_miles082510_wallet_cluster_review.md",
+        ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json",
+        ROOT / "cases" / "2026-07-16_elonkely_latest_100_review.md",
         ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
@@ -145,6 +147,32 @@ def main() -> int:
     except Exception as exc:
         config_msg = str(exc)
     checks.append(("watchlist example JSON parses", config_ok, config_msg))
+
+    elonkely_review_ok = False
+    elonkely_review_msg = ""
+    try:
+        elonkely_review = json.loads(
+            (ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json").read_text(encoding="utf-8")
+        )
+        root_signals = [row.get("root_signal_id") for row in elonkely_review.get("outcome_ledger", [])]
+        runtime_decisions = elonkely_review.get("runtime_decisions", {})
+        time_cases = elonkely_review.get("source_time_sanity_cases", [])
+        elonkely_review_ok = (
+            elonkely_review.get("schema") == "kol_strategy_review.v1"
+            and elonkely_review.get("source_scope", {}).get("post_count_deduped") == 100
+            and elonkely_review.get("source_scope", {}).get("new_since_prior_review_count") == 17
+            and len(root_signals) >= 2
+            and len(root_signals) == len(set(root_signals))
+            and all(row.get("evaluation_horizons") for row in elonkely_review.get("outcome_ledger", []))
+            and all(row.get("outcome_status") in {"won", "lost", "mixed", "unresolved"} for row in elonkely_review.get("outcome_ledger", []))
+            and any(row.get("event_time_sanity") == "mismatch" for row in time_cases)
+            and runtime_decisions.get("trade_action_change") is False
+            and runtime_decisions.get("telegram_alert_change") is False
+        )
+        elonkely_review_msg = f"roots={len(root_signals)}, time_cases={len(time_cases)}"
+    except Exception as exc:
+        elonkely_review_msg = str(exc)
+    checks.append(("ElonKely latest-100 review parses with safe outcome ledger", elonkely_review_ok, elonkely_review_msg))
 
     b2_forward_ok = False
     b2_forward_msg = ""
@@ -990,7 +1018,10 @@ assert readback_gate['can_follow'] is False, readback_gate
     checks.append(("server cron includes independent health watchdog", cron_watchdog_ok, cron_watchdog_msg))
 
     perp_watch_code = """
-from scripts.perp_oi_funding_watch import best_ok_venue, cached_funding_records, canonical_funding_records, classify_perp, depth_action_note, depth_metrics, funding_history_note, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, summarize_funding_history, total_open_interest, trend_for_symbol, venue_signal_notes
+import tempfile
+from pathlib import Path
+import scripts.perp_oi_funding_watch as perp_module
+from scripts.perp_oi_funding_watch import aggregate_open_interest_quality, best_ok_venue, cached_funding_records, canonical_funding_records, classify_perp, depth_action_note, depth_metrics, funding_history_note, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, summarize_funding_history, total_open_interest, trend_for_symbol, venue_signal_notes
 
 thin = classify_perp({'open_interest_usd': '1000', 'last_funding_rate': '0', 'quote_volume_24h': '0'})
 assert thin['status'] == 'thin_or_unusable', thin
@@ -1057,6 +1088,124 @@ history = [{
 }]
 trend = trend_for_symbol(history, 'CAP', {'mark_price': '0.022', 'open_interest_usd': '1200000', 'last_funding_rate': '0.0002'}, '2026-06-30T01:00:00+00:00')
 assert trend['trend_hint'] == '多头增量', trend
+aggregate_history = [{
+    'generated_at': '2026-06-30T00:00:00+00:00',
+    'rows': [{
+        'symbol': 'TOTAL',
+        'perp_symbol': 'TOTALUSDT',
+        'status': 'ok',
+        'venue': 'binance_usdm',
+        'mark_price': '1',
+        'open_interest_usd': '1000000',
+        'total_open_interest_usd': '6000000',
+        'listed_venues': ['binance_usdm', 'okx_swap', 'bybit_linear'],
+        'extra_venues': [
+            {'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': '2000000'},
+            {'venue': 'bybit_linear', 'status': 'ok', 'open_interest_usd': '3000000'},
+        ],
+        'last_funding_rate': '0',
+    }],
+}]
+aggregate_trend = trend_for_symbol(
+    aggregate_history,
+    'TOTAL',
+    {
+        'perp_symbol': 'TOTALUSDT',
+        'venue': 'binance_usdm',
+        'mark_price': '1',
+        'open_interest_usd': '1000000',
+        'total_open_interest_usd': '9000000',
+        'listed_venues': ['binance_usdm', 'okx_swap', 'bybit_linear'],
+        'extra_venues': [
+            {'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': '3000000'},
+            {'venue': 'bybit_linear', 'status': 'ok', 'open_interest_usd': '5000000'},
+        ],
+        'last_funding_rate': '0',
+    },
+    '2026-06-30T01:00:00+00:00',
+)
+assert aggregate_trend['oi_usd_delta_pct'] == '0', aggregate_trend
+assert aggregate_trend['trend_hint'] == '观察', aggregate_trend
+assert aggregate_trend['total_oi_trend_status'] == 'scope_match', aggregate_trend
+assert aggregate_trend['total_oi_usd_delta'] == '3000000', aggregate_trend
+assert aggregate_trend['total_oi_usd_delta_pct'] == '50.0', aggregate_trend
+assert aggregate_trend['total_oi_data_quality'] == 'complete', aggregate_trend
+original_history_path = perp_module.HISTORY_PATH
+original_latest_path = perp_module.LATEST_PATH
+try:
+    history_dir = Path(tempfile.mkdtemp(prefix='perp_history_roundtrip_'))
+    perp_module.HISTORY_PATH = history_dir / 'history.jsonl'
+    perp_module.LATEST_PATH = history_dir / 'latest.json'
+    perp_module.append_history({'generated_at': '2026-06-30T00:00:00+00:00', 'source_status': 'ok', 'rows': aggregate_history[0]['rows']})
+    roundtrip = perp_module.read_history()
+    stored_aggregate = roundtrip[0]['rows'][0]
+    assert stored_aggregate['oi_venue_components'] == {
+        'binance_usdm': '1000000',
+        'okx_swap': '2000000',
+        'bybit_linear': '3000000',
+    }, stored_aggregate
+    stored_scope, stored_quality = aggregate_open_interest_quality(stored_aggregate)
+    assert stored_scope == ['binance_usdm', 'bybit_linear', 'okx_swap'] and stored_quality is True, (stored_scope, stored_quality)
+    roundtrip_trend = trend_for_symbol(roundtrip, 'TOTAL', {
+        'perp_symbol': 'TOTALUSDT',
+        'venue': 'binance_usdm',
+        'mark_price': '1',
+        'open_interest_usd': '1000000',
+        'total_open_interest_usd': '9000000',
+        'listed_venues': ['binance_usdm', 'okx_swap', 'bybit_linear'],
+        'oi_venue_components': {'binance_usdm': '1000000', 'okx_swap': '3000000', 'bybit_linear': '5000000'},
+        'last_funding_rate': '0',
+    }, '2026-06-30T01:00:00+00:00')
+    assert roundtrip_trend['total_oi_trend_status'] == 'scope_match', roundtrip_trend
+    assert roundtrip_trend['total_oi_usd_delta_pct'] == '50.0', roundtrip_trend
+finally:
+    perp_module.HISTORY_PATH = original_history_path
+    perp_module.LATEST_PATH = original_latest_path
+bad_scope, bad_quality = aggregate_open_interest_quality({
+    'venue': 'binance_usdm',
+    'open_interest_usd': '0',
+    'total_open_interest_usd': '0',
+    'listed_venues': ['binance_usdm', 'okx_swap'],
+    'extra_venues': [{'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': ''}],
+})
+assert bad_scope == ['binance_usdm', 'okx_swap'] and bad_quality is False, (bad_scope, bad_quality)
+incomplete_trend = trend_for_symbol(
+    aggregate_history,
+    'TOTAL',
+    {
+        'perp_symbol': 'TOTALUSDT',
+        'venue': 'binance_usdm',
+        'mark_price': '1',
+        'open_interest_usd': '0',
+        'total_open_interest_usd': '0',
+        'listed_venues': ['binance_usdm', 'okx_swap', 'bybit_linear'],
+        'extra_venues': [
+            {'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': ''},
+            {'venue': 'bybit_linear', 'status': 'ok', 'open_interest_usd': ''},
+        ],
+        'last_funding_rate': '0',
+    },
+    '2026-06-30T01:00:00+00:00',
+)
+assert incomplete_trend['total_oi_trend_status'] == 'incomplete_components', incomplete_trend
+assert incomplete_trend['total_oi_usd_delta_pct'] == '', incomplete_trend
+scope_mismatch = trend_for_symbol(
+    aggregate_history,
+    'TOTAL',
+    {
+        'perp_symbol': 'TOTALUSDT',
+        'venue': 'binance_usdm',
+        'mark_price': '1',
+        'open_interest_usd': '1000000',
+        'total_open_interest_usd': '7000000',
+        'listed_venues': ['binance_usdm', 'okx_swap'],
+        'extra_venues': [{'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': '6000000'}],
+        'last_funding_rate': '0',
+    },
+    '2026-06-30T01:00:00+00:00',
+)
+assert scope_mismatch['total_oi_trend_status'] == 'scope_mismatch', scope_mismatch
+assert scope_mismatch['total_oi_usd_delta_pct'] == '', scope_mismatch
 history_cross_venue = [{
     'generated_at': '2026-06-30T00:00:00+00:00',
     'rows': [{

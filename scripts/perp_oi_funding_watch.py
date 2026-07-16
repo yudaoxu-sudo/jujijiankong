@@ -80,6 +80,7 @@ def append_history(snapshot: dict[str, Any]) -> None:
                 "mark_price": row.get("mark_price", ""),
                 "open_interest_usd": row.get("open_interest_usd", ""),
                 "total_open_interest_usd": row.get("total_open_interest_usd", ""),
+                "oi_venue_components": row.get("oi_venue_components") or aggregate_open_interest_components(row),
                 "last_funding_rate": row.get("last_funding_rate", ""),
                 "current_funding_rate_8h": row.get("current_funding_rate_8h", ""),
                 "funding_24h_avg_8h_rate": row.get("funding_24h_avg_8h_rate", ""),
@@ -898,6 +899,40 @@ def total_open_interest(primary: dict[str, Any], extras: list[dict[str, Any]]) -
     return total
 
 
+def aggregate_open_interest_components(row: dict[str, Any]) -> dict[str, str]:
+    persisted = row.get("oi_venue_components")
+    if isinstance(persisted, dict):
+        return {str(name): str(value) for name, value in persisted.items() if str(name)}
+    components: dict[str, str] = {}
+    primary_venue = str(row.get("venue") or "")
+    if primary_venue:
+        components[primary_venue] = str(decimal_from(row.get("open_interest_usd")))
+    for venue in row.get("extra_venues") or []:
+        if venue.get("status") != "ok":
+            continue
+        name = str(venue.get("venue") or "")
+        if name:
+            components[name] = str(decimal_from(venue.get("open_interest_usd")))
+    return components
+
+
+def aggregate_open_interest_quality(row: dict[str, Any]) -> tuple[list[str], bool]:
+    scope = sorted({str(name) for name in (row.get("listed_venues") or []) if str(name)})
+    components = {name: decimal_from(value) for name, value in aggregate_open_interest_components(row).items()}
+    total_raw = row.get("total_open_interest_usd")
+    total = decimal_from(total_raw)
+    component_total = sum(components.values(), Decimal(0))
+    complete = bool(
+        scope
+        and total_raw not in (None, "")
+        and set(scope) == set(components)
+        and all(value > 0 for value in components.values())
+        and total > 0
+        and total == component_total
+    )
+    return scope, complete
+
+
 def percent_change(current: Decimal, previous: Decimal) -> Decimal:
     if previous <= 0:
         return Decimal(0)
@@ -969,6 +1004,47 @@ def trend_for_symbol(history: list[dict[str, Any]], symbol: str, current: dict[s
     price_delta_pct = percent_change(current_price, base_price)
     funding_delta = current_funding - base_funding
 
+    current_scope, current_total_complete = aggregate_open_interest_quality(current)
+    baseline_scope, baseline_total_complete = aggregate_open_interest_quality(baseline)
+    previous_scope, previous_total_complete = aggregate_open_interest_quality(previous)
+    current_total_raw = current.get("total_open_interest_usd")
+    baseline_total_raw = baseline.get("total_open_interest_usd")
+    previous_total_raw = previous.get("total_open_interest_usd")
+    total_oi_trend = {
+        "oi_scope": "aggregate_listed_venues",
+        "total_oi_trend_status": "unavailable",
+        "total_oi_venue_coverage": current_scope,
+        "baseline_total_oi_venue_coverage": baseline_scope,
+        "previous_total_oi_venue_coverage": previous_scope,
+        "total_oi_data_quality": "complete" if current_total_complete else "incomplete",
+        "baseline_total_oi_data_quality": "complete" if baseline_total_complete else "incomplete",
+        "total_oi_usd_delta": "",
+        "total_oi_usd_delta_pct": "",
+        "previous_total_oi_usd_delta_pct": "",
+    }
+    if current_total_raw not in (None, "") and baseline_total_raw not in (None, ""):
+        if not (current_total_complete and baseline_total_complete):
+            total_oi_trend["total_oi_trend_status"] = "incomplete_components"
+        elif current_scope == baseline_scope:
+            current_total = decimal_from(current_total_raw)
+            baseline_total = decimal_from(baseline_total_raw)
+            previous_total = decimal_from(previous_total_raw)
+            previous_total_delta_pct = (
+                str(percent_change(current_total, previous_total))
+                if previous_total_raw not in (None, "") and previous_total_complete and current_scope == previous_scope
+                else ""
+            )
+            total_oi_trend.update(
+                {
+                    "total_oi_trend_status": "scope_match",
+                    "total_oi_usd_delta": str(current_total - baseline_total),
+                    "total_oi_usd_delta_pct": str(percent_change(current_total, baseline_total)),
+                    "previous_total_oi_usd_delta_pct": previous_total_delta_pct,
+                }
+            )
+        else:
+            total_oi_trend["total_oi_trend_status"] = "scope_mismatch"
+
     oi_expand_pct = Decimal(os.environ.get("PERP_WATCH_OI_EXPANSION_PCT", "5"))
     price_move_pct = Decimal(os.environ.get("PERP_WATCH_PRICE_MOVE_PCT", "3"))
     trend_hint = "观察"
@@ -998,6 +1074,7 @@ def trend_for_symbol(history: list[dict[str, Any]], symbol: str, current: dict[s
         "funding_rate_delta": str(funding_delta),
         "trend_hint": trend_hint,
         "trend_action": trend_action,
+        **total_oi_trend,
     }
 
 
@@ -1103,7 +1180,6 @@ def build_snapshot() -> dict[str, Any]:
                 other_venues = [venue for venue in extra_venues if venue.get("venue") != fallback.get("venue")]
                 row = dict(base, status="ok", venue=fallback.get("venue", ""), perp_symbol=fallback.get("perp_symbol", ""))
                 row.update(fallback)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M不可用；{fallback.get('venue')} {decision.get('action', '')}"
@@ -1112,6 +1188,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
+                row["oi_venue_components"] = aggregate_open_interest_components(row)
+                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row.update(trend)
                 rows.append(row)
             else:
@@ -1125,7 +1203,6 @@ def build_snapshot() -> dict[str, Any]:
                 other_venues = [venue for venue in extra_venues if venue.get("venue") != fallback.get("venue")]
                 row = dict(base, status="ok", venue=fallback.get("venue", ""), perp_symbol=fallback.get("perp_symbol", ""))
                 row.update(fallback)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M未上；{fallback.get('venue')} {decision.get('action', '')}"
@@ -1134,6 +1211,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
+                row["oi_venue_components"] = aggregate_open_interest_components(row)
+                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row.update(trend)
                 rows.append(row)
             else:
@@ -1151,7 +1230,6 @@ def build_snapshot() -> dict[str, Any]:
             )
             decision = classify_perp(row)
             attach_depth(row, binance_depth_context, symbol, row.get("mark_price"))
-            trend = trend_for_symbol(history, item["symbol"], row, generated_at)
             venue_notes = venue_signal_notes(extra_venues)
             row["perp_state"] = decision.get("status", "")
             row["direction_hint"] = decision.get("direction_hint", "")
@@ -1164,7 +1242,9 @@ def build_snapshot() -> dict[str, Any]:
                 row["action"] += "；其他场地 " + "；".join(venue_notes)
             row["listed_venues"] = listed_venue_names(row, extra_venues)
             row["total_open_interest_usd"] = str(total_open_interest(row, extra_venues))
+            row["oi_venue_components"] = aggregate_open_interest_components(row)
             row["cross_venue_notes"] = venue_notes
+            trend = trend_for_symbol(history, item["symbol"], row, generated_at)
             row.update(trend)
             rows.append(row)
         except Exception as exc:
@@ -1174,7 +1254,6 @@ def build_snapshot() -> dict[str, Any]:
                 other_venues = [venue for venue in extra_venues if venue.get("venue") != fallback.get("venue")]
                 row = dict(base, status="ok", venue=fallback.get("venue", ""), perp_symbol=fallback.get("perp_symbol", ""))
                 row.update(fallback)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row["perp_state"] = decision.get("status", "")
                 row["direction_hint"] = decision.get("direction_hint", "")
                 row["action"] = f"Binance USD-M指标失败；{fallback.get('venue')} {decision.get('action', '')}"
@@ -1184,6 +1263,8 @@ def build_snapshot() -> dict[str, Any]:
                 row["extra_venues"] = other_venues
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
+                row["oi_venue_components"] = aggregate_open_interest_components(row)
+                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
                 row.update(trend)
                 rows.append(row)
             else:
@@ -1250,8 +1331,8 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- item_count: `{snapshot['item_count']}`",
         f"- alert_count: `{snapshot['alert_count']}`",
         "",
-        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Funding 8h | Funding 24h | 24h Vol | 24h Chg | Depth | Liq | Trend | Action |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | --- | --- | --- |",
+        "| Symbol | Perp | Venues | Status | OI USD | Total OI | OI Δ | Total OI Δ | Funding 8h | Funding 24h | 24h Vol | 24h Chg | Depth | Liq | Trend | Action |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in snapshot["rows"]:
         funding_rate = row.get("current_funding_rate_8h")
@@ -1265,6 +1346,11 @@ def render(snapshot: dict[str, Any]) -> str:
             else row.get("funding_history_status", "")
         )
         oi_delta_pct = decimal_from(row.get("oi_usd_delta_pct"))
+        total_oi_delta = (
+            f"{fmt(row.get('total_oi_usd_delta_pct'), '0.01')}%"
+            if row.get("total_oi_trend_status") == "scope_match"
+            else row.get("total_oi_trend_status", "")
+        )
         combined_action = row.get("action", "")
         if row.get("trend_action"):
             combined_action += f"; {row.get('trend_action')}"
@@ -1283,7 +1369,7 @@ def render(snapshot: dict[str, Any]) -> str:
             )
         lines.append(
             f"| `{row.get('symbol')}` | `{row.get('perp_symbol')}` | {venues} | {row.get('status')}:{row.get('perp_state', '')} / {row.get('direction_hint', '')} | "
-            f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {fmt(funding_pct, '0.0001')}% | {funding_24h} | "
+            f"{fmt(row.get('open_interest_usd'), '0.01')} | {fmt(row.get('total_open_interest_usd') or row.get('open_interest_usd'), '0.01')} | {fmt(oi_delta_pct, '0.01')}% | {total_oi_delta} | {fmt(funding_pct, '0.0001')}% | {funding_24h} | "
             f"{fmt(row.get('quote_volume_24h'), '0.01')} | {fmt(row.get('price_change_pct_24h'), '0.01')}% | "
             f"{depth} | {liquidation} | {row.get('trend_hint', '')} | {combined_action} |"
         )

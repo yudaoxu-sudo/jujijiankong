@@ -69,6 +69,11 @@ CELUE_STRATEGY_FIELDS = [
         "区分 burn、buyback、buyback-to-liquidity、fee donation、foundation、airdrop、initial float、utility change。",
     ),
     (
+        "supply_lifecycle",
+        "official tokenomics plus on-chain supply and first-receiver paths",
+        "区分 mint、reissue、retirement、compensation、snapshot、migration，并核对相对流通量、锁定和 CEX/LP 去向。",
+    ),
+    (
         "identity_label_quality",
         "global address labels, external label review, custody/MM/foundation checks",
         "标记 verified official、exchange/custody、market maker、inferred whale、KOL、unknown。",
@@ -77,6 +82,26 @@ CELUE_STRATEGY_FIELDS = [
         "venue_rotation",
         "price momentum venue class, CEX listings, Surf context-only market rows",
         "跟踪 Binance Alpha、Binance spot/perps、Binance Wallet、Coinbase、Korea CEX、SOL/Pump、Base、ASTER、unknown。",
+    ),
+    (
+        "outcome_ledger",
+        "deduped KOL root signal plus fixed-horizon local replay",
+        "同一原始信号的引用更新只计一次；记录 24h/72h/7d、MFE、MAE、期末收益、失效和 unresolved。",
+    ),
+    (
+        "regime_expectancy",
+        "current liquidity, MC/FDV, aggregate OI, venue policy, capital breadth",
+        "按当前市场重算目标、分段止盈和 time stop；历史倍数只作背景。",
+    ),
+    (
+        "source_time_sanity",
+        "source published time, claimed event time, quote context",
+        "时间或引用上下文冲突时保持待证，不升级事实层。",
+    ),
+    (
+        "flow_recycling_candidate",
+        "gross buy/sell, net-to-gross, round-trip addresses, quote recovery",
+        "只作 report-only 候选；本地验证前不改变告警或动作。",
     ),
 ]
 

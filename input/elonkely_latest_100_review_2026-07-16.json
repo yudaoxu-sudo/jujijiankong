@@ -1,0 +1,166 @@
+{
+  "schema": "kol_strategy_review.v1",
+  "updated_at": "2026-07-16",
+  "account": "ElonKely_",
+  "source_url": "https://x.com/elonkely_",
+  "source_scope": {
+    "post_count_raw": 100,
+    "post_count_deduped": 100,
+    "unique_post_count": 100,
+    "retweet_count": 0,
+    "quote_post_count": 18,
+    "quote_posts_referencing_posts_inside_sample": 15,
+    "media_post_count": 91,
+    "media_item_count": 135,
+    "time_range_start_utc": "2026-06-12T06:31:11Z",
+    "time_range_end_utc": "2026-07-16T13:11:12Z",
+    "raw_fetch_sha256": "adb69a00239fe6481de29adfade237cd0701e39c875a394cf7fe92b473b49f25",
+    "tool": "agent-reach twitter-cli 0.8.5",
+    "manual_text_review_count": 100,
+    "new_since_prior_review_count": 17,
+    "overlap_with_2026_07_07_review_count": 83,
+    "new_media_item_review_count": 24
+  },
+  "evidence_boundary": {
+    "official": "No official source was used to promote a live action.",
+    "onchain": "Only previously verified local PARTI cluster evidence is treated as on-chain evidence in this review.",
+    "market": "Previously verified local PARTI and B2 replays are used as counterexamples; post screenshots stay social claims.",
+    "social": "All posts, screenshots, wallet labels, route claims, profit descriptions, and market-regime opinions from the account.",
+    "inference": "The adopted controls, field mappings, and deferred detector decisions."
+  },
+  "incremental_post_ids": [
+    "2077742847751843945",
+    "2077627655114149977",
+    "2077613299559186856",
+    "2077033474381545937",
+    "2077024988075528335",
+    "2077013668798287947",
+    "2076931508808327191",
+    "2076926377941709109",
+    "2076892468164063358",
+    "2076608922656583775",
+    "2075915168996118791",
+    "2075827292102881530",
+    "2075164060409270485",
+    "2075099066137207235",
+    "2075086373187662314",
+    "2074859463027408945",
+    "2074486956415971340"
+  ],
+  "adopted_rules": [
+    {
+      "rule_id": "ELON-R15",
+      "name": "deduped_outcome_denominator",
+      "rule": "Assign one root_signal_id to the original signal, merge self-quotes and follow-ups, and retain won, lost, mixed, and unresolved outcomes at fixed 24h, 72h, and 7d horizons.",
+      "fields": ["root_signal_id", "related_update_post_urls", "mfe", "mae", "end_return", "invalidation", "exit_path_verified", "outcome_status"],
+      "runtime_effect": "none"
+    },
+    {
+      "rule_id": "ELON-R16",
+      "name": "current_regime_expectancy",
+      "rule": "Recompute target, staged exits, and time stop from current liquidity, MC/FDV, aggregate OI, venue policy, and capital concentration. Historical monster-token multiples remain background context.",
+      "runtime_effect": "report_and_decision_checklist"
+    },
+    {
+      "rule_id": "ELON-R17",
+      "name": "supply_lifecycle_labels",
+      "rule": "Classify mint, reissue, retirement, compensation, snapshot, and migration separately, then verify relative float, first receiver, lock conditions, and CEX/LP path.",
+      "runtime_effect": "analysis_template"
+    },
+    {
+      "rule_id": "ELON-R18",
+      "name": "source_event_time_sanity",
+      "rule": "Keep claims pending when source publication time, claimed event time, or quote context conflicts.",
+      "runtime_effect": "intake_gate"
+    },
+    {
+      "rule_id": "ELON-R19",
+      "name": "flow_recycling_candidate",
+      "rule": "A wash-volume claim remains report-only until gross buy and sell, net-to-gross, repeated or round-trip addresses, and quote recovery are locally verified.",
+      "runtime_effect": "none"
+    }
+  ],
+  "counterexamples": [
+    {
+      "case": "PARTI",
+      "source_posts": [
+        "https://x.com/ElonKely_/status/2074859463027408945",
+        "https://x.com/ElonKely_/status/2075915168996118791"
+      ],
+      "local_evidence": "cases/2026-07-13_miles082510_wallet_cluster_review.md",
+      "lesson": "A real wallet fan-out signal can still fail directionally; cluster direction stays unknown until price, next-hop, and sell evidence agree."
+    },
+    {
+      "case": "EVAA",
+      "source_posts": ["https://x.com/ElonKely_/status/2075164060409270485"],
+      "lesson": "Accumulation and long OI can coexist with falling price; motive explanations remain inference."
+    }
+  ],
+  "outcome_ledger": [
+    {
+      "root_signal_id": "ELON-2074859463027408945",
+      "symbol": "PARTI",
+      "signal_time_utc": "2026-07-08T14:13:39Z",
+      "source_post_url": "https://x.com/ElonKely_/status/2074859463027408945",
+      "related_update_post_urls": ["https://x.com/ElonKely_/status/2075915168996118791"],
+      "entry_window_definition": "No locally verified entry; social discovery only.",
+      "invalidation": "Verified distribution, CEX redeposit, DEX sale with quote recovery, or fixed-horizon price failure.",
+      "evaluation_horizons": {
+        "24h": "unresolved_exact_anchor_replay",
+        "72h": "unresolved_exact_anchor_replay",
+        "7d": "unresolved_exact_anchor_replay"
+      },
+      "mfe": null,
+      "mae": null,
+      "end_return": null,
+      "exit_path_verified": false,
+      "outcome_status": "unresolved",
+      "social_claimed_outcome": "lost",
+      "local_replay_status": "pending_exact_anchor_replay",
+      "related_local_counterexample": "The separate same-day PARTI replay in cases/2026-07-13_miles082510_wallet_cluster_review.md is anchored to a different public post and cannot supply this root signal's exact horizon metrics."
+    },
+    {
+      "root_signal_id": "ELON-2075164060409270485",
+      "symbol": "EVAA",
+      "signal_time_utc": "2026-07-09T10:24:01Z",
+      "source_post_url": "https://x.com/ElonKely_/status/2075164060409270485",
+      "related_update_post_urls": [],
+      "entry_window_definition": "No locally verified entry; evidence-response conflict case only.",
+      "invalidation": "Price and real spot inventory fail to confirm the claimed accumulation and long-OI thesis.",
+      "evaluation_horizons": {
+        "24h": "unresolved_local_replay",
+        "72h": "unresolved_local_replay",
+        "7d": "unresolved_local_replay"
+      },
+      "mfe": null,
+      "mae": null,
+      "end_return": null,
+      "exit_path_verified": false,
+      "outcome_status": "unresolved"
+    }
+  ],
+  "source_time_sanity_cases": [
+    {
+      "post_url": "https://x.com/ElonKely_/status/2069768362297856076",
+      "source_published_at_utc": "2026-06-24T13:03:26Z",
+      "claimed_event_at": "2023",
+      "event_time_sanity": "mismatch",
+      "quote_fidelity": "original_context_not_recovered",
+      "action": "keep_pending"
+    }
+  ],
+  "runtime_decisions": {
+    "aggregate_total_oi_delta": "implemented_as_report_only_evidence_with_same-venue-scope_guard",
+    "tracked_non_cex_distribution_sources": "deferred_until_local_tracked-source_fixtures_exist",
+    "wash_volume_detector": "deferred_until_local_round-trip_and_quote-recovery_fixtures_exist",
+    "trade_action_change": false,
+    "telegram_alert_change": false
+  },
+  "rejected_shortcuts": [
+    "Count self-quotes or result updates as independent wins.",
+    "Use historical 10x or 100x examples as a current target baseline.",
+    "Treat custody or multisig fan-out as one operator without entity and next-hop evidence.",
+    "Promote screenshot-described wash volume into an automatic detector.",
+    "Use a social signal alone to change a position action."
+  ]
+}

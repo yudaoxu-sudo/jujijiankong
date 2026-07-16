@@ -34,6 +34,9 @@ REQUIRED_SYSTEM_LOGIC_PHRASES = [
     "aLiiDeez-Derived Checks",
     "0xcrypto_max-Derived Checks",
     "Miles082510-Derived Checks",
+    "root_signal_id",
+    "regime_expectancy",
+    "supply lifecycle",
     "official",
     "On-chain source",
     "market",
@@ -58,6 +61,8 @@ REQUIRED_PROJECT_FILES = [
     "output/0xcrypto_max_x_research/analysis/method_index.csv",
     "input/miles082510_wallet_cluster_review_2026-07-13.json",
     "cases/2026-07-13_miles082510_wallet_cluster_review.md",
+    "input/elonkely_latest_100_review_2026-07-16.json",
+    "cases/2026-07-16_elonkely_latest_100_review.md",
 ]
 
 REQUIRED_DAILY_FIELDS = [
@@ -69,6 +74,11 @@ REQUIRED_DAILY_FIELDS = [
     "catalyst_source",
     "identity_label_quality",
     "venue_rotation",
+    "supply_lifecycle",
+    "outcome_ledger",
+    "regime_expectancy",
+    "source_time_sanity",
+    "flow_recycling_candidate",
 ]
 
 
@@ -140,6 +150,9 @@ def main() -> int:
         "method index",
         "case index",
         "integration proposal",
+        "outcome ledger",
+        "root_signal_id",
+        "event_time_sanity",
         "python3 scripts/audit_celue_integration.py",
     ]:
         add_check(checks, f"KOL intake prompt contains: {phrase}", phrase in intake_prompt, phrase)
@@ -148,6 +161,23 @@ def main() -> int:
     add_check(checks, "daily report has celue checklist function", "def celue_strategy_checklist" in report_builder, "")
     for field in REQUIRED_DAILY_FIELDS:
         add_check(checks, f"daily report exposes celue field: {field}", field in report_builder, field)
+
+    elonkely_review_path = ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json"
+    try:
+        elonkely_review = json.loads(read_text(elonkely_review_path))
+        ledger = elonkely_review.get("outcome_ledger", [])
+        root_ids = [row.get("root_signal_id") for row in ledger]
+        decisions = elonkely_review.get("runtime_decisions", {})
+        time_cases = elonkely_review.get("source_time_sanity_cases", [])
+        add_check(checks, "ElonKely review schema", elonkely_review.get("schema") == "kol_strategy_review.v1", "")
+        add_check(checks, "ElonKely review covers 100 deduped posts", elonkely_review.get("source_scope", {}).get("post_count_deduped") == 100, "")
+        add_check(checks, "ElonKely outcome ledger has unique roots", len(root_ids) >= 2 and len(root_ids) == len(set(root_ids)), str(root_ids))
+        add_check(checks, "ElonKely outcome ledger has fixed horizons", bool(ledger) and all(row.get("evaluation_horizons") for row in ledger), "")
+        add_check(checks, "ElonKely outcome ledger uses valid statuses", bool(ledger) and all(row.get("outcome_status") in {"won", "lost", "mixed", "unresolved"} for row in ledger), "")
+        add_check(checks, "ElonKely source-time mismatch is preserved", any(row.get("event_time_sanity") == "mismatch" for row in time_cases), "")
+        add_check(checks, "ElonKely review leaves actions unchanged", decisions.get("trade_action_change") is False and decisions.get("telegram_alert_change") is False, "")
+    except Exception as exc:
+        add_check(checks, "ElonKely structured review parses", False, str(exc))
 
     latest_daily = latest_report(ROOT / "reports")
     latest_daily_text = read_text(latest_daily) if latest_daily else ""

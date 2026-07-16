@@ -265,8 +265,13 @@
 | catalyst_source | official / founder / exchange / KOL / media / community / unknown plus first-seen time |  | unknown |
 | meme_stage | pre-viral / first public trigger / post-5x / post-10x / exhausted / unknown |  | unknown |
 | tokenomics_catalyst | burn / buyback / buyback-to-liquidity / fee donation / foundation / airdrop / initial float / utility change |  | unknown |
+| supply_lifecycle | mint / reissue / retirement / compensation / snapshot / migration; relative float / first receiver / lock / CEX-LP path |  | unknown |
 | identity_label_quality | verified official / exchange-custody / market maker / inferred whale / KOL / unknown |  | unknown |
 | venue_rotation | Binance Alpha / Binance spot-perps / Binance Wallet / Coinbase / Korea CEX / SOL-Pump / Base / ASTER / unknown |  | unknown |
+| outcome_ledger | root_signal_id / related updates / 24h-72h-7d / MFE / MAE / end return / unresolved |  | unknown |
+| regime_expectancy | liquidity / MC-FDV / total OI / venue policy / capital concentration / target / staged exit / time stop |  | unknown |
+| source_time_sanity | source published time / claimed event time / quote fidelity |  | unknown |
+| flow_recycling_candidate | gross buy-sell / net-to-gross / repeated or round-trip addresses / pending or locally confirmed / runtime_effect=none |  | pending |
 
 ## 9. 决策输出
 
