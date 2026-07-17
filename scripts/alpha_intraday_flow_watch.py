@@ -1104,6 +1104,70 @@ def cex_withdrawal_cluster(
     }
 
 
+def external_cex_source_role(
+    event: dict[str, Any],
+    address: str,
+    source_class: str = "",
+    excluded: set[str] | None = None,
+) -> str:
+    address = norm(address)
+    source_class = source_class or opening.configured_address_class(event, address)
+    internal_classes = {
+        "cex_deposit",
+        "cex_hot_wallet",
+        "exchange_aggregator",
+        "exchange_aggregator_suspect",
+        "exchange_rebalance",
+    }
+    if source_class in internal_classes:
+        return ""
+    if address == opening.ZERO:
+        return "mint_or_zero"
+    if address == norm(event["token"]["address"]):
+        return "token_contract"
+    if address in {norm(event.get("hook")), norm(event.get("operator"))} - {""}:
+        return "project_or_pool"
+    if address in (excluded if excluded is not None else opening.excluded_addresses(event)):
+        return ""
+    return source_class or "unlabeled"
+
+
+def fifo_attributed_external_inflow(events: list[dict[str, Any]]) -> tuple[Decimal, set[str], int]:
+    queue: list[dict[str, Any]] = []
+    attributed = Decimal(0)
+    attributed_roles: set[str] = set()
+    attributed_inbound_ids: set[int] = set()
+    inbound_id = 0
+    queue_index = 0
+    for event in sorted(events, key=lambda row: row["order"]):
+        amount = decimal_from(event.get("amount"))
+        if amount <= 0:
+            continue
+        if event.get("kind") == "in":
+            inbound_id += 1
+            queue.append(
+                {
+                    "remaining": amount,
+                    "external_role": str(event.get("external_role") or ""),
+                    "inbound_id": inbound_id,
+                }
+            )
+            continue
+        remaining_out = amount
+        while remaining_out > 0 and queue_index < len(queue):
+            bucket = queue[queue_index]
+            consumed = min(remaining_out, bucket["remaining"])
+            if event.get("to_cex") and bucket["external_role"]:
+                attributed += consumed
+                attributed_roles.add(bucket["external_role"])
+                attributed_inbound_ids.add(bucket["inbound_id"])
+            bucket["remaining"] -= consumed
+            remaining_out -= consumed
+            if bucket["remaining"] <= 0:
+                queue_index += 1
+    return attributed, attributed_roles, len(attributed_inbound_ids)
+
+
 def runtime_cex_deposit_candidates(
     event: dict[str, Any],
     from_block: int,
@@ -1117,21 +1181,45 @@ def runtime_cex_deposit_candidates(
     excluded = opening.excluded_addresses(event)
     inflow: dict[str, dict[str, Any]] = {}
     outflow: dict[str, dict[str, Any]] = {}
+    movement_events: dict[str, list[dict[str, Any]]] = {}
     if transfers is None:
         transfers, _coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
     for row in transfers:
         from_addr = norm(row.get("from"))
         to_addr = norm(row.get("to"))
-        amount = row.get("amount", Decimal(0))
+        amount = decimal_from(row.get("amount"))
         order = (int(row.get("block") or 0), int(row.get("log_index") or 0))
-        if to_addr and to_addr not in excluded and from_addr not in excluded:
-            item = inflow.setdefault(to_addr, {"amount": Decimal(0), "count": 0, "first_order": order})
+        destination_class = known_cex_destination_class(event, to_addr)
+        source_class = opening.configured_address_class(event, from_addr)
+        external_role = external_cex_source_role(event, from_addr, source_class, excluded)
+        if from_addr and to_addr and from_addr != to_addr:
+            movement_events.setdefault(to_addr, []).append(
+                {"kind": "in", "order": order, "amount": amount, "external_role": external_role}
+            )
+            movement_events.setdefault(from_addr, []).append(
+                {"kind": "out", "order": order, "amount": amount, "to_cex": bool(destination_class)}
+            )
+        if to_addr and to_addr not in excluded and from_addr:
+            item = inflow.setdefault(
+                to_addr,
+                {
+                    "amount": Decimal(0),
+                    "count": 0,
+                    "first_order": order,
+                    "external_amount": Decimal(0),
+                    "external_count": 0,
+                    "external_source_roles": set(),
+                },
+            )
             item["amount"] += amount
             item["count"] += 1
             item["first_order"] = min(item["first_order"], order)
+            if external_role:
+                item["external_amount"] += amount
+                item["external_count"] += 1
+                item["external_source_roles"].add(external_role)
         if not from_addr or from_addr in excluded:
             continue
-        destination_class = known_cex_destination_class(event, to_addr)
         if not destination_class:
             continue
         item = outflow.setdefault(
@@ -1161,16 +1249,77 @@ def runtime_cex_deposit_candidates(
             continue
         if opening.configured_address_class(event, address):
             continue
+        attributed_external_inflow, attributed_roles, attributed_inbound_count = fifo_attributed_external_inflow(
+            movement_events.get(address, [])
+        )
         candidates[address] = {
             "address": address,
             "class": "cex_deposit_candidate",
             "in_amount": opening.decimal_str(in_item["amount"]),
+            "external_in_amount": opening.decimal_str(in_item["external_amount"]),
+            "external_in_count": in_item["external_count"],
+            "external_source_roles": sorted(in_item["external_source_roles"]),
+            "attributed_external_inflow_amount": opening.decimal_str(attributed_external_inflow),
+            "attributed_external_inbound_count": attributed_inbound_count,
+            "attributed_external_source_roles": sorted(attributed_roles),
+            "attribution_method": "observed_window_fifo_in_before_cex_out",
             "out_amount": opening.decimal_str(out_item["amount"]),
             "out_count": out_item["count"],
             "destination_classes": sorted(out_item["destination_classes"]),
             "destinations": sorted(out_item["destinations"])[:3],
         }
     return candidates
+
+
+def runtime_cex_candidate_aggregate_rows(
+    event: dict[str, Any],
+    runtime_cex_candidates: dict[str, dict[str, Any]],
+    transfer_coverage: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    price = context_price_usdt(event)
+    coverage_complete = True if transfer_coverage is None else bool(transfer_coverage.get("complete"))
+    coverage_state = "fixture_complete" if transfer_coverage is None else str(transfer_coverage.get("state") or "unknown")
+    rows: list[dict[str, Any]] = []
+    for address, candidate in sorted(runtime_cex_candidates.items()):
+        amount = decimal_from(candidate.get("attributed_external_inflow_amount"))
+        if amount <= 0:
+            continue
+        quote_estimate = amount * price if price > 0 else Decimal(0)
+        risk_amount = amount if coverage_complete else Decimal(0)
+        risk_quote_estimate = quote_estimate if coverage_complete else Decimal(0)
+        rows.append(
+            {
+                "evidence_type": "runtime_cex_candidate_aggregate",
+                "candidate_address": address,
+                "path_role": "external_to_cex_inflow",
+                "source_roles": ",".join(candidate.get("attributed_external_source_roles", [])),
+                "attributed_external_inbound_count": int(candidate.get("attributed_external_inbound_count") or 0),
+                "attribution_method": str(candidate.get("attribution_method") or ""),
+                "candidate_in_amount": str(candidate.get("in_amount") or "0"),
+                "candidate_out_amount": str(candidate.get("out_amount") or "0"),
+                "destinations": list(candidate.get("destinations", []))[:3],
+                "coverage_state": coverage_state,
+                "coverage_complete": coverage_complete,
+                "attributed_external_token": opening.decimal_str(amount),
+                "runtime_effect": "cex_inflow_risk" if coverage_complete else "none_incomplete_coverage",
+                "buyer": "",
+                "spent_quote": "0",
+                "seller": "",
+                "got_quote": "0",
+                "cex_token_deposit": opening.decimal_str(risk_amount),
+                "cex_quote_estimate": opening.decimal_str(risk_quote_estimate),
+                "cex_deposit_count": 1 if coverage_complete else 0,
+                "cex_destination_classes": ",".join(candidate.get("destination_classes", [])),
+                "runtime_cex_deposit_candidate_count": 1 if coverage_complete else 0,
+                "cex_internal_aggregation_token": "0",
+                "cex_internal_aggregation_quote_estimate": "0",
+                "cex_internal_aggregation_count": 0,
+                "cex_internal_path_roles": "",
+                "cex_gas_priming_bnb": "0",
+                "cex_gas_priming_count": 0,
+            }
+        )
+    return rows
 
 
 def summarize_flow_tx(
@@ -1202,19 +1351,36 @@ def summarize_flow_tx(
             sellers.append((address, -token_net, quote_net))
     seller, sold_token, got_quote = max(sellers, key=lambda row: row[2], default=("", Decimal(0), Decimal(0)))
     min_quote = Decimal(os.environ.get("ALPHA_INTRADAY_MIN_QUOTE", "2000"))
-    cex_rows = cex_deposit_transfers(event, transfers, runtime_cex_candidates)
+    cex_path_rows = classify_cex_transfer_paths(event, transfers, runtime_cex_candidates)
+    cex_rows = [row for row in cex_path_rows if row["runtime_effect"] == "cex_inflow_risk"]
+    cex_internal_rows = [row for row in cex_path_rows if row["runtime_effect"] == "none"]
     cex_token = sum((row["amount"] for row in cex_rows), Decimal(0))
     price = context_price_usdt(event)
     cex_quote_est = cex_token * price if price > 0 else Decimal(0)
+    cex_internal_token = sum((row["amount"] for row in cex_internal_rows), Decimal(0))
+    cex_internal_quote_est = cex_internal_token * price if price > 0 else Decimal(0)
     min_cex_token = Decimal(os.environ.get("ALPHA_INTRADAY_CEX_DEPOSIT_MIN_TOKEN", "100000"))
     min_cex_quote = Decimal(os.environ.get("ALPHA_INTRADAY_CEX_DEPOSIT_MIN_QUOTE", "10000"))
     cex_significant = cex_token >= min_cex_token or (cex_quote_est and cex_quote_est >= min_cex_quote)
+    cex_internal_significant = cex_internal_token >= min_cex_token or (
+        cex_internal_quote_est and cex_internal_quote_est >= min_cex_quote
+    )
     gas_rows: list[dict[str, Any]] = []
     gas_bnb = Decimal(0)
-    if cex_significant:
-        gas_rows = cex_gas_priming_transfers(event, {row["from"] for row in cex_rows}, opening.hex_to_int(receipt.get("blockNumber")) or 0)
+    gas_targets = {
+        address
+        for row in cex_path_rows
+        for address in row.get("gas_watch_addresses", [])
+        if opening.is_address(address)
+    }
+    if (cex_significant or cex_internal_significant) and gas_targets:
+        gas_rows = cex_gas_priming_transfers(
+            event,
+            gas_targets,
+            opening.hex_to_int(receipt.get("blockNumber")) or 0,
+        )
         gas_bnb = sum((row["amount_bnb"] for row in gas_rows), Decimal(0))
-    if spent < min_quote and got_quote < min_quote and not cex_significant:
+    if spent < min_quote and got_quote < min_quote and not cex_significant and not cex_internal_significant:
         return None
     return {
         "tx": tx_hash,
@@ -1233,6 +1399,25 @@ def summarize_flow_tx(
         "cex_deposit_count": len(cex_rows),
         "cex_destination_classes": ",".join(sorted({row["class"] for row in cex_rows})),
         "runtime_cex_deposit_candidate_count": sum(1 for row in cex_rows if row["class"] == "cex_deposit_candidate"),
+        "cex_internal_aggregation_token": opening.decimal_str(cex_internal_token),
+        "cex_internal_aggregation_quote_estimate": opening.decimal_str(cex_internal_quote_est),
+        "cex_internal_aggregation_count": len(cex_internal_rows),
+        "cex_internal_path_roles": ",".join(sorted({row["path_role"] for row in cex_internal_rows})),
+        "cex_path_sample": [
+            {
+                "from": row["from"],
+                "to": row["to"],
+                "amount": opening.decimal_str(row["amount"]),
+                "destination_class": row["class"],
+                "source_class": row["source_class"],
+                "source_role": row["source_role"],
+                "path_role": row["path_role"],
+                "direction": row["direction"],
+                "alert_policy": row["alert_policy"],
+                "runtime_effect": row["runtime_effect"],
+            }
+            for row in cex_path_rows[:12]
+        ],
         "cex_gas_priming_count": len(gas_rows),
         "cex_gas_priming_bnb": opening.decimal_str(gas_bnb),
         "cex_gas_priming_sources": ",".join(sorted({row["source_class"] for row in gas_rows})),
@@ -1244,26 +1429,92 @@ def cex_deposit_transfers(
     transfers: list[dict[str, Any]],
     runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in classify_cex_transfer_paths(event, transfers, runtime_cex_candidates)
+        if row["runtime_effect"] == "cex_inflow_risk"
+    ]
+
+
+def classify_cex_transfer_paths(
+    event: dict[str, Any],
+    transfers: list[dict[str, Any]],
+    runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     excluded = opening.excluded_addresses(event)
     runtime_cex_candidates = runtime_cex_candidates or {}
     rows: list[dict[str, Any]] = []
     token_address = norm(event["token"]["address"])
+    cex_classes = {"cex_deposit", "cex_hot_wallet"}
+    alpha_custody_classes = {"exchange_aggregator", "exchange_aggregator_suspect", "exchange_rebalance"}
+    internal_source_classes = cex_classes | alpha_custody_classes
     for row in transfers:
         if norm(row.get("token")) != token_address:
             continue
         from_addr = norm(row.get("from"))
         to_addr = norm(row.get("to"))
-        if from_addr in excluded:
-            continue
-        destination_class = opening.destination_class(event, to_addr)
-        if destination_class not in {"cex_deposit", "cex_hot_wallet"}:
+        source_class = opening.configured_address_class(event, from_addr)
+        destination_class = opening.configured_address_class(event, to_addr)
+        if destination_class not in cex_classes | alpha_custody_classes:
             if to_addr in runtime_cex_candidates:
                 destination_class = "cex_deposit_candidate"
             else:
                 continue
         if destination_class == "cex_deposit_candidate" and to_addr in excluded:
             continue
-        rows.append({"from": from_addr, "to": to_addr, "amount": row["amount"], "class": destination_class})
+        source_is_runtime_candidate = from_addr in runtime_cex_candidates
+        if source_class in alpha_custody_classes or destination_class in alpha_custody_classes:
+            path_role = "alpha_custody_movement_unresolved"
+            runtime_effect = "none"
+            source_role = source_class or "alpha_custody_unlabeled"
+        elif source_class in internal_source_classes or source_is_runtime_candidate:
+            path_role = "cex_internal_aggregation"
+            runtime_effect = "none"
+            source_role = source_class or "cex_deposit_candidate"
+        else:
+            source_role = external_cex_source_role(event, from_addr, source_class, excluded)
+            if not source_role:
+                continue
+            if destination_class == "cex_deposit_candidate":
+                path_role = "external_to_cex_inflow_component"
+                runtime_effect = "aggregate_only"
+            else:
+                path_role = (
+                    "unlabeled_to_cex_inflow_candidate"
+                    if source_role == "unlabeled"
+                    else "external_to_cex_inflow"
+                )
+                runtime_effect = "cex_inflow_risk"
+        gas_watch_addresses = [] if from_addr in {opening.ZERO, token_address} else [from_addr]
+        if destination_class == "cex_deposit_candidate":
+            gas_watch_addresses.append(to_addr)
+        rows.append(
+            {
+                "from": from_addr,
+                "to": to_addr,
+                "amount": decimal_from(row.get("amount")),
+                "class": destination_class,
+                "source_class": source_class or ("cex_deposit_candidate" if source_is_runtime_candidate else "unlabeled"),
+                "source_role": source_role,
+                "path_role": path_role,
+                "direction": (
+                    "bearish_risk_candidate"
+                    if path_role == "unlabeled_to_cex_inflow_candidate"
+                    else "bearish_risk"
+                    if runtime_effect == "cex_inflow_risk"
+                    else "unknown"
+                ),
+                "alert_policy": (
+                    "existing_cex_inflow_gate"
+                    if runtime_effect == "cex_inflow_risk"
+                    else "aggregate_in_window"
+                    if runtime_effect == "aggregate_only"
+                    else "report_only"
+                ),
+                "runtime_effect": runtime_effect,
+                "gas_watch_addresses": sorted(set(gas_watch_addresses)),
+            }
+        )
     return rows
 
 
@@ -1326,6 +1577,10 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
     cex_deposit_count = 0
     cex_destination_classes: set[str] = set()
     runtime_cex_deposit_candidate_count = 0
+    cex_internal_aggregation_token = Decimal(0)
+    cex_internal_aggregation_quote_estimate = Decimal(0)
+    cex_internal_aggregation_count = 0
+    cex_internal_path_roles: set[str] = set()
     cex_gas_priming_bnb = Decimal(0)
     cex_gas_priming_count = 0
     for row in rows:
@@ -1343,9 +1598,15 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         cex_quote_estimate += decimal_from(row.get("cex_quote_estimate"))
         cex_deposit_count += int(row.get("cex_deposit_count") or 0)
         runtime_cex_deposit_candidate_count += int(row.get("runtime_cex_deposit_candidate_count") or 0)
+        cex_internal_aggregation_token += decimal_from(row.get("cex_internal_aggregation_token"))
+        cex_internal_aggregation_quote_estimate += decimal_from(row.get("cex_internal_aggregation_quote_estimate"))
+        cex_internal_aggregation_count += int(row.get("cex_internal_aggregation_count") or 0)
         for class_name in str(row.get("cex_destination_classes") or "").split(","):
             if class_name:
                 cex_destination_classes.add(class_name)
+        for path_role in str(row.get("cex_internal_path_roles") or "").split(","):
+            if path_role:
+                cex_internal_path_roles.add(path_role)
         cex_gas_priming_bnb += decimal_from(row.get("cex_gas_priming_bnb"))
         cex_gas_priming_count += int(row.get("cex_gas_priming_count") or 0)
     net_buy = sum((value for value in address_net.values() if value > 0), Decimal(0))
@@ -1410,6 +1671,11 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         "cex_deposit_count": cex_deposit_count,
         "cex_destination_classes": ",".join(sorted(cex_destination_classes)),
         "runtime_cex_deposit_candidate_count": runtime_cex_deposit_candidate_count,
+        "cex_internal_aggregation_token": opening.decimal_str(cex_internal_aggregation_token),
+        "cex_internal_aggregation_quote_estimate": opening.decimal_str(cex_internal_aggregation_quote_estimate),
+        "cex_internal_aggregation_count": cex_internal_aggregation_count,
+        "cex_internal_path_roles": ",".join(sorted(cex_internal_path_roles)),
+        "cex_internal_aggregation_measure": "gross_transfer_turnover_may_repeat_economic_tokens",
         "cex_gas_priming_bnb": opening.decimal_str(cex_gas_priming_bnb),
         "cex_gas_priming_count": cex_gas_priming_count,
         "top_net_buyers": [{"address": a, "quote": opening.decimal_str(v)} for a, v in top_net_buyers],
@@ -1452,7 +1718,8 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
             continue
         if row:
             rows.append(row)
-    analysis = analyze_rows(event, rows, from_block, to_block, logs, txs)
+    runtime_candidate_rows = runtime_cex_candidate_aggregate_rows(event, runtime_candidates, transfer_coverage)
+    analysis = analyze_rows(event, rows + runtime_candidate_rows, from_block, to_block, logs, txs)
     analysis["cex_withdrawal_cluster"] = withdrawal_cluster
     analysis["scan_limited"] = scan_limited
     analysis["sampled_receipts"] = len(rows)
@@ -1462,6 +1729,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         "from_block": from_block,
         "to_block": to_block,
         "runtime_cex_deposit_candidates": list(runtime_candidates.values())[:20],
+        "runtime_cex_candidate_aggregate_rows": runtime_candidate_rows[:20],
         "rows": rows,
         "analysis": analysis,
         "_withdrawal_forward_scan": {
@@ -1793,6 +2061,11 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- cex_deposit_count: `{analysis.get('cex_deposit_count')}`",
                 f"- cex_destination_classes: `{analysis.get('cex_destination_classes')}`",
                 f"- runtime_cex_deposit_candidate_count: `{analysis.get('runtime_cex_deposit_candidate_count')}`",
+                f"- cex_internal_aggregation_token: `{analysis.get('cex_internal_aggregation_token')}`",
+                f"- cex_internal_aggregation_quote_estimate: `{analysis.get('cex_internal_aggregation_quote_estimate')}`",
+                f"- cex_internal_aggregation_count: `{analysis.get('cex_internal_aggregation_count')}`",
+                f"- cex_internal_path_roles: `{analysis.get('cex_internal_path_roles')}`",
+                f"- cex_internal_aggregation_measure: `{analysis.get('cex_internal_aggregation_measure')}`",
                 f"- cex_gas_priming_bnb: `{analysis.get('cex_gas_priming_bnb')}`",
                 f"- cex_gas_priming_count: `{analysis.get('cex_gas_priming_count')}`",
                 f"- cex_withdrawal_cluster_status: `{withdrawal.get('status')}`",
@@ -1809,6 +2082,28 @@ def render(snapshot: dict[str, Any]) -> str:
         for row in analysis.get("top_net_sellers", []):
             lines.append(f"- {short_addr(row.get('address', ''))}: {opening.format_amount(row.get('quote'))} {event['quote']['symbol']}")
         clusters = withdrawal.get("clusters", []) or []
+        runtime_candidate_rows = event.get("runtime_cex_candidate_aggregate_rows", []) or []
+        if runtime_candidate_rows:
+            lines.extend(["", "### Runtime CEX Candidate Aggregates", ""])
+            for row in runtime_candidate_rows[:20]:
+                lines.append(
+                    f"- `{row.get('candidate_address', '')}`: attributed_external="
+                    f"{opening.format_amount(row.get('attributed_external_token'))} {event['token']['symbol']}, "
+                    f"in={opening.format_amount(row.get('candidate_in_amount'))}, "
+                    f"out={opening.format_amount(row.get('candidate_out_amount'))}, "
+                    f"sources=`{row.get('source_roles', '')}`, method=`{row.get('attribution_method', '')}`, "
+                    f"coverage=`{row.get('coverage_state', '')}`, runtime_effect=`{row.get('runtime_effect', '')}`, "
+                    f"destinations=" + ",".join(row.get("destinations", []) or [])
+                )
+        if int(analysis.get("cex_internal_aggregation_count") or 0):
+            lines.extend(
+                [
+                    "",
+                    "### CEX Internal Aggregation",
+                    "",
+                    "Report-only evidence. Internal CEX and Alpha custody paths do not change direction or Telegram alerts.",
+                ]
+            )
         if clusters:
             lines.extend(["", "### CEX Withdrawal Cluster Candidates", "", "Report-only evidence. Direction stays `unknown`; action stays `Observe`.", ""])
             for cluster in clusters:
@@ -1820,6 +2115,20 @@ def render(snapshot: dict[str, Any]) -> str:
                     + ",".join(cluster.get("unresolved_gates", []) or [])
                 )
         rows = event.get("rows", [])
+        path_samples = [
+            (row.get("tx", ""), path)
+            for row in rows[:30]
+            for path in (row.get("cex_path_sample", []) or [])
+        ]
+        if path_samples:
+            lines.extend(["", "### CEX Path Samples", ""])
+            for tx_hash, path in path_samples[:60]:
+                lines.append(
+                    f"- tx `{tx_hash}`: `{path.get('path_role', '')}` "
+                    f"`{path.get('from', '')}` -> `{path.get('to', '')}`, "
+                    f"amount={opening.format_amount(path.get('amount'))}, "
+                    f"source_role=`{path.get('source_role', '')}`, runtime_effect=`{path.get('runtime_effect', '')}`"
+                )
         if rows:
             lines.extend(["", "| block | buy quote | sell quote | CEX token | CEX quote est | CEX class | CEX gas BNB | buyer | seller |", "| ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |"])
             for row in rows[:30]:

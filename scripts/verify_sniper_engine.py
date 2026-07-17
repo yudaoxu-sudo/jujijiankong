@@ -108,6 +108,8 @@ def main() -> int:
         ROOT / "cases" / "2026-07-13_miles082510_wallet_cluster_review.md",
         ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json",
         ROOT / "cases" / "2026-07-16_elonkely_latest_100_review.md",
+        ROOT / "input" / "binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
+        ROOT / "cases" / "2026-07-17_binance_alpha_cex_wallet_aggregation.md",
         ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
@@ -147,6 +149,74 @@ def main() -> int:
     except Exception as exc:
         config_msg = str(exc)
     checks.append(("watchlist example JSON parses", config_ok, config_msg))
+
+    cex_aggregation_review_ok = False
+    cex_aggregation_review_msg = ""
+    try:
+        cex_review = json.loads(
+            (ROOT / "input" / "binance_alpha_cex_wallet_aggregation_review_2026-07-17.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        verified_rows = cex_review.get("verified_ui_records", [])
+        pending_rows = cex_review.get("pending_ui_records", [])
+        runtime_integration = cex_review.get("runtime_integration", {})
+        verified_by_tx = {row.get("txid"): row for row in verified_rows}
+        expected_gate_records = {
+            "0xbd9b2b41d92c7ed59bd22afa376656aabea115755c7295f584d4130ab329ec28": {
+                "from": "0xd5da17a84314194e348649c89a65143a061f7190",
+                "amount": "1845034161.853208889131008",
+                "time": "2026-07-14T05:11:24Z",
+            },
+            "0xcc96491ff1dcbf98511a5aba24955ad9629c3ff68d8325a99be7403ac72dd619": {
+                "from": "0x8782163068c7cd74d2510768a61135c1e4eb07b3",
+                "amount": "1914689272",
+                "time": "2026-07-14T05:11:23Z",
+            },
+        }
+        cex_aggregation_review_ok = (
+            cex_review.get("schema") == "binance_alpha_cex_wallet_aggregation_review.v1"
+            and cex_review.get("token", {}).get("contract")
+            == "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db"
+            and len(verified_rows) == 2
+            and set(verified_by_tx) == set(expected_gate_records)
+            and all(
+                verified_by_tx[txid].get("transfer_from") == expected["from"]
+                and verified_by_tx[txid].get("exact_amount_token") == expected["amount"]
+                and verified_by_tx[txid].get("block_time_utc") == expected["time"]
+                for txid, expected in expected_gate_records.items()
+            )
+            and all(
+                row.get("transfer_to") == "0x0d0707963952f2fba59dd06f2b425ace40b492fe"
+                for row in verified_rows
+            )
+            and all(row.get("receipt_status") == "success" for row in verified_rows)
+            and all(row.get("token_contract_verified") is True for row in verified_rows)
+            and all(row.get("path_role") == "unlabeled_to_cex_inflow_candidate" for row in verified_rows)
+            and all(row.get("transfer_direction_verified") is True for row in verified_rows)
+            and all(row.get("economic_external_inflow_verified") is False for row in verified_rows)
+            and all(row.get("source_entity_role") == "unresolved" for row in verified_rows)
+            and all(row.get("entity_linkage_verified") is False for row in verified_rows)
+            and all(row.get("runtime_effect") == "cex_inflow_risk" for row in verified_rows)
+            and len(pending_rows) == 3
+            and all(row.get("txid") is None for row in pending_rows)
+            and all(row.get("path_role") == "pending_txid" for row in pending_rows)
+            and all(row.get("runtime_effect") == "none" for row in pending_rows)
+            and runtime_integration.get("unlabeled_to_cex_inflow_candidate", {}).get("runtime_effect")
+            == "cex_inflow_risk"
+            and runtime_integration.get("cex_internal_aggregation", {}).get("alert_policy") == "report_only"
+            and runtime_integration.get("alpha_custody_movement_unresolved", {}).get("alert_policy") == "report_only"
+        )
+        cex_aggregation_review_msg = f"verified={len(verified_rows)}, pending={len(pending_rows)}"
+    except Exception as exc:
+        cex_aggregation_review_msg = str(exc)
+    checks.append(
+        (
+            "Binance Alpha CEX wallet aggregation review parses with safe path roles",
+            cex_aggregation_review_ok,
+            cex_aggregation_review_msg,
+        )
+    )
 
     elonkely_review_ok = False
     elonkely_review_msg = ""
@@ -2350,12 +2420,193 @@ transfers = [
 cex_rows = module.cex_deposit_transfers(event, transfers)
 assert len(cex_rows) == 1, cex_rows
 candidate = '0x' + 'e' * 40
+alpha_custody = '0x' + 'f' * 40
+alpha_custody_suspect = '0x' + '5' * 40
+external = '0x' + '6' * 40
+project_operator = '0x' + '4' * 40
+assert len({project_operator, hot, deposit, candidate, alpha_custody, alpha_custody_suspect, external}) == 7
+path_event = {
+    **event,
+    'operator': project_operator,
+    'known_contracts': [
+        {'address': deposit, 'class': 'cex_deposit', 'exchange': 'FixtureEx'},
+        {'address': hot, 'class': 'cex_hot_wallet', 'exchange': 'FixtureEx'},
+        {'address': alpha_custody, 'class': 'exchange_aggregator', 'exchange': 'Binance'},
+        {'address': alpha_custody_suspect, 'class': 'exchange_aggregator_suspect', 'exchange': 'Binance'},
+    ],
+}
+path_rows = module.classify_cex_transfer_paths(
+    path_event,
+    [
+        {'token': event['token']['address'], 'from': external, 'to': deposit, 'amount': module.Decimal('2000')},
+        {'token': event['token']['address'], 'from': deposit, 'to': hot, 'amount': module.Decimal('2000')},
+        {'token': event['token']['address'], 'from': external, 'to': candidate, 'amount': module.Decimal('3000')},
+        {'token': event['token']['address'], 'from': candidate, 'to': hot, 'amount': module.Decimal('3000')},
+        {'token': event['token']['address'], 'from': alpha_custody, 'to': hot, 'amount': module.Decimal('4000')},
+        {'token': event['token']['address'], 'from': hot, 'to': alpha_custody, 'amount': module.Decimal('5000')},
+        {'token': event['token']['address'], 'from': alpha_custody_suspect, 'to': hot, 'amount': module.Decimal('6000')},
+    ],
+    {candidate: {'address': candidate, 'class': 'cex_deposit_candidate'}},
+)
+risk_paths = [row for row in path_rows if row['runtime_effect'] == 'cex_inflow_risk']
+internal_paths = [row for row in path_rows if row['runtime_effect'] == 'none']
+aggregate_components = [row for row in path_rows if row['runtime_effect'] == 'aggregate_only']
+assert sum((row['amount'] for row in risk_paths), module.Decimal(0)) == module.Decimal('2000'), path_rows
+assert len(risk_paths) == 1 and {row['path_role'] for row in risk_paths} == {'unlabeled_to_cex_inflow_candidate'}, path_rows
+assert len(aggregate_components) == 1 and aggregate_components[0]['amount'] == module.Decimal('3000'), path_rows
+assert aggregate_components[0]['path_role'] == 'external_to_cex_inflow_component', path_rows
+assert len(internal_paths) == 5, path_rows
+assert {row['path_role'] for row in internal_paths} == {'cex_internal_aggregation', 'alpha_custody_movement_unresolved'}, path_rows
+assert all(row['direction'] == 'unknown' and row['alert_policy'] == 'report_only' for row in internal_paths), path_rows
+supply_risk_rows = module.classify_cex_transfer_paths(
+    path_event,
+    [
+        {'token': event['token']['address'], 'from': module.opening.ZERO, 'to': hot, 'amount': module.Decimal('7000')},
+        {'token': event['token']['address'], 'from': event['token']['address'], 'to': hot, 'amount': module.Decimal('8000')},
+        {'token': event['token']['address'], 'from': project_operator, 'to': hot, 'amount': module.Decimal('9000')},
+    ],
+)
+assert len(supply_risk_rows) == 3, supply_risk_rows
+assert all(row['path_role'] == 'external_to_cex_inflow' for row in supply_risk_rows), supply_risk_rows
+assert {row['source_role'] for row in supply_risk_rows} == {'mint_or_zero', 'token_contract', 'project_or_pool'}, supply_risk_rows
+gate_evidence_rows = module.classify_cex_transfer_paths(
+    path_event,
+    [
+        {
+            'token': event['token']['address'],
+            'from': '0xd5da17a84314194e348649c89a65143a061f7190',
+            'to': hot,
+            'amount': module.Decimal('1845034161.853208889131008'),
+        },
+        {
+            'token': event['token']['address'],
+            'from': '0x8782163068c7cd74d2510768a61135c1e4eb07b3',
+            'to': hot,
+            'amount': module.Decimal('1914689272'),
+        },
+    ],
+)
+assert len(gate_evidence_rows) == 2, gate_evidence_rows
+assert all(row['path_role'] == 'unlabeled_to_cex_inflow_candidate' for row in gate_evidence_rows), gate_evidence_rows
+assert all(row['runtime_effect'] == 'cex_inflow_risk' for row in gate_evidence_rows), gate_evidence_rows
+assert all(row['source_role'] == 'unlabeled' for row in gate_evidence_rows), gate_evidence_rows
+assert all(row['direction'] == 'bearish_risk_candidate' for row in gate_evidence_rows), gate_evidence_rows
+real_internal_quick_rpc = module.opening.quick_rpc_call
+real_internal_receipt_transfers = module.opening.receipt_transfers_from_receipt
+real_internal_gas_priming = module.cex_gas_priming_transfers
+gas_target_calls = []
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: {'blockNumber': '0x64', 'transactionIndex': '0x1'}
+module.cex_gas_priming_transfers = lambda event, targets, block: gas_target_calls.append(set(targets)) or []
+module.opening.receipt_transfers_from_receipt = lambda receipt, token, quote: [
+    {'token': event['token']['address'], 'from': deposit, 'to': hot, 'amount': module.Decimal('300000')}
+]
+internal_receipt_row = module.summarize_flow_tx(path_event, '0x' + '4' * 64)
+module.opening.receipt_transfers_from_receipt = lambda receipt, token, quote: [
+    {'token': event['token']['address'], 'from': external, 'to': candidate, 'amount': module.Decimal('300000')},
+    {'token': event['token']['address'], 'from': candidate, 'to': hot, 'amount': module.Decimal('300000')},
+]
+mixed_receipt_row = module.summarize_flow_tx(
+    path_event,
+    '0x' + '5' * 64,
+    {candidate: {'address': candidate, 'class': 'cex_deposit_candidate'}},
+)
+module.opening.quick_rpc_call = real_internal_quick_rpc
+module.opening.receipt_transfers_from_receipt = real_internal_receipt_transfers
+module.cex_gas_priming_transfers = real_internal_gas_priming
+assert internal_receipt_row is not None, internal_receipt_row
+assert internal_receipt_row['cex_deposit_count'] == 0, internal_receipt_row
+assert internal_receipt_row['cex_internal_aggregation_count'] == 1, internal_receipt_row
+assert internal_receipt_row['cex_internal_path_roles'] == 'cex_internal_aggregation', internal_receipt_row
+assert internal_receipt_row['cex_path_sample'][0]['from'] == deposit, internal_receipt_row
+assert internal_receipt_row['cex_path_sample'][0]['to'] == hot, internal_receipt_row
+assert internal_receipt_row['cex_path_sample'][0]['runtime_effect'] == 'none', internal_receipt_row
+assert mixed_receipt_row is not None, mixed_receipt_row
+assert mixed_receipt_row['cex_token_deposit'] == '0', mixed_receipt_row
+assert mixed_receipt_row['cex_internal_aggregation_token'] == '300000', mixed_receipt_row
+assert {row['path_role'] for row in mixed_receipt_row['cex_path_sample']} == {
+    'external_to_cex_inflow_component',
+    'cex_internal_aggregation',
+}, mixed_receipt_row
+assert gas_target_calls[0] == {deposit}, gas_target_calls
+assert gas_target_calls[1] == {external, candidate}, gas_target_calls
+deduped_risk_rows = module.cex_deposit_transfers(
+    path_event,
+    [
+        {'token': event['token']['address'], 'from': external, 'to': candidate, 'amount': module.Decimal('3000')},
+        {'token': event['token']['address'], 'from': candidate, 'to': hot, 'amount': module.Decimal('3000')},
+    ],
+    {candidate: {'address': candidate, 'class': 'cex_deposit_candidate'}},
+)
+assert deduped_risk_rows == [], deduped_risk_rows
 runtime_rows = module.cex_deposit_transfers(
     event,
     [{'token': event['token']['address'], 'from': '0x' + '6' * 40, 'to': candidate, 'amount': module.Decimal('150000')}],
     {candidate: {'address': candidate, 'class': 'cex_deposit_candidate'}},
 )
-assert len(runtime_rows) == 1 and runtime_rows[0]['class'] == 'cex_deposit_candidate', runtime_rows
+assert runtime_rows == [], runtime_rows
+small_inflows = [
+    {
+        'token': event['token']['address'],
+        'from': f"0x{100 + index:040x}",
+        'to': candidate,
+        'amount': module.Decimal('50000'),
+        'block': 100 + index,
+        'log_index': 0,
+    }
+    for index in range(20)
+]
+small_inflows.append(
+    {
+        'token': event['token']['address'],
+        'from': candidate,
+        'to': hot,
+        'amount': module.Decimal('1000000'),
+        'block': 130,
+        'log_index': 0,
+    }
+)
+small_candidates = module.runtime_cex_deposit_candidates(path_event, 100, 130, small_inflows)
+assert small_candidates[candidate]['attributed_external_inflow_amount'] == '1000000', small_candidates
+assert small_candidates[candidate]['attributed_external_inbound_count'] == 20, small_candidates
+assert small_candidates[candidate]['attribution_method'] == 'observed_window_fifo_in_before_cex_out', small_candidates
+small_aggregate_rows = module.runtime_cex_candidate_aggregate_rows(path_event, small_candidates)
+assert len(small_aggregate_rows) == 1, small_aggregate_rows
+assert small_aggregate_rows[0]['cex_token_deposit'] == '1000000', small_aggregate_rows
+assert small_aggregate_rows[0]['path_role'] == 'external_to_cex_inflow', small_aggregate_rows
+assert small_aggregate_rows[0]['source_roles'] == 'unlabeled', small_aggregate_rows
+assert small_aggregate_rows[0]['attributed_external_inbound_count'] == 20, small_aggregate_rows
+assert small_aggregate_rows[0]['coverage_complete'] is True, small_aggregate_rows
+small_analysis = module.analyze_rows(path_event, small_aggregate_rows, 100, 130, 21, 21)
+assert small_analysis['cex_token_deposit'] == '1000000', small_analysis
+assert small_analysis['cex_deposit_count'] == 1, small_analysis
+assert module.event_alert_keys({**path_event, 'analysis': small_analysis}), small_analysis
+incomplete_aggregate_rows = module.runtime_cex_candidate_aggregate_rows(
+    path_event,
+    small_candidates,
+    {'state': 'partial_rpc_error', 'complete': False},
+)
+assert incomplete_aggregate_rows[0]['attributed_external_token'] == '1000000', incomplete_aggregate_rows
+assert incomplete_aggregate_rows[0]['cex_token_deposit'] == '0', incomplete_aggregate_rows
+assert incomplete_aggregate_rows[0]['runtime_effect'] == 'none_incomplete_coverage', incomplete_aggregate_rows
+incomplete_analysis = module.analyze_rows(path_event, incomplete_aggregate_rows, 100, 130, 20, 20)
+assert incomplete_analysis['cex_deposit_count'] == 0, incomplete_analysis
+assert module.event_alert_keys({**path_event, 'analysis': incomplete_analysis}) == [], incomplete_analysis
+late_inflow_rows = [
+    {'token': event['token']['address'], 'from': external, 'to': candidate, 'amount': module.Decimal('100000'), 'block': 1, 'log_index': 0},
+    {'token': event['token']['address'], 'from': candidate, 'to': hot, 'amount': module.Decimal('1000000'), 'block': 2, 'log_index': 0},
+    {'token': event['token']['address'], 'from': '0x' + '7' * 40, 'to': candidate, 'amount': module.Decimal('900000'), 'block': 3, 'log_index': 0},
+]
+late_candidates = module.runtime_cex_deposit_candidates(path_event, 1, 3, late_inflow_rows)
+assert late_candidates[candidate]['external_in_amount'] == '1000000', late_candidates
+assert late_candidates[candidate]['attributed_external_inflow_amount'] == '100000', late_candidates
+mixed_origin_rows = [
+    {'token': event['token']['address'], 'from': hot, 'to': candidate, 'amount': module.Decimal('400000'), 'block': 1, 'log_index': 0},
+    {'token': event['token']['address'], 'from': external, 'to': candidate, 'amount': module.Decimal('600000'), 'block': 2, 'log_index': 0},
+    {'token': event['token']['address'], 'from': candidate, 'to': hot, 'amount': module.Decimal('500000'), 'block': 3, 'log_index': 0},
+]
+mixed_origin_candidates = module.runtime_cex_deposit_candidates(path_event, 1, 3, mixed_origin_rows)
+assert mixed_origin_candidates[candidate]['external_in_amount'] == '600000', mixed_origin_candidates
+assert mixed_origin_candidates[candidate]['attributed_external_inflow_amount'] == '100000', mixed_origin_candidates
 runtime_analysis = module.analyze_rows(
     event,
     [{'cex_token_deposit': '150000', 'cex_quote_estimate': '7500', 'cex_deposit_count': 1, 'runtime_cex_deposit_candidate_count': 1, 'cex_destination_classes': 'cex_deposit_candidate'}],
@@ -2367,6 +2618,27 @@ runtime_analysis = module.analyze_rows(
 assert runtime_analysis['runtime_cex_deposit_candidate_count'] == 1, runtime_analysis
 assert runtime_analysis['cex_destination_classes'] == 'cex_deposit_candidate', runtime_analysis
 assert '候选CEX充值路径' in runtime_analysis['trade_signal'], runtime_analysis
+internal_analysis = module.analyze_rows(
+    path_event,
+    [{
+        'cex_token_deposit': '0',
+        'cex_quote_estimate': '0',
+        'cex_deposit_count': 0,
+        'cex_internal_aggregation_token': '300000',
+        'cex_internal_aggregation_quote_estimate': '15000',
+        'cex_internal_aggregation_count': 2,
+        'cex_internal_path_roles': 'alpha_custody_movement_unresolved,cex_internal_aggregation',
+    }],
+    100,
+    200,
+    2,
+    2,
+)
+assert internal_analysis['direction'] == '观察', internal_analysis
+assert internal_analysis['cex_internal_aggregation_count'] == 2, internal_analysis
+assert internal_analysis['cex_internal_aggregation_quote_estimate'] == '15000', internal_analysis
+assert internal_analysis['cex_internal_aggregation_measure'] == 'gross_transfer_turnover_may_repeat_economic_tokens', internal_analysis
+assert module.event_alert_keys({**path_event, 'analysis': internal_analysis}) == [], internal_analysis
 def fake_get_logs(chain, query, chunk_blocks, max_logs, timeout):
     user = '0x' + '7' * 40
     hot = '0x' + 'd' * 40
@@ -4950,12 +5222,14 @@ spec.loader.exec_module(module)
 text = module.build_report()
 assert '## Perp / OI / Funding' in text, text
 assert '## Alpha Price Momentum' in text, text
+assert '## CEX Wallet Flow' in text, text
 assert '## Holder Concentration' in text, text
 assert '## Surf Auxiliary Market' in text, text
 assert '## External Auxiliary Sources' in text, text
 assert '## Position / Cost Watch' in text, text
 assert '## Prelaunch Schedule' in text, text
 assert '15m high/low/close' in text and 'Book' in text and 'Alpha 价格层' in text, text
+assert '+归集' in text and 'report-only' in text, text
 assert '排除托管后前十' in text or 'No holder concentration snapshot available.' in text, text
 assert '外部全量Top10' in text or 'No holder concentration snapshot available.' in text, text
 assert '联动判断' in text or 'No holder concentration snapshot available.' in text, text

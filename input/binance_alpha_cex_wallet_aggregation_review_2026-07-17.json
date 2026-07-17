@@ -1,0 +1,174 @@
+{
+  "schema": "binance_alpha_cex_wallet_aggregation_review.v1",
+  "reviewed_at": "2026-07-17T05:28:39Z",
+  "scope": "Evaluate Binance Alpha due-diligence CEX wallet aggregation records as a discovery source and prevent CEX-internal transfers from being counted as new exchange inflow.",
+  "screenshot": {
+    "path": "/Users/xuyufan/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_e9f0ddf3eaf9b399fb3ce8b753370f57/nt_data/Pic/2026-07/Thumb/de80784f0d0d6fa1570f86770ac5cbff_720.png",
+    "sha256": "5fd09714bc0d5ca706dd9eb85fa4b43c95f08587abd5b294c746c7a20cb56bd2",
+    "provenance": "user_supplied_binance_app_capture",
+    "visible_module": "CEX 钱包归集资金动态"
+  },
+  "token": {
+    "symbol": "AKE",
+    "name": "AKE",
+    "chain": "bsc",
+    "chain_id": 56,
+    "contract": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+    "decimals": 18,
+    "alpha_id": "ALPHA_331",
+    "official_token_list_url": "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list",
+    "binance_wallet_url": "https://web3.binance.com/en/token/bsc/0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+    "explorer_url": "https://bscscan.com/token/0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db"
+  },
+  "official_discovery": {
+    "due_diligence_announcement_url": "https://x.com/binancezh/status/2059152880133902573",
+    "alpha_api_reference_url": "https://github.com/binance/binance-skills-hub/blob/main/skills/binance/binance/references/alpha.md",
+    "documented_field_semantics": false,
+    "undocumented_items": [
+      "wallet label origin",
+      "plus-sign definition",
+      "aggregation algorithm",
+      "deduplication rule"
+    ],
+    "runtime_role": "official_discovery_only_until_tx_receipt_and_path_are_verified"
+  },
+  "verified_ui_records": [
+    {
+      "record_id": "AKE-GATE-2026-07-14-01",
+      "ui_label": "Gate",
+      "ui_chain": "BSC",
+      "ui_date": "2026-07-14",
+      "ui_displayed_amount": "+1.85B AKE",
+      "txid": "0xbd9b2b41d92c7ed59bd22afa376656aabea115755c7295f584d4130ab329ec28",
+      "block_number_hex": "0x68ca7a4",
+      "block_time_utc": "2026-07-14T05:11:24Z",
+      "receipt_status": "success",
+      "receipt_log_count": 1,
+      "token_contract_verified": true,
+      "transfer_from": "0xd5da17a84314194e348649c89a65143a061f7190",
+      "transfer_to": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+      "destination_label": "Gate 1",
+      "exact_amount_token": "1845034161.853208889131008",
+      "source_code_state_at_latest": "eoa",
+      "source_code_state_at_transfer_block": "unresolved_archive_state",
+      "source_address_class_at_review": "unlabeled",
+      "source_entity_role": "unresolved",
+      "entity_linkage_verified": false,
+      "path_role": "unlabeled_to_cex_inflow_candidate",
+      "transfer_direction_verified": true,
+      "economic_external_inflow_verified": false,
+      "runtime_effect": "cex_inflow_risk",
+      "explorer_url": "https://bscscan.com/tx/0xbd9b2b41d92c7ed59bd22afa376656aabea115755c7295f584d4130ab329ec28"
+    },
+    {
+      "record_id": "AKE-GATE-2026-07-14-02",
+      "ui_label": "Gate",
+      "ui_chain": "BSC",
+      "ui_date": "2026-07-14",
+      "ui_displayed_amount": "+1.91B AKE",
+      "txid": "0xcc96491ff1dcbf98511a5aba24955ad9629c3ff68d8325a99be7403ac72dd619",
+      "block_number_hex": "0x68ca7a2",
+      "block_time_utc": "2026-07-14T05:11:23Z",
+      "receipt_status": "success",
+      "receipt_log_count": 1,
+      "token_contract_verified": true,
+      "transfer_from": "0x8782163068c7cd74d2510768a61135c1e4eb07b3",
+      "transfer_to": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+      "destination_label": "Gate 1",
+      "exact_amount_token": "1914689272",
+      "source_code_state_at_latest": "eoa",
+      "source_code_state_at_transfer_block": "unresolved_archive_state",
+      "source_address_class_at_review": "unlabeled",
+      "source_entity_role": "unresolved",
+      "entity_linkage_verified": false,
+      "path_role": "unlabeled_to_cex_inflow_candidate",
+      "transfer_direction_verified": true,
+      "economic_external_inflow_verified": false,
+      "runtime_effect": "cex_inflow_risk",
+      "explorer_url": "https://bscscan.com/tx/0xcc96491ff1dcbf98511a5aba24955ad9629c3ff68d8325a99be7403ac72dd619"
+    }
+  ],
+  "pending_ui_records": [
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-07",
+      "ui_label": "Binance: Alpha Hot Wallet",
+      "ui_chain": "BSC",
+      "ui_date": "2026-07-07",
+      "ui_displayed_amount": "+972.54M AKE",
+      "txid": null,
+      "wallet_address": null,
+      "direction_verified": false,
+      "path_role": "pending_txid",
+      "runtime_effect": "none"
+    },
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-05",
+      "ui_label": "Binance: Alpha Hot Wallet",
+      "ui_chain": "BSC",
+      "ui_date": "2026-07-05",
+      "ui_displayed_amount": "+822.99M AKE",
+      "txid": null,
+      "wallet_address": null,
+      "direction_verified": false,
+      "path_role": "pending_txid",
+      "runtime_effect": "none"
+    },
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-04",
+      "ui_label": "Binance: Alpha Hot Wallet",
+      "ui_chain": "BSC",
+      "ui_date": "2026-07-04",
+      "ui_displayed_amount": "+670.00M AKE",
+      "txid": null,
+      "wallet_address": null,
+      "direction_verified": false,
+      "path_role": "pending_txid",
+      "runtime_effect": "none"
+    }
+  ],
+  "semantic_conclusion": {
+    "verified_sample_count": 2,
+    "verified_plus_sign_meaning": "the Gate destination wallet received tokens in both reconstructed samples",
+    "generalization_limit": "The two Gate samples do not prove the meaning of every Binance Alpha Hot Wallet row.",
+    "source_role_limit": "The two current EOA senders are unlabeled; Gate deposit, sweep, user, project, market-maker, and unrelated-source roles remain unresolved.",
+    "trade_direction_limit": "The receipts prove transfer direction into Gate. Economic external inflow, sender ownership, sale intent, and later execution remain unresolved without source linkage, next-hop, or quote-recovery evidence."
+  },
+  "runtime_integration": {
+    "unlabeled_to_cex_inflow_candidate": {
+      "direction": "bearish_risk_candidate",
+      "runtime_effect": "cex_inflow_risk",
+      "rule": "A verified token transfer into a configured CEX destination can enter the existing supply-risk gate while source entity, economic external inflow, sale intent, and next hop remain unresolved."
+    },
+    "external_to_cex_inflow": {
+      "direction": "bearish_risk",
+      "runtime_effect": "cex_inflow_risk",
+      "rule": "Keep the existing threshold and action gate after receipt, token, direction, and destination role are verified."
+    },
+    "cex_internal_aggregation": {
+      "direction": "unknown",
+      "runtime_effect": "none",
+      "alert_policy": "report_only",
+      "rule": "Do not count deposit or runtime sweep to hot-wallet movement as a second economic inflow; internal aggregation metrics are gross transfer turnover and may repeat the same economic tokens across hops."
+    },
+    "alpha_custody_movement_unresolved": {
+      "direction": "unknown",
+      "runtime_effect": "none",
+      "alert_policy": "report_only",
+      "rule": "Keep Alpha Router, Custody, Rebalance, external-to-custody, and unverified Alpha Hot Wallet movement outside buy or sell actions."
+    }
+  },
+  "evidence_layers": {
+    "official": "Binance due-diligence UI discovery, Binance announcement, public Alpha token list, and official Alpha API reference.",
+    "onchain": "BSC transaction, receipt, Transfer log, block timestamp, token decimals, and destination-address reconstruction.",
+    "market": "The screenshot contains a point-in-time price display; no market action is derived from it in this review.",
+    "social": "No KOL or community claim is promoted into the runtime decision.",
+    "inference": "Path roles and runtime effects are assigned only after official discovery and on-chain direction are separated."
+  },
+  "remaining_gates": [
+    "Open the three Binance Alpha Hot Wallet TXID links in the app and preserve the exact hashes.",
+    "Verify receipt status, token contract, from/to, decimals, wallet labels, and same-path deduplication for each hash.",
+    "Keep entity ownership, sale intent, next hop, and quote recovery unresolved until direct evidence exists.",
+    "Window-start balances remain outside ordered FIFO attribution.",
+    "Window aggregation for multiple individually sub-threshold transfers sent directly to already configured CEX addresses remains unimplemented."
+  ]
+}

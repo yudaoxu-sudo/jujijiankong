@@ -24,6 +24,11 @@ CELUE_STRATEGY_FIELDS = [
         "标记 source -> CEX cold/hot/deposit -> intermediate wallet -> perp venue treasury/sell venue -> quote recovery。",
     ),
     (
+        "cex_wallet_aggregation",
+        "Binance Alpha due-diligence UI plus alpha_intraday_flow_watch receipt paths",
+        "官方 +归集 只作发现；TXID/receipt 核验后区分供给风险候选、CEX 内部归集和 Alpha 托管相关未决路径，内部路径仅报告。",
+    ),
+    (
         "cluster_evidence",
         "funding_source_clusters, intraday runtime CEX candidates, gas priming",
         "记录钱包数量、共同来源、共同时间窗、共同充值端口、共同 gas 来源。",
@@ -246,6 +251,7 @@ def build_report() -> str:
     monitor = read_json(ROOT / "output" / "monitoring" / "latest_snapshot.json", {"wallets": [], "alerts": [], "groups": []})
     prediction = read_json(ROOT / "output" / "prediction_markets" / "latest_prediction_markets.json", {"rows": []})
     alpha_price = read_json(ROOT / "output" / "alpha_price_momentum_watch" / "latest.json", {"events": []})
+    intraday_flow = read_json(ROOT / "output" / "alpha_intraday_flow_watch" / "latest.json", {"events": []})
     holder_concentration = read_json(ROOT / "output" / "alpha_holder_concentration_watch" / "latest.json", {"projects": []})
     perp_watch = read_json(ROOT / "output" / "perp_oi_funding_watch" / "latest.json", {"rows": []})
     surf_aux = read_json(ROOT / "output" / "surf_aux_market_watch" / "latest.json", {"rows": []})
@@ -432,6 +438,38 @@ def build_report() -> str:
         lines.append("- Alpha 价格层只给动作提醒和注意力排序，跟随口径仍需要链上成交、首批去向、活动分发和可售性共同确认。")
     else:
         lines.append("- No Alpha price momentum snapshot available.")
+
+    lines.extend(["", "## CEX Wallet Flow", ""])
+    cex_flow_events = []
+    for event in intraday_flow.get("events", []):
+        analysis = event.get("analysis", {}) or {}
+        withdrawal = analysis.get("cex_withdrawal_cluster", {}) or {}
+        if (
+            int(analysis.get("cex_deposit_count") or 0)
+            or int(analysis.get("cex_internal_aggregation_count") or 0)
+            or int(withdrawal.get("candidate_count") or 0)
+        ):
+            cex_flow_events.append(event)
+    if cex_flow_events:
+        lines.extend(
+            [
+                "| Symbol | Direction | External CEX inflow | Internal gross turnover | Internal role | Withdrawal candidates |",
+                "| --- | --- | ---: | ---: | --- | ---: |",
+            ]
+        )
+        for event in cex_flow_events[:12]:
+            analysis = event.get("analysis", {}) or {}
+            withdrawal = analysis.get("cex_withdrawal_cluster", {}) or {}
+            lines.append(
+                f"| `{event.get('symbol', '')}` | {analysis.get('direction', '')} | "
+                f"{fmt_dec(analysis.get('cex_quote_estimate'), 2)} | "
+                f"{fmt_dec(analysis.get('cex_internal_aggregation_quote_estimate'), 2)} | "
+                f"{analysis.get('cex_internal_path_roles') or '-'} | {int(withdrawal.get('candidate_count') or 0)} |"
+            )
+    else:
+        lines.append("- No verified CEX inflow, internal aggregation, or withdrawal-cluster observation in the latest intraday snapshot.")
+    lines.append("- `+归集` 先核验 receipt 与 CEX 目标；未标记来源进入供给风险候选，CEX/Alpha 内部路径保持 report-only，来源实体和出售意图继续 unresolved。")
+    lines.append("- Internal gross turnover 是内部路径 Transfer 毛额；同一批代币经过多跳时可能重复出现，不作为净经济流。")
 
     lines.extend(["", "## Holder Concentration", ""])
     holder_projects = holder_concentration.get("projects", [])

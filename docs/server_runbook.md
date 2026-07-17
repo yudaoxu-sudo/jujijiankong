@@ -234,6 +234,12 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 
 `alpha_intraday_flow_watch.py` 用于开盘后链上盘中大额流监控。它不推送长地址和 tx，Telegram 只给方向、买卖信号、现货动作、合约动作、净买/净卖；完整地址和 tx 保存在 `output/alpha_intraday_flow_watch/latest.json` 和 `latest.md`。它按地址净额聚合，避免同一地址来回交易被误读为单边买入或单边卖出。
 
+CEX 路径按经济角色拆分：外部地址进入 CEX deposit/hot 或 runtime sweep 候选为 `external_to_cex_inflow`，继续进入既有 CEX 风险门槛；deposit/sweep/hot 之间的后续搬运为 `cex_internal_aggregation`；涉及 Alpha Router/Custody/Rebalance 的路径为 `alpha_custody_movement_unresolved`。后两类固定 `direction=unknown`、`runtime_effect=none`、`alert_policy=report_only`，只写入盘中 JSON、Markdown 和日报，不进入 Telegram。`alpha_custody_movement_unresolved` 也覆盖外部地址进入 Alpha 托管入口，名称不推断内部调仓。`external -> runtime sweep -> hot` 只把按有序 FIFO 归因到后续 CEX 转出的外部入账计入一次，后续内部搬运不重复进入风险金额。`cex_internal_aggregation_token` 和对应 quote estimate 表示内部 Transfer 毛额，多跳时可重复出现同一批代币，仅用于路径审计。
+
+FIFO 归因只覆盖当前抓取窗口内可见的 Transfer，窗口开始前余额保持未知；候选金额是已观察路径的归因量。只有 transfer coverage 完整时，窗口聚合量才进入风险门槛；部分覆盖保留 `attributed_external_token` 并固定 `runtime_effect=none_incomplete_coverage`。多笔直接进入已配置 CEX 地址且每笔均低于单笔门槛的窗口聚合尚未实现，继续作为显式残余缺口。每个已抽样 receipt 的 `cex_path_sample` 在 `latest.json` 保存完整 from/to/角色，`latest.md` 保存对应完整 tx 和路径明细。
+
+Binance Alpha 尽调中心的 `CEX 钱包归集资金动态` 可作为 `official` 发现源。界面中的 `+归集` 不直接映射为吸筹、买入、项目方派发或已确认卖出。取得 TXID 并核对 receipt、token contract、from/to、decimals 和已配置 CEX 目标后，未标记来源进入 `unlabeled_to_cex_inflow_candidate` 供给风险门槛；明确项目、operator、mint 或 token-contract 来源进入 `external_to_cex_inflow`。来源实体、经济外部入金、出售意图和下一跳继续独立标记。无法取得 TXID 或目标地址标签冲突时保持 pending，并进入人工复核。
+
 其中 `cex_withdrawal_cluster` 只生成 `report_only` 候选。提款集群与 runtime CEX 候选链路共用一轮带 coverage 的 Token Transfer 分段抓取；模块原有的主交易抽样查询仍是独立读取。coverage 记录请求区间、完成分段数、最后覆盖块、返回日志数和上限。只有请求区间完整覆盖且未触发日志上限时才移除 `log_window_completeness`。同一批日志会计算每个候选收款地址在首次集群入账前的同币种入账次数；`new_to_token_in_window` 只表示完整扫描窗口内未见更早的同币种入账，不代表新钱包或全链历史完整。
 
 候选通过热钱包来源、收款地址数、金额离散度、价值和区块跨度门槛后，程序读取首末块公共 RPC header，记录 `first_block_time_utc`、`last_block_time_utc`、`window_seconds` 和 `time_window_evidence`。单次进程最多尝试四次 RPC，每次超时限制在一至三秒。RPC 不可用、预算耗尽、时间戳无效或顺序异常时，`exact_time_window` 继续列在 `unresolved_gates`。

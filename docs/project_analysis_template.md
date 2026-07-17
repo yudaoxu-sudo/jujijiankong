@@ -255,6 +255,7 @@
 | 字段 | 当前内容 | 证据位置 | 状态 |
 | --- | --- | --- | --- |
 | path_stage | source -> CEX cold/hot/deposit -> fresh cluster -> gas source -> sell venue -> quote recovery |  | unknown |
+| cex_wallet_aggregation | official UI discovery -> TXID/receipt -> unlabeled_to_cex_inflow_candidate / external_to_cex_inflow / cex_internal_aggregation / alpha_custody_movement_unresolved; internal paths report-only |  | pending |
 | cluster_evidence | wallet count / same source / same deposit port / same timing / same gas source |  | unknown |
 | deposit_status | closed / open / reopened / chain-supported / chain-migrated / unknown |  | unknown |
 | derivatives_ratio | OI/MC / OI/FDV / 24h volume/MC / funding direction |  | unknown |

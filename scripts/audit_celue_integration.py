@@ -42,6 +42,8 @@ REQUIRED_SYSTEM_LOGIC_PHRASES = [
     "market",
     "social",
     "inference",
+    "cex_internal_aggregation",
+    "unlabeled_to_cex_inflow_candidate",
 ]
 
 REQUIRED_UPDATE_PROTOCOL_PHRASES = [
@@ -63,11 +65,14 @@ REQUIRED_PROJECT_FILES = [
     "cases/2026-07-13_miles082510_wallet_cluster_review.md",
     "input/elonkely_latest_100_review_2026-07-16.json",
     "cases/2026-07-16_elonkely_latest_100_review.md",
+    "input/binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
+    "cases/2026-07-17_binance_alpha_cex_wallet_aggregation.md",
 ]
 
 REQUIRED_DAILY_FIELDS = [
     "source_layers",
     "path_stage",
+    "cex_wallet_aggregation",
     "cluster_evidence",
     "deposit_status",
     "derivatives_ratio",
