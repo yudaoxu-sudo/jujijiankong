@@ -1,6 +1,6 @@
 {
-  "schema": "binance_alpha_cex_wallet_aggregation_review.v1",
-  "reviewed_at": "2026-07-17T05:28:39Z",
+  "schema": "binance_alpha_cex_wallet_aggregation_review.v2",
+  "reviewed_at": "2026-07-18T12:49:23Z",
   "scope": "Evaluate Binance Alpha due-diligence CEX wallet aggregation records as a discovery source and prevent CEX-internal transfers from being counted as new exchange inflow.",
   "screenshot": {
     "path": "/Users/xuyufan/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_e9f0ddf3eaf9b399fb3ce8b753370f57/nt_data/Pic/2026-07/Thumb/de80784f0d0d6fa1570f86770ac5cbff_720.png",
@@ -88,18 +88,73 @@
       "explorer_url": "https://bscscan.com/tx/0xcc96491ff1dcbf98511a5aba24955ad9629c3ff68d8325a99be7403ac72dd619"
     }
   ],
-  "pending_ui_records": [
+  "matched_alpha_onchain_candidates": [
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-07",
       "ui_label": "Binance: Alpha Hot Wallet",
       "ui_chain": "BSC",
       "ui_date": "2026-07-07",
       "ui_displayed_amount": "+972.54M AKE",
-      "txid": null,
-      "wallet_address": null,
-      "direction_verified": false,
-      "path_role": "pending_txid",
-      "runtime_effect": "none"
+      "txid": "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727",
+      "block_number": 108566378,
+      "block_number_hex": "0x678976a",
+      "block_time_utc": "2026-07-07T08:46:34Z",
+      "block_time_beijing": "2026-07-07T16:46:34+08:00",
+      "block_milli_timestamp_utc": "2026-07-07T08:46:34.150Z",
+      "block_milli_timestamp_beijing": "2026-07-07T16:46:34.150+08:00",
+      "block_milli_timestamp_source": "eth_getBlockByNumber.milliTimestamp",
+      "receipt_status": "success",
+      "receipt_log_count": 2,
+      "ake_transfer_log_count": 1,
+      "transfer_log_index": 218,
+      "token_contract_verified": true,
+      "token_decimals_verified": 18,
+      "exact_amount_raw": "972540250000000000000000000",
+      "exact_amount_token": "972540250",
+      "transaction_from": "0x6449b24d8dad7cef8ece12d7d5c8d0e0ef355a48",
+      "transaction_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "transaction_value_wei": "0",
+      "transaction_input_selector": "0xdb453e2d",
+      "transfer_from": "0x6449b24d8dad7cef8ece12d7d5c8d0e0ef355a48",
+      "transfer_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "source_code_state_at_latest": "eoa",
+      "source_entity_role": "unresolved",
+      "destination_code_state_at_latest": "contract",
+      "destination_label_tracked": "Binance Alpha 2.0 Proxy/Custody",
+      "destination_class_tracked": "exchange_aggregator",
+      "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
+      "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
+      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
+      "ui_record_linkage_verified": false,
+      "screenshot_label_exact_mapping_verified": false,
+      "transfer_direction_verified": true,
+      "custody_purpose_verified": false,
+      "economic_external_inflow_verified": false,
+      "sale_intent_verified": false,
+      "same_tx_secondary_log": {
+        "emitter": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "topic0": "0xe9932b60b9430987dc7ccc0dc23fe5c4d39d3207c8bc0d99613bfb21ea18a3a2",
+        "token_topic": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "raw_amount": "972540250000000000000000000",
+        "is_ake_transfer": false,
+        "dedup_effect": "not_counted_as_second_transfer"
+      },
+      "visible_address_level_next_hop": {
+        "txid": "0x62b6677cc9861ece58fa7525e65197bea58fcfe91a9809bdb88b0d8b030e7843",
+        "block_time_utc": "2026-07-07T08:46:40Z",
+        "amount_token": "479101.9600125",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_label_tracked": "Binance Alpha 2.0 Router",
+        "scan_pages": "500-516",
+        "scan_time_utc": "2026-07-05T17:17:31Z/2026-07-07T10:27:27Z",
+        "same_batch_economic_linkage_verified": false
+      },
+      "path_role": "alpha_custody_movement_unresolved",
+      "runtime_effect": "none",
+      "alert_policy": "report_only",
+      "explorer_url": "https://bscscan.com/tx/0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727"
     },
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-05",
@@ -107,11 +162,66 @@
       "ui_chain": "BSC",
       "ui_date": "2026-07-05",
       "ui_displayed_amount": "+822.99M AKE",
-      "txid": null,
-      "wallet_address": null,
-      "direction_verified": false,
-      "path_role": "pending_txid",
-      "runtime_effect": "none"
+      "txid": "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8",
+      "block_number": 108196248,
+      "block_number_hex": "0x672f198",
+      "block_time_utc": "2026-07-05T10:25:35Z",
+      "block_time_beijing": "2026-07-05T18:25:35+08:00",
+      "block_milli_timestamp_utc": "2026-07-05T10:25:35.250Z",
+      "block_milli_timestamp_beijing": "2026-07-05T18:25:35.250+08:00",
+      "block_milli_timestamp_source": "eth_getBlockByNumber.milliTimestamp",
+      "receipt_status": "success",
+      "receipt_log_count": 2,
+      "ake_transfer_log_count": 1,
+      "transfer_log_index": 420,
+      "token_contract_verified": true,
+      "token_decimals_verified": 18,
+      "exact_amount_raw": "822989955000000000000000000",
+      "exact_amount_token": "822989955",
+      "transaction_from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+      "transaction_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "transaction_value_wei": "0",
+      "transaction_input_selector": "0xdb453e2d",
+      "transfer_from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+      "transfer_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "source_code_state_at_latest": "eoa",
+      "source_entity_role": "unresolved",
+      "destination_code_state_at_latest": "contract",
+      "destination_label_tracked": "Binance Alpha 2.0 Proxy/Custody",
+      "destination_class_tracked": "exchange_aggregator",
+      "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
+      "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
+      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
+      "ui_record_linkage_verified": false,
+      "screenshot_label_exact_mapping_verified": false,
+      "transfer_direction_verified": true,
+      "custody_purpose_verified": false,
+      "economic_external_inflow_verified": false,
+      "sale_intent_verified": false,
+      "same_tx_secondary_log": {
+        "emitter": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "topic0": "0xe9932b60b9430987dc7ccc0dc23fe5c4d39d3207c8bc0d99613bfb21ea18a3a2",
+        "token_topic": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "raw_amount": "822989955000000000000000000",
+        "is_ake_transfer": false,
+        "dedup_effect": "not_counted_as_second_transfer"
+      },
+      "visible_address_level_next_hop": {
+        "txid": "0x68b5ee2c7d35455f0d453d0f399ee6d49abd692284e19c9b795ccd1827adce62",
+        "block_time_utc": "2026-07-05T10:30:44Z",
+        "amount_token": "70322.2219445",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_label_tracked": "Binance Alpha 2.0 Router",
+        "scan_pages": "509-525",
+        "scan_time_utc": "2026-07-04T17:44:31Z/2026-07-07T08:38:18Z",
+        "same_batch_economic_linkage_verified": false
+      },
+      "path_role": "alpha_custody_movement_unresolved",
+      "runtime_effect": "none",
+      "alert_policy": "report_only",
+      "explorer_url": "https://bscscan.com/tx/0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8"
     },
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-04",
@@ -119,19 +229,168 @@
       "ui_chain": "BSC",
       "ui_date": "2026-07-04",
       "ui_displayed_amount": "+670.00M AKE",
-      "txid": null,
-      "wallet_address": null,
-      "direction_verified": false,
-      "path_role": "pending_txid",
-      "runtime_effect": "none"
+      "txid": "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87",
+      "block_number": 108008641,
+      "block_number_hex": "0x67014c1",
+      "block_time_utc": "2026-07-04T10:58:07Z",
+      "block_time_beijing": "2026-07-04T18:58:07+08:00",
+      "block_milli_timestamp_utc": "2026-07-04T10:58:07.650Z",
+      "block_milli_timestamp_beijing": "2026-07-04T18:58:07.650+08:00",
+      "block_milli_timestamp_source": "eth_getBlockByNumber.milliTimestamp",
+      "receipt_status": "success",
+      "receipt_log_count": 2,
+      "ake_transfer_log_count": 1,
+      "transfer_log_index": 330,
+      "token_contract_verified": true,
+      "token_decimals_verified": 18,
+      "exact_amount_raw": "670000000000000000000000000",
+      "exact_amount_token": "670000000",
+      "transaction_from": "0xb40b35fe21be75f6e5c0b7dabab1ec87d87a1395",
+      "transaction_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "transaction_value_wei": "0",
+      "transaction_input_selector": "0xdb453e2d",
+      "transfer_from": "0xb40b35fe21be75f6e5c0b7dabab1ec87d87a1395",
+      "transfer_to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "source_code_state_at_latest": "eoa",
+      "source_entity_role": "unresolved",
+      "destination_code_state_at_latest": "contract",
+      "destination_label_tracked": "Binance Alpha 2.0 Proxy/Custody",
+      "destination_class_tracked": "exchange_aggregator",
+      "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
+      "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
+      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
+      "ui_record_linkage_verified": false,
+      "screenshot_label_exact_mapping_verified": false,
+      "transfer_direction_verified": true,
+      "custody_purpose_verified": false,
+      "economic_external_inflow_verified": false,
+      "sale_intent_verified": false,
+      "same_tx_secondary_log": {
+        "emitter": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "topic0": "0xe9932b60b9430987dc7ccc0dc23fe5c4d39d3207c8bc0d99613bfb21ea18a3a2",
+        "token_topic": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "raw_amount": "670000000000000000000000000",
+        "is_ake_transfer": false,
+        "dedup_effect": "not_counted_as_second_transfer"
+      },
+      "visible_address_level_next_hop": {
+        "txid": "0xfa0557f8e2da6d827f73cec9557ba60f5898737efdc4165646242757059b6f36",
+        "block_time_utc": "2026-07-04T11:01:19Z",
+        "amount_token": "323089",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_label_tracked": "Binance Alpha 2.0 Router",
+        "scan_pages": "532-548",
+        "scan_time_utc": "2026-07-04T07:51:34Z/2026-07-04T16:56:47Z",
+        "same_batch_economic_linkage_verified": false
+      },
+      "path_role": "alpha_custody_movement_unresolved",
+      "runtime_effect": "none",
+      "alert_policy": "report_only",
+      "explorer_url": "https://bscscan.com/tx/0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87"
     }
   ],
+  "pending_ui_linkage_records": [
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-07",
+      "matched_candidate_txid": "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727",
+      "pending_fact": "direct screenshot-row TXID comparison"
+    },
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-05",
+      "matched_candidate_txid": "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8",
+      "pending_fact": "direct screenshot-row TXID comparison"
+    },
+    {
+      "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-04",
+      "matched_candidate_txid": "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87",
+      "pending_fact": "direct screenshot-row TXID comparison"
+    }
+  ],
+  "bounded_search": {
+    "search_model": "left_closed_right_open UTC-day and Beijing-day union, then approximate UI amount rounding",
+    "amount_rounding_intervals_token": {
+      "+670.00M": "[669995000,670005000)",
+      "+822.99M": "[822985000,822995000)",
+      "+972.54M": "[972535000,972545000)"
+    },
+    "date_windows": [
+      {
+        "ui_date": "2026-07-04",
+        "beijing_day": "2026-07-04T00:00:00+08:00/2026-07-05T00:00:00+08:00",
+        "utc_day": "2026-07-04T00:00:00Z/2026-07-05T00:00:00Z",
+        "union_utc": "2026-07-03T16:00:00Z/2026-07-05T00:00:00Z",
+        "rows_examined": 2952,
+        "amount_candidates": 1,
+        "amount_exclusions": 2951,
+        "coverage": "complete_for_union_within_address_filter"
+      },
+      {
+        "ui_date": "2026-07-05",
+        "beijing_day": "2026-07-05T00:00:00+08:00/2026-07-06T00:00:00+08:00",
+        "utc_day": "2026-07-05T00:00:00Z/2026-07-06T00:00:00Z",
+        "union_utc": "2026-07-04T16:00:00Z/2026-07-06T00:00:00Z",
+        "rows_examined": 2292,
+        "amount_candidates": 1,
+        "amount_exclusions": 2291,
+        "coverage": "complete_for_union_within_address_filter"
+      },
+      {
+        "ui_date": "2026-07-07",
+        "beijing_day": "2026-07-07T00:00:00+08:00/2026-07-08T00:00:00+08:00",
+        "utc_day": "2026-07-07T00:00:00Z/2026-07-08T00:00:00Z",
+        "union_utc": "2026-07-06T16:00:00Z/2026-07-08T00:00:00Z",
+        "rows_examined": 3412,
+        "amount_candidates": 1,
+        "amount_exclusions": 3411,
+        "covered_through_utc": "2026-07-07T12:08:33Z",
+        "coverage": "partial_after_candidate"
+      }
+    ],
+    "address_filter": {
+      "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+      "address": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "source": "BscScan public token-transfer address filter",
+      "pages": "480-552",
+      "page_size": 100,
+      "pages_succeeded": 73,
+      "pages_expected": 73,
+      "rows_observed": 7300,
+      "missing_pages": 0,
+      "earliest_utc": "2026-07-03T15:36:31Z",
+      "latest_utc": "2026-07-07T12:08:33Z",
+      "iframe_log_index_available": false,
+      "candidate_tx_log_dedup": "verified_from_receipts"
+    },
+    "public_rpc_verification": {
+      "endpoint": "https://bsc-dataseed.binance.org/",
+      "chain_id_verified": 56,
+      "methods_succeeded": [
+        "eth_getTransactionByHash",
+        "eth_getTransactionReceipt",
+        "eth_getBlockByNumber",
+        "eth_call decimals()",
+        "eth_getCode latest"
+      ],
+      "eth_getLogs": "disabled_on_public_endpoint_-32005_limit_exceeded_even_for_one_block",
+      "official_endpoint_documentation": "https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/"
+    },
+    "supplementary_address_coverage": {
+      "alpha_router_0x6aba": "sampled only; available page depth did not fully cover 2026-07-04",
+      "configured_binance_hot_wallets": "first of eight total supplementary addresses hit a Cloudflare challenge on page 1; scan stopped without bypass; attempted=1, complete=0",
+      "scope_limit": "exact transaction details are proven for three unique direct-transfer candidates to 0x73d8; direct screenshot-row linkage and exhaustive coverage across every possible screenshot-label address are unresolved"
+    }
+  },
   "semantic_conclusion": {
     "verified_sample_count": 2,
-    "verified_plus_sign_meaning": "the Gate destination wallet received tokens in both reconstructed samples",
-    "generalization_limit": "The two Gate samples do not prove the meaning of every Binance Alpha Hot Wallet row.",
-    "source_role_limit": "The two current EOA senders are unlabeled; Gate deposit, sweep, user, project, market-maker, and unrelated-source roles remain unresolved.",
-    "trade_direction_limit": "The receipts prove transfer direction into Gate. Economic external inflow, sender ownership, sale intent, and later execution remain unresolved without source linkage, next-hop, or quote-recovery evidence."
+    "verified_gate_sample_count": 2,
+    "matched_alpha_onchain_candidate_count": 3,
+    "verified_alpha_ui_mapping_count": 0,
+    "verified_plus_sign_meaning": "the Gate destination received AKE in both directly linked samples; the three Alpha candidates also transfer AKE into the matched destination while direct UI linkage remains pending",
+    "generalization_limit": "The three Alpha candidates are direct transfers to the tracked Alpha Proxy/Custody address; direct screenshot-row linkage and the exact Alpha Hot Wallet label mapping remain unresolved.",
+    "source_role_limit": "All three Alpha senders are EOAs at latest state; sender ownership, custody purpose, economic external inflow, market-maker role, and unrelated-source roles remain unresolved.",
+    "trade_direction_limit": "The receipts prove token direction into the tracked Alpha custody path. Sale intent, same-batch next hop, quote recovery, and later execution remain unresolved."
   },
   "runtime_integration": {
     "unlabeled_to_cex_inflow_candidate": {
@@ -165,10 +424,11 @@
     "inference": "Path roles and runtime effects are assigned only after official discovery and on-chain direction are separated."
   },
   "remaining_gates": [
-    "Open the three Binance Alpha Hot Wallet TXID links in the app and preserve the exact hashes.",
-    "Verify receipt status, token contract, from/to, decimals, wallet labels, and same-path deduplication for each hash.",
-    "Keep entity ownership, sale intent, next hop, and quote recovery unresolved until direct evidence exists.",
+    "Open each screenshot row's TXID link in the Binance app and compare it with the three bounded-search candidate hashes.",
+    "Obtain a public or official field-level mapping from the screenshot's exact Binance: Alpha Hot Wallet label to 0x73d8.",
+    "Keep sender ownership, custody purpose, economic external inflow, same-batch next hop, sale intent, and quote recovery unresolved until direct evidence exists.",
+    "Complete the supplementary Alpha Router and configured Binance hot-wallet scan only when an auditable public source permits bounded access without challenge bypass.",
     "Window-start balances remain outside ordered FIFO attribution.",
-    "Window aggregation for multiple individually sub-threshold transfers sent directly to already configured CEX addresses remains unimplemented."
+    "Collect the first natural configured-CEX window aggregation sample after the 2026-07-18 coverage-gated implementation."
   ]
 }

@@ -159,9 +159,11 @@ def main() -> int:
             )
         )
         verified_rows = cex_review.get("verified_ui_records", [])
-        pending_rows = cex_review.get("pending_ui_records", [])
+        alpha_candidate_rows = cex_review.get("matched_alpha_onchain_candidates", [])
+        pending_linkage_rows = cex_review.get("pending_ui_linkage_records", [])
         runtime_integration = cex_review.get("runtime_integration", {})
         verified_by_tx = {row.get("txid"): row for row in verified_rows}
+        alpha_candidate_by_tx = {row.get("txid"): row for row in alpha_candidate_rows}
         expected_gate_records = {
             "0xbd9b2b41d92c7ed59bd22afa376656aabea115755c7295f584d4130ab329ec28": {
                 "from": "0xd5da17a84314194e348649c89a65143a061f7190",
@@ -174,8 +176,52 @@ def main() -> int:
                 "time": "2026-07-14T05:11:23Z",
             },
         }
+        expected_alpha_records = {
+            "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87": {
+                "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-04",
+                "from": "0xb40b35fe21be75f6e5c0b7dabab1ec87d87a1395",
+                "amount": "670000000",
+                "raw_amount": "670000000000000000000000000",
+                "time": "2026-07-04T10:58:07Z",
+                "milli_time": "2026-07-04T10:58:07.650Z",
+                "block": 108008641,
+                "block_hex": "0x67014c1",
+                "log_index": 330,
+                "next_tx": "0xfa0557f8e2da6d827f73cec9557ba60f5898737efdc4165646242757059b6f36",
+                "next_time": "2026-07-04T11:01:19Z",
+                "next_amount": "323089",
+            },
+            "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8": {
+                "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-05",
+                "from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+                "amount": "822989955",
+                "raw_amount": "822989955000000000000000000",
+                "time": "2026-07-05T10:25:35Z",
+                "milli_time": "2026-07-05T10:25:35.250Z",
+                "block": 108196248,
+                "block_hex": "0x672f198",
+                "log_index": 420,
+                "next_tx": "0x68b5ee2c7d35455f0d453d0f399ee6d49abd692284e19c9b795ccd1827adce62",
+                "next_time": "2026-07-05T10:30:44Z",
+                "next_amount": "70322.2219445",
+            },
+            "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727": {
+                "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-07",
+                "from": "0x6449b24d8dad7cef8ece12d7d5c8d0e0ef355a48",
+                "amount": "972540250",
+                "raw_amount": "972540250000000000000000000",
+                "time": "2026-07-07T08:46:34Z",
+                "milli_time": "2026-07-07T08:46:34.150Z",
+                "block": 108566378,
+                "block_hex": "0x678976a",
+                "log_index": 218,
+                "next_tx": "0x62b6677cc9861ece58fa7525e65197bea58fcfe91a9809bdb88b0d8b030e7843",
+                "next_time": "2026-07-07T08:46:40Z",
+                "next_amount": "479101.9600125",
+            },
+        }
         cex_aggregation_review_ok = (
-            cex_review.get("schema") == "binance_alpha_cex_wallet_aggregation_review.v1"
+            cex_review.get("schema") == "binance_alpha_cex_wallet_aggregation_review.v2"
             and cex_review.get("token", {}).get("contract")
             == "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db"
             and len(verified_rows) == 2
@@ -198,16 +244,100 @@ def main() -> int:
             and all(row.get("source_entity_role") == "unresolved" for row in verified_rows)
             and all(row.get("entity_linkage_verified") is False for row in verified_rows)
             and all(row.get("runtime_effect") == "cex_inflow_risk" for row in verified_rows)
-            and len(pending_rows) == 3
-            and all(row.get("txid") is None for row in pending_rows)
-            and all(row.get("path_role") == "pending_txid" for row in pending_rows)
-            and all(row.get("runtime_effect") == "none" for row in pending_rows)
+            and len(alpha_candidate_rows) == 3
+            and set(alpha_candidate_by_tx) == set(expected_alpha_records)
+            and all(
+                alpha_candidate_by_tx[txid].get("record_id") == expected["record_id"]
+                and alpha_candidate_by_tx[txid].get("transfer_from") == expected["from"]
+                and alpha_candidate_by_tx[txid].get("transaction_from") == expected["from"]
+                and alpha_candidate_by_tx[txid].get("exact_amount_token") == expected["amount"]
+                and alpha_candidate_by_tx[txid].get("exact_amount_raw") == expected["raw_amount"]
+                and alpha_candidate_by_tx[txid].get("block_time_utc") == expected["time"]
+                and alpha_candidate_by_tx[txid].get("block_milli_timestamp_utc")
+                == expected["milli_time"]
+                and alpha_candidate_by_tx[txid].get("block_milli_timestamp_source")
+                == "eth_getBlockByNumber.milliTimestamp"
+                and alpha_candidate_by_tx[txid].get("block_number") == expected["block"]
+                and alpha_candidate_by_tx[txid].get("block_number_hex") == expected["block_hex"]
+                and alpha_candidate_by_tx[txid].get("transfer_log_index") == expected["log_index"]
+                and alpha_candidate_by_tx[txid].get("visible_address_level_next_hop", {}).get(
+                    "txid"
+                )
+                == expected["next_tx"]
+                and alpha_candidate_by_tx[txid].get("visible_address_level_next_hop", {}).get(
+                    "block_time_utc"
+                )
+                == expected["next_time"]
+                and alpha_candidate_by_tx[txid].get("visible_address_level_next_hop", {}).get(
+                    "amount_token"
+                )
+                == expected["next_amount"]
+                for txid, expected in expected_alpha_records.items()
+            )
+            and all(
+                row.get("transfer_to") == "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db"
+                and row.get("transaction_to") == "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db"
+                and row.get("transaction_value_wei") == "0"
+                and row.get("receipt_status") == "success"
+                and row.get("receipt_log_count") == 2
+                and row.get("ake_transfer_log_count") == 1
+                and row.get("token_contract_verified") is True
+                and row.get("token_decimals_verified") == 18
+                and row.get("path_role") == "alpha_custody_movement_unresolved"
+                and row.get("transfer_direction_verified") is True
+                and row.get("custody_purpose_verified") is False
+                and row.get("economic_external_inflow_verified") is False
+                and row.get("sale_intent_verified") is False
+                and row.get("ui_record_linkage_verified") is False
+                and row.get("screenshot_label_exact_mapping_verified") is False
+                and row.get("match_status")
+                == "unique_date_amount_destination_candidate_within_bounded_search"
+                and row.get("runtime_effect") == "none"
+                and row.get("alert_policy") == "report_only"
+                and row.get("same_tx_secondary_log", {}).get("is_ake_transfer") is False
+                and row.get("same_tx_secondary_log", {}).get("dedup_effect")
+                == "not_counted_as_second_transfer"
+                and row.get("visible_address_level_next_hop", {}).get("to")
+                == "0x6aba0315493b7e6989041c91181337b662fb1b90"
+                and row.get("visible_address_level_next_hop", {}).get(
+                    "same_batch_economic_linkage_verified"
+                )
+                is False
+                for row in alpha_candidate_rows
+            )
+            and len(pending_linkage_rows) == 3
+            and {row.get("record_id"): row.get("matched_candidate_txid") for row in pending_linkage_rows}
+            == {expected["record_id"]: txid for txid, expected in expected_alpha_records.items()}
+            and all(
+                row.get("pending_fact") == "direct screenshot-row TXID comparison"
+                for row in pending_linkage_rows
+            )
+            and cex_review.get("bounded_search", {}).get("address_filter", {}).get("pages_succeeded") == 73
+            and cex_review.get("bounded_search", {}).get("address_filter", {}).get("missing_pages") == 0
+            and cex_review.get("bounded_search", {}).get("public_rpc_verification", {}).get(
+                "chain_id_verified"
+            )
+            == 56
+            and [row.get("coverage") for row in cex_review.get("bounded_search", {}).get("date_windows", [])]
+            == [
+                "complete_for_union_within_address_filter",
+                "complete_for_union_within_address_filter",
+                "partial_after_candidate",
+            ]
+            and cex_review.get("semantic_conclusion", {}).get("matched_alpha_onchain_candidate_count")
+            == 3
+            and cex_review.get("semantic_conclusion", {}).get("verified_alpha_ui_mapping_count") == 0
             and runtime_integration.get("unlabeled_to_cex_inflow_candidate", {}).get("runtime_effect")
             == "cex_inflow_risk"
             and runtime_integration.get("cex_internal_aggregation", {}).get("alert_policy") == "report_only"
+            and runtime_integration.get("alpha_custody_movement_unresolved", {}).get("direction") == "unknown"
+            and runtime_integration.get("alpha_custody_movement_unresolved", {}).get("runtime_effect") == "none"
             and runtime_integration.get("alpha_custody_movement_unresolved", {}).get("alert_policy") == "report_only"
         )
-        cex_aggregation_review_msg = f"verified={len(verified_rows)}, pending={len(pending_rows)}"
+        cex_aggregation_review_msg = (
+            f"gate_verified={len(verified_rows)}, alpha_candidates={len(alpha_candidate_rows)}, "
+            f"pending_ui_linkage={len(pending_linkage_rows)}"
+        )
     except Exception as exc:
         cex_aggregation_review_msg = str(exc)
     checks.append(
