@@ -1,0 +1,128 @@
+{
+  "schema": "configured_cex_window_aggregation_verification.v1",
+  "generated_at_utc": "2026-07-18T10:21:47Z",
+  "base_git_head": "ee9d9ea115cc94317e42f19958e16629d9f2e1ce",
+  "scope": "Close the false-negative bound where multiple individually sub-threshold token transfers enter configured CEX addresses during one fully covered scan window.",
+  "reproduction": {
+    "old_path": "Each sampled receipt applied the CEX minimum independently. Cross-transaction direct CEX inflows that were individually below the token and quote thresholds returned no row and never reached window analysis.",
+    "fixture": {
+      "price_usdt": "0.05",
+      "token_threshold": "100000",
+      "quote_threshold_usdt": "10000",
+      "transfers": [
+        {
+          "block": 101,
+          "amount_token": "60000",
+          "single_transfer_below_threshold": true
+        },
+        {
+          "block": 104,
+          "amount_token": "60000",
+          "single_transfer_below_threshold": true
+        }
+      ],
+      "window_total_token": "120000",
+      "window_total_quote_estimate_usdt": "6000",
+      "expected_result": "CEX risk gate is active because the complete-window token total exceeds the token threshold."
+    },
+    "preimplementation_verifier_result": "AttributeError: configured_cex_inflow_aggregate_rows was absent"
+  },
+  "implementation": {
+    "central_transfer_deduplication": {
+      "key": "lower(transactionHash), integer(logIndex)",
+      "consumers": [
+        "runtime_cex_deposit_candidates",
+        "cex_withdrawal_cluster",
+        "configured_cex_inflow_aggregate_rows",
+        "withdrawal_forward_scan"
+      ],
+      "fail_closed_conditions": [
+        "missing transaction hash",
+        "missing or invalid log index",
+        "conflicting payloads at one transaction-hash/log-index anchor"
+      ]
+    },
+    "configured_cex_residual_aggregation": {
+      "evidence_type": "configured_cex_inflow_window_aggregate",
+      "accepted_path_effect": "cex_inflow_risk",
+      "receipt_overlap_rule": "Exclude every transaction already represented by a receipt row with positive CEX amount or count.",
+      "runtime_candidate_overlap_rule": "external-to-candidate stays aggregate_only; candidate-to-configured-CEX stays cex_internal_aggregation; FIFO attributed external inflow remains the only runtime-candidate risk contribution.",
+      "coverage_rule": "Require requested_window_complete, complete=true, exact requested from/to bounds, covered-through equal to the scan end, returned logs below max logs, and valid log identities.",
+      "incomplete_coverage_rule": "Preserve observed amount/count fields; zero CEX risk amount, quote estimate, and count; emit none_incomplete_coverage."
+    },
+    "reporting": {
+      "json_and_markdown": "Keep destination, observed amount/count, source/path roles, deduplication metadata, coverage state, and runtime effect.",
+      "telegram": "Reuse the existing compact CEX summary; do not add addresses, transaction hashes, coverage fields, or aggregation diagnostics."
+    }
+  },
+  "verification_matrix": [
+    {
+      "case": "complete_cross_block_subthreshold_transfers",
+      "expected": "120000 token, 2 transfers, 2 tx, CEX alert"
+    },
+    {
+      "case": "incomplete_coverage_helper_and_scan",
+      "expected": "observed 120000; risk amount/count zero; no alert"
+    },
+    {
+      "case": "duplicate_tx_log_and_same_tx_distinct_logs",
+      "expected": "exact duplicates counted once; distinct log indexes retained"
+    },
+    {
+      "case": "conflicting_or_missing_log_identity",
+      "expected": "coverage invalid; all window risk contributions disabled"
+    },
+    {
+      "case": "large_receipt_plus_small_window_residual",
+      "expected": "150000 receipt plus 120000 residual equals 270000, count 3"
+    },
+    {
+      "case": "cross_block_cex_internal_transfers",
+      "expected": "risk amount/count zero; report-only classifier unchanged; no alert"
+    },
+    {
+      "case": "runtime_candidate_and_direct_cex_inflow_with_duplicate_logs",
+      "expected": "FIFO runtime amount 80000 plus direct amount 120000 equals 200000, count 3, runtime candidate count 1"
+    },
+    {
+      "case": "telegram_compact_boundary",
+      "expected": "one compact CEX summary, at most 320 characters and 5 lines, no address or coverage diagnostics"
+    }
+  ],
+  "preserved_invariants": [
+    "ordered FIFO runtime-candidate attribution",
+    "one economic contribution for candidate-to-CEX sweeps",
+    "CEX internal and Alpha custody paths stay direction unknown, runtime effect none, report-only",
+    "Telegram remains compact",
+    "read-only monitoring with no signing or trade execution",
+    "window-start inventory remains unresolved"
+  ],
+  "local_file_sha256": {
+    "scripts/alpha_intraday_flow_watch.py": "6d5f78986b6d03944436c69ef05f30f6e64e7250432db17bac740f6b2bce9fe6",
+    "scripts/verify_sniper_engine.py": "5ab720a7fe93cbf1e2872948f95c606999a9318cf3a68057eebcd2a5d6c9cc00",
+    "docs/server_runbook.md": "13c141e7a80306e509c292af3e9c0c2f652e1cc2769345405ff621a73bb37f8e",
+    "cases/2026-07-18_configured_cex_window_aggregation.md": "a3dbb1c0e44f495f881a4d03d2025b46d81ef9a0498b9389b5d711c8f8b42051"
+  },
+  "verification": {
+    "targeted_preimplementation_failure_observed": true,
+    "targeted_postimplementation_status": "pass",
+    "sniper_verifier": {
+      "command": "python3 scripts/verify_sniper_engine.py",
+      "pass_count": 190,
+      "fail_count": 0,
+      "report": "output/sniper_engine/verification_report.md"
+    },
+    "celue_audit": {
+      "command": "python3 scripts/audit_celue_integration.py",
+      "pass_count": 101,
+      "fail_count": 0,
+      "report": "output/celue_integration_audit/latest.md"
+    },
+    "independent_review": "passed_final_read_only_review_no_blocking_findings"
+  },
+  "remaining_external_dependencies": [
+    "A natural production sample with multiple direct sub-threshold configured-CEX transfers has not yet appeared.",
+    "The three Binance Alpha Hot Wallet UI rows still require exact transaction hashes from the user-facing app.",
+    "Window-start inventory remains unavailable to a bounded transfer-log scan."
+  ]
+}

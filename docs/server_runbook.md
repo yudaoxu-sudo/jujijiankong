@@ -236,7 +236,11 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 
 CEX 路径按经济角色拆分：外部地址进入 CEX deposit/hot 或 runtime sweep 候选为 `external_to_cex_inflow`，继续进入既有 CEX 风险门槛；deposit/sweep/hot 之间的后续搬运为 `cex_internal_aggregation`；涉及 Alpha Router/Custody/Rebalance 的路径为 `alpha_custody_movement_unresolved`。后两类固定 `direction=unknown`、`runtime_effect=none`、`alert_policy=report_only`，只写入盘中 JSON、Markdown 和日报，不进入 Telegram。`alpha_custody_movement_unresolved` 也覆盖外部地址进入 Alpha 托管入口，名称不推断内部调仓。`external -> runtime sweep -> hot` 只把按有序 FIFO 归因到后续 CEX 转出的外部入账计入一次，后续内部搬运不重复进入风险金额。`cex_internal_aggregation_token` 和对应 quote estimate 表示内部 Transfer 毛额，多跳时可重复出现同一批代币，仅用于路径审计。
 
-FIFO 归因只覆盖当前抓取窗口内可见的 Transfer，窗口开始前余额保持未知；候选金额是已观察路径的归因量。只有 transfer coverage 完整时，窗口聚合量才进入风险门槛；部分覆盖保留 `attributed_external_token` 并固定 `runtime_effect=none_incomplete_coverage`。多笔直接进入已配置 CEX 地址且每笔均低于单笔门槛的窗口聚合尚未实现，继续作为显式残余缺口。每个已抽样 receipt 的 `cex_path_sample` 在 `latest.json` 保存完整 from/to/角色，`latest.md` 保存对应完整 tx 和路径明细。
+FIFO 归因只覆盖当前抓取窗口内可见的 Transfer，窗口开始前余额保持未知；候选金额是已观察路径的归因量。窗口 Transfer 先按 `(transactionHash, logIndex)` 中央去重，再供 runtime candidate、withdrawal cluster、配置 CEX 直达聚合和 forward evidence 共用；缺失日志身份或同一锚点内容冲突会关闭本窗口风险贡献。只有 transfer coverage 与本次扫描区间完整吻合且未触发日志上限时，窗口聚合量才进入风险门槛；部分覆盖保留观察字段并固定 `runtime_effect=none_incomplete_coverage`。
+
+`configured_cex_inflow_aggregate_rows` 聚合同窗口内直接进入已配置 CEX deposit/hot wallet 的剩余外部流入，使多笔单笔低于门槛、窗口合计达到门槛的路径进入既有 CEX 风险判断。已由 receipt row 计入的 tx 整笔排除，避免单笔大额与窗口日志重复；runtime candidate 的外部入账继续只由 FIFO 聚合贡献，candidate 到 CEX 的后续腿继续归为内部搬运。CEX 内部和 Alpha 托管路径保持 `direction=unknown`、`runtime_effect=none`、`report_only`。聚合明细只写入 `latest.json`、`latest.md` 与日报，Telegram 沿用既有精简摘要。回归证据见 `input/configured_cex_window_aggregation_verification_2026-07-18.json` 和 `cases/2026-07-18_configured_cex_window_aggregation.md`。
+
+每个已抽样 receipt 的 `cex_path_sample` 在 `latest.json` 保存完整 from/to/角色，`latest.md` 保存对应完整 tx 和路径明细。
 
 Binance Alpha 尽调中心的 `CEX 钱包归集资金动态` 可作为 `official` 发现源。界面中的 `+归集` 不直接映射为吸筹、买入、项目方派发或已确认卖出。取得 TXID 并核对 receipt、token contract、from/to、decimals 和已配置 CEX 目标后，未标记来源进入 `unlabeled_to_cex_inflow_candidate` 供给风险门槛；明确项目、operator、mint 或 token-contract 来源进入 `external_to_cex_inflow`。来源实体、经济外部入金、出售意图和下一跳继续独立标记。无法取得 TXID 或目标地址标签冲突时保持 pending，并进入人工复核。
 

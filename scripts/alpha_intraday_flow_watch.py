@@ -805,11 +805,58 @@ def recipient_amount_stats(amounts: list[Decimal]) -> tuple[Decimal, Decimal]:
 
 
 def transfer_order(row: dict[str, Any]) -> tuple[int, int, str]:
+    try:
+        block = int(row.get("block") or 0)
+    except (TypeError, ValueError):
+        block = 0
+    try:
+        log_index = int(row.get("log_index") or 0)
+    except (TypeError, ValueError):
+        log_index = 0
     return (
-        int(row.get("block") or 0),
-        int(row.get("log_index") or 0),
+        block,
+        log_index,
         str(row.get("tx") or "").lower(),
     )
+
+
+def deduplicate_transfer_logs(transfers: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    unique: list[dict[str, Any]] = []
+    seen: dict[tuple[str, int], tuple[str, str, str, Decimal, int]] = {}
+    duplicate_log_count = 0
+    conflicting_duplicate_log_count = 0
+    missing_log_identity_count = 0
+    for row in sorted(transfers, key=transfer_order):
+        tx_hash = str(row.get("tx") or "").lower()
+        raw_log_index = row.get("log_index")
+        try:
+            log_index = int(raw_log_index) if raw_log_index not in {None, ""} else None
+        except (TypeError, ValueError):
+            log_index = None
+        if not tx_hash or log_index is None:
+            missing_log_identity_count += 1
+            continue
+        log_id = (tx_hash, log_index)
+        fingerprint = (
+            norm(row.get("token")),
+            norm(row.get("from")),
+            norm(row.get("to")),
+            decimal_from(row.get("amount")),
+            int(row.get("block") or 0),
+        )
+        if log_id in seen:
+            duplicate_log_count += 1
+            if seen[log_id] != fingerprint:
+                conflicting_duplicate_log_count += 1
+            continue
+        seen[log_id] = fingerprint
+        unique.append(row)
+    return unique, {
+        "duplicate_log_count": duplicate_log_count,
+        "conflicting_duplicate_log_count": conflicting_duplicate_log_count,
+        "missing_log_identity_count": missing_log_identity_count,
+        "unique_log_count": len(unique),
+    }
 
 
 def bounded_recipient_history(
@@ -1518,6 +1565,120 @@ def classify_cex_transfer_paths(
     return rows
 
 
+def configured_cex_inflow_aggregate_rows(
+    event: dict[str, Any],
+    transfers: list[dict[str, Any]],
+    from_block: int,
+    to_block: int,
+    transfer_coverage: dict[str, Any] | None = None,
+    receipt_rows: list[dict[str, Any]] | None = None,
+    runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    transfer_coverage = dict(transfer_coverage or {})
+    transfers, local_deduplication = deduplicate_transfer_logs(transfers)
+    coverage_complete = bool(
+        transfer_coverage.get("state") == "requested_window_complete"
+        and transfer_coverage.get("complete") is True
+        and transfer_coverage.get("requested_from_block") == from_block
+        and transfer_coverage.get("requested_to_block") == to_block
+        and transfer_coverage.get("covered_through_block") == to_block
+        and int(transfer_coverage.get("max_logs", 0)) > 0
+        and int(transfer_coverage.get("returned_log_count", 0)) < int(transfer_coverage.get("max_logs", 0))
+        and int(transfer_coverage.get("conflicting_duplicate_log_count", 0)) == 0
+        and int(transfer_coverage.get("missing_log_identity_count", 0)) == 0
+        and local_deduplication["conflicting_duplicate_log_count"] == 0
+        and local_deduplication["missing_log_identity_count"] == 0
+    )
+    coverage_state = str(transfer_coverage.get("state") or "missing_transfer_coverage")
+    accounted_receipt_txs = {
+        str(row.get("tx") or "").lower()
+        for row in receipt_rows or []
+        if decimal_from(row.get("cex_token_deposit")) > 0 or int(row.get("cex_deposit_count") or 0) > 0
+    }
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for transfer in transfers:
+        tx_hash = str(transfer.get("tx") or "").lower()
+        if tx_hash in accounted_receipt_txs:
+            continue
+        path = next(
+            (
+                row
+                for row in classify_cex_transfer_paths(event, [transfer], runtime_cex_candidates)
+                if row["runtime_effect"] == "cex_inflow_risk"
+            ),
+            None,
+        )
+        if path is None:
+            continue
+        group_key = (path["to"], path["class"], path["path_role"])
+        block = int(transfer.get("block") or 0)
+        group = groups.setdefault(
+            group_key,
+            {
+                "amount": Decimal(0),
+                "count": 0,
+                "first_block": block,
+                "last_block": block,
+                "source_roles": set(),
+                "txs": set(),
+            },
+        )
+        group["amount"] += path["amount"]
+        group["count"] += 1
+        group["first_block"] = min(group["first_block"], block)
+        group["last_block"] = max(group["last_block"], block)
+        group["source_roles"].add(path["source_role"])
+        group["txs"].add(tx_hash)
+
+    price = context_price_usdt(event)
+    rows: list[dict[str, Any]] = []
+    for (destination, destination_class, path_role), group in sorted(groups.items()):
+        amount = group["amount"]
+        quote_estimate = amount * price if price > 0 else Decimal(0)
+        rows.append(
+            {
+                "evidence_type": "configured_cex_inflow_window_aggregate",
+                "destination_address": destination,
+                "path_role": path_role,
+                "source_roles": ",".join(sorted(group["source_roles"])),
+                "observed_external_token": opening.decimal_str(amount),
+                "observed_quote_estimate": opening.decimal_str(quote_estimate),
+                "observed_transfer_count": group["count"],
+                "observed_tx_count": len(group["txs"]),
+                "duplicate_log_count": local_deduplication["duplicate_log_count"],
+                "window_duplicate_log_count": int(transfer_coverage.get("duplicate_log_count", 0)),
+                "conflicting_duplicate_log_count": (
+                    int(transfer_coverage.get("conflicting_duplicate_log_count", 0))
+                    + local_deduplication["conflicting_duplicate_log_count"]
+                ),
+                "deduplication_key": "transaction_hash_log_index",
+                "attribution_method": "observed_window_direct_to_configured_cex_residual",
+                "first_block": group["first_block"],
+                "last_block": group["last_block"],
+                "coverage_state": coverage_state,
+                "coverage_complete": coverage_complete,
+                "runtime_effect": "cex_inflow_risk" if coverage_complete else "none_incomplete_coverage",
+                "alert_policy": "existing_cex_inflow_gate" if coverage_complete else "report_only_incomplete_coverage",
+                "buyer": "",
+                "spent_quote": "0",
+                "seller": "",
+                "got_quote": "0",
+                "cex_token_deposit": opening.decimal_str(amount if coverage_complete else Decimal(0)),
+                "cex_quote_estimate": opening.decimal_str(quote_estimate if coverage_complete else Decimal(0)),
+                "cex_deposit_count": group["count"] if coverage_complete else 0,
+                "cex_destination_classes": destination_class,
+                "runtime_cex_deposit_candidate_count": 0,
+                "cex_internal_aggregation_token": "0",
+                "cex_internal_aggregation_quote_estimate": "0",
+                "cex_internal_aggregation_count": 0,
+                "cex_internal_path_roles": "",
+                "cex_gas_priming_bnb": "0",
+                "cex_gas_priming_count": 0,
+            }
+        )
+    return rows
+
+
 def cex_gas_priming_transfers(event: dict[str, Any], targets: set[str], deposit_block: int) -> list[dict[str, Any]]:
     targets = {norm(value) for value in targets if opening.is_address(value)}
     if not targets or deposit_block <= 0 or os.environ.get("ALPHA_INTRADAY_CEX_GAS_PRIMING", "1") != "1":
@@ -1695,7 +1856,12 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         from_block = max(int(event["opening_block"]), latest - window)
         to_block = latest
     tx_hashes, logs, txs = aggregate_candidate_txs(event, from_block, to_block)
-    transfer_rows, transfer_coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
+    raw_transfer_rows, transfer_coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
+    transfer_rows, deduplication = deduplicate_transfer_logs(raw_transfer_rows)
+    transfer_coverage = {**transfer_coverage, **deduplication}
+    if deduplication["conflicting_duplicate_log_count"] or deduplication["missing_log_identity_count"]:
+        transfer_coverage["state"] = "invalid_transfer_log_identity"
+        transfer_coverage["complete"] = False
     runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
     withdrawal_cluster = cex_withdrawal_cluster(
         event,
@@ -1719,7 +1885,16 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         if row:
             rows.append(row)
     runtime_candidate_rows = runtime_cex_candidate_aggregate_rows(event, runtime_candidates, transfer_coverage)
-    analysis = analyze_rows(event, rows + runtime_candidate_rows, from_block, to_block, logs, txs)
+    configured_cex_inflow_rows = configured_cex_inflow_aggregate_rows(
+        event,
+        transfer_rows,
+        from_block,
+        to_block,
+        transfer_coverage,
+        rows,
+        runtime_candidates,
+    )
+    analysis = analyze_rows(event, rows + runtime_candidate_rows + configured_cex_inflow_rows, from_block, to_block, logs, txs)
     analysis["cex_withdrawal_cluster"] = withdrawal_cluster
     analysis["scan_limited"] = scan_limited
     analysis["sampled_receipts"] = len(rows)
@@ -1730,6 +1905,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         "to_block": to_block,
         "runtime_cex_deposit_candidates": list(runtime_candidates.values())[:20],
         "runtime_cex_candidate_aggregate_rows": runtime_candidate_rows[:20],
+        "configured_cex_inflow_aggregate_rows": configured_cex_inflow_rows[:20],
         "rows": rows,
         "analysis": analysis,
         "_withdrawal_forward_scan": {
@@ -2082,6 +2258,18 @@ def render(snapshot: dict[str, Any]) -> str:
         for row in analysis.get("top_net_sellers", []):
             lines.append(f"- {short_addr(row.get('address', ''))}: {opening.format_amount(row.get('quote'))} {event['quote']['symbol']}")
         clusters = withdrawal.get("clusters", []) or []
+        configured_cex_inflow_rows = event.get("configured_cex_inflow_aggregate_rows", []) or []
+        if configured_cex_inflow_rows:
+            lines.extend(["", "### Configured CEX Inflow Window Aggregates", ""])
+            for row in configured_cex_inflow_rows[:20]:
+                lines.append(
+                    f"- `{row.get('destination_address', '')}`: observed_external="
+                    f"{opening.format_amount(row.get('observed_external_token'))} {event['token']['symbol']}, "
+                    f"transfers={row.get('observed_transfer_count', 0)}, "
+                    f"duplicates={row.get('duplicate_log_count', 0)}, window_duplicates={row.get('window_duplicate_log_count', 0)}, "
+                    f"sources=`{row.get('source_roles', '')}`, path=`{row.get('path_role', '')}`, "
+                    f"coverage=`{row.get('coverage_state', '')}`, runtime_effect=`{row.get('runtime_effect', '')}`"
+                )
         runtime_candidate_rows = event.get("runtime_cex_candidate_aggregate_rows", []) or []
         if runtime_candidate_rows:
             lines.extend(["", "### Runtime CEX Candidate Aggregates", ""])

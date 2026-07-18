@@ -2538,6 +2538,266 @@ deduped_risk_rows = module.cex_deposit_transfers(
     {candidate: {'address': candidate, 'class': 'cex_deposit_candidate'}},
 )
 assert deduped_risk_rows == [], deduped_risk_rows
+complete_cex_coverage = {
+    'state': 'requested_window_complete',
+    'complete': True,
+    'requested_from_block': 100,
+    'requested_to_block': 110,
+    'covered_through_block': 110,
+    'returned_log_count': 2,
+    'max_logs': 12000,
+}
+direct_small_transfers = [
+    {
+        'token': event['token']['address'],
+        'from': '0x' + '7' * 40,
+        'to': deposit,
+        'amount': module.Decimal('60000'),
+        'block': 101,
+        'log_index': 3,
+        'tx': '0x' + '1' * 64,
+    },
+    {
+        'token': event['token']['address'],
+        'from': external,
+        'to': deposit,
+        'amount': module.Decimal('60000'),
+        'block': 104,
+        'log_index': 1,
+        'tx': '0x' + '2' * 64,
+    },
+]
+direct_small_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    direct_small_transfers,
+    100,
+    110,
+    complete_cex_coverage,
+)
+assert len(direct_small_rows) == 1, direct_small_rows
+assert direct_small_rows[0]['observed_external_token'] == '120000', direct_small_rows
+assert direct_small_rows[0]['observed_transfer_count'] == 2, direct_small_rows
+assert direct_small_rows[0]['observed_tx_count'] == 2, direct_small_rows
+assert direct_small_rows[0]['duplicate_log_count'] == 0, direct_small_rows
+assert direct_small_rows[0]['first_block'] == 101 and direct_small_rows[0]['last_block'] == 104, direct_small_rows
+assert direct_small_rows[0]['coverage_complete'] is True, direct_small_rows
+assert direct_small_rows[0]['runtime_effect'] == 'cex_inflow_risk', direct_small_rows
+assert direct_small_rows[0]['cex_token_deposit'] == '120000', direct_small_rows
+assert direct_small_rows[0]['cex_deposit_count'] == 2, direct_small_rows
+direct_small_analysis = module.analyze_rows(path_event, direct_small_rows, 100, 110, 2, 2)
+assert direct_small_analysis['cex_token_deposit'] == '120000', direct_small_analysis
+assert direct_small_analysis['cex_deposit_count'] == 2, direct_small_analysis
+assert module.event_alert_keys({**path_event, 'analysis': direct_small_analysis}), direct_small_analysis
+real_direct_aggregate_candidate_txs = module.aggregate_candidate_txs
+real_direct_transfer_fetch = module.token_transfer_logs_with_coverage
+module.aggregate_candidate_txs = lambda event_arg, from_arg, to_arg: ([], 2, 2)
+module.token_transfer_logs_with_coverage = lambda event_arg, from_arg, to_arg: (
+    direct_small_transfers,
+    complete_cex_coverage,
+)
+scanned_direct_small = module.scan_event({**path_event, 'opening_block': 100, 'latest_block': 110})
+module.aggregate_candidate_txs = real_direct_aggregate_candidate_txs
+module.token_transfer_logs_with_coverage = real_direct_transfer_fetch
+assert scanned_direct_small['analysis']['cex_token_deposit'] == '120000', scanned_direct_small
+assert scanned_direct_small['analysis']['cex_deposit_count'] == 2, scanned_direct_small
+assert len(scanned_direct_small['configured_cex_inflow_aggregate_rows']) == 1, scanned_direct_small
+direct_small_text = module.telegram_text({'events': [scanned_direct_small], 'new_alert_count': 1})
+assert 'CEX预出货' in direct_small_text, direct_small_text
+assert direct_small_text.count('CEX预出货') == 1, direct_small_text
+assert deposit not in direct_small_text, direct_small_text
+assert all(value not in direct_small_text for value in ('Configured CEX', 'observed_external', 'coverage')), direct_small_text
+assert len(direct_small_text) <= 320 and len(direct_small_text.splitlines()) <= 5, direct_small_text
+direct_small_report = module.render({
+    'generated_at': 'fixture',
+    'event_count': 1,
+    'alert_count': 1,
+    'new_alert_count': 1,
+    'events': [scanned_direct_small],
+})
+assert 'Configured CEX Inflow Window Aggregates' in direct_small_report, direct_small_report
+assert 'observed_external=120000.0000 TEST' in direct_small_report, direct_small_report
+
+duplicate_direct_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [direct_small_transfers[0], dict(direct_small_transfers[0]), direct_small_transfers[1]],
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 3},
+)
+assert duplicate_direct_rows[0]['observed_external_token'] == '120000', duplicate_direct_rows
+assert duplicate_direct_rows[0]['observed_transfer_count'] == 2, duplicate_direct_rows
+assert duplicate_direct_rows[0]['observed_tx_count'] == 2, duplicate_direct_rows
+assert duplicate_direct_rows[0]['duplicate_log_count'] == 1, duplicate_direct_rows
+assert duplicate_direct_rows[0]['cex_token_deposit'] == '120000', duplicate_direct_rows
+conflicting_direct_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [direct_small_transfers[0], {**direct_small_transfers[0], 'amount': module.Decimal('70000')}],
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 2},
+)
+assert conflicting_direct_rows[0]['conflicting_duplicate_log_count'] == 1, conflicting_direct_rows
+assert conflicting_direct_rows[0]['coverage_complete'] is False, conflicting_direct_rows
+assert conflicting_direct_rows[0]['cex_token_deposit'] == '0', conflicting_direct_rows
+
+same_tx = '0x' + '8' * 64
+same_tx_distinct_logs = [
+    {**direct_small_transfers[0], 'tx': same_tx, 'amount': module.Decimal('60000'), 'log_index': 7},
+    {**direct_small_transfers[1], 'tx': same_tx, 'amount': module.Decimal('20000'), 'log_index': 8},
+]
+same_tx_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [same_tx_distinct_logs[0], dict(same_tx_distinct_logs[0]), same_tx_distinct_logs[1]],
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 3},
+)
+assert same_tx_rows[0]['observed_external_token'] == '80000', same_tx_rows
+assert same_tx_rows[0]['observed_transfer_count'] == 2, same_tx_rows
+assert same_tx_rows[0]['observed_tx_count'] == 1, same_tx_rows
+assert same_tx_rows[0]['duplicate_log_count'] == 1, same_tx_rows
+same_tx_analysis = module.analyze_rows(path_event, same_tx_rows, 100, 110, 3, 1)
+assert module.event_alert_keys({**path_event, 'analysis': same_tx_analysis}) == [], same_tx_analysis
+
+incomplete_direct_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    direct_small_transfers,
+    100,
+    110,
+    {
+        'state': 'partial_rpc_error',
+        'complete': False,
+        'requested_from_block': 100,
+        'requested_to_block': 110,
+        'covered_through_block': 105,
+        'returned_log_count': 2,
+        'max_logs': 12000,
+    },
+)
+assert incomplete_direct_rows[0]['observed_external_token'] == '120000', incomplete_direct_rows
+assert incomplete_direct_rows[0]['cex_token_deposit'] == '0', incomplete_direct_rows
+assert incomplete_direct_rows[0]['cex_deposit_count'] == 0, incomplete_direct_rows
+assert incomplete_direct_rows[0]['runtime_effect'] == 'none_incomplete_coverage', incomplete_direct_rows
+incomplete_direct_analysis = module.analyze_rows(path_event, incomplete_direct_rows, 100, 110, 2, 2)
+assert module.event_alert_keys({**path_event, 'analysis': incomplete_direct_analysis}) == [], incomplete_direct_analysis
+missing_coverage_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    direct_small_transfers,
+    100,
+    110,
+)
+assert missing_coverage_rows[0]['coverage_state'] == 'missing_transfer_coverage', missing_coverage_rows
+assert missing_coverage_rows[0]['cex_token_deposit'] == '0', missing_coverage_rows
+wrong_window_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    direct_small_transfers,
+    100,
+    110,
+    {**complete_cex_coverage, 'requested_from_block': 99},
+)
+assert wrong_window_rows[0]['coverage_complete'] is False, wrong_window_rows
+assert wrong_window_rows[0]['cex_token_deposit'] == '0', wrong_window_rows
+real_incomplete_aggregate_candidate_txs = module.aggregate_candidate_txs
+real_incomplete_transfer_fetch = module.token_transfer_logs_with_coverage
+module.aggregate_candidate_txs = lambda event_arg, from_arg, to_arg: ([], 2, 2)
+module.token_transfer_logs_with_coverage = lambda event_arg, from_arg, to_arg: (
+    direct_small_transfers,
+    {
+        'state': 'partial_rpc_error',
+        'complete': False,
+        'requested_from_block': 100,
+        'requested_to_block': 110,
+        'covered_through_block': 105,
+        'returned_log_count': 2,
+        'max_logs': 12000,
+    },
+)
+scanned_incomplete_direct = module.scan_event({**path_event, 'opening_block': 100, 'latest_block': 110})
+module.aggregate_candidate_txs = real_incomplete_aggregate_candidate_txs
+module.token_transfer_logs_with_coverage = real_incomplete_transfer_fetch
+assert scanned_incomplete_direct['configured_cex_inflow_aggregate_rows'][0]['observed_external_token'] == '120000', scanned_incomplete_direct
+assert scanned_incomplete_direct['analysis']['cex_token_deposit'] == '0', scanned_incomplete_direct
+assert scanned_incomplete_direct['analysis']['cex_deposit_count'] == 0, scanned_incomplete_direct
+assert module.event_alert_keys(scanned_incomplete_direct) == [], scanned_incomplete_direct
+
+large_tx = '0x' + '3' * 64
+large_transfer = {
+    'token': event['token']['address'],
+    'from': external,
+    'to': deposit,
+    'amount': module.Decimal('150000'),
+    'block': 105,
+    'log_index': 2,
+    'tx': large_tx,
+}
+large_receipt_row = {
+    'tx': large_tx,
+    'cex_token_deposit': '150000',
+    'cex_quote_estimate': '7500',
+    'cex_deposit_count': 1,
+    'cex_destination_classes': 'cex_deposit',
+}
+large_aggregate_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [large_transfer],
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 1},
+    [large_receipt_row],
+)
+assert large_aggregate_rows == [], large_aggregate_rows
+large_analysis = module.analyze_rows(path_event, [large_receipt_row] + large_aggregate_rows, 100, 110, 1, 1)
+assert large_analysis['cex_token_deposit'] == '150000', large_analysis
+assert large_analysis['cex_deposit_count'] == 1, large_analysis
+large_with_residual_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [large_transfer] + direct_small_transfers,
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 3},
+    [large_receipt_row],
+)
+assert large_with_residual_rows[0]['cex_token_deposit'] == '120000', large_with_residual_rows
+large_with_residual_analysis = module.analyze_rows(
+    path_event,
+    [large_receipt_row] + large_with_residual_rows,
+    100,
+    110,
+    3,
+    3,
+)
+assert large_with_residual_analysis['cex_token_deposit'] == '270000', large_with_residual_analysis
+assert large_with_residual_analysis['cex_deposit_count'] == 3, large_with_residual_analysis
+
+internal_window_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    [
+        {
+            'token': event['token']['address'],
+            'from': hot,
+            'to': deposit,
+            'amount': module.Decimal('60000'),
+            'block': 106,
+            'log_index': 0,
+            'tx': '0x' + '4' * 64,
+        },
+        {
+            'token': event['token']['address'],
+            'from': deposit,
+            'to': hot,
+            'amount': module.Decimal('60000'),
+            'block': 109,
+            'log_index': 0,
+            'tx': '0x' + '9' * 64,
+        },
+    ],
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': 2},
+)
+assert internal_window_rows == [], internal_window_rows
+internal_window_analysis = module.analyze_rows(path_event, internal_window_rows, 100, 110, 2, 2)
+assert module.event_alert_keys({**path_event, 'analysis': internal_window_analysis}) == [], internal_window_analysis
 runtime_rows = module.cex_deposit_transfers(
     event,
     [{'token': event['token']['address'], 'from': '0x' + '6' * 40, 'to': candidate, 'amount': module.Decimal('150000')}],
@@ -2580,6 +2840,116 @@ small_analysis = module.analyze_rows(path_event, small_aggregate_rows, 100, 130,
 assert small_analysis['cex_token_deposit'] == '1000000', small_analysis
 assert small_analysis['cex_deposit_count'] == 1, small_analysis
 assert module.event_alert_keys({**path_event, 'analysis': small_analysis}), small_analysis
+combined_direct_transfers = direct_small_transfers + [
+    {
+        'token': event['token']['address'],
+        'from': external,
+        'to': candidate,
+        'amount': module.Decimal('80000'),
+        'block': 107,
+        'log_index': 0,
+        'tx': '0x' + '5' * 64,
+    },
+    {
+        'token': event['token']['address'],
+        'from': candidate,
+        'to': hot,
+        'amount': module.Decimal('80000'),
+        'block': 108,
+        'log_index': 0,
+        'tx': '0x' + '6' * 64,
+    },
+    {
+        'token': event['token']['address'],
+        'from': hot,
+        'to': deposit,
+        'amount': module.Decimal('40000'),
+        'block': 109,
+        'log_index': 0,
+        'tx': '0x' + '7' * 64,
+    },
+]
+combined_candidates = module.runtime_cex_deposit_candidates(path_event, 100, 110, combined_direct_transfers)
+combined_runtime_rows = module.runtime_cex_candidate_aggregate_rows(
+    path_event,
+    combined_candidates,
+    {**complete_cex_coverage, 'returned_log_count': len(combined_direct_transfers)},
+)
+combined_direct_rows = module.configured_cex_inflow_aggregate_rows(
+    path_event,
+    combined_direct_transfers,
+    100,
+    110,
+    {**complete_cex_coverage, 'returned_log_count': len(combined_direct_transfers)},
+    [],
+    combined_candidates,
+)
+assert combined_runtime_rows[0]['cex_token_deposit'] == '80000', combined_runtime_rows
+assert combined_direct_rows[0]['cex_token_deposit'] == '120000', combined_direct_rows
+combined_analysis = module.analyze_rows(
+    path_event,
+    combined_runtime_rows + combined_direct_rows,
+    100,
+    110,
+    len(combined_direct_transfers),
+    len(combined_direct_transfers),
+)
+assert combined_analysis['cex_token_deposit'] == '200000', combined_analysis
+assert combined_analysis['cex_deposit_count'] == 3, combined_analysis
+assert combined_analysis['runtime_cex_deposit_candidate_count'] == 1, combined_analysis
+duplicate_combined_transfers = combined_direct_transfers + [
+    dict(combined_direct_transfers[2]),
+    dict(combined_direct_transfers[3]),
+]
+deduped_combined_transfers, combined_deduplication = module.deduplicate_transfer_logs(duplicate_combined_transfers)
+assert len(deduped_combined_transfers) == len(combined_direct_transfers), deduped_combined_transfers
+assert combined_deduplication['duplicate_log_count'] == 2, combined_deduplication
+assert combined_deduplication['conflicting_duplicate_log_count'] == 0, combined_deduplication
+deduped_combined_candidates = module.runtime_cex_deposit_candidates(
+    path_event,
+    100,
+    110,
+    deduped_combined_transfers,
+)
+assert deduped_combined_candidates[candidate]['attributed_external_inflow_amount'] == '80000', deduped_combined_candidates
+real_duplicate_aggregate_candidate_txs = module.aggregate_candidate_txs
+real_duplicate_transfer_fetch = module.token_transfer_logs_with_coverage
+module.aggregate_candidate_txs = lambda event_arg, from_arg, to_arg: ([], len(duplicate_combined_transfers), len(combined_direct_transfers))
+module.token_transfer_logs_with_coverage = lambda event_arg, from_arg, to_arg: (
+    duplicate_combined_transfers,
+    {**complete_cex_coverage, 'returned_log_count': len(duplicate_combined_transfers)},
+)
+scanned_duplicate_combined = module.scan_event({**path_event, 'opening_block': 100, 'latest_block': 110})
+module.aggregate_candidate_txs = real_duplicate_aggregate_candidate_txs
+module.token_transfer_logs_with_coverage = real_duplicate_transfer_fetch
+assert scanned_duplicate_combined['analysis']['cex_token_deposit'] == '200000', scanned_duplicate_combined
+assert scanned_duplicate_combined['analysis']['cex_deposit_count'] == 3, scanned_duplicate_combined
+assert scanned_duplicate_combined['analysis']['runtime_cex_deposit_candidate_count'] == 1, scanned_duplicate_combined
+duplicate_coverage = scanned_duplicate_combined['_withdrawal_forward_scan']['transfer_coverage']
+assert duplicate_coverage['duplicate_log_count'] == 2, duplicate_coverage
+assert duplicate_coverage['unique_log_count'] == len(combined_direct_transfers), duplicate_coverage
+missing_log_index_transfers = direct_small_transfers + [{
+    **direct_small_transfers[0],
+    'tx': '0x' + 'a' * 64,
+    'log_index': None,
+}]
+real_missing_identity_aggregate_candidate_txs = module.aggregate_candidate_txs
+real_missing_identity_transfer_fetch = module.token_transfer_logs_with_coverage
+module.aggregate_candidate_txs = lambda event_arg, from_arg, to_arg: ([], len(missing_log_index_transfers), len(missing_log_index_transfers))
+module.token_transfer_logs_with_coverage = lambda event_arg, from_arg, to_arg: (
+    missing_log_index_transfers,
+    {**complete_cex_coverage, 'returned_log_count': len(missing_log_index_transfers)},
+)
+scanned_missing_log_index = module.scan_event({**path_event, 'opening_block': 100, 'latest_block': 110})
+module.aggregate_candidate_txs = real_missing_identity_aggregate_candidate_txs
+module.token_transfer_logs_with_coverage = real_missing_identity_transfer_fetch
+missing_identity_coverage = scanned_missing_log_index['_withdrawal_forward_scan']['transfer_coverage']
+assert missing_identity_coverage['state'] == 'invalid_transfer_log_identity', missing_identity_coverage
+assert missing_identity_coverage['complete'] is False, missing_identity_coverage
+assert missing_identity_coverage['missing_log_identity_count'] == 1, missing_identity_coverage
+assert scanned_missing_log_index['analysis']['cex_token_deposit'] == '0', scanned_missing_log_index
+assert scanned_missing_log_index['analysis']['cex_deposit_count'] == 0, scanned_missing_log_index
+assert module.event_alert_keys(scanned_missing_log_index) == [], scanned_missing_log_index
 incomplete_aggregate_rows = module.runtime_cex_candidate_aggregate_rows(
     path_event,
     small_candidates,
