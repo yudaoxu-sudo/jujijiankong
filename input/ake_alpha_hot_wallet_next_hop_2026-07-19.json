@@ -1,0 +1,4101 @@
+{
+  "schema_version": 1,
+  "case_id": "ake_alpha_hot_wallet_next_hop_2026_07_19",
+  "generated_at_utc": "2026-07-19T03:38:12Z",
+  "source_case": "input/binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
+  "scope": {
+    "chain": "bsc",
+    "chain_id": 56,
+    "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+    "token_symbol": "AKE",
+    "decimals": 18,
+    "target": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+    "target_tracked_role": {
+      "name": "Binance Alpha 2.0 Proxy/Custody",
+      "class": "exchange_aggregator",
+      "source": "config/global_address_labels.json",
+      "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE buy traces show Router approving and depositing Alpha tokens to Binance Deposit/Proxy-Custody via 0xfed29397; KGEN sell trace shows Router pulling tokens from the same custody path via 0x5d7208c3. Promoted from suspect after nested call evidence."
+    },
+    "union_from_block": 108008641,
+    "union_to_block": 109142105,
+    "union_start_event_utc": "2026-07-04T10:58:07.000Z",
+    "union_last_event_utc": "2026-07-10T08:46:14.000Z",
+    "bounded_only": true,
+    "heavy_full_chain_scan": false
+  },
+  "claim_status": {
+    "screenshot_exact_label_to_address_mapping": "unresolved",
+    "target_role_used": "Binance Alpha 2.0 Proxy/Custody / exchange_aggregator from tracked global labels",
+    "target_role_upgrade_to_binance_alpha_hot_wallet": false,
+    "sender_ownership": "unresolved",
+    "custody_or_rebalance_purpose_for_root_transfers": "unresolved",
+    "economic_external_inflow": "unresolved",
+    "sale_intent": "not_established",
+    "runtime_effect": "none",
+    "action": "report_only"
+  },
+  "coverage": {
+    "primary_public_log_rpc": {
+      "endpoint": "https://bsc.rpc.blxrbdn.com",
+      "direction_chunk_size_blocks": 10000,
+      "scheduled_direction_chunks": 228,
+      "completed_direction_chunks": 228,
+      "terminal_failed_ranges": [],
+      "attempts": [
+        {
+          "direction": "inbound",
+          "from_block": 108008641,
+          "to_block": 108018640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 20,
+          "elapsed_seconds": 4.453,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108018641,
+          "to_block": 108028640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 38,
+          "elapsed_seconds": 4.545,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108028641,
+          "to_block": 108038640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 30,
+          "elapsed_seconds": 4.572,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108038641,
+          "to_block": 108048640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 17,
+          "elapsed_seconds": 4.435,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108048641,
+          "to_block": 108058640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 20,
+          "elapsed_seconds": 5.468,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108058641,
+          "to_block": 108068640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 17,
+          "elapsed_seconds": 4.012,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108068641,
+          "to_block": 108078640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 19,
+          "elapsed_seconds": 3.586,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108078641,
+          "to_block": 108088640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 14,
+          "elapsed_seconds": 3.609,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108088641,
+          "to_block": 108098640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 14,
+          "elapsed_seconds": 3.022,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108098641,
+          "to_block": 108108640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 20,
+          "elapsed_seconds": 3.244,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108108641,
+          "to_block": 108118640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 3.326,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108118641,
+          "to_block": 108128640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 12,
+          "elapsed_seconds": 3.445,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108128641,
+          "to_block": 108138640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 11,
+          "elapsed_seconds": 4.379,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108138641,
+          "to_block": 108148640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 4.351,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108148641,
+          "to_block": 108158640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 4.916,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108158641,
+          "to_block": 108168640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 4.829,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108168641,
+          "to_block": 108178640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 5.02,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108178641,
+          "to_block": 108188640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 4.762,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108188641,
+          "to_block": 108198640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 4.296,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108198641,
+          "to_block": 108208640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.838,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108208641,
+          "to_block": 108218640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 4.13,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108218641,
+          "to_block": 108228640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.868,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108228641,
+          "to_block": 108238640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.728,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108238641,
+          "to_block": 108248640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.234,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108248641,
+          "to_block": 108258640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.571,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108258641,
+          "to_block": 108268640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.429,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108268641,
+          "to_block": 108278640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 27,
+          "elapsed_seconds": 2.589,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108278641,
+          "to_block": 108288640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 2.279,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108288641,
+          "to_block": 108298640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 2.139,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108298641,
+          "to_block": 108308640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.071,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108308641,
+          "to_block": 108318640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.343,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108318641,
+          "to_block": 108328640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.466,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108328641,
+          "to_block": 108338640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 4.321,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108338641,
+          "to_block": 108348640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 4.846,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108348641,
+          "to_block": 108358640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 4.72,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108358641,
+          "to_block": 108368640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 4.898,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108368641,
+          "to_block": 108378640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 5.077,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108378641,
+          "to_block": 108388640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 4.416,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108388641,
+          "to_block": 108398640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 4.35,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108398641,
+          "to_block": 108408640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 4.254,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108408641,
+          "to_block": 108418640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 4.033,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108418641,
+          "to_block": 108428640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.96,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108428641,
+          "to_block": 108438640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.512,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108438641,
+          "to_block": 108448640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 2.934,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108448641,
+          "to_block": 108458640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 1.733,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108458641,
+          "to_block": 108468640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 2.383,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108468641,
+          "to_block": 108478640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.185,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108478641,
+          "to_block": 108488640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 2.293,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108488641,
+          "to_block": 108498640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 2.622,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108498641,
+          "to_block": 108508640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.843,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108508641,
+          "to_block": 108518640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.864,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108518641,
+          "to_block": 108528640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.635,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108528641,
+          "to_block": 108538640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 4.193,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108538641,
+          "to_block": 108548640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 4.843,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108548641,
+          "to_block": 108558640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 5.634,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108558641,
+          "to_block": 108568640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 78,
+          "elapsed_seconds": 7.75,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108568641,
+          "to_block": 108578640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 51,
+          "elapsed_seconds": 7.703,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108578641,
+          "to_block": 108588640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 41,
+          "elapsed_seconds": 9.726,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108588641,
+          "to_block": 108598640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2068,
+          "elapsed_seconds": 13.825,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108598641,
+          "to_block": 108608640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 281,
+          "elapsed_seconds": 10.409,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108608641,
+          "to_block": 108618640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 68,
+          "elapsed_seconds": 8.388,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108618641,
+          "to_block": 108628640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 34,
+          "elapsed_seconds": 7.498,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108628641,
+          "to_block": 108638640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 89,
+          "elapsed_seconds": 5.813,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108638641,
+          "to_block": 108648640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 60,
+          "elapsed_seconds": 5.159,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108648641,
+          "to_block": 108658640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 37,
+          "elapsed_seconds": 4.562,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108658641,
+          "to_block": 108668640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 27,
+          "elapsed_seconds": 3.47,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108668641,
+          "to_block": 108678640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 3.927,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108678641,
+          "to_block": 108688640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 4.185,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108688641,
+          "to_block": 108698640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 10,
+          "elapsed_seconds": 4.508,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108698641,
+          "to_block": 108708640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 19,
+          "elapsed_seconds": 5.335,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108708641,
+          "to_block": 108718640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 5.457,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108718641,
+          "to_block": 108728640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 6.143,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108728641,
+          "to_block": 108738640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 10,
+          "elapsed_seconds": 5.765,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108738641,
+          "to_block": 108748640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 13,
+          "elapsed_seconds": 6.451,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108748641,
+          "to_block": 108758640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 6.393,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108758641,
+          "to_block": 108768640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 83,
+          "elapsed_seconds": 7.44,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108768641,
+          "to_block": 108778640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 6.461,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108778641,
+          "to_block": 108788640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 14,
+          "elapsed_seconds": 5.633,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108788641,
+          "to_block": 108798640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 5.806,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108798641,
+          "to_block": 108808640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 5.809,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108808641,
+          "to_block": 108818640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 6.168,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108818641,
+          "to_block": 108828640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 5.557,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108828641,
+          "to_block": 108838640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 4.742,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108838641,
+          "to_block": 108848640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 3.633,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108848641,
+          "to_block": 108858640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.152,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108858641,
+          "to_block": 108868640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.222,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108868641,
+          "to_block": 108878640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.208,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108878641,
+          "to_block": 108888640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.235,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108888641,
+          "to_block": 108898640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.314,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108898641,
+          "to_block": 108908640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.075,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108908641,
+          "to_block": 108918640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.243,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108918641,
+          "to_block": 108928640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 17,
+          "elapsed_seconds": 3.287,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108928641,
+          "to_block": 108938640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 3.964,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108938641,
+          "to_block": 108948640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.681,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108948641,
+          "to_block": 108958640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 3.484,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108958641,
+          "to_block": 108968640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.787,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108968641,
+          "to_block": 108978640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.496,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108978641,
+          "to_block": 108988640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 4.019,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108988641,
+          "to_block": 108998640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.887,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 108998641,
+          "to_block": 109008640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 3.969,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109008641,
+          "to_block": 109018640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.799,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109018641,
+          "to_block": 109028640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 3.895,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109028641,
+          "to_block": 109038640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.622,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109038641,
+          "to_block": 109048640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.371,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109048641,
+          "to_block": 109058640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.554,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109058641,
+          "to_block": 109068640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.697,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109068641,
+          "to_block": 109078640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.363,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109078641,
+          "to_block": 109088640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.422,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109088641,
+          "to_block": 109098640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.655,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109098641,
+          "to_block": 109108640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 14,
+          "elapsed_seconds": 3.58,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109108641,
+          "to_block": 109118640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.155,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109118641,
+          "to_block": 109128640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 3.044,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109128641,
+          "to_block": 109138640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 3.413,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "inbound",
+          "from_block": 109138641,
+          "to_block": 109142105,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 1.749,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108008641,
+          "to_block": 108018640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 25,
+          "elapsed_seconds": 4.033,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108018641,
+          "to_block": 108028640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 47,
+          "elapsed_seconds": 4.08,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108028641,
+          "to_block": 108038640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 23,
+          "elapsed_seconds": 4.088,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108038641,
+          "to_block": 108048640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 37,
+          "elapsed_seconds": 4.224,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108048641,
+          "to_block": 108058640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1163,
+          "elapsed_seconds": 6.512,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108058641,
+          "to_block": 108068640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 177,
+          "elapsed_seconds": 3.934,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108068641,
+          "to_block": 108078640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 37,
+          "elapsed_seconds": 3.671,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108078641,
+          "to_block": 108088640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 24,
+          "elapsed_seconds": 3.376,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108088641,
+          "to_block": 108098640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 2.463,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108098641,
+          "to_block": 108108640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 45,
+          "elapsed_seconds": 3.235,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108108641,
+          "to_block": 108118640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 64,
+          "elapsed_seconds": 3.668,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108118641,
+          "to_block": 108128640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 75,
+          "elapsed_seconds": 3.821,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108128641,
+          "to_block": 108138640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 41,
+          "elapsed_seconds": 4.144,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108138641,
+          "to_block": 108148640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 30,
+          "elapsed_seconds": 3.82,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108148641,
+          "to_block": 108158640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 4.503,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108158641,
+          "to_block": 108168640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 41,
+          "elapsed_seconds": 4.067,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108168641,
+          "to_block": 108178640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 123,
+          "elapsed_seconds": 4.131,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108178641,
+          "to_block": 108188640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 129,
+          "elapsed_seconds": 3.472,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108188641,
+          "to_block": 108198640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 29,
+          "elapsed_seconds": 2.636,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108198641,
+          "to_block": 108208640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 16,
+          "elapsed_seconds": 2.521,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108208641,
+          "to_block": 108218640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 2.849,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108218641,
+          "to_block": 108228640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 2.896,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108228641,
+          "to_block": 108238640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 3.199,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108238641,
+          "to_block": 108248640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.145,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108248641,
+          "to_block": 108258640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.407,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108258641,
+          "to_block": 108268640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 2.029,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108268641,
+          "to_block": 108278640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 17,
+          "elapsed_seconds": 2.607,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108278641,
+          "to_block": 108288640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 13,
+          "elapsed_seconds": 2.621,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108288641,
+          "to_block": 108298640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 11,
+          "elapsed_seconds": 2.765,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108298641,
+          "to_block": 108308640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.954,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108308641,
+          "to_block": 108318640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.922,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108318641,
+          "to_block": 108328640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 3.157,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108328641,
+          "to_block": 108338640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 3.51,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108338641,
+          "to_block": 108348640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.918,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108348641,
+          "to_block": 108358640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.826,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108358641,
+          "to_block": 108368640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 3.858,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108368641,
+          "to_block": 108378640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 78,
+          "elapsed_seconds": 4.44,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108378641,
+          "to_block": 108388640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.524,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108388641,
+          "to_block": 108398640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.547,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108398641,
+          "to_block": 108408640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 4.312,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108408641,
+          "to_block": 108418640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 4.255,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108418641,
+          "to_block": 108428640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 4.187,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108428641,
+          "to_block": 108438640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.617,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108438641,
+          "to_block": 108448640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 3.066,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108448641,
+          "to_block": 108458640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.529,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108458641,
+          "to_block": 108468640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 2.464,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108468641,
+          "to_block": 108478640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 2.349,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108478641,
+          "to_block": 108488640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 2.467,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108488641,
+          "to_block": 108498640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.585,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108498641,
+          "to_block": 108508640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.726,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108508641,
+          "to_block": 108518640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 2.795,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108518641,
+          "to_block": 108528640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.704,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108528641,
+          "to_block": 108538640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 2.646,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108538641,
+          "to_block": 108548640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.518,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108548641,
+          "to_block": 108558640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 115,
+          "elapsed_seconds": 3.271,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108558641,
+          "to_block": 108568640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 406,
+          "elapsed_seconds": 5.945,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108568641,
+          "to_block": 108578640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 536,
+          "elapsed_seconds": 5.959,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108578641,
+          "to_block": 108588640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 792,
+          "elapsed_seconds": 6.533,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108588641,
+          "to_block": 108598640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 270,
+          "elapsed_seconds": 7.719,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108598641,
+          "to_block": 108608640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 49,
+          "elapsed_seconds": 5.13,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108608641,
+          "to_block": 108618640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 19,
+          "elapsed_seconds": 4.396,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108618641,
+          "to_block": 108628640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 4.463,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108628641,
+          "to_block": 108638640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 3.39,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108638641,
+          "to_block": 108648640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 2.913,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108648641,
+          "to_block": 108658640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 2.762,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108658641,
+          "to_block": 108668640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 2.231,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108668641,
+          "to_block": 108678640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1,
+          "elapsed_seconds": 2.557,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108678641,
+          "to_block": 108688640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 12,
+          "elapsed_seconds": 2.683,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108688641,
+          "to_block": 108698640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 2.742,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108698641,
+          "to_block": 108708640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 2.958,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108708641,
+          "to_block": 108718640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 2.541,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108718641,
+          "to_block": 108728640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.574,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108728641,
+          "to_block": 108738640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 2.883,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108738641,
+          "to_block": 108748640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.198,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108748641,
+          "to_block": 108758640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 3.4,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108758641,
+          "to_block": 108768640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 1476,
+          "elapsed_seconds": 5.035,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108768641,
+          "to_block": 108778640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 44,
+          "elapsed_seconds": 3.734,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108778641,
+          "to_block": 108788640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 40,
+          "elapsed_seconds": 3.314,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108788641,
+          "to_block": 108798640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 48,
+          "elapsed_seconds": 3.366,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108798641,
+          "to_block": 108808640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 19,
+          "elapsed_seconds": 3.385,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108808641,
+          "to_block": 108818640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 20,
+          "elapsed_seconds": 3.565,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108818641,
+          "to_block": 108828640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 10,
+          "elapsed_seconds": 3.34,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108828641,
+          "to_block": 108838640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 11,
+          "elapsed_seconds": 2.567,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108838641,
+          "to_block": 108848640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 2.088,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108848641,
+          "to_block": 108858640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 2.011,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108858641,
+          "to_block": 108868640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 0,
+          "elapsed_seconds": 2.124,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108868641,
+          "to_block": 108878640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 2.143,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108878641,
+          "to_block": 108888640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 14,
+          "elapsed_seconds": 2.026,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108888641,
+          "to_block": 108898640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.189,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108898641,
+          "to_block": 108908640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 12,
+          "elapsed_seconds": 2.593,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108908641,
+          "to_block": 108918640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 20,
+          "elapsed_seconds": 2.729,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108918641,
+          "to_block": 108928640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 23,
+          "elapsed_seconds": 2.519,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108928641,
+          "to_block": 108938640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 24,
+          "elapsed_seconds": 3.166,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108938641,
+          "to_block": 108948640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.833,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108948641,
+          "to_block": 108958640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 21,
+          "elapsed_seconds": 2.876,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108958641,
+          "to_block": 108968640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 2.811,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108968641,
+          "to_block": 108978640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 15,
+          "elapsed_seconds": 2.883,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108978641,
+          "to_block": 108988640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 3.275,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108988641,
+          "to_block": 108998640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 16,
+          "elapsed_seconds": 2.983,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 108998641,
+          "to_block": 109008640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 8,
+          "elapsed_seconds": 2.868,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109008641,
+          "to_block": 109018640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 2.615,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109018641,
+          "to_block": 109028640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 17,
+          "elapsed_seconds": 2.504,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109028641,
+          "to_block": 109038640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 12,
+          "elapsed_seconds": 2.552,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109038641,
+          "to_block": 109048640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 4,
+          "elapsed_seconds": 2.342,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109048641,
+          "to_block": 109058640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 1.851,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109058641,
+          "to_block": 109068640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 2.561,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109068641,
+          "to_block": 109078640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 2.214,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109078641,
+          "to_block": 109088640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 2.428,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109088641,
+          "to_block": 109098640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 2,
+          "elapsed_seconds": 3.029,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109098641,
+          "to_block": 109108640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 7,
+          "elapsed_seconds": 3.292,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109108641,
+          "to_block": 109118640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 6,
+          "elapsed_seconds": 3.091,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109118641,
+          "to_block": 109128640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 9,
+          "elapsed_seconds": 3.061,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109128641,
+          "to_block": 109138640,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 5,
+          "elapsed_seconds": 2.269,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        },
+        {
+          "direction": "outbound",
+          "from_block": 109138641,
+          "to_block": 109142105,
+          "depth": 0,
+          "retry": 0,
+          "status": "complete",
+          "log_count": 3,
+          "elapsed_seconds": 1.048,
+          "endpoint": "https://bsc.rpc.blxrbdn.com"
+        }
+      ]
+    },
+    "canonical_ledger": {
+      "status": "complete",
+      "raw_log_count": 10185,
+      "raw_duplicate_count": 0,
+      "canonical_event_count": 10185,
+      "unique_tx_count": 10185,
+      "identity_conflict_count": 0,
+      "removed_event_count": 0
+    },
+    "receipt_verification": {
+      "public_rpc": "https://bsc-dataseed.binance.org/",
+      "batch_size": 40,
+      "scheduled_batch_count": 255,
+      "individual_retry_tx_count": 40,
+      "individual_retry_success_count": 40,
+      "receipt_count": 10185,
+      "receipt_failure_count": 0,
+      "failed_status_event_count": 0,
+      "receipt_log_mismatch_count": 0
+    },
+    "secondary_public_rpc_spotchecks": {
+      "range_width_blocks": 50,
+      "total_provider_samples": 36,
+      "equal_count": 20,
+      "mismatch_count": 0,
+      "unavailable_count": 16,
+      "each_range_has_at_least_one_equal_provider": true,
+      "provider_summary": {
+        "https://bsc-pokt.nodies.app": {
+          "sample_count": 18,
+          "equal_count": 18,
+          "mismatch_count": 0,
+          "unavailable_count": 0
+        },
+        "https://1rpc.io/bnb": {
+          "sample_count": 18,
+          "equal_count": 2,
+          "mismatch_count": 0,
+          "unavailable_count": 16
+        }
+      },
+      "samples": [
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108008641,
+          "to_block": 108008690,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108008641,
+          "to_block": 108008690,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108008641,
+          "to_block": 108008690,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108008641,
+          "to_block": 108008690,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108196248,
+          "to_block": 108196297,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108196248,
+          "to_block": 108196297,
+          "expected_count": 1,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: HTTP 429: {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32005,\"message\":\"You have reached the maximum API usage limit of public. If you need higher throughput, please check out https://meganode.nodereal.io/\"}}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108196248,
+          "to_block": 108196297,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": [
+            "retry=0: RuntimeError: {\"code\": -32002, \"message\": \"request timed out\"}"
+          ]
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108196248,
+          "to_block": 108196297,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108200537,
+          "to_block": 108200586,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108200537,
+          "to_block": 108200586,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108200537,
+          "to_block": 108200586,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108200537,
+          "to_block": 108200586,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"log query range must not exceed 25 blocks\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108388157,
+          "to_block": 108388206,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108388157,
+          "to_block": 108388206,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108388157,
+          "to_block": 108388206,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108388157,
+          "to_block": 108388206,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108566378,
+          "to_block": 108566427,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108566378,
+          "to_block": 108566427,
+          "expected_count": 1,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108566378,
+          "to_block": 108566427,
+          "expected_count": 2,
+          "observed_count": 2,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108566378,
+          "to_block": 108566427,
+          "expected_count": 2,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32603, \"message\": \"Remote Error\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108583864,
+          "to_block": 108583913,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108583864,
+          "to_block": 108583913,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108583864,
+          "to_block": 108583913,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108583864,
+          "to_block": 108583913,
+          "expected_count": 1,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108758181,
+          "to_block": 108758230,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108758181,
+          "to_block": 108758230,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108758181,
+          "to_block": 108758230,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108758181,
+          "to_block": 108758230,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: HTTP 429: {\"jsonrpc\": \"2.0\", \"id\": null, \"error\": {\"code\": -32005, \"message\": \"Rate limit exceeded on Nodies public endpoints. For higher limits, create a free account at https://nodies.app and use a private endpoint. Enterprise: sales@nodies.org\"}}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 108771383,
+          "to_block": 108771432,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 108771383,
+          "to_block": 108771432,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 108771383,
+          "to_block": 108771432,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 108771383,
+          "to_block": 108771432,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "inbound",
+          "from_block": 109142056,
+          "to_block": 109142105,
+          "expected_count": 0,
+          "observed_count": 0,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "inbound",
+          "from_block": 109142056,
+          "to_block": 109142105,
+          "expected_count": 0,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          ]
+        },
+        {
+          "provider": "https://bsc-pokt.nodies.app",
+          "direction": "outbound",
+          "from_block": 109142056,
+          "to_block": 109142105,
+          "expected_count": 1,
+          "observed_count": 1,
+          "identities_and_fields_equal": true,
+          "missing": [],
+          "extra": [],
+          "errors_before_success": []
+        },
+        {
+          "provider": "https://1rpc.io/bnb",
+          "direction": "outbound",
+          "from_block": 109142056,
+          "to_block": 109142105,
+          "expected_count": 1,
+          "observed_count": null,
+          "identities_and_fields_equal": null,
+          "errors": [
+            "retry=0: RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}",
+            "retry=1: RuntimeError: {\"code\": -32603, \"message\": \"Remote Error\"}"
+          ]
+        }
+      ]
+    },
+    "historical_balance_validation": {
+      "all_six_root_horizon_balances_available_and_reconcile": true,
+      "providers_tried": [
+        "https://bsc.rpc.blxrbdn.com",
+        "https://bsc-pokt.nodies.app",
+        "https://1rpc.io/bnb",
+        "https://bsc-mainnet.public.blastapi.io"
+      ],
+      "results": [
+        {
+          "root_id": "ake_2026_07_04_670m",
+          "opening_state_block": 108008640,
+          "earlier_same_block_event_identities": [],
+          "opening_inventory_raw": 5463979755126102411767076499,
+          "opening_inventory_origin": "unknown",
+          "opening_inventory_rpc": "https://bsc-mainnet.public.blastapi.io",
+          "opening_inventory_earlier_rpc_errors": {
+            "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          },
+          "horizons": {
+            "24": {
+              "end_balance_block": 108200586,
+              "end_balance_raw": 6799008544469227218135112475,
+              "rpc": "https://bsc-mainnet.public.blastapi.io",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+              },
+              "opening_plus_event_net_raw": 6799008544469227218135112475,
+              "matches_event_ledger": true
+            },
+            "72": {
+              "end_balance_block": 108583913,
+              "end_balance_raw": 7807686904606265543520497960,
+              "rpc": "https://bsc-mainnet.public.blastapi.io",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+              },
+              "opening_plus_event_net_raw": 7807686904606265543520497960,
+              "matches_event_ledger": true
+            }
+          }
+        },
+        {
+          "root_id": "ake_2026_07_05_822_99m",
+          "opening_state_block": 108196247,
+          "earlier_same_block_event_identities": [],
+          "opening_inventory_raw": 5976446170273295778135112475,
+          "opening_inventory_origin": "unknown",
+          "opening_inventory_rpc": "https://bsc-mainnet.public.blastapi.io",
+          "opening_inventory_earlier_rpc_errors": {
+            "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"historical state 1de600b221ea34a2a52768a420d4874db31505f7a2cfb0b9e837891850385dd5 is not available\"}"
+          },
+          "horizons": {
+            "24": {
+              "end_balance_block": 108388206,
+              "end_balance_raw": 6513561341673494335423769469,
+              "rpc": "https://bsc-mainnet.public.blastapi.io",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+              },
+              "opening_plus_event_net_raw": 6513561341673494335423769469,
+              "matches_event_ledger": true
+            },
+            "72": {
+              "end_balance_block": 108771432,
+              "end_balance_raw": 11455881098524493979855713526,
+              "rpc": "https://1rpc.io/bnb",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}"
+              },
+              "opening_plus_event_net_raw": 11455881098524493979855713526,
+              "matches_event_ledger": true
+            }
+          }
+        },
+        {
+          "root_id": "ake_2026_07_07_972_54m",
+          "opening_state_block": 108566377,
+          "earlier_same_block_event_identities": [],
+          "opening_inventory_raw": 7851912595775280176778878698,
+          "opening_inventory_origin": "unknown",
+          "opening_inventory_rpc": "https://bsc-mainnet.public.blastapi.io",
+          "opening_inventory_earlier_rpc_errors": {
+            "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+            "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+          },
+          "horizons": {
+            "24": {
+              "end_balance_block": 108758230,
+              "end_balance_raw": 10824189688513068059143897244,
+              "rpc": "https://bsc-mainnet.public.blastapi.io",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"missing trie node\"}"
+              },
+              "opening_plus_event_net_raw": 10824189688513068059143897244,
+              "matches_event_ledger": true
+            },
+            "72": {
+              "end_balance_block": 109142105,
+              "end_balance_raw": 11255717926823425623092293458,
+              "rpc": "https://bsc-mainnet.public.blastapi.io",
+              "earlier_rpc_errors": {
+                "https://bsc.rpc.blxrbdn.com": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://bsc-pokt.nodies.app": "RuntimeError: {\"code\": -32000, \"message\": \"not supported\"}",
+                "https://1rpc.io/bnb": "RuntimeError: {\"code\": -32000, \"message\": \"header not found\"}"
+              },
+              "opening_plus_event_net_raw": 11255717926823425623092293458,
+              "matches_event_ledger": true
+            }
+          }
+        }
+      ]
+    },
+    "token_contract_and_decimals": {
+      "contract": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+      "decimals": 18,
+      "rpc": "https://bsc-mainnet.public.blastapi.io",
+      "verified": true
+    }
+  },
+  "dedup_and_fifo": {
+    "canonical_identity": [
+      "chain_id",
+      "token",
+      "lower(tx_hash)",
+      "log_index"
+    ],
+    "one_global_ledger_for_overlapping_windows": true,
+    "one_global_fifo_for_overlapping_windows": true,
+    "pre_union_opening_inventory_raw": 5463979755126102411767076499,
+    "pre_union_opening_inventory_ake": "5463979755.126102411767076499",
+    "pre_union_opening_inventory_provenance": "unknown",
+    "union_total_outbound_raw": 5451529191466927206300000000,
+    "union_total_outbound_ake": "5451529191.4669272063",
+    "pre_union_opening_lot_remaining_raw": 12450563659175205467076499,
+    "pre_union_opening_lot_remaining_ake": "12450563.659175205467076499",
+    "visible_candidate_root_lots_consumed_raw": 0,
+    "visible_candidate_root_lots_consumed_ake": "0",
+    "fifo_is_accounting_attribution_not_economic_provenance": true
+  },
+  "event_ledger": {
+    "path": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+    "sha256": "bf990b08571b43e017ca2792d208bfc398e73bee9110747d5f4b272e93b645ee",
+    "row_count": 10185,
+    "all_matching_event_fields": [
+      "tx/log identity",
+      "amount",
+      "from/to",
+      "receipt status and exact-log match",
+      "tracked endpoint roles and sources",
+      "outbound classification"
+    ]
+  },
+  "destination_roles": [
+    {
+      "address": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+      "event_count": 5742,
+      "amount_raw": 2451966631064038756300000000,
+      "amount_ake": "2451966631.0640387563",
+      "tracked_role": {
+        "name": "Binance Alpha 2.0 Router",
+        "class": "exchange_aggregator",
+        "source": "config/global_address_labels.json",
+        "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/KGEN/RAVE traces show direct Alpha Router/Binance Wallet Proxy entry, delegatecall dispatch, DEX Router swap call, and custody deposit/pull interaction. Promoted from suspect after nested call evidence."
+      },
+      "classification": "alpha_router_custody_rebalance_unresolved_report_only",
+      "code_present_at_validation_latest": true,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x4b51345f29b32763cfcea9b83fc087d793f5b332",
+      "event_count": 233,
+      "amount_raw": 1272136598961485100000000000,
+      "amount_ake": "1272136598.9614851",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xbd97306a087ed0c46b783cfbfdcdc6c12c7a2866",
+      "event_count": 595,
+      "amount_raw": 911625814071460000000000000,
+      "amount_ake": "911625814.07146",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xa4510761b1d8643c6aab58c56b15f62bc4789d1d",
+      "event_count": 18,
+      "amount_raw": 227579364915892000000000000,
+      "amount_ake": "227579364.915892",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xe4adb7d180598321db9750a0d220a2ca994619b3",
+      "event_count": 15,
+      "amount_raw": 188611178382772000000000000,
+      "amount_ake": "188611178.382772",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x19a2432075534e955d12d467509d1876e834fdc8",
+      "event_count": 26,
+      "amount_raw": 175812422631533000000000000,
+      "amount_ake": "175812422.631533",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x5083e28c57008ce6d30ea3c42f50f0bef6f56fa2",
+      "event_count": 3,
+      "amount_raw": 101605948491087000000000000,
+      "amount_ake": "101605948.491087",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xa76cb489fad3e025f46780870b3afc696c5cdd26",
+      "event_count": 3,
+      "amount_raw": 45195199163580000000000000,
+      "amount_ake": "45195199.16358",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xca47c8f264ac5b13394f3c6feb702bc5f43ab73b",
+      "event_count": 2,
+      "amount_raw": 42796466237298790000000000,
+      "amount_ake": "42796466.23729879",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x19b444af8be6e51fb5e997efa509c2cd64c421a7",
+      "event_count": 4,
+      "amount_raw": 19600113339243000000000000,
+      "amount_ake": "19600113.339243",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x4073e9b9aa86bea4ec4d12609435aff4cedc3190",
+      "event_count": 5,
+      "amount_raw": 9998566000000000000000000,
+      "amount_ake": "9998566",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xd8efec70e2c518acf078cf0ea4dc5d995c51032d",
+      "event_count": 2,
+      "amount_raw": 2940802530475000000000000,
+      "amount_ake": "2940802.530475",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x7030c2cdf8439ee9f265692f3c086b1edb66b10d",
+      "event_count": 1,
+      "amount_raw": 831550407698000000000000,
+      "amount_ake": "831550.407698",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x76810358a36e1ce79933ac3f85810bf0d984f56c",
+      "event_count": 1,
+      "amount_raw": 196634041818100000000000,
+      "amount_ake": "196634.0418181",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": true,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xbf6ba2bf0452568457d61ae06a0845c603979a8b",
+      "event_count": 1,
+      "amount_raw": 171004388950000000000000,
+      "amount_ake": "171004.38895",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xfb625392045283a4ae0cb3aebeeb06e98b0b10ec",
+      "event_count": 1,
+      "amount_raw": 155463000000000000000000,
+      "amount_ake": "155463",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x9f191abc3cb85e65264f4cbc78c07f2c6dfbd51a",
+      "event_count": 1,
+      "amount_raw": 155461000000000000000000,
+      "amount_ake": "155461",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xcd101a07625676df71a397c1a5f03a279b0df59d",
+      "event_count": 1,
+      "amount_raw": 113611080127000000000000,
+      "amount_ake": "113611.080127",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x2945ccc8d658529a9dd790779f318e8707af0474",
+      "event_count": 1,
+      "amount_raw": 15039101701690000000000,
+      "amount_ake": "15039.10170169",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x25d7c10c73cc02be72d1863d9b8378bf339b048e",
+      "event_count": 1,
+      "amount_raw": 14579841236330000000000,
+      "amount_ake": "14579.84123633",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": true,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0x978a19e4e6970cc8c10bae91fe82ba999ee22cd1",
+      "event_count": 1,
+      "amount_raw": 6086888031440000000000,
+      "amount_ake": "6086.88803144",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    },
+    {
+      "address": "0xabdaf2816c64e6372d6d23ac97833fbe829419a0",
+      "event_count": 1,
+      "amount_raw": 655928500000000000000,
+      "amount_ake": "655.9285",
+      "tracked_role": {
+        "name": null,
+        "class": "unlabeled_address",
+        "source": "tracked_global_labels_no_match"
+      },
+      "classification": "unlabeled_destination_unresolved",
+      "code_present_at_validation_latest": false,
+      "code_query_temporal_scope": "latest_only"
+    }
+  ],
+  "roots": [
+    {
+      "id": "ake_2026_07_04_670m",
+      "candidate_status": "unique_bounded_onchain_candidate_direct_screenshot_link_unresolved",
+      "root_event": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87:330",
+        "tx_hash": "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87",
+        "log_index": 330,
+        "block_number": 108008641,
+        "transaction_index": 54,
+        "milli_timestamp_utc": "2026-07-04T10:58:07.650Z",
+        "milli_timestamp_beijing": "2026-07-04T18:58:07.650+08:00",
+        "rpc_log_timestamp_utc": "2026-07-04T10:58:07.000Z",
+        "from": "0xb40b35fe21be75f6e5c0b7dabab1ec87d87a1395",
+        "from_role": {
+          "name": null,
+          "class": "unlabeled_address",
+          "source": "tracked_global_labels_no_match"
+        },
+        "to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Proxy/Custody",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE buy traces show Router approving and depositing Alpha tokens to Binance Deposit/Proxy-Custody via 0xfed29397; KGEN sell trace shows Router pulling tokens from the same custody path via 0x5d7208c3. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 670000000000000000000000000,
+        "amount_ake": "670000000",
+        "receipt_success": true,
+        "receipt_log_verified": true
+      },
+      "earliest_address_level_outbound_after_root": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0xfa0557f8e2da6d827f73cec9557ba60f5898737efdc4165646242757059b6f36:382",
+        "tx_hash": "0xfa0557f8e2da6d827f73cec9557ba60f5898737efdc4165646242757059b6f36",
+        "log_index": 382,
+        "timestamp_utc": "2026-07-04T11:01:19.000Z",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Router",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/KGEN/RAVE traces show direct Alpha Router/Binance Wallet Proxy entry, delegatecall dispatch, DEX Router swap call, and custody deposit/pull interaction. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 323089000000000000000000,
+        "amount_ake": "323089",
+        "receipt_success": true,
+        "receipt_log_verified": true,
+        "classification": "alpha_router_custody_rebalance_unresolved_report_only",
+        "root_lot_economic_linkage_verified": false
+      },
+      "horizons": {
+        "24": {
+          "window": {
+            "start_utc_inclusive": "2026-07-04T10:58:07.650Z",
+            "start_beijing_inclusive": "2026-07-04T18:58:07.650+08:00",
+            "end_utc_exclusive": "2026-07-05T10:58:07.650Z",
+            "end_beijing_exclusive": "2026-07-05T18:58:07.650+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87:330",
+            "end_block_exclusive": 108200587,
+            "boundary_block_timestamp": "2026-07-05T10:58:08.000Z",
+            "previous_block_timestamp": "2026-07-05T10:58:07.550Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108008640,
+            "amount_raw": 5463979755126102411767076499,
+            "amount_ake": "5463979755.126102411767076499",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 3132200440389220696368035976,
+            "inbound_ake": "3132200440.389220696368035976",
+            "outbound_raw": 1797171651046095890000000000,
+            "outbound_ake": "1797171651.04609589",
+            "net_change_raw": 1335028789343124806368035976,
+            "net_change_ake": "1335028789.343124806368035976",
+            "end_balance_state_block": 108200586,
+            "end_balance_raw": 6799008544469227218135112475,
+            "end_balance_ake": "6799008544.469227218135112475",
+            "event_count": 2389,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 1776,
+                "amount_raw": 843158228001267450000000000,
+                "amount_ake": "843158228.00126745"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 351,
+                "amount_raw": 954013423044828440000000000,
+                "amount_ake": "954013423.04482844"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 670000000000000000000000000,
+            "candidate_attributable_retention_ake": "670000000",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        },
+        "72": {
+          "window": {
+            "start_utc_inclusive": "2026-07-04T10:58:07.650Z",
+            "start_beijing_inclusive": "2026-07-04T18:58:07.650+08:00",
+            "end_utc_exclusive": "2026-07-07T10:58:07.650Z",
+            "end_beijing_exclusive": "2026-07-07T18:58:07.650+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87:330",
+            "end_block_exclusive": 108583914,
+            "boundary_block_timestamp": "2026-07-07T10:58:08.000Z",
+            "previous_block_timestamp": "2026-07-07T10:58:07.550Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108008640,
+            "amount_raw": 5463979755126102411767076499,
+            "amount_ake": "5463979755.126102411767076499",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 6182305204450814828053421461,
+            "inbound_ake": "6182305204.450814828053421461",
+            "outbound_raw": 3838598054970651696300000000,
+            "outbound_ake": "3838598054.9706516963",
+            "net_change_raw": 2343707149480163131753421461,
+            "net_change_ake": "2343707149.480163131753421461",
+            "end_balance_state_block": 108583913,
+            "end_balance_raw": 7807686904606265543520497960,
+            "end_balance_ake": "7807686904.60626554352049796",
+            "event_count": 4433,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 3198,
+                "amount_raw": 1574604069838348256300000000,
+                "amount_ake": "1574604069.8383482563"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 709,
+                "amount_raw": 2263993985132303440000000000,
+                "amount_ake": "2263993985.13230344"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 670000000000000000000000000,
+            "candidate_attributable_retention_ake": "670000000",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        }
+      }
+    },
+    {
+      "id": "ake_2026_07_05_822_99m",
+      "candidate_status": "unique_bounded_onchain_candidate_direct_screenshot_link_unresolved",
+      "root_event": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8:420",
+        "tx_hash": "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8",
+        "log_index": 420,
+        "block_number": 108196248,
+        "transaction_index": 54,
+        "milli_timestamp_utc": "2026-07-05T10:25:35.250Z",
+        "milli_timestamp_beijing": "2026-07-05T18:25:35.250+08:00",
+        "rpc_log_timestamp_utc": "2026-07-05T10:25:35.000Z",
+        "from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+        "from_role": {
+          "name": null,
+          "class": "unlabeled_address",
+          "source": "tracked_global_labels_no_match"
+        },
+        "to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Proxy/Custody",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE buy traces show Router approving and depositing Alpha tokens to Binance Deposit/Proxy-Custody via 0xfed29397; KGEN sell trace shows Router pulling tokens from the same custody path via 0x5d7208c3. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 822989955000000000000000000,
+        "amount_ake": "822989955",
+        "receipt_success": true,
+        "receipt_log_verified": true
+      },
+      "earliest_address_level_outbound_after_root": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x68b5ee2c7d35455f0d453d0f399ee6d49abd692284e19c9b795ccd1827adce62:150",
+        "tx_hash": "0x68b5ee2c7d35455f0d453d0f399ee6d49abd692284e19c9b795ccd1827adce62",
+        "log_index": 150,
+        "timestamp_utc": "2026-07-05T10:30:44.000Z",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Router",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/KGEN/RAVE traces show direct Alpha Router/Binance Wallet Proxy entry, delegatecall dispatch, DEX Router swap call, and custody deposit/pull interaction. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 70322221944500000000000,
+        "amount_ake": "70322.2219445",
+        "receipt_success": true,
+        "receipt_log_verified": true,
+        "classification": "alpha_router_custody_rebalance_unresolved_report_only",
+        "root_lot_economic_linkage_verified": false
+      },
+      "horizons": {
+        "24": {
+          "window": {
+            "start_utc_inclusive": "2026-07-05T10:25:35.250Z",
+            "start_beijing_inclusive": "2026-07-05T18:25:35.250+08:00",
+            "end_utc_exclusive": "2026-07-06T10:25:35.250Z",
+            "end_beijing_exclusive": "2026-07-06T18:25:35.250+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8:420",
+            "end_block_exclusive": 108388207,
+            "boundary_block_timestamp": "2026-07-06T10:25:35.650Z",
+            "previous_block_timestamp": "2026-07-06T10:25:35.200Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108196247,
+            "amount_raw": 5976446170273295778135112475,
+            "amount_ake": "5976446170.273295778135112475",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 883552783149564747288656994,
+            "inbound_ake": "883552783.149564747288656994",
+            "outbound_raw": 346437611749366190000000000,
+            "outbound_ake": "346437611.74936619",
+            "net_change_raw": 537115171400198557288656994,
+            "net_change_ake": "537115171.400198557288656994",
+            "end_balance_state_block": 108388206,
+            "end_balance_raw": 6513561341673494335423769469,
+            "end_balance_ake": "6513561341.673494335423769469",
+            "event_count": 279,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 119,
+                "amount_raw": 66827850639516190000000000,
+                "amount_ake": "66827850.63951619"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 86,
+                "amount_raw": 279609761109850000000000000,
+                "amount_ake": "279609761.10985"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 822989955000000000000000000,
+            "candidate_attributable_retention_ake": "822989955",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        },
+        "72": {
+          "window": {
+            "start_utc_inclusive": "2026-07-05T10:25:35.250Z",
+            "start_beijing_inclusive": "2026-07-05T18:25:35.250+08:00",
+            "end_utc_exclusive": "2026-07-08T10:25:35.250Z",
+            "end_beijing_exclusive": "2026-07-08T18:25:35.250+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8:420",
+            "end_block_exclusive": 108771433,
+            "boundary_block_timestamp": "2026-07-08T10:25:35.550Z",
+            "previous_block_timestamp": "2026-07-08T10:25:35.100Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108196247,
+            "amount_raw": 5976446170273295778135112475,
+            "amount_ake": "5976446170.273295778135112475",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 8832338009473789978020601051,
+            "inbound_ake": "8832338009.473789978020601051",
+            "outbound_raw": 3352903081222591776300000000,
+            "outbound_ake": "3352903081.2225917763",
+            "net_change_raw": 5479434928251198201720601051,
+            "net_change_ake": "5479434928.251198201720601051",
+            "end_balance_state_block": 108771432,
+            "end_balance_raw": 11455881098524493979855713526,
+            "end_balance_ake": "11455881098.524493979855713526",
+            "event_count": 7151,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 3557,
+                "amount_raw": 1444228509742338346300000000,
+                "amount_ake": "1444228509.7423383463"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 492,
+                "amount_raw": 1908674571480253430000000000,
+                "amount_ake": "1908674571.48025343"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 822989955000000000000000000,
+            "candidate_attributable_retention_ake": "822989955",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        }
+      }
+    },
+    {
+      "id": "ake_2026_07_07_972_54m",
+      "candidate_status": "unique_bounded_onchain_candidate_direct_screenshot_link_unresolved",
+      "root_event": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727:218",
+        "tx_hash": "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727",
+        "log_index": 218,
+        "block_number": 108566378,
+        "transaction_index": 49,
+        "milli_timestamp_utc": "2026-07-07T08:46:34.150Z",
+        "milli_timestamp_beijing": "2026-07-07T16:46:34.150+08:00",
+        "rpc_log_timestamp_utc": "2026-07-07T08:46:34.000Z",
+        "from": "0x6449b24d8dad7cef8ece12d7d5c8d0e0ef355a48",
+        "from_role": {
+          "name": null,
+          "class": "unlabeled_address",
+          "source": "tracked_global_labels_no_match"
+        },
+        "to": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Proxy/Custody",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/RAVE buy traces show Router approving and depositing Alpha tokens to Binance Deposit/Proxy-Custody via 0xfed29397; KGEN sell trace shows Router pulling tokens from the same custody path via 0x5d7208c3. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 972540250000000000000000000,
+        "amount_ake": "972540250",
+        "receipt_success": true,
+        "receipt_log_verified": true
+      },
+      "earliest_address_level_outbound_after_root": {
+        "identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x62b6677cc9861ece58fa7525e65197bea58fcfe91a9809bdb88b0d8b030e7843:99",
+        "tx_hash": "0x62b6677cc9861ece58fa7525e65197bea58fcfe91a9809bdb88b0d8b030e7843",
+        "log_index": 99,
+        "timestamp_utc": "2026-07-07T08:46:40.000Z",
+        "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+        "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+        "to_role": {
+          "name": "Binance Alpha 2.0 Router",
+          "class": "exchange_aggregator",
+          "source": "config/global_address_labels.json",
+          "evidence": "2026-06-29 Phalcon Invocation Flow review: CLO/KGEN/RAVE traces show direct Alpha Router/Binance Wallet Proxy entry, delegatecall dispatch, DEX Router swap call, and custody deposit/pull interaction. Promoted from suspect after nested call evidence."
+        },
+        "amount_raw": 479101960012500000000000,
+        "amount_ake": "479101.9600125",
+        "receipt_success": true,
+        "receipt_log_verified": true,
+        "classification": "alpha_router_custody_rebalance_unresolved_report_only",
+        "root_lot_economic_linkage_verified": false
+      },
+      "horizons": {
+        "24": {
+          "window": {
+            "start_utc_inclusive": "2026-07-07T08:46:34.150Z",
+            "start_beijing_inclusive": "2026-07-07T16:46:34.150+08:00",
+            "end_utc_exclusive": "2026-07-08T08:46:34.150Z",
+            "end_beijing_exclusive": "2026-07-08T16:46:34.150+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727:218",
+            "end_block_exclusive": 108758231,
+            "boundary_block_timestamp": "2026-07-08T08:46:34.450Z",
+            "previous_block_timestamp": "2026-07-08T08:46:34.000Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108566377,
+            "amount_raw": 7851912595775280176778878698,
+            "amount_ake": "7851912595.775280176778878698",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 5073183907365994418665018546,
+            "inbound_ake": "5073183907.365994418665018546",
+            "outbound_raw": 2100906814628206536300000000,
+            "outbound_ake": "2100906814.6282065363",
+            "net_change_raw": 2972277092737787882365018546,
+            "net_change_ake": "2972277092.737787882365018546",
+            "end_balance_state_block": 108758230,
+            "end_balance_raw": 10824189688513068059143897244,
+            "end_balance_ake": "10824189688.513068059143897244",
+            "event_count": 4674,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 1549,
+                "amount_raw": 959570482777617106300000000,
+                "amount_ake": "959570482.7776171063"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 270,
+                "amount_raw": 1141336331850589430000000000,
+                "amount_ake": "1141336331.85058943"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 972540250000000000000000000,
+            "candidate_attributable_retention_ake": "972540250",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        },
+        "72": {
+          "window": {
+            "start_utc_inclusive": "2026-07-07T08:46:34.150Z",
+            "start_beijing_inclusive": "2026-07-07T16:46:34.150+08:00",
+            "end_utc_exclusive": "2026-07-10T08:46:34.150Z",
+            "end_beijing_exclusive": "2026-07-10T16:46:34.150+08:00",
+            "start_event_identity": "56:0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db:0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727:218",
+            "end_block_exclusive": 109142106,
+            "boundary_block_timestamp": "2026-07-10T08:46:34.150Z",
+            "previous_block_timestamp": "2026-07-10T08:46:33.700Z"
+          },
+          "coverage": {
+            "primary_log_scan": "complete",
+            "receipt_and_log_identity": "complete",
+            "historical_balance_reconciliation": "complete"
+          },
+          "window_start_balance": {
+            "state_block": 108566377,
+            "amount_raw": 7851912595775280176778878698,
+            "amount_ake": "7851912595.775280176778878698",
+            "provenance": "unknown_pre_window_inventory_mix",
+            "earlier_same_block_event_identities": [],
+            "rpc": "https://bsc-mainnet.public.blastapi.io"
+          },
+          "address_scope": {
+            "inbound_raw": 6119173412128579042613414760,
+            "inbound_ake": "6119173412.12857904261341476",
+            "outbound_raw": 2715368081080433596300000000,
+            "outbound_ake": "2715368081.0804335963",
+            "net_change_raw": 3403805331048145446313414760,
+            "net_change_ake": "3403805331.04814544631341476",
+            "end_balance_state_block": 109142105,
+            "end_balance_raw": 11255717926823425623092293458,
+            "end_balance_ake": "11255717926.823425623092293458",
+            "event_count": 6904,
+            "event_identities_location": "input/ake_alpha_hot_wallet_next_hop_events_2026-07-19.csv",
+            "balance_reconciles_to_event_ledger": true,
+            "outbound_destination_breakdown": {
+              "alpha_router_custody_rebalance_unresolved_report_only": {
+                "event_count": 3434,
+                "amount_raw": 1385809290610565586300000000,
+                "amount_ake": "1385809290.6105655863"
+              },
+              "unlabeled_destination_unresolved": {
+                "event_count": 363,
+                "amount_raw": 1329558790469868010000000000,
+                "amount_ake": "1329558790.46986801"
+              }
+            }
+          },
+          "global_fifo_root_lot": {
+            "method": "single_global_fifo_with_historical_pre_union_opening_lot",
+            "candidate_attributed_outflow_raw": 0,
+            "candidate_attributed_outflow_ake": "0",
+            "candidate_attributable_retention_raw": 972540250000000000000000000,
+            "candidate_attributable_retention_ake": "972540250",
+            "candidate_retention_ratio": 1.0,
+            "economic_sale_inference": false,
+            "reason": "the known-amount, unknown-origin pre-union opening lot remains ahead of every visible root lot and is not exhausted anywhere in the bounded union"
+          },
+          "cluster_scope_retention": null,
+          "cluster_scope_reason": "the exhaustive scan covers the target address only",
+          "overlapping_window_metrics_are_non_additive": true
+        }
+      }
+    }
+  ],
+  "same_receipt_quote_recovery_to_target": {
+    "outbound_event_count_with_recovery": 0,
+    "interpretation": "no same-receipt tracked quote-token recovery to the target was observed; this does not exhaust recovery to downstream addresses"
+  },
+  "classification_guardrails": {
+    "balance_decrease_equals_sale": false,
+    "alpha_router_custody_rebalance": "neutral_report_only",
+    "tracked_cex_destination": "separate_cex_path_if_observed",
+    "tracked_dex_or_pool_destination": "execution_observed_quote_recovery_required_for_sell",
+    "zero_address": "burn_or_zero_address",
+    "unlabeled_destination": "unresolved",
+    "read_only_unsigned_no_execution": true,
+    "telegram_inclusion": false
+  },
+  "unresolved": [
+    "direct Binance App screenshot-row TXID linkage",
+    "public field-level mapping of the exact screenshot label Binance: Alpha Hot Wallet",
+    "root senders' ownership and economic relationship to Binance Alpha",
+    "economic purpose of each root transfer",
+    "cluster-scope retention beyond the exhaustively scanned target address",
+    "roles of destinations absent from tracked global labels",
+    "sell intent or downstream quote recovery outside the target address"
+  ],
+  "runtime_or_rule_change": false,
+  "deployment_required": false
+}
