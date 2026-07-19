@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "case_id": "ake_common_receiver_monitor_gap_analysis_2026_07_19",
+  "scope": {
+    "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+    "common_receiver": "0x85401508c777321eed3018390408ad0ab2e087e5",
+    "confirmed_sell_transactions": 126
+  },
+  "current_config_replay": {
+    "ake_in_current_watchlist": false,
+    "evidence": "config/current_alpha_watchlist.json has no item whose symbol is AKE",
+    "result": "current generic monitors do not build an AKE event"
+  },
+  "existing_capabilities": [
+    {
+      "module": "scripts/alpha_intraday_flow_watch.py",
+      "lines": "607-674",
+      "capability": "builds events only from active P0/P1/P2 watchlist items with a valid BSC contract and pool"
+    },
+    {
+      "module": "scripts/alpha_intraday_flow_watch.py",
+      "lines": "1372-1443",
+      "capability": "can classify one receipt as a sell when one configured quote token is net-positive to the seller in the same receipt"
+    },
+    {
+      "module": "scripts/alpha_intraday_flow_watch.py",
+      "lines": "1847-1900",
+      "capability": "uses a recent 1800-block default window, receipt candidate selection, and a 20-second receipt-sampling deadline"
+    },
+    {
+      "module": "scripts/alpha_opening_block_watch.py",
+      "lines": "1174-1285",
+      "capability": "can confirm direct or bounded next-hop quote recovery for selected opening buyers using the configured quote token"
+    },
+    {
+      "module": "scripts/alpha_opening_block_watch.py",
+      "lines": "2213-2231",
+      "capability": "opening analysis defaults to 25 selected transactions and four traced meaningful buyers"
+    }
+  ],
+  "observed_gaps": [
+    {
+      "id": "watchlist_coverage",
+      "state": "confirmed_current_configuration_gap",
+      "detail": "AKE is absent from the current watchlist, so the generic runtime path cannot replay this case without an explicit review event"
+    },
+    {
+      "id": "arbitrary_sender_fan_in_cluster",
+      "state": "confirmed_capability_gap",
+      "detail": "the current cluster logic covers CEX withdrawal fan-out; it does not persist arbitrary multi-sender fan-in to a common EOA and connect that address to later quote recovery"
+    },
+    {
+      "id": "batch_receipt_completeness",
+      "state": "confirmed_bounded_sampling_gap",
+      "detail": "126 sell receipts plus other token transactions exceed the intraday 120-receipt candidate cap, and the 20-second deadline may reduce sampled receipts further"
+    },
+    {
+      "id": "multi_quote_batch_aggregation",
+      "state": "confirmed_capability_gap",
+      "detail": "runtime sell classification follows one configured quote token; this case recovered USDT plus USDC and WBNB dust across the batch"
+    },
+    {
+      "id": "opening_trace_depth",
+      "state": "confirmed_bounded_sampling_gap",
+      "detail": "opening buyer tracing defaults to the latest three outgoing transactions per traced buyer and cannot reconstruct 126 sells as one complete batch"
+    }
+  ],
+  "expected_runtime_behavior_if_configured_in_window": {
+    "single_usdt_sell_receipt": "detectable",
+    "some_large_sell_activity": "likely detectable when selected before deadline",
+    "all_126_receipts_complete": "not guaranteed",
+    "sender_fan_in_to_common_receiver_linkage": "not implemented",
+    "usdc_and_wbnb_dust_aggregation": "not represented by the single configured quote field"
+  },
+  "change_decision": {
+    "runtime_code_changed": false,
+    "verifier_guard_changed": false,
+    "reason": "the positive case proves a real coverage gap, while a safe generic fan-in rule still lacks negative fixtures for ordinary retail pooling, router or custody routing, non-sale transfers, and partial receipt coverage",
+    "deployment_required": false,
+    "recommended_fixture_set": [
+      "positive: multi-sender fan-in followed by complete same-receipt token-out and quote-in batch",
+      "negative: fan-in followed only by custody or internal routing with no quote recovery",
+      "negative: ordinary unrelated deposits into one address",
+      "negative: router call or token balance decline without quote received by the seller",
+      "coverage: receipt cap or RPC failure leaves the batch incomplete and report-only"
+    ]
+  },
+  "strategy_effect": {
+    "new_rule_adopted": false,
+    "reason": "existing celue rules already require receipt or next-hop quote recovery before confirmed sell and keep common control unresolved",
+    "case_value": "positive design fixture for a future coverage-aware fan-in-to-confirmed-sell path"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "status": "pass",
+  "checks": {
+    "sell_tx_count": true,
+    "receipt_success": true,
+    "all_quote_recipients_target": true,
+    "canonical_address_events": true,
+    "balance_reconciliation": true,
+    "nonce_unique_and_increasing": true
+  },
+  "artifact_hashes": {
+    "input/ake_common_receiver_quote_recovery_2026-07-19.json": "2eb7fb4054a2120eb5d4be2dd40c55060b67cf283dcf7012418e64738fa68d9e",
+    "input/ake_common_receiver_quote_recovery_ledger_2026-07-19.csv": "90d0b8a999f896fda29eac0dacce5c69d862de51be8cc5e17d91ddb17d113509",
+    "input/ake_common_receiver_quote_asset_events_2026-07-19.csv": "6e5d47290b3ba7d0e7a6fd9f2c25622b0d12265ec2d7d987379f30a1030eb385"
+  }
+}

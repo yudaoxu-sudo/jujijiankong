@@ -1,0 +1,779 @@
+{
+  "schema_version": 1,
+  "case_id": "ake_common_receiver_quote_recovery_2026_07_19",
+  "generated_at_utc": "2026-07-19T15:36:50.819422+00:00",
+  "chain_id": 56,
+  "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+  "address": "0x85401508c777321eed3018390408ad0ab2e087e5",
+  "source_artifacts": {
+    "input/ake_common_receiver_forensic_2026-07-19.json": "109f76fc52f247f350628112dc88d19b3fa81c4179d8ae984c2adf5303ace51e",
+    "input/ake_common_receiver_events_2026-07-19.csv": "4dc685b4f61e0004f8dc2befa921e4b0ffd6f4607d762e9dcbce10cf7e4de110",
+    "input/ake_common_receiver_public_index_2026-07-19.json": "315bbaac6badd114115cae7ecf9887c59492eca102ec60e8feaa4a47136bd726"
+  },
+  "coverage": {
+    "public_index_tx_count": 174,
+    "successful_receipt_count": 173,
+    "failed_receipt_count": 1,
+    "receipt_transfer_log_count": 23375,
+    "canonical_address_event_count": 906,
+    "canonical_duplicate_count": 0,
+    "sell_tx_expected": 126,
+    "sell_tx_verified": 126,
+    "quote_asset_event_count_from_first_recovery": 228,
+    "page_coverage": {
+      "expected_pages": 10,
+      "fetched_pages": 10,
+      "missing_pages": [],
+      "direct_html_pages": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "jina_fallback_pages": [
+        4
+      ],
+      "expected_row_count": 906,
+      "fetched_row_count": 906,
+      "exact_ake_contract_row_count": 665,
+      "pages": [
+        {
+          "page": 1,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=1&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 49,
+          "local_sha256": "5cf1d0eada62c9084d2accbf6e967bc2ba21e26d1570809451240b4af00fd112"
+        },
+        {
+          "page": 2,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=2&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 71,
+          "local_sha256": "5d848242bd925834924805a9311af146da4764509c3d713d6e7b08e11c0d654c"
+        },
+        {
+          "page": 3,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=3&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 78,
+          "local_sha256": "2bba9cafa4bc1cd7796de445cc8ec99989c368c4d75eb304d94c373aa4e894cd"
+        },
+        {
+          "page": 4,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=4&ps=100",
+          "source_format": "agent_reach_jina_markdown_fallback",
+          "row_count": 100,
+          "exact_ake_row_count": 79,
+          "local_sha256": "6fcf22b8561386600835c35b6d1affc1d02281c53ec941648ca4d3f3dbe91536",
+          "quick_export_fields_unavailable": true
+        },
+        {
+          "page": 5,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=5&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 82,
+          "local_sha256": "66070c4c9f876491127764f28f14f0361b3c89823cf770c1fd3e5a6f3332134c"
+        },
+        {
+          "page": 6,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=6&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 85,
+          "local_sha256": "f4404dcb2c8e7fc00bb595193488fcdd80490b21de3ad99df4036d672d7b063e"
+        },
+        {
+          "page": 7,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=7&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 79,
+          "local_sha256": "94f4b4e2f066e625cc76c045bcc574da8d6bbc8efa05a437703ad31460124a1a"
+        },
+        {
+          "page": 8,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=8&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 74,
+          "local_sha256": "45b23d84915165616091ee099b05d2552d464a638e4765d672c4f80e4921e814"
+        },
+        {
+          "page": 9,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=9&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 100,
+          "exact_ake_row_count": 62,
+          "local_sha256": "794780a3da1170ed36c0e5738cadd5260a21161d23b967323d4c5d7c19d87c80"
+        },
+        {
+          "page": 10,
+          "source_url": "https://bscscan.com/tokentxns?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=10&ps=100",
+          "source_format": "direct_html_quick_export_plus_exact_contract_links",
+          "row_count": 6,
+          "exact_ake_row_count": 6,
+          "local_sha256": "4f0c6e2a09ab8f9d2f38d28a6ef3cf61c77999c09b8d9a303c78ee9cd4e247dd"
+        }
+      ]
+    },
+    "normal_page_coverage": {
+      "expected_pages": 3,
+      "fetched_pages": 3,
+      "missing_pages": [],
+      "expected_row_count": 139,
+      "fetched_row_count": 139,
+      "pages": [
+        {
+          "page": 1,
+          "source_url": "https://bscscan.com/txs?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=1&ps=50",
+          "row_count": 50,
+          "local_sha256": "f5bffd6e13ec317b151622e01b7301c3c275294ca9b37d5bd6001bb6c0d77dad"
+        },
+        {
+          "page": 2,
+          "source_url": "https://bscscan.com/txs?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=2&ps=50",
+          "row_count": 50,
+          "local_sha256": "baa6975f18e1128e8b6e975c743b6cba5270b4c34338c8c619825547a7f5cf3c"
+        },
+        {
+          "page": 3,
+          "source_url": "https://bscscan.com/txs?a=0x85401508c777321eed3018390408ad0ab2e087e5&p=3&ps=50",
+          "row_count": 39,
+          "local_sha256": "53b9c05364177c3192f76c114f6a4bdf8c0770eb410aa4bc863afea4f8428c6a"
+        }
+      ]
+    },
+    "head_probe": {
+      "block": 110914871,
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current"
+    },
+    "boundary_blocks": {
+      "24h": 108782760,
+      "72h": 109166631
+    },
+    "provider_retry_policy": "maximum three total attempts per uncached RPC call; null result is failure",
+    "internal_native_coverage": "out_of_scope_unresolved"
+  },
+  "token_metadata": {
+    "0x55d398326f99059ff775485246999027b3197955": {
+      "contract": "0x55d398326f99059ff775485246999027b3197955",
+      "decimals": 18,
+      "symbol": "USDT",
+      "decimals_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      },
+      "symbol_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      }
+    },
+    "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": {
+      "contract": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      "decimals": 18,
+      "symbol": "USDC",
+      "decimals_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      },
+      "symbol_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      }
+    },
+    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": {
+      "contract": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "decimals": 18,
+      "symbol": "WBNB",
+      "decimals_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      },
+      "symbol_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current"
+      }
+    }
+  },
+  "confirmed_sell_out": {
+    "state": true,
+    "definition": "same successful receipt has AKE out from target and quote token in to target",
+    "tx_count": 126,
+    "ake_sold_raw": 3334531833000000000000000000,
+    "ake_sold": "3334531833",
+    "first_time_utc": "2026-07-07T11:50:33+00:00",
+    "last_time_utc": "2026-07-07T12:44:22+00:00",
+    "span_seconds": 3229.0,
+    "quote_recovered": {
+      "0x55d398326f99059ff775485246999027b3197955": {
+        "contract": "0x55d398326f99059ff775485246999027b3197955",
+        "decimals": 18,
+        "symbol": "USDT",
+        "decimals_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "symbol_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "role": "primary_stable_quote",
+        "recovered_raw": 654762728839630414058477,
+        "recovered": "654762.728839630414058477"
+      },
+      "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": {
+        "contract": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "decimals": 18,
+        "symbol": "USDC",
+        "decimals_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "symbol_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "role": "stable_dust",
+        "recovered_raw": 13836135160552786937,
+        "recovered": "13.836135160552786937"
+      },
+      "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": {
+        "contract": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "decimals": 18,
+        "symbol": "WBNB",
+        "decimals_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "symbol_provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current"
+        },
+        "role": "native_quote_dust",
+        "recovered_raw": 251911935150942470,
+        "recovered": "0.25191193515094247"
+      }
+    },
+    "true_quote_recipient": "0x85401508c777321eed3018390408ad0ab2e087e5",
+    "all_quote_recipients_match_target": true,
+    "stable_units_per_ake_weighted": "0.00019636236742286663509726164308595460932881128683469971240187587676869540324463293",
+    "stable_units_per_ake_median_tx": "0.0001985521928888073252275",
+    "usd_price": null,
+    "usd_price_gap": "USDT/USDC units are reported on-chain; USD peg and WBNB conversion were not independently priced"
+  },
+  "execution_template": {
+    "transaction_from": {
+      "0x85401508c777321eed3018390408ad0ab2e087e5": 126
+    },
+    "transaction_to": {
+      "0x62ccef0b4545166f721caa9fee13c1d3767e27dc": 126
+    },
+    "method_selectors": {
+      "0xf2c42696": 126
+    },
+    "nonce_min": 1,
+    "nonce_max": 132,
+    "nonce_unique_count": 126,
+    "nonce_contiguous": false,
+    "nonce_strictly_increasing": true,
+    "missing_nonces": [
+      15,
+      16,
+      36,
+      70,
+      75,
+      121
+    ],
+    "intervening_target_transactions": [
+      {
+        "tx_hash": "0x9211fddc784aaf9c983833705142b6fa22bf1742afab274b80d8a52f934f446b",
+        "nonce": 15,
+        "receipt_status": 1,
+        "transaction_to": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "method_selector": "0x095ea7b3"
+      },
+      {
+        "tx_hash": "0x63ba9103a4f57cc195936def555c2e1a913c80124af43861f16c0c17e6e3fa02",
+        "nonce": 16,
+        "receipt_status": 1,
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab"
+      },
+      {
+        "tx_hash": "0xf14f9f07560511a810dd11563bb40f316474960d47ad953baeedeb759049d119",
+        "nonce": 36,
+        "receipt_status": 1,
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab"
+      },
+      {
+        "tx_hash": "0x1fc09375fc799925122c030650f391fdee0dea71dded8a914bc2a786962ed449",
+        "nonce": 70,
+        "receipt_status": 0,
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0xf2c42696"
+      },
+      {
+        "tx_hash": "0x1cde717040f23cc5e497b878f126978bb1c8d3ada152eeb6744944e013f8ac35",
+        "nonce": 75,
+        "receipt_status": 1,
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab"
+      },
+      {
+        "tx_hash": "0xb50df9945587754840f15fa52717dea88438ea3a35bab36e21adeb75efb72917",
+        "nonce": 121,
+        "receipt_status": 1,
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab"
+      }
+    ],
+    "gap_seconds_min": 0.0,
+    "gap_seconds_median": 15.0,
+    "gap_seconds_max": 274.0,
+    "failed_normal_transaction_count": 1,
+    "failed_normal_transaction_hashes": [
+      "0x1fc09375fc799925122c030650f391fdee0dea71dded8a914bc2a786962ed449"
+    ],
+    "coordination_evidence_only": true,
+    "ownership": "unresolved"
+  },
+  "quote_asset_windows": {
+    "24h": {
+      "start_block_inclusive": 108590877,
+      "end_block_exclusive": 108782760,
+      "tokens": {
+        "0x55d398326f99059ff775485246999027b3197955": {
+          "symbol": "USDT",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 654912505667795202899599,
+          "inbound": "654912.505667795202899599",
+          "outbound_raw": 654912504551452698348149,
+          "outbound": "654912.504551452698348149",
+          "net_raw": 1116342504551450,
+          "net": "0.00111634250455145",
+          "ending_balance_raw": 1116342504551450,
+          "ending_balance": "0.00111634250455145",
+          "event_count": 149,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        },
+        "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": {
+          "symbol": "USDC",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 13836135160552786937,
+          "inbound": "13.836135160552786937",
+          "outbound_raw": 13836135160552786937,
+          "outbound": "13.836135160552786937",
+          "net_raw": 0,
+          "net": "0",
+          "ending_balance_raw": 0,
+          "ending_balance": "0",
+          "event_count": 27,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        },
+        "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": {
+          "symbol": "WBNB",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 251911935150942470,
+          "inbound": "0.25191193515094247",
+          "outbound_raw": 251911935150942470,
+          "outbound": "0.25191193515094247",
+          "net_raw": 0,
+          "net": "0",
+          "ending_balance_raw": 0,
+          "ending_balance": "0",
+          "event_count": 52,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        }
+      }
+    },
+    "72h": {
+      "start_block_inclusive": 108590877,
+      "end_block_exclusive": 109166631,
+      "tokens": {
+        "0x55d398326f99059ff775485246999027b3197955": {
+          "symbol": "USDT",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 654912505667795202899599,
+          "inbound": "654912.505667795202899599",
+          "outbound_raw": 654912504551452698348149,
+          "outbound": "654912.504551452698348149",
+          "net_raw": 1116342504551450,
+          "net": "0.00111634250455145",
+          "ending_balance_raw": 1116342504551450,
+          "ending_balance": "0.00111634250455145",
+          "event_count": 149,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        },
+        "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": {
+          "symbol": "USDC",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 13836135160552786937,
+          "inbound": "13.836135160552786937",
+          "outbound_raw": 13836135160552786937,
+          "outbound": "13.836135160552786937",
+          "net_raw": 0,
+          "net": "0",
+          "ending_balance_raw": 0,
+          "ending_balance": "0",
+          "event_count": 27,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        },
+        "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": {
+          "symbol": "WBNB",
+          "decimals": 18,
+          "opening_inventory_raw": 0,
+          "opening_inventory": "0",
+          "inbound_raw": 251911935150942470,
+          "inbound": "0.25191193515094247",
+          "outbound_raw": 251911935150942470,
+          "outbound": "0.25191193515094247",
+          "net_raw": 0,
+          "net": "0",
+          "ending_balance_raw": 0,
+          "ending_balance": "0",
+          "event_count": 52,
+          "balance_reconciles": true,
+          "opening_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          },
+          "ending_balance_provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current"
+          }
+        }
+      }
+    }
+  },
+  "quote_next_hop": {
+    "outbound_event_count": 7,
+    "outbound_to_reviewed_senders": [],
+    "outbound_to_alpha_custody": [],
+    "outbound_to_alpha_router": [],
+    "outbound_to_okx_router": [],
+    "outbound_to_configured_cex": [],
+    "outbound_to_unlabeled": [
+      {
+        "identity": "56:0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c:0x63ba9103a4f57cc195936def555c2e1a913c80124af43861f16c0c17e6e3fa02:106",
+        "token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "symbol": "WBNB",
+        "decimals": 18,
+        "tx_hash": "0x63ba9103a4f57cc195936def555c2e1a913c80124af43861f16c0c17e6e3fa02",
+        "log_index": 106,
+        "block_number": 108591799,
+        "timestamp_utc": "2026-07-07T11:57:27+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "direction": "outbound",
+        "amount_raw": 2000000000000000,
+        "amount": "0.002",
+        "counterparty": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab",
+        "nonce": 16,
+        "all_receipt_transfers": "[{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48\",\"amount_raw\":2000000000000000,\"tx_hash\":\"0x63ba9103a4f57cc195936def555c2e1a913c80124af43861f16c0c17e6e3fa02\",\"log_index\":106,\"block_number\":108591799,\"transaction_index\":22,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c:0xf14f9f07560511a810dd11563bb40f316474960d47ad953baeedeb759049d119:125",
+        "token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "symbol": "WBNB",
+        "decimals": 18,
+        "tx_hash": "0xf14f9f07560511a810dd11563bb40f316474960d47ad953baeedeb759049d119",
+        "log_index": 125,
+        "block_number": 108592616,
+        "timestamp_utc": "2026-07-07T12:03:35+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "direction": "outbound",
+        "amount_raw": 5000000000000000,
+        "amount": "0.005",
+        "counterparty": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab",
+        "nonce": 36,
+        "all_receipt_transfers": "[{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48\",\"amount_raw\":5000000000000000,\"tx_hash\":\"0xf14f9f07560511a810dd11563bb40f316474960d47ad953baeedeb759049d119\",\"log_index\":125,\"block_number\":108592616,\"transaction_index\":31,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c:0x1cde717040f23cc5e497b878f126978bb1c8d3ada152eeb6744944e013f8ac35:101",
+        "token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "symbol": "WBNB",
+        "decimals": 18,
+        "tx_hash": "0x1cde717040f23cc5e497b878f126978bb1c8d3ada152eeb6744944e013f8ac35",
+        "log_index": 101,
+        "block_number": 108594233,
+        "timestamp_utc": "2026-07-07T12:16:00+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "direction": "outbound",
+        "amount_raw": 5000000000000000,
+        "amount": "0.005",
+        "counterparty": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab",
+        "nonce": 75,
+        "all_receipt_transfers": "[{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48\",\"amount_raw\":5000000000000000,\"tx_hash\":\"0x1cde717040f23cc5e497b878f126978bb1c8d3ada152eeb6744944e013f8ac35\",\"log_index\":101,\"block_number\":108594233,\"transaction_index\":29,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c:0xb50df9945587754840f15fa52717dea88438ea3a35bab36e21adeb75efb72917:193",
+        "token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "symbol": "WBNB",
+        "decimals": 18,
+        "tx_hash": "0xb50df9945587754840f15fa52717dea88438ea3a35bab36e21adeb75efb72917",
+        "log_index": 193,
+        "block_number": 108597108,
+        "timestamp_utc": "2026-07-07T12:37:34+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "direction": "outbound",
+        "amount_raw": 5000000000000000,
+        "amount": "0.005",
+        "counterparty": "0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0x01617fab",
+        "nonce": 121,
+        "all_receipt_transfers": "[{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x0b5f474ad0e3f7ef629bd10dbf9e4a8fd60d9a48\",\"amount_raw\":5000000000000000,\"tx_hash\":\"0xb50df9945587754840f15fa52717dea88438ea3a35bab36e21adeb75efb72917\",\"log_index\":193,\"block_number\":108597108,\"transaction_index\":24,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c:0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156:133",
+        "token": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "symbol": "WBNB",
+        "decimals": 18,
+        "tx_hash": "0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156",
+        "log_index": 133,
+        "block_number": 108601242,
+        "timestamp_utc": "2026-07-07T13:08:34+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db",
+        "direction": "outbound",
+        "amount_raw": 234911935150942470,
+        "amount": "0.23491193515094247",
+        "counterparty": "0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0xf2c42696",
+        "nonce": 133,
+        "all_receipt_transfers": "[{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"amount_raw\":234911935150942470,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":133,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"from\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":136112338716905209856,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":135,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"to\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"amount_raw\":234911935150942470,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":137,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"amount_raw\":136112338716905209856,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":139,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x2170ed0880ac9a755fd29b2688956bd959f933f8\",\"from\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":76570064425088530,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":141,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"from\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"to\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"amount_raw\":136112338716905209856,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":143,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x2170ed0880ac9a755fd29b2688956bd959f933f8\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"amount_raw\":76570064425088530,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":146,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":136081470079674524635,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":148,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x2170ed0880ac9a755fd29b2688956bd959f933f8\",\"from\":\"0x33d285926c0d6b35bdf61d04cc77de60ce0bd5db\",\"to\":\"0x76801132a22801640284cd67f7dd41fed2926b6a\",\"amount_raw\":76570064425088530,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":150,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x6ea08ca8f313d860808ef7431fc72c6fbcf4a72d\",\"amount_raw\":136081470079674524,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":153,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"amount_raw\":135945388609594850111,\"tx_hash\":\"0x169c9f1eace16bc407f5ea34be44cef8a75042fd52c3aa06fc43cce971cb0156\",\"log_index\":155,\"block_number\":108601242,\"transaction_index\":32,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d:0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306:373",
+        "token": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "symbol": "USDC",
+        "decimals": 18,
+        "tx_hash": "0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306",
+        "log_index": 373,
+        "block_number": 108601272,
+        "timestamp_utc": "2026-07-07T13:08:48+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0xaa86268030aae432ac471f220080ba3e46b52b43",
+        "direction": "outbound",
+        "amount_raw": 13836135160552786937,
+        "amount": "13.836135160552786937",
+        "counterparty": "0xaa86268030aae432ac471f220080ba3e46b52b43",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "code_present",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "method_selector": "0xf2c42696",
+        "nonce": 135,
+        "all_receipt_transfers": "[{\"token\":\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0xaa86268030aae432ac471f220080ba3e46b52b43\",\"amount_raw\":13836135160552786937,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":373,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"from\":\"0xaa86268030aae432ac471f220080ba3e46b52b43\",\"to\":\"0x238a358808379702088667322f80ac48bad5e6c4\",\"amount_raw\":13836135160552786937,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":376,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d\",\"from\":\"0x238a358808379702088667322f80ac48bad5e6c4\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":13851586379747408481,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":377,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x7a7ad9aa93cd0a2d0255326e5fb145cec14997ff\",\"amount_raw\":13851586379747408481,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":378,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x3d7c319090edf2293608a0f9a786317c66d320f8\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":23866449478344741,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":379,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d\",\"from\":\"0x7a7ad9aa93cd0a2d0255326e5fb145cec14997ff\",\"to\":\"0x3d7c319090edf2293608a0f9a786317c66d320f8\",\"amount_raw\":13851586379747408481,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":380,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x7a7ad9aa93cd0a2d0255326e5fb145cec14997ff\",\"amount_raw\":23866449478344741,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":382,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x172fcd41e0913e95784454622d1c3724f546f849\",\"to\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"amount_raw\":13844167380069509070,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":383,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\",\"from\":\"0x7a7ad9aa93cd0a2d0255326e5fb145cec14997ff\",\"to\":\"0x172fcd41e0913e95784454622d1c3724f546f849\",\"amount_raw\":23866449478344741,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":384,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x6ea08ca8f313d860808ef7431fc72c6fbcf4a72d\",\"amount_raw\":13844167380069509,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":386,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false},{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x62ccef0b4545166f721caa9fee13c1d3767e27dc\",\"to\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"amount_raw\":13830323212689439561,\"tx_hash\":\"0x516d7a507cb0f5242dcfc547ca8649961c5f6a9fe43317ee210a30407e8bb306\",\"log_index\":388,\"block_number\":108601272,\"transaction_index\":94,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      },
+      {
+        "identity": "56:0x55d398326f99059ff775485246999027b3197955:0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194:182",
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "symbol": "USDT",
+        "decimals": 18,
+        "tx_hash": "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194",
+        "log_index": 182,
+        "block_number": 108603203,
+        "timestamp_utc": "2026-07-07T13:23:17+00:00",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+        "direction": "outbound",
+        "amount_raw": 654912504551452698348149,
+        "amount": "654912.504551452698348149",
+        "counterparty": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+        "counterparty_label": "",
+        "counterparty_class": "unlabeled",
+        "counterparty_code_state": "empty",
+        "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+        "method_selector": "0xa9059cbb",
+        "nonce": 136,
+        "all_receipt_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x85401508c777321eed3018390408ad0ab2e087e5\",\"to\":\"0x1929fec1f9553dde93aa9ae57a4e4ac033e75109\",\"amount_raw\":654912504551452698348149,\"tx_hash\":\"0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194\",\"log_index\":182,\"block_number\":108603203,\"transaction_index\":43,\"removed\":false}]",
+        "is_reviewed_sender": false,
+        "is_alpha_custody": false,
+        "is_alpha_router": false,
+        "is_okx_router": false,
+        "is_configured_cex": false,
+        "receipt_success": true
+      }
+    ]
+  },
+  "ledger": {
+    "path": "input/ake_common_receiver_quote_recovery_ledger_2026-07-19.csv",
+    "row_count": 126,
+    "sha256": "90d0b8a999f896fda29eac0dacce5c69d862de51be8cc5e17d91ddb17d113509"
+  },
+  "quote_asset_ledger": {
+    "path": "input/ake_common_receiver_quote_asset_events_2026-07-19.csv",
+    "row_count": 228,
+    "sha256": "6e5d47290b3ba7d0e7a6fd9f2c25622b0d12265ec2d7d987379f30a1030eb385"
+  },
+  "classification_guardrails": {
+    "router_call_alone_is_sell": false,
+    "balance_decline_alone_is_sell": false,
+    "internal_movement_alone_is_sell": false,
+    "ownership": "unresolved",
+    "runtime_effect": "none",
+    "alert_policy": "report_only"
+  },
+  "unresolved": [
+    "USD peg value and WBNB/USD conversion",
+    "official entity mapping for explorer OKX router label",
+    "ownership/common control",
+    "quote assets after 72h",
+    "internal-native traces"
+  ]
+}
