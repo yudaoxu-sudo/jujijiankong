@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "case_id": "ake_proceeds_runtime_gap_analysis_2026_07_20",
+  "generated_at_utc": "2026-07-19T18:17:41.617487+00:00",
+  "builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "continuity_binding": {
+    "expected_git_head": "f4c19929d0f1e39badabc9981c63ccc3bed9d2f1",
+    "verified_by_outer_preflight": true
+  },
+  "source_artifacts": {
+    "input/ake_common_receiver_quote_recovery_2026-07-19.json": "2eb7fb4054a2120eb5d4be2dd40c55060b67cf283dcf7012418e64738fa68d9e",
+    "input/ake_common_receiver_quote_recovery_ledger_2026-07-19.csv": "90d0b8a999f896fda29eac0dacce5c69d862de51be8cc5e17d91ddb17d113509",
+    "input/ake_common_receiver_quote_asset_events_2026-07-19.csv": "6e5d47290b3ba7d0e7a6fd9f2c25622b0d12265ec2d7d987379f30a1030eb385",
+    "cases/2026-07-19_AKE_common_receiver_quote_recovery.md": "be88692946c0b22923847c73a756be8bb4c059354a847d7d9ec466f6fddf5721"
+  },
+  "classification_sources": {
+    "config/global_address_labels.json": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55"
+  },
+  "prior_gap_artifact": "input/ake_common_receiver_monitor_gap_analysis_2026-07-19.json",
+  "new_fixture": {
+    "type": "positive_followup_fixture",
+    "description": "confirmed same-receipt AKE sell batch followed by a direct USDT proceeds transfer and bounded downstream ledger",
+    "supports": [
+      "persisting quote-token proceeds lot after the sell receipt",
+      "separating opening inventory, proceeds lot and later inbound funds under FIFO",
+      "classifying adapter and relay contracts separately from custody or pool addresses"
+    ],
+    "does_not_supply": [
+      "ordinary pooling negative fixture",
+      "custody or internal-routing negative fixture",
+      "no-quote negative fixture",
+      "partial-coverage negative fixture"
+    ]
+  },
+  "matrix": {
+    "single_same_receipt_sell_detection": {
+      "runtime": "present_for_configured_token",
+      "fixture_effect": "additional_positive"
+    },
+    "sender_fan_in_to_common_receiver": {
+      "runtime": "absent",
+      "fixture_effect": "positive_case_only"
+    },
+    "batch_receipt_completeness": {
+      "runtime": "bounded_below_case_size",
+      "fixture_effect": "positive_case_only"
+    },
+    "multi_quote_batch_aggregation": {
+      "runtime": "absent",
+      "fixture_effect": "positive_case_only"
+    },
+    "proceeds_lot_persistence_and_horizon_fifo": {
+      "runtime": "absent",
+      "fixture_effect": "new_positive_followup"
+    },
+    "post_sell_quote_proceeds_disposition": {
+      "runtime": "confirmed_capability_gap",
+      "detail": "token-driven candidate scans do not follow standalone quote-token transfers or attribute opening inventory and FIFO proceeds lots",
+      "fixture_effect": "new_positive_followup"
+    },
+    "adapter_vs_pool_vs_custody_role": {
+      "runtime": "label_dependent_and_incomplete",
+      "fixture_effect": "positive_role_evidence_pending_reusable_positive_and_negative_fixtures"
+    }
+  },
+  "decision": {
+    "runtime_code_change": false,
+    "verifier_guard_change": false,
+    "celue_rule_change": false,
+    "deployment_required": false,
+    "reason": "new positive follow-up evidence improves the gap matrix; negative and incomplete-coverage fixtures remain insufficient for a fail-closed production rule"
+  }
+}

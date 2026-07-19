@@ -1,0 +1,2108 @@
+{
+  "schema_version": 1,
+  "case_id": "ake_usdt_proceeds_next_hop_2026_07_20",
+  "generated_at_utc": "2026-07-19T18:17:41.612269+00:00",
+  "chain_id": 56,
+  "builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "continuity_binding": {
+    "expected_git_head": "f4c19929d0f1e39badabc9981c63ccc3bed9d2f1",
+    "verified_by_outer_preflight": true
+  },
+  "source_artifacts": {
+    "input/ake_common_receiver_quote_recovery_2026-07-19.json": "2eb7fb4054a2120eb5d4be2dd40c55060b67cf283dcf7012418e64738fa68d9e",
+    "input/ake_common_receiver_quote_recovery_ledger_2026-07-19.csv": "90d0b8a999f896fda29eac0dacce5c69d862de51be8cc5e17d91ddb17d113509",
+    "input/ake_common_receiver_quote_asset_events_2026-07-19.csv": "6e5d47290b3ba7d0e7a6fd9f2c25622b0d12265ec2d7d987379f30a1030eb385",
+    "cases/2026-07-19_AKE_common_receiver_quote_recovery.md": "be88692946c0b22923847c73a756be8bb4c059354a847d7d9ec466f6fddf5721"
+  },
+  "classification_sources": {
+    "config/global_address_labels.json": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55"
+  },
+  "usdt_metadata": {
+    "contract": "0x55d398326f99059ff775485246999027b3197955",
+    "decimals": 18,
+    "symbol": "USDT",
+    "decimals_provenance": {
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "3542d0025e38c332bd4621d49202ff91d4f4c60bb624a3ef5a6c9175d0218037",
+      "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+    },
+    "symbol_provenance": {
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "196539339d7cee1493e10a914c83e15c0025be86fd3f9b3ef0fef3f0cc9896e0",
+      "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+    },
+    "fail_closed_metadata_errors": []
+  },
+  "receiver": "0x85401508c777321eed3018390408ad0ab2e087e5",
+  "proceeds_address": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+  "anchor": {
+    "token": "0x55d398326f99059ff775485246999027b3197955",
+    "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+    "to": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+    "amount_raw": 654912504551452698348149,
+    "tx_hash": "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194",
+    "log_index": 182,
+    "block_number": 108603203,
+    "transaction_index": 43,
+    "removed": false,
+    "identity": "56:0x55d398326f99059ff775485246999027b3197955:0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194:182",
+    "timestamp_utc": "2026-07-07T13:23:17+00:00",
+    "receipt_success": true,
+    "transaction_from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+    "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+    "method_selector": "0xa9059cbb",
+    "same_receipt_transfers": [
+      {
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+        "to": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+        "amount_raw": 654912504551452698348149,
+        "tx_hash": "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194",
+        "log_index": 182,
+        "block_number": 108603203,
+        "transaction_index": 43,
+        "removed": false
+      }
+    ],
+    "transaction_provenance": {
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "be646fd50a55493a9ac08a1f0f1321af07e54aff24c58849edab42a39ae6a971",
+      "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+    },
+    "receipt_provenance": {
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "38d8d0e128ac3f2beb09884496e98dccc75867f3edb0cf572c22122ebc9cdb70",
+      "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+    },
+    "receiver_code_state": {
+      "anchor": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "654890b7d767819c47114851261b0f825afc9957ef0f9aac8f6d63d004ab8d26",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "current": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "928b18d5563e53ea3f243039f51921283d8e0355fc2fabea6f4223f8e617379d",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      }
+    },
+    "recipient_code_state": {
+      "anchor_minus_1": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "8bc82b48c7f590aef5a3c696b0b1a792e4c2a6e420c4728ea89c0c409d20c469",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "anchor": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5c5ed2a1e89e4a0069e87e44661734382a4be7d05acd8d49a13e349a693855b3",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "current": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "da60370fa610ef5e5b533c29d033c15fc6d546d92eba72c6bbcc01a6f1862a1a",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      }
+    }
+  },
+  "coverage": {
+    "head_probe": {
+      "block": 110942157,
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "6b90a1db59a8aba0d36b14f5cc4344d1b91be8c5f9bf220675cdc717392f9e66",
+      "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+    },
+    "boundary_blocks": {
+      "24h": 108795122,
+      "72h": 109178992,
+      "7d": 109946811
+    },
+    "logs": {
+      "source_type": "bscscan_public_full_address_token_pages_plus_canonical_receipts",
+      "start_block_inclusive": 108603203,
+      "end_block_exclusive": 109946811,
+      "page_size": 100,
+      "fetched_pages": 2,
+      "missing_pages": [],
+      "terminal_empty_page": 2,
+      "single_data_page_guard_passed": true,
+      "full_address_token_history_row_count": 29,
+      "exact_token_contract_row_count": 24,
+      "exact_token_contract_unique_transaction_count": 24,
+      "receipt_reconstructed_exact_event_count": 24,
+      "excluded_exact_events_outside_requested_range": 0,
+      "canonical_event_count": 24,
+      "canonical_identity_conflict_count": 0,
+      "same_filter_duplicate_count": 0,
+      "direction_overlap_count": 0,
+      "deduplicated_observation_count": 0,
+      "pages": [
+        {
+          "page": 1,
+          "source_url": "https://bscscan.com/tokentxns?a=0x1929fec1f9553dde93aa9ae57a4e4ac033e75109&p=1&ps=100",
+          "row_count": 29,
+          "exact_token_contract_row_count": 24,
+          "html_sha256": "f8fa17abfc84806ab6f3c3c37f1c48d4f7a5b86169a7a25df59acdb864dd84ca",
+          "html_bytes": 282831,
+          "cache_builder_sha256": "34b69ccf0d6b75eea9b92e6a038e9bd0f066c5236cba78e70d5e7846edd1024a",
+          "cache_meta_sha256": "908cc7b58d88e1ac1787731e1e1061bac5936e0362c85657424ac606ed8cbb2e",
+          "cache": "current",
+          "retry_count": 0,
+          "errors_before_success": []
+        },
+        {
+          "page": 2,
+          "source_url": "https://bscscan.com/tokentxns?a=0x1929fec1f9553dde93aa9ae57a4e4ac033e75109&p=2&ps=100",
+          "row_count": 0,
+          "exact_token_contract_row_count": 0,
+          "html_sha256": "73a1755772da1414a494624e4170b914ab9d551dc07e3e0ad8aadee15e305389",
+          "html_bytes": 86467,
+          "cache_builder_sha256": "34b69ccf0d6b75eea9b92e6a038e9bd0f066c5236cba78e70d5e7846edd1024a",
+          "cache_meta_sha256": "caedd996d44277fcb865302b7f4a7960e0f5d5c96063fe1e395863e6370ab4d4",
+          "cache": "current",
+          "retry_count": 0,
+          "errors_before_success": []
+        }
+      ],
+      "index_receipt_provenance": {
+        "0x013d0aa154757bffe25953ec1b0380c66d6866c900055f039edec9d847518d59": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "fd4eebc8b2ed29dd2be4b42fafeebf7e21c15ad1a76bddc60762fd893c06d9d1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x062cbbd36b4c823bdcda72cba82d8ecf16e4f8b1d43ebebc5a33ea0a3995d58c": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a78ead8e44bf0099657bec2c9eb3bb0ac8fb2c8997572912a728e9205adf11ba",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x0f0fd0b7db1824b9c5ac71affc1c18fa719590881d5dffe4722078811f5199b9": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e0cb771932ab8a0233087e85f396574ae747d3b0be4e7e6ef2d265c7e5f01dd5",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x1fcf068c8c7868619de26ea577358844d48008719213e09c39cb337f511f3085": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "0c9c30f4811912bcd422ca2ba48a8d9a9d4f73f1fc9d5f7fbf6e0b25382873b1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x248f3a66fe08d19016fa8fae406fda4969dba89705278477764b9be745657f4a": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d9313099262536190b5b0afdcb75031d0830e58c8ede4edbd6cf869c526aef1b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x30f52651787a0525d004cf06001166807a45fbba298019d4b8e914a1837a32f2": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "82c9a7cf093f6d38a77f6d97eaa55c76a6636bcb6d63a44449fc604710de44eb",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x38eb251a8a5ce3671207b7f12bafaeb112311fe38bc708cd9fc3d0d6beb270a4": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "bb93b131c798da3ba15ff48fdf2bbbb0fc66e83757ac840f9039b6f23fa70533",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x5228550e928ca9e53186e50c01c144a9a2f456e855949027dfab1905243ae1d2": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "ef143372eefd5abbd3b43a3f727d409c7e374d7fe8d4b9d4d5c12cf5fa036d58",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x5f9f4e5a4b77f2dc0a91aedf9db1d659314d5351d6c06da1596098289d6fafe5": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f4395a068533b4baf40bd2ff43149374ee3c2641e5ca8e33794480e00deaa37d",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x89b62892d870480d0102a668f3c77aec37917df7b48cf3dc0c2e90452bb06165": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "8231f0fcbf15f1cef17bd862f9de385f178d0c7c73f117b18673db09f6e99859",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "38d8d0e128ac3f2beb09884496e98dccc75867f3edb0cf572c22122ebc9cdb70",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xa6f46c4490667aaa6fc7b69d893fdb2600a4cab5e968115d94d71f8e93ca0843": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e0e601dd1080968f0db28ce5f3cf26dba4c0ec2bbe09169528a0dd516614c694",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "77eec6cd19ee51d03d4b09db99706c48f9bc67c4806f2994d2322304c07ef5e8",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xb16cf14c7a5348ea2ef2a0793b180f5cd8867ba9c5cdb7ec6b07b26a6f0d71d8": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "204ad4b679959e9139d3595701148e6ec9c95352525722c39d1344d1b7a6720c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xb24df5487e55e7951957eda4f88bfc504e0bafae9c43a656fc2dc9a1b05b18f3": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f479f3287e7bc6b2f10b0d89bd4ab23256dc5cb75dfb7005d1e4487b982a504e",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xbdcca3fb469fdf16b01c00f3d8a80d05021ed151686fe3cecc74a3db86c2e62f": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9ea2bc405816498435f14bff9205fe25a5f40c1a15de255e221bcc3765ba7333",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xcbfe0646360f2ce35a00a22a6da6d796b4f0e7eccf42fcf30f727c46199bc5f4": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "82769c3b99a6c7c330c4fb51921b9fe4f7bbc6336ab1253f7a450ebf33d854ad",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xd067a1ff68b4f48cbf5f643a6a2e49fe85aa2ae814e203ac719f86be62f3b212": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "36cdbe0127e58d050942b742271a6a4458145c355230fb2188dc5e6f34b4b1f2",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xd1ebf69ec4a7928a7db99bc04d4bb96152c3aa210c3fdd7a16745a69631f7296": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d7ec73fdbfef1f5bbba8919626c103eea137c4e48837ba3ab0d3fe0bd65f18ef",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xd7c66182780402496d5f2129219375919cffcafbbc6e537c8dbf808792af232e": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "c63be90d9d37cac23518722a6c575e1739103e4c9d55b542ea2988f253924f44",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xda849e131484bb80d8320f1b536581acbb97eaef2cac6bcc992cb6038d68ef0f": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "61589fd8eb9b4a29eaa1d9c7502a6a985b3ebd21836963d367ff3971f978ad27",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xea3173bb3efef570d884453c437e2e854777ceefe0a164a205b76644f89af5b9": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "da27267d2ad8fa037e1a599f0e5e06ec4b4a9b75e576e1b72445e3fa88a37155",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xedbe7dbdd73f623ed4bd96fd63a2b650a695afe58500b520378e63531646c7c1": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f52e41b6dfc9527ae63f3286be94a67068a09dc69826b3ae0a0c9fb9bb08f2f6",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "0xf69e944b2d31866070fd99dbb33cc4cb09a93e15c714d9830052e02fed090533": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "ec4a239e67d0e4532fe4ecedd4f4ad730f50a690ffe159d83d47d7d8018201fd",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "coverage_complete": true,
+      "validated_stage_reused": false
+    },
+    "unique_transaction_count": 24,
+    "receipt_success_count": 24,
+    "receipt_mismatch_count": 0,
+    "canonical_identity_conflict_count": 0,
+    "same_filter_duplicate_count": 0,
+    "direction_overlap_count": 0,
+    "outbound_public_label_addresses_total": 1,
+    "outbound_public_label_addresses_reviewed": 1,
+    "outbound_public_label_limit": 25,
+    "provider_retry_policy": "maximum three total attempts per uncached RPC or public-page request; null RPC result and empty page are failures",
+    "superseded_query_attempts": [
+      {
+        "stage": "proceeds_usdt_log_scan",
+        "builder_sha256": "cf8fbcdb86d1360c5dda6b02512ec55c41b62e1705c8f14aa7584f7b37045852",
+        "query": {
+          "from_block": 108603203,
+          "to_block_inclusive": 108611202,
+          "direction_filter": "from",
+          "token": "0x55d398326f99059ff775485246999027b3197955",
+          "requested_chunk_size": 8000
+        },
+        "attempts": [
+          {
+            "provider": "https://bsc-dataseed.binance.org",
+            "error_class": "rpc_-32005_limit_exceeded"
+          },
+          {
+            "provider": "https://bsc-pokt.nodies.app",
+            "error_class": "rpc_-32001_maximum_250_blocks"
+          },
+          {
+            "provider": "https://bsc-rpc.publicnode.com",
+            "error_class": "http_403_forbidden"
+          }
+        ],
+        "resolution": "query was not retried; a distinct 4999-block replacement query was attempted once per provider and is recorded separately",
+        "final_coverage_effect": "superseded by complete public-page pagination plus canonical receipt reconstruction only if final coverage checks pass"
+      },
+      {
+        "stage": "proceeds_usdt_log_scan",
+        "builder_sha256": "0c2883b80d84cdab23a0777e26d80913a0f3f2693938795b48a1f54a888f4e97",
+        "query": {
+          "from_block": 108603203,
+          "to_block_inclusive": 108608201,
+          "direction_filter": "from",
+          "token": "0x55d398326f99059ff775485246999027b3197955",
+          "requested_chunk_size": 4999
+        },
+        "attempts": [
+          {
+            "provider": "https://bsc-dataseed.binance.org",
+            "error_class": "rpc_-32005_limit_exceeded"
+          },
+          {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "error_class": "http_400_bad_request"
+          },
+          {
+            "provider": "https://1rpc.io/bnb",
+            "error_class": "rpc_-32602_maximum_50_blocks"
+          }
+        ],
+        "resolution": "query was not retried; target-address USDT coverage switched to complete BscScan public token-page pagination plus exact receipt reconstruction",
+        "final_coverage_effect": "none only if terminal page, exact token-contract row multiplicity, canonical receipts and balance checks pass"
+      }
+    ],
+    "abandoned_public_source_probes": [
+      {
+        "source": "Routescan keyless Etherscan-compatible API",
+        "attempt_count": 1,
+        "result": "chain_id_56_not_supported"
+      },
+      {
+        "source": "BNB SubQuery public RPC",
+        "attempt_count": 2,
+        "result": "connection_reset"
+      },
+      {
+        "source": "dRPC BSC public RPC",
+        "attempt_count": 1,
+        "result": "http_429"
+      },
+      {
+        "source": "BlockPI BSC public RPC",
+        "attempt_count": 1,
+        "result": "http_521"
+      },
+      {
+        "source": "LlamaNodes BSC public RPC",
+        "attempt_count": 1,
+        "result": "connection_reset"
+      }
+    ],
+    "interrupted_builder_runs": [
+      {
+        "builder_sha256": "74374c88b394c266551d3d3c76bacaec8cb4ed5884324fbfd4e17890b0f20a2f",
+        "last_completed_stage": "source_extraction_complete",
+        "reason": "manually interrupted during boundary block lookup after independent audit identified additional fail-closed guards",
+        "project_artifacts_written": false
+      },
+      {
+        "builder_sha256": "34b69ccf0d6b75eea9b92e6a038e9bd0f066c5236cba78e70d5e7846edd1024a",
+        "last_completed_stage": "anchor_and_boundaries_complete",
+        "reason": "BscScan empty terminal page used an empty quick-export string; parser stopped fail-closed before receipt reconstruction",
+        "project_artifacts_written": false
+      },
+      {
+        "builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906",
+        "last_completed_stage": "proceeds_public_labels",
+        "reason": "first 50-block contract activity shard failed at the three-attempt provider limit; broad activity scan was converted to an explicit coverage gap",
+        "project_artifacts_written": false
+      }
+    ],
+    "rpc_provenance_by_transaction": {
+      "0x013d0aa154757bffe25953ec1b0380c66d6866c900055f039edec9d847518d59": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "465b6a9b9a060db1597ceb1233613074f493fe9a90e6f41c8faa8b9a72c72fe3",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "fd4eebc8b2ed29dd2be4b42fafeebf7e21c15ad1a76bddc60762fd893c06d9d1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "dad410f73fda9f0b98ab06e9465dfa4c64cc277fc8c10c34bcd5d50d18e09d05",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5d14d66c6d3619be6e07836410130405c8200f918b7f8b706ac63143c471458a",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x062cbbd36b4c823bdcda72cba82d8ecf16e4f8b1d43ebebc5a33ea0a3995d58c": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d2dbede1bec4b660225460d0f67da0c7d483d045d6735f44d58da532dafb5729",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a78ead8e44bf0099657bec2c9eb3bb0ac8fb2c8997572912a728e9205adf11ba",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a83ac77c11973c3035e9c89ae6de716b2bcb8950066819494249baf5c507987b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "b19a5140f1a0e5cce688a3b59fb80e25b2e1d53662048f7e63e498f8545c3b7b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x0f0fd0b7db1824b9c5ac71affc1c18fa719590881d5dffe4722078811f5199b9": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "35d2aaedf2847a9e34131f521dc3be95fd7c0648afd4feba1b63b7b0c2666a40",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e0cb771932ab8a0233087e85f396574ae747d3b0be4e7e6ef2d265c7e5f01dd5",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "6d04782dc141342924cf1b5d3edb497902c578c49a7e199d4f306d1d1ca7a4a7",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "744d93eb0e44c14a7b080e009a9aefb73b6f28cf4855d08bf2bfc75f0c94cb3f",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x1fcf068c8c7868619de26ea577358844d48008719213e09c39cb337f511f3085": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "07c97cc849f61a794d00742a5b8b8de49757184b07ec52be698b786bc329d6e2",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "0c9c30f4811912bcd422ca2ba48a8d9a9d4f73f1fc9d5f7fbf6e0b25382873b1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "b8d085c774aeac24f4157132ca626741a60d72934eb31213aebc9614fd6b7634",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "102ae500b13f130dc644147ebccb2c63d26e88ab47f319867468c55468ec3e85",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x248f3a66fe08d19016fa8fae406fda4969dba89705278477764b9be745657f4a": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "1cc0b5e3d5e86702ff4a2b49843d1fcbb0fd16e67618f1612e534a4f99d46bf3",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d9313099262536190b5b0afdcb75031d0830e58c8ede4edbd6cf869c526aef1b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "dcdac4d0a4830c1ac5192a1f62d1a2b17368cadc23b724ca208083b47bc36263",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e24c1d6eca705128929b4ee467d11787b2aa2ee0c7b94f30b4f2e5ea0df4c17c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x30f52651787a0525d004cf06001166807a45fbba298019d4b8e914a1837a32f2": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e8d839c6d6840a32eab542f1c855f566b1a51c2abd12ddc69dfce6c5afd4d31f",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "82c9a7cf093f6d38a77f6d97eaa55c76a6636bcb6d63a44449fc604710de44eb",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "98a3e7ea9c55963ed36f633eca5111176d79a98cdfa00f1e1763dbb9c99b1c5d",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "4563c554153505bbbd1d9c125b02b4f5ce45cfea15244f113845d02285e453b5",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x38eb251a8a5ce3671207b7f12bafaeb112311fe38bc708cd9fc3d0d6beb270a4": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d6141d804662f5267902b17a9ffe9ed546a551353da0aa49b839e73cb804b5d7",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "bb93b131c798da3ba15ff48fdf2bbbb0fc66e83757ac840f9039b6f23fa70533",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5a7f1275129dec01f0d190e6b1a95c9397485331c09b2ce64206a760075d58e4",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "3c9a486979dca41a226fdd324bd553b011f689e08d4eddd024b931e053c90f61",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x5228550e928ca9e53186e50c01c144a9a2f456e855949027dfab1905243ae1d2": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "984892687feda60ba44b12ec5c3b7c8aa3d4ae838bcd6221dd1d6b18e6e8ea8b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "ef143372eefd5abbd3b43a3f727d409c7e374d7fe8d4b9d4d5c12cf5fa036d58",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "114662263a704525e60db63748ccfce8aa93f4d502d564fd2ac9f61837170a3c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e90cc7b13f309ece23917e285cb0a2d6d244c015759a05e23b9efc53078b059f",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x5f9f4e5a4b77f2dc0a91aedf9db1d659314d5351d6c06da1596098289d6fafe5": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "4d27054aed5930bdee76172e6ee4e40666c3450bf422c5537b88164ca5e95a70",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f4395a068533b4baf40bd2ff43149374ee3c2641e5ca8e33794480e00deaa37d",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "1e4e2a2688b7738cc3b1761e3c30f1578e5342706fd0bca5ec3a528d0ff318f4",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "731c776db3152bd304b7adf38c82123cdc62d3917a897e9252320ee82dd0450b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x89b62892d870480d0102a668f3c77aec37917df7b48cf3dc0c2e90452bb06165": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "ee6ccdb5ec9611b264091cbebe2c87d8c858aa7f1fbd06abd5ca4a259dfb1f19",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "8231f0fcbf15f1cef17bd862f9de385f178d0c7c73f117b18673db09f6e99859",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e3297f22ee4de9178788a663dcd1b16c1d6786f9f1bfc4525cb027c067bc7388",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e5cb032c9891a822f3bab22c562ced70f4b7e9cf98ee9505c39bae4e63545539",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "be646fd50a55493a9ac08a1f0f1321af07e54aff24c58849edab42a39ae6a971",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "38d8d0e128ac3f2beb09884496e98dccc75867f3edb0cf572c22122ebc9cdb70",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e76a2a48039f79c5beffb5a33a7782625c3d1e1716d78a7027495eea20129157",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a76b14fc323e429bb2667244a5c3c69e2a58db74aab5aec13f66d87b2bd2e630",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xa6f46c4490667aaa6fc7b69d893fdb2600a4cab5e968115d94d71f8e93ca0843": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "87c3134a8cfd4f82cd546159fa65141a80aaa128cfc24c3349a80bd7b30f06bc",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e0e601dd1080968f0db28ce5f3cf26dba4c0ec2bbe09169528a0dd516614c694",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "001390f82e1f7f6851718d8ddc6b2fd876bb7fd3b6e09a9955db707dc4eae103",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "1aec76420950003ffe65dbbd2fe66b44d6d3698082e994c1c9213ef557ee7bed",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "81c8b7cc7935308e7ee1d58fa83e81c071f96c6b1cc94e58239ac957a8de7071",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "77eec6cd19ee51d03d4b09db99706c48f9bc67c4806f2994d2322304c07ef5e8",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "907011ae8e3f2e85197bd4ad2829b8b1c53c7f503550814ea6b46ea96373d446",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "6a2c0dec09f1b28a299653de72c8a350c301e3b07a0aa90f50005db64bac8def",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xb16cf14c7a5348ea2ef2a0793b180f5cd8867ba9c5cdb7ec6b07b26a6f0d71d8": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "42bbddea348ffba3b5f07fa2871c3262286938474397d18ea949f7bcbd9a414c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "204ad4b679959e9139d3595701148e6ec9c95352525722c39d1344d1b7a6720c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5ae4788ea61abe6877f4548fc3ad79a1404244721d99db0263ad4dd069490a1b",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a3f0fd2ab8acdc3cb5b8be689684a573ae37f22719f32fa88ea2cc28b6820a00",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xb24df5487e55e7951957eda4f88bfc504e0bafae9c43a656fc2dc9a1b05b18f3": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "856ba433c3ef00780c42e516bb089ea0fe2904feddffa892be7d78a72c42afc6",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f479f3287e7bc6b2f10b0d89bd4ab23256dc5cb75dfb7005d1e4487b982a504e",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "1cd4f725e4aace75bd07c6bcd97ac844ff39c7f76d266080a7278ba74d7a0a5f",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "34d1c4391f8c1f1778287334e7242ca5a00e4b99cffd09b616ca68ecd2b95a52",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xbdcca3fb469fdf16b01c00f3d8a80d05021ed151686fe3cecc74a3db86c2e62f": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "dcff7c267140f9ce252d9d34f3a157ffc51b1f8e121ffc540e38568c1d987701",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9ea2bc405816498435f14bff9205fe25a5f40c1a15de255e221bcc3765ba7333",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "b655ddae75558a79457991197f1a924b9b90bcf8f7119bb579359102d1729f9e",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "c206055cfaf54d116e33f149aeed78bee2165cb638e710283a269226597957d9",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xcbfe0646360f2ce35a00a22a6da6d796b4f0e7eccf42fcf30f727c46199bc5f4": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "216dfcd34180112be456e171e2e0ca07a968013111830bae5325299504d08b66",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "82769c3b99a6c7c330c4fb51921b9fe4f7bbc6336ab1253f7a450ebf33d854ad",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "89c1755749dd70ef67e7741fb668923b82aca12208ac6a82982534475f4e5e3d",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9feae82126a460012e5ae6fb2a41413b2cdc4016f09940d3034da030cd5a440a",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xd067a1ff68b4f48cbf5f643a6a2e49fe85aa2ae814e203ac719f86be62f3b212": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "143669ab9d45c23097bdbd901c818f6e24f4b3b00744c1df9e21b97997e028db",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "36cdbe0127e58d050942b742271a6a4458145c355230fb2188dc5e6f34b4b1f2",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "038cf39e2d43cf03bce699a7401cb6fb390254c69550e0588682d91aafe21cb2",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "300801ed93d7014950a06d7070b164730d8be98b418ae96ad62f3c1e1620f2d3",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xd1ebf69ec4a7928a7db99bc04d4bb96152c3aa210c3fdd7a16745a69631f7296": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "36cb716c8ed7ed3f35f28ed8cda14c87031ee4f803ce1924eb3e5a342e77f53e",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d7ec73fdbfef1f5bbba8919626c103eea137c4e48837ba3ab0d3fe0bd65f18ef",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "bc7e00aaedaf67590e20dd8d2cea4769d8af1b8ce69718035f0a3f99adb1e523",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "a36c2c8bfe63763334e4d36607f334b9a8a2c3c1e8efb8a6589fed591b274d13",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xd7c66182780402496d5f2129219375919cffcafbbc6e537c8dbf808792af232e": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "47ce42bd76d82adf308028aef6be5ea3bdb018f72ca50429b91d02e6ce8eb2ec",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "c63be90d9d37cac23518722a6c575e1739103e4c9d55b542ea2988f253924f44",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "696967b172ed06ae884b0729e37c484e12b22e113423a7cbf4580ed651b59adb",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "53a2b0f91ed124a0e7c89af6a1d3f216228cfc47940ca644b334d09faa2a2a3a",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xda849e131484bb80d8320f1b536581acbb97eaef2cac6bcc992cb6038d68ef0f": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5e6132a9a43bbb1be397abeaaa8be1034e54a88f806f3fcefa8c38c86c3d8ba1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "61589fd8eb9b4a29eaa1d9c7502a6a985b3ebd21836963d367ff3971f978ad27",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e5fbe3b60eca08ca25d3f531419f5b3130f1998e4e30a200a1e5c86292b2dc65",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "095e01145dc35381bbaf92642fec240d769022618fcea68795ad12ca3126462c",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xea3173bb3efef570d884453c437e2e854777ceefe0a164a205b76644f89af5b9": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "4058add85d3b8b0a51005cc9cae85e27f351c6231dd6a15ca10cc88f794af6e0",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "da27267d2ad8fa037e1a599f0e5e06ec4b4a9b75e576e1b72445e3fa88a37155",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "fea6e0b58e82af3073987ad1d381018ab8b4baf0dfeeb5db9c4d3921db1060cb",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9b280c9748e41fc693faf173a1344998ae76479c4257cde1d1f1c106dd176396",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xedbe7dbdd73f623ed4bd96fd63a2b650a695afe58500b520378e63531646c7c1": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e20e5a9f3f2c146adae4c01ba6ab48e083412fb2c314fb708833ad317d8e3ac3",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f52e41b6dfc9527ae63f3286be94a67068a09dc69826b3ae0a0c9fb9bb08f2f6",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e60b6d6052c4d686af87ab215c233bef8f2cc59308720f7146c73ddfd5e42032",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "31d0dc2727adb3cc342bb143727b08729079641a8282769d71557f2c10e0fdf4",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      },
+      "0xf69e944b2d31866070fd99dbb33cc4cb09a93e15c714d9830052e02fed090533": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "642e90675fbdcd1e77057a6c981cf6f7dfc89cc063ac2ca8916267f854699c23",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "ec4a239e67d0e4532fe4ecedd4f4ad730f50a690ffe159d83d47d7d8018201fd",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "2bdf5ba996266ae92bce559020ea26494e97793ef8699267e177c082e91667b8",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "3c8756971c0803ea6aaa10fa18e82f09132370051a379dafcba3224e7dad06f1",
+          "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+        }
+      }
+    },
+    "coverage_gaps": []
+  },
+  "windows": {
+    "24h": {
+      "start_block_inclusive": 108603203,
+      "end_block_exclusive": 108795122,
+      "opening_inventory_raw": 0,
+      "opening_inventory_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 654912505798777703809349,
+      "inbound_usdt": "654912.505798777703809349",
+      "outbound_raw": 654912504551000000000000,
+      "outbound_usdt": "654912.504551",
+      "net_raw": 1247777703809349,
+      "net_usdt": "0.001247777703809349",
+      "ending_balance_raw": 1247777703809349,
+      "ending_balance_usdt": "0.001247777703809349",
+      "event_count": 24,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "8a5db3f72df10d62de522aaeee9ff8e6b901e92f5458b824e293a6e50c6e7023",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "139b2f4e87d75a52004715e8d0e9ec9805e9c1f27cf251754276f7da55b4007a",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "fifo": {
+        "end_block_exclusive": 108795122,
+        "event_count": 24,
+        "inbound_raw": 654912505798777703809349,
+        "outbound_raw": 654912504551000000000000,
+        "net_raw": 1247777703809349,
+        "proceeds_lot_initial_raw": 654912504551452698348149,
+        "proceeds_lot_consumed_raw": 654912504551000000000000,
+        "proceeds_lot_remaining_raw": 452698348149,
+        "proceeds_lot_retention_ratio": "6.91234851988437032008008525381810356784153014925310270714509513677175868208904580295678765E-13",
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "initial_raw": 0,
+            "remaining_raw": 0,
+            "origin": "pre_anchor_ownership_unknown"
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "initial_raw": 654912504551452698348149,
+            "remaining_raw": 452698348149,
+            "origin": "anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x0f0fd0b7db1824b9c5ac71affc1c18fa719590881d5dffe4722078811f5199b9:381",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xf69e944b2d31866070fd99dbb33cc4cb09a93e15c714d9830052e02fed090533:560",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5f9f4e5a4b77f2dc0a91aedf9db1d659314d5351d6c06da1596098289d6fafe5:704",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xcbfe0646360f2ce35a00a22a6da6d796b4f0e7eccf42fcf30f727c46199bc5f4:466",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd7c66182780402496d5f2129219375919cffcafbbc6e537c8dbf808792af232e:523",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5228550e928ca9e53186e50c01c144a9a2f456e855949027dfab1905243ae1d2:592",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb24df5487e55e7951957eda4f88bfc504e0bafae9c43a656fc2dc9a1b05b18f3:389",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd1ebf69ec4a7928a7db99bc04d4bb96152c3aa210c3fdd7a16745a69631f7296:536",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb16cf14c7a5348ea2ef2a0793b180f5cd8867ba9c5cdb7ec6b07b26a6f0d71d8:560",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xa6f46c4490667aaa6fc7b69d893fdb2600a4cab5e968115d94d71f8e93ca0843:389",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x062cbbd36b4c823bdcda72cba82d8ecf16e4f8b1d43ebebc5a33ea0a3995d58c:448",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x38eb251a8a5ce3671207b7f12bafaeb112311fe38bc708cd9fc3d0d6beb270a4:238",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x1fcf068c8c7868619de26ea577358844d48008719213e09c39cb337f511f3085:374",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x013d0aa154757bffe25953ec1b0380c66d6866c900055f039edec9d847518d59:534",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x248f3a66fe08d19016fa8fae406fda4969dba89705278477764b9be745657f4a:211",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xedbe7dbdd73f623ed4bd96fd63a2b650a695afe58500b520378e63531646c7c1:321",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xbdcca3fb469fdf16b01c00f3d8a80d05021ed151686fe3cecc74a3db86c2e62f:238",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd067a1ff68b4f48cbf5f643a6a2e49fe85aa2ae814e203ac719f86be62f3b212:168",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x30f52651787a0525d004cf06001166807a45fbba298019d4b8e914a1837a32f2:332",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xea3173bb3efef570d884453c437e2e854777ceefe0a164a205b76644f89af5b9:288",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x89b62892d870480d0102a668f3c77aec37917df7b48cf3dc0c2e90452bb06165:227",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xda849e131484bb80d8320f1b536581acbb97eaef2cac6bcc992cb6038d68ef0f:264",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          }
+        ]
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 452698348149,
+        "later_remaining_raw": 1247325005461200,
+        "total_remaining_raw": 1247777703809349
+      }
+    },
+    "72h": {
+      "start_block_inclusive": 108603203,
+      "end_block_exclusive": 109178992,
+      "opening_inventory_raw": 0,
+      "opening_inventory_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 654912505798777703809349,
+      "inbound_usdt": "654912.505798777703809349",
+      "outbound_raw": 654912504551000000000000,
+      "outbound_usdt": "654912.504551",
+      "net_raw": 1247777703809349,
+      "net_usdt": "0.001247777703809349",
+      "ending_balance_raw": 1247777703809349,
+      "ending_balance_usdt": "0.001247777703809349",
+      "event_count": 24,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "8a5db3f72df10d62de522aaeee9ff8e6b901e92f5458b824e293a6e50c6e7023",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "7ec493244c3eda52aa6768b3b4b764433b0c376185ba1d73d60b97eda2fc5c12",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "fifo": {
+        "end_block_exclusive": 109178992,
+        "event_count": 24,
+        "inbound_raw": 654912505798777703809349,
+        "outbound_raw": 654912504551000000000000,
+        "net_raw": 1247777703809349,
+        "proceeds_lot_initial_raw": 654912504551452698348149,
+        "proceeds_lot_consumed_raw": 654912504551000000000000,
+        "proceeds_lot_remaining_raw": 452698348149,
+        "proceeds_lot_retention_ratio": "6.91234851988437032008008525381810356784153014925310270714509513677175868208904580295678765E-13",
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "initial_raw": 0,
+            "remaining_raw": 0,
+            "origin": "pre_anchor_ownership_unknown"
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "initial_raw": 654912504551452698348149,
+            "remaining_raw": 452698348149,
+            "origin": "anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x0f0fd0b7db1824b9c5ac71affc1c18fa719590881d5dffe4722078811f5199b9:381",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xf69e944b2d31866070fd99dbb33cc4cb09a93e15c714d9830052e02fed090533:560",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5f9f4e5a4b77f2dc0a91aedf9db1d659314d5351d6c06da1596098289d6fafe5:704",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xcbfe0646360f2ce35a00a22a6da6d796b4f0e7eccf42fcf30f727c46199bc5f4:466",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd7c66182780402496d5f2129219375919cffcafbbc6e537c8dbf808792af232e:523",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5228550e928ca9e53186e50c01c144a9a2f456e855949027dfab1905243ae1d2:592",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb24df5487e55e7951957eda4f88bfc504e0bafae9c43a656fc2dc9a1b05b18f3:389",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd1ebf69ec4a7928a7db99bc04d4bb96152c3aa210c3fdd7a16745a69631f7296:536",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb16cf14c7a5348ea2ef2a0793b180f5cd8867ba9c5cdb7ec6b07b26a6f0d71d8:560",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xa6f46c4490667aaa6fc7b69d893fdb2600a4cab5e968115d94d71f8e93ca0843:389",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x062cbbd36b4c823bdcda72cba82d8ecf16e4f8b1d43ebebc5a33ea0a3995d58c:448",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x38eb251a8a5ce3671207b7f12bafaeb112311fe38bc708cd9fc3d0d6beb270a4:238",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x1fcf068c8c7868619de26ea577358844d48008719213e09c39cb337f511f3085:374",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x013d0aa154757bffe25953ec1b0380c66d6866c900055f039edec9d847518d59:534",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x248f3a66fe08d19016fa8fae406fda4969dba89705278477764b9be745657f4a:211",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xedbe7dbdd73f623ed4bd96fd63a2b650a695afe58500b520378e63531646c7c1:321",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xbdcca3fb469fdf16b01c00f3d8a80d05021ed151686fe3cecc74a3db86c2e62f:238",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd067a1ff68b4f48cbf5f643a6a2e49fe85aa2ae814e203ac719f86be62f3b212:168",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x30f52651787a0525d004cf06001166807a45fbba298019d4b8e914a1837a32f2:332",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xea3173bb3efef570d884453c437e2e854777ceefe0a164a205b76644f89af5b9:288",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x89b62892d870480d0102a668f3c77aec37917df7b48cf3dc0c2e90452bb06165:227",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xda849e131484bb80d8320f1b536581acbb97eaef2cac6bcc992cb6038d68ef0f:264",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          }
+        ]
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 452698348149,
+        "later_remaining_raw": 1247325005461200,
+        "total_remaining_raw": 1247777703809349
+      }
+    },
+    "7d": {
+      "start_block_inclusive": 108603203,
+      "end_block_exclusive": 109946811,
+      "opening_inventory_raw": 0,
+      "opening_inventory_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 654912505798777703809349,
+      "inbound_usdt": "654912.505798777703809349",
+      "outbound_raw": 654912504551000000000000,
+      "outbound_usdt": "654912.504551",
+      "net_raw": 1247777703809349,
+      "net_usdt": "0.001247777703809349",
+      "ending_balance_raw": 1247777703809349,
+      "ending_balance_usdt": "0.001247777703809349",
+      "event_count": 24,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "8a5db3f72df10d62de522aaeee9ff8e6b901e92f5458b824e293a6e50c6e7023",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "d96a8fe353988a679bd64f3ac404d8afd7939f4afaf7eb9d8ade9b1205854fc4",
+        "cache_builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906"
+      },
+      "fifo": {
+        "end_block_exclusive": 109946811,
+        "event_count": 24,
+        "inbound_raw": 654912505798777703809349,
+        "outbound_raw": 654912504551000000000000,
+        "net_raw": 1247777703809349,
+        "proceeds_lot_initial_raw": 654912504551452698348149,
+        "proceeds_lot_consumed_raw": 654912504551000000000000,
+        "proceeds_lot_remaining_raw": 452698348149,
+        "proceeds_lot_retention_ratio": "6.91234851988437032008008525381810356784153014925310270714509513677175868208904580295678765E-13",
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "initial_raw": 0,
+            "remaining_raw": 0,
+            "origin": "pre_anchor_ownership_unknown"
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "initial_raw": 654912504551452698348149,
+            "remaining_raw": 452698348149,
+            "origin": "anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x0f0fd0b7db1824b9c5ac71affc1c18fa719590881d5dffe4722078811f5199b9:381",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xf69e944b2d31866070fd99dbb33cc4cb09a93e15c714d9830052e02fed090533:560",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5f9f4e5a4b77f2dc0a91aedf9db1d659314d5351d6c06da1596098289d6fafe5:704",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xcbfe0646360f2ce35a00a22a6da6d796b4f0e7eccf42fcf30f727c46199bc5f4:466",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd7c66182780402496d5f2129219375919cffcafbbc6e537c8dbf808792af232e:523",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x5228550e928ca9e53186e50c01c144a9a2f456e855949027dfab1905243ae1d2:592",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb24df5487e55e7951957eda4f88bfc504e0bafae9c43a656fc2dc9a1b05b18f3:389",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd1ebf69ec4a7928a7db99bc04d4bb96152c3aa210c3fdd7a16745a69631f7296:536",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xb16cf14c7a5348ea2ef2a0793b180f5cd8867ba9c5cdb7ec6b07b26a6f0d71d8:560",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xa6f46c4490667aaa6fc7b69d893fdb2600a4cab5e968115d94d71f8e93ca0843:389",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x062cbbd36b4c823bdcda72cba82d8ecf16e4f8b1d43ebebc5a33ea0a3995d58c:448",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x38eb251a8a5ce3671207b7f12bafaeb112311fe38bc708cd9fc3d0d6beb270a4:238",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x1fcf068c8c7868619de26ea577358844d48008719213e09c39cb337f511f3085:374",
+            "initial_raw": 1000000000000,
+            "remaining_raw": 1000000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x013d0aa154757bffe25953ec1b0380c66d6866c900055f039edec9d847518d59:534",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x248f3a66fe08d19016fa8fae406fda4969dba89705278477764b9be745657f4a:211",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xedbe7dbdd73f623ed4bd96fd63a2b650a695afe58500b520378e63531646c7c1:321",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xbdcca3fb469fdf16b01c00f3d8a80d05021ed151686fe3cecc74a3db86c2e62f:238",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd067a1ff68b4f48cbf5f643a6a2e49fe85aa2ae814e203ac719f86be62f3b212:168",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x30f52651787a0525d004cf06001166807a45fbba298019d4b8e914a1837a32f2:332",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xea3173bb3efef570d884453c437e2e854777ceefe0a164a205b76644f89af5b9:288",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0x89b62892d870480d0102a668f3c77aec37917df7b48cf3dc0c2e90452bb06165:227",
+            "initial_raw": 65490000000000,
+            "remaining_raw": 65490000000000,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xda849e131484bb80d8320f1b536581acbb97eaef2cac6bcc992cb6038d68ef0f:264",
+            "initial_raw": 65491250455100,
+            "remaining_raw": 65491250455100,
+            "origin": "post_anchor_or_same_block_non_anchor"
+          }
+        ]
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 452698348149,
+        "later_remaining_raw": 1247325005461200,
+        "total_remaining_raw": 1247777703809349
+      }
+    }
+  },
+  "first_outbound": {
+    "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3:266",
+    "token": "0x55d398326f99059ff775485246999027b3197955",
+    "symbol": "USDT",
+    "decimals": 18,
+    "tx_hash": "0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3",
+    "log_index": 266,
+    "block_number": 108634007,
+    "transaction_index": 93,
+    "timestamp_utc": "2026-07-07T17:14:29+00:00",
+    "from": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+    "to": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+    "direction": "outbound",
+    "amount_raw": 654912504551000000000000,
+    "amount_usdt": "654912.504551",
+    "counterparty": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+    "counterparty_label": "",
+    "counterparty_class": "unlabeled_eoa",
+    "label_source": "onchain_code_state_and_absent_reviewed_label",
+    "label_confidence": "high_for_code_state_only",
+    "counterparty_historical_code_state": "empty",
+    "counterparty_current_code_state": "empty",
+    "transaction_from": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+    "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+    "method_selector": "0xa9059cbb",
+    "nonce": 0,
+    "receipt_success": true,
+    "same_receipt_quote_in": "[]",
+    "same_receipt_quote_net": "[]",
+    "explicit_swap_guard_passed": false,
+    "explicit_swap_guard_details": "{\"tx_from_is_proceeds_address\":true,\"route_target_has_historical_code\":true,\"selector_is_non_transfer\":false,\"quote_net_positive\":false,\"quote_metadata_complete\":false,\"quote_metadata_exact_and_code_present\":false,\"quote_tokens_allowlisted\":false,\"allowlisted_quote_tokens\":[\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\"],\"non_allowlisted_quote_requires_trace_and_remains_incomplete\":true}",
+    "same_receipt_all_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x1929fec1f9553dde93aa9ae57a4e4ac033e75109\",\"to\":\"0xb8210c25df20921538ea35729badc3e0a63520f1\",\"amount_raw\":654912504551000000000000,\"tx_hash\":\"0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3\",\"log_index\":266,\"block_number\":108634007,\"transaction_index\":93,\"removed\":false}]",
+    "path_classification": "outbound_unlabeled_eoa",
+    "is_anchor": false,
+    "seconds_after_anchor": 13872
+  },
+  "major_counterparties": [
+    {
+      "direction": "inbound",
+      "counterparty": "0x85401508c777321eed3018390408ad0ab2e087e5",
+      "counterparty_class": "unlabeled_eoa",
+      "event_count": 1,
+      "amount_raw": 654912504551452698348149,
+      "amount_usdt": "654912.504551452698348149"
+    },
+    {
+      "direction": "outbound",
+      "counterparty": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "counterparty_class": "unlabeled_eoa",
+      "event_count": 1,
+      "amount_raw": 654912504551000000000000,
+      "amount_usdt": "654912.504551"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0xb821cc6ff0ce00fc342ee63a67e3f0ef326520f1",
+      "counterparty_class": "unlabeled_contract",
+      "event_count": 12,
+      "amount_raw": 785895005461200,
+      "amount_usdt": "0.0007858950054612"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0xb8215c9c8a4f754a84c1ad858a1f2281f30520f1",
+      "counterparty_class": "unlabeled_contract",
+      "event_count": 7,
+      "amount_raw": 458430000000000,
+      "amount_usdt": "0.00045843"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0xb821dcbe37694beda817dab8e517f4a3210500f1",
+      "counterparty_class": "unlabeled_contract",
+      "event_count": 2,
+      "amount_raw": 2000000000000,
+      "amount_usdt": "0.000002"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0xbec9c161c65788c9c4cf10dd97eb9e54573520f1",
+      "counterparty_class": "unlabeled_contract",
+      "event_count": 1,
+      "amount_raw": 1000000000000,
+      "amount_usdt": "0.000001"
+    }
+  ],
+  "outbound_paths": [
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3:266",
+      "token": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "decimals": 18,
+      "tx_hash": "0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3",
+      "log_index": 266,
+      "block_number": 108634007,
+      "transaction_index": 93,
+      "timestamp_utc": "2026-07-07T17:14:29+00:00",
+      "from": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+      "to": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "direction": "outbound",
+      "amount_raw": 654912504551000000000000,
+      "amount_usdt": "654912.504551",
+      "counterparty": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "counterparty_label": "",
+      "counterparty_class": "unlabeled_eoa",
+      "label_source": "onchain_code_state_and_absent_reviewed_label",
+      "label_confidence": "high_for_code_state_only",
+      "counterparty_historical_code_state": "empty",
+      "counterparty_current_code_state": "empty",
+      "transaction_from": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+      "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+      "method_selector": "0xa9059cbb",
+      "nonce": 0,
+      "receipt_success": true,
+      "same_receipt_quote_in": "[]",
+      "same_receipt_quote_net": "[]",
+      "explicit_swap_guard_passed": false,
+      "explicit_swap_guard_details": "{\"tx_from_is_proceeds_address\":true,\"route_target_has_historical_code\":true,\"selector_is_non_transfer\":false,\"quote_net_positive\":false,\"quote_metadata_complete\":false,\"quote_metadata_exact_and_code_present\":false,\"quote_tokens_allowlisted\":false,\"allowlisted_quote_tokens\":[\"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d\",\"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c\"],\"non_allowlisted_quote_requires_trace_and_remains_incomplete\":true}",
+      "same_receipt_all_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x1929fec1f9553dde93aa9ae57a4e4ac033e75109\",\"to\":\"0xb8210c25df20921538ea35729badc3e0a63520f1\",\"amount_raw\":654912504551000000000000,\"tx_hash\":\"0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3\",\"log_index\":266,\"block_number\":108634007,\"transaction_index\":93,\"removed\":false}]",
+      "path_classification": "outbound_unlabeled_eoa",
+      "is_anchor": false
+    }
+  ],
+  "same_receipt_non_usdt_token_metadata": {},
+  "public_counterparty_labels": {
+    "0xb8210c25df20921538ea35729badc3e0a63520f1": {
+      "url": "https://bscscan.com/address/0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "available": true,
+      "public_name": null,
+      "title": "Address: 0xb8210c25...0a63520f1 | BscScan",
+      "heading": null,
+      "page_provenance": {
+        "schema_version": 2,
+        "builder_sha256": "d0b8a4b4d71559ba47e28363e3d038235969c5d0893fcecd163daa57c213c906",
+        "source_url": "https://bscscan.com/address/0xb8210c25df20921538ea35729badc3e0a63520f1",
+        "reader_url": "https://r.jina.ai/https://bscscan.com/address/0xb8210c25df20921538ea35729badc3e0a63520f1",
+        "sha256": "b7004ee7b4cb08e79c85b633b3b775fb4a978ebb6cd3577a9df5e820733eaff8",
+        "bytes": 30636,
+        "errors_before_success": [],
+        "fetched_at_utc": "2026-07-19T17:52:52.121856+00:00",
+        "cache": "current",
+        "cache_meta_sha256": "bf648f5f281c6f2e7f281b8fbe4af78a0c4b5ea9d0696e97324c1265e50497a2"
+      }
+    }
+  },
+  "disposition": {
+    "confirmed_sell_out_remains_true": true,
+    "proceeds_disposition_known": false,
+    "state": "partially_retained_or_mixed",
+    "ownership": "unresolved",
+    "common_control": "unresolved",
+    "ultimate_beneficiary": "unresolved",
+    "balance_decline_alone_is_cash_out": false
+  },
+  "ledger": {
+    "path": "input/ake_usdt_proceeds_events_2026-07-20.csv",
+    "row_count": 24,
+    "sha256": "658e254a3792309788a7260966f67cc9ec4fc506e56350ac909c1d0fc1cae81b"
+  }
+}

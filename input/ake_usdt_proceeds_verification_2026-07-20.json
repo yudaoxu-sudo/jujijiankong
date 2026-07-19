@@ -1,0 +1,48 @@
+{
+  "status": "pass_with_coverage_gaps",
+  "generated_at_utc": "2026-07-19T18:17:41.617880+00:00",
+  "builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "source_artifacts": {
+    "input/ake_common_receiver_quote_recovery_2026-07-19.json": "2eb7fb4054a2120eb5d4be2dd40c55060b67cf283dcf7012418e64738fa68d9e",
+    "input/ake_common_receiver_quote_recovery_ledger_2026-07-19.csv": "90d0b8a999f896fda29eac0dacce5c69d862de51be8cc5e17d91ddb17d113509",
+    "input/ake_common_receiver_quote_asset_events_2026-07-19.csv": "6e5d47290b3ba7d0e7a6fd9f2c25622b0d12265ec2d7d987379f30a1030eb385",
+    "cases/2026-07-19_AKE_common_receiver_quote_recovery.md": "be88692946c0b22923847c73a756be8bb4c059354a847d7d9ec466f6fddf5721"
+  },
+  "classification_sources": {
+    "config/global_address_labels.json": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55"
+  },
+  "checks": {
+    "source_addresses_cross_checked": true,
+    "source_hashes_match_fixed_expected": true,
+    "classification_labels_hash_matches_fixed_expected": true,
+    "anchor_receipt_success": true,
+    "anchor_identity_exact": true,
+    "anchor_usdt_metadata": true,
+    "proceeds_source_coverage_complete": true,
+    "proceeds_canonical_unique": true,
+    "proceeds_receipts_all_success": true,
+    "balance_anchors_reconcile": true,
+    "fifo_independent_replay_matches": true,
+    "fifo_no_later_funds_backflow": true,
+    "swap_upgrades_require_explicit_guard": true,
+    "contract_count": true,
+    "contract_anchor_receipts": true,
+    "contract_anchor_scope_receipts": true,
+    "contract_broad_activity_gap_recorded": true,
+    "runtime_change_false": true,
+    "deployment_false": true
+  },
+  "counts": {
+    "proceeds_events": 24,
+    "proceeds_unique_transactions": 24,
+    "contract_reviews": 3,
+    "contract_anchor_receipts": 6
+  },
+  "artifact_hashes": {
+    "input/ake_usdt_proceeds_next_hop_2026-07-20.json": "10c2dba7000a1cc3603f231ab56913202c26c37c2807761b260c75b2def1e096",
+    "input/ake_usdt_proceeds_events_2026-07-20.csv": "658e254a3792309788a7260966f67cc9ec4fc506e56350ac909c1d0fc1cae81b",
+    "input/ake_quote_route_contract_roles_2026-07-20.json": "10f95a8f5f060b74057613304d90f38a09a23909febe627dea67ea0dc4ed77c1",
+    "input/ake_proceeds_runtime_gap_analysis_2026-07-20.json": "85cae86dc1be4b533c513dd5847728606db8ab1693f7d62fb8fd70dd7f14193c",
+    "cases/2026-07-20_AKE_USDT_proceeds_and_quote_route_contracts.md": "b63ab0da18d6afe96bb64570e13be8805cee5a38e15339e1280c3673f96810c1"
+  }
+}
