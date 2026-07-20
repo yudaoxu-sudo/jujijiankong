@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "case_id": "AKE_USDT_SECOND_HOP_RUNTIME_GAP_2026-07-20",
+  "generated_at_utc": "2026-07-20T00:50:38.935097+00:00",
+  "builder_sha256": "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942",
+  "decision": "evidence_only_no_runtime_or_verifier_change",
+  "positive_fixtures": [
+    {
+      "id": "sender_fan_in_common_receiver_confirmed_quote_recovery",
+      "source": "prior tracked AKE quote-recovery artifacts",
+      "coverage": "complete"
+    },
+    {
+      "id": "proceeds_lot_second_hop_split_to_three_unlabeled_eoas",
+      "source": "input/ake_usdt_second_hop_2026-07-20.json",
+      "coverage": "complete_through_one_layer_and_7d"
+    }
+  ],
+  "negative_fixtures": [
+    {
+      "id": "pure_transfer_no_same_receipt_quote",
+      "count": 4,
+      "guard": "must remain path-only and must not become confirmed swap"
+    },
+    {
+      "id": "dust_events_in_balance_fifo",
+      "count": 84,
+      "guard": "must not backflow into proceeds attribution or common-control inference"
+    },
+    {
+      "id": "direct_native_gas_activation",
+      "count": 6,
+      "guard": "must stay distinct from ERC20 quote recovery and internal-native"
+    }
+  ],
+  "partial_coverage_fixtures": [
+    {
+      "id": "internal_native_unavailable",
+      "guard": "report gap and residual; do not infer hidden value path"
+    },
+    {
+      "id": "one_unlabeled_eoa_layer_stop",
+      "guard": "do not recurse to a third unlabeled EOA"
+    }
+  ],
+  "why_no_code_change": [
+    "the observed path is preserved by the current path and FIFO evidence model",
+    "a pure transfer without same-receipt quote recovery remains correctly unconfirmed",
+    "runtime still lacks balanced fixtures for labeled venue closure, opening inventory above zero, multiple proceeds lots, failed or reorged events, and complete versus partial native trace coverage"
+  ],
+  "fixtures_still_required": [
+    "b821-like proceeds path ending at a high-confidence CEX address",
+    "b821-like same-receipt USDT-out plus quote-in DEX swap",
+    "explicit bridge and custody closures",
+    "opening inventory greater than zero with multiple proceeds lots",
+    "failed, removed, reorged, metadata-incomplete and page-partial observations",
+    "paired direct-native and complete internal-native trace fixtures"
+  ],
+  "deployment_required": false
+}

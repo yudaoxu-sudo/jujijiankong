@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "case_id": "AKE_USDT_SECOND_HOP_VERIFICATION_2026-07-20",
+  "generated_at_utc": "2026-07-20T00:50:38.980881+00:00",
+  "builder_sha256": "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942",
+  "utility_builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "raw_cache_compatible_builder_sha256": [
+    "31ff4ee89da91b4e457329e33d8c92e1611e478c7a07f1d664c8b6ea7a0645cc",
+    "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942"
+  ],
+  "source_hashes": {
+    "input/ake_usdt_proceeds_next_hop_2026-07-20.json": "10c2dba7000a1cc3603f231ab56913202c26c37c2807761b260c75b2def1e096",
+    "input/ake_usdt_proceeds_events_2026-07-20.csv": "658e254a3792309788a7260966f67cc9ec4fc506e56350ac909c1d0fc1cae81b",
+    "cases/2026-07-20_AKE_USDT_proceeds_and_quote_route_contracts.md": "b63ab0da18d6afe96bb64570e13be8805cee5a38e15339e1280c3673f96810c1"
+  },
+  "labels_sha256": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55",
+  "expected_git_head": "b178f1a18ea32dd04455fd2ba2c17b02d6e11644",
+  "artifact_hashes": {
+    "input/ake_usdt_second_hop_2026-07-20.json": "ba0292979a47b3f53a19e3b0f5569b5a5bc07dc203aee9400611c27088d792e2",
+    "input/ake_usdt_second_hop_ledger_2026-07-20.csv": "89662637ae4cca6a2084b4cf68a07dc0b1c1689f9f6b93a71d80b921811f6a78",
+    "input/ake_usdt_second_hop_dust_native_2026-07-20.json": "a5c16f3af9d8095ca097dd5bffe7b62c37eb023ee011b529280badaf79519332",
+    "input/ake_usdt_second_hop_runtime_gap_2026-07-20.json": "c94540a04ffe1c66dd73ba6eea439827c1638f7e9f4a2c423493886b794cfd0b",
+    "cases/2026-07-20_AKE_USDT_second_hop.md": "c3c85e779ab310b81d871b5829e31b92348c09308afddffd3c45e5cf3bc7de46"
+  },
+  "guards": {
+    "source_hashes_match": true,
+    "outer_preflight_git_head_matches": true,
+    "anchor_json_csv_case_cross_check": true,
+    "anchor_receipt_and_log_identity": true,
+    "receipt_success_all": true,
+    "receipt_mismatch_count": 0,
+    "canonical_identity_unique": true,
+    "usdt_metadata_and_code": true,
+    "single_short_token_page_then_empty": true,
+    "missing_token_pages": [],
+    "all_usdt_windows_balance_reconcile": true,
+    "dual_fifo_replay_matches": true,
+    "target_code_empty_at_all_anchors": true,
+    "required_current_endpoint_code_empty_supplemental": true,
+    "direct_native_page_coverage_complete": true,
+    "direct_native_7d_reconciles": true,
+    "same_receipt_swap_guard_count": 0,
+    "third_unlabeled_eoa_recursion_performed": false,
+    "runtime_or_verifier_changed": false,
+    "deployment_required": false
+  },
+  "coverage_gaps": [
+    "internal-native trace coverage unavailable through bounded standard public RPC",
+    "one-layer stop prevents recursion beyond the three newly observed unlabeled EOAs",
+    "public explorer names are snapshots and do not establish ownership"
+  ],
+  "result": "PASS"
+}
