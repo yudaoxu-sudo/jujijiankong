@@ -1,0 +1,185 @@
+{
+  "case_id": "CEX_MICRO_GAS_LOW_VALUE_NEGATIVE_CALIBRATION_2026_07_22",
+  "scope": {
+    "tracked_candidate_count": 5,
+    "external_retry_limit_per_source": 3,
+    "runtime_changed": false,
+    "deployment_required": false
+  },
+  "baseline_counts": {
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 2
+  },
+  "candidates": [
+    {
+      "candidate_id": "gate_0000125_after_usdt_ingress",
+      "status": "verified",
+      "classification": "correlated_complete_post_ingress_temporal_control",
+      "independent_negative_eligible": false,
+      "exclusion_reason": "same AKE sell-proceeds lineage as the existing USDT/Bitget positive root",
+      "official": [],
+      "onchain": {
+        "token_ingress": {
+          "token": "0x55d398326f99059ff775485246999027b3197955",
+          "symbol": "USDT",
+          "tx_hash": "0x97028e895dcfd4444591ac383d602ec46b4af307309484534efa2a2b58394194",
+          "log_index": 182,
+          "from": "0x85401508c777321eed3018390408ad0ab2e087e5",
+          "to": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+          "amount": "654912.504551452698348149",
+          "timestamp_utc": "2026-07-07T13:23:17+00:00",
+          "receipt_success": true
+        },
+        "later_cex_native": {
+          "tx_hash": "0x3721e18e98c6924d2bdacb39203c8a1893887d6bb93fea9e30e6d040cf310c6a",
+          "from": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+          "from_label": "Gate 1",
+          "to": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+          "amount_bnb": "0.000125",
+          "timestamp_utc": "2026-07-07T17:09:09+00:00",
+          "seconds_after_token_ingress": 13552,
+          "receipt_success": true
+        },
+        "later_token_outbound": {
+          "tx_hash": "0xabcd5cc05c21a088e92d74b5a5bdafa25756b2206bf502472a325e8e2b7471f3",
+          "log_index": 266,
+          "from": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109",
+          "to": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+          "amount_usdt": "654912.504551",
+          "timestamp_utc": "2026-07-07T17:14:29+00:00",
+          "seconds_after_native": 320,
+          "receipt_success": true
+        }
+      },
+      "market": [],
+      "social": [],
+      "inference": "The exact-address Gate transfer occurs after the token ingress. A later token outbound cannot retroactively turn it into pre-ingress corroboration.",
+      "coverage": {
+        "normal_address_pages_complete": true,
+        "terminal_empty_page_verified": true,
+        "canonical_transaction_count": 2,
+        "native_receipt_mismatch_count": 0,
+        "direct_native_balance_equations_reconcile_24h_72h_7d": true,
+        "token_event_ledger_complete_for_window": true,
+        "internal_native": "unavailable_and_not_needed_for_the_strict_ordering_failure"
+      }
+    },
+    {
+      "candidate_id": "non_cex_00005_after_ake_ingress",
+      "status": "verified",
+      "classification": "complete_independent_negative_control",
+      "negative_type": "post_ingress_and_non_cex_source",
+      "independent_negative_eligible": true,
+      "independence_unit": {
+        "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "token_symbol": "AKE",
+        "root_operator": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+        "event_window_start_utc": "2026-07-07T11:40:12+00:00",
+        "event_window_end_utc": "2026-07-07T11:41:10+00:00",
+        "exchange_entity": "none_unlabeled_non_cex_source"
+      },
+      "official": [],
+      "onchain": {
+        "token_ingress": {
+          "tx_hash": "0xf5c8332a3ec0e7d0db05df8b8c238987530b5cc4841d3163a596174c00e41908",
+          "log_index": 187,
+          "from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+          "to": "0x85401508c777321eed3018390408ad0ab2e087e5",
+          "amount_ake": "1250531833.687891267835287201",
+          "timestamp_utc": "2026-07-07T11:40:12+00:00",
+          "receipt_success": true
+        },
+        "later_native": {
+          "tx_hash": "0x5aeaf516cfb61a70c97ad1d4c7fd0944769486150968e119c983002d196f1642",
+          "from": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+          "to": "0x85401508c777321eed3018390408ad0ab2e087e5",
+          "amount_bnb": "0.0005",
+          "timestamp_utc": "2026-07-07T11:41:10+00:00",
+          "seconds_after_token_ingress": 58,
+          "receipt_success": true
+        },
+        "source_exact_address_title": "Address: 0xd49ef7de...70ea99f04 | BscScan",
+        "target_exact_address_title": "Address: 0x85401508...ab2e087e5 | BscScan",
+        "cex_label_present": false
+      },
+      "market": [],
+      "social": [],
+      "inference": "The native transfer is later than the AKE ingress and its source has no exact-address CEX label. It fails both ordering and source-class gates, so it cannot be a positive micro-gas corroboration sample.",
+      "coverage": {
+        "canonical_transactions_found": 2,
+        "successful_receipts": 2,
+        "strict_post_ingress_ordering": true,
+        "token_log_identity_verified": true,
+        "public_token_pages_complete": true,
+        "normal_native_pages_complete": true,
+        "complete_for_negative_claim": true,
+        "complete_internal_native_history_claimed": false
+      }
+    },
+    {
+      "candidate_id": "non_cex_0001_between_correlated_ake_ingresses",
+      "status": "blocked",
+      "classification": "ambiguous_pairing_within_correlated_ingress_sequence",
+      "amount_bnb": "0.001",
+      "gap": "native transfer is after the first AKE ingress and before later AKE ingresses; no unique pairing rule identifies which token event it belongs to"
+    },
+    {
+      "candidate_id": "unlabeled_0000001_long_before_ake_anchor",
+      "status": "blocked",
+      "classification": "unlabeled_dust_no_bounded_event_pair",
+      "amount_bnb": "0.0000001",
+      "gap": "source is unlabeled and the tracked event is not bound to a complete short token-ingress window"
+    },
+    {
+      "candidate_id": "unlabeled_000000001_post_usdt_outbound",
+      "status": "observation",
+      "classification": "correlated_post_outbound_temporal_guard",
+      "amount_bnb": "0.000000001",
+      "independent_negative_eligible": false,
+      "gap": "canonical timing is complete, but the event belongs to the already-counted correlated AKE proceeds root"
+    }
+  ],
+  "provenance": {
+    "tracked_sources": [
+      {"path": "input/ake_usdt_second_hop_dust_native_2026-07-20.json", "sha256": "a5c16f3af9d8095ca097dd5bffe7b62c37eb023ee011b529280badaf79519332"},
+      {"path": "input/ake_usdt_proceeds_next_hop_2026-07-20.json", "sha256": "10c2dba7000a1cc3603f231ab56913202c26c37c2807761b260c75b2def1e096"},
+      {"path": "input/ake_common_receiver_forensic_2026-07-19.json", "sha256": "109f76fc52f247f350628112dc88d19b3fa81c4179d8ae984c2adf5303ace51e"},
+      {"path": "input/ake_alpha_custody_sender_upstream_2026-07-19.json", "sha256": "4a5e89ff39b2482c265d270b012be3a34d7433d548922935cea23009c1ec012f"},
+      {"path": "input/ake_usdt_62835_branch_2026-07-22.json", "sha256": "fb9abfdfadcc25005c41baa8a103e7c7d81934cea9dfb37f64340acdb25facf9"},
+      {"path": "input/cex_exact_address_micro_gas_calibration_expansion_2026-07-22.json", "sha256": "9a7a83610710122bfe0069a7d5b47482ab92b0d700199f502252254122f9ff67"}
+    ],
+    "public_exact_address_pages": [
+      {"address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe", "title": "Gate 1", "reader_sha256": "27b2690513578b74be59fe6a6fe53771188d09270815a43f1ef8ef37572cb785"},
+      {"address": "0x1929fec1f9553dde93aa9ae57a4e4ac033e75109", "title": "Address: 0x1929fec1...033e75109", "reader_sha256": "8fbf3809ce858341af134a36cc0fb33f2cb656e5061422ff7e6799ce87043e03"},
+      {"address": "0xd49ef7def42f4633cd55cb874e016a570ea99f04", "title": "Address: 0xd49ef7de...70ea99f04", "reader_sha256": "e720cb2d63d25daf4ef42984eedf3739fde675d1c75c92d88a2545009e199cfe"},
+      {"address": "0x85401508c777321eed3018390408ad0ab2e087e5", "title": "Address: 0x85401508...ab2e087e5", "reader_sha256": "16a37639d398142e19c87cab7e4aa035955b84dfc9ed8701cc65e178b0f70522"}
+    ],
+    "onchain_source": "BNB Smart Chain public JSON-RPC canonical transaction, receipt, block timestamp, and ERC-20 Transfer log replay"
+  },
+  "independence_review": {
+    "new_independent_negative_id": "non_cex_00005_after_ake_ingress",
+    "shares_token_with_existing_negatives": false,
+    "shares_root_operator_with_existing_negatives": false,
+    "shares_event_window_with_existing_negatives": false,
+    "shares_exchange_class_with_existing_negatives": false,
+    "correlated_gate_control_counted": false,
+    "blocked_candidates_counted": false
+  },
+  "updated_counts": {
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 3,
+    "verified_correlated_temporal_controls": 1,
+    "blocked_candidates": 2,
+    "observation_only_candidates": 1
+  },
+  "threshold_gate": {
+    "positive_roots": "1/3",
+    "positive_tokens": "1/2",
+    "complete_negatives": "3/3",
+    "all_requirements_met": false
+  },
+  "decision": "calibration_gap_no_runtime_change",
+  "runtime_policy": "micro-gas remains corroboration only; it cannot independently create custody, buy, sell, follow, reduce, or other action semantics"
+}
