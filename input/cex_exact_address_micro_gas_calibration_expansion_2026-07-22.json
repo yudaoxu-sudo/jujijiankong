@@ -1,0 +1,260 @@
+{
+  "case_id": "CEX_EXACT_ADDRESS_MICRO_GAS_CALIBRATION_EXPANSION_2026_07_22",
+  "generated_at_utc": "2026-07-22T09:05:00Z",
+  "scope": {
+    "candidate_limit": 3,
+    "candidate_source": "git-tracked input/cex_sweep_manual_review_2026-07-08.json",
+    "external_retry_limit_per_source": 3,
+    "runtime_changed": false,
+    "deployment_required": false
+  },
+  "baseline": {
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 0,
+    "observation_only_records": 6
+  },
+  "candidate_results": [
+    {
+      "candidate_id": "bybit_funded_771c_noncustodial_negative",
+      "status": "verified",
+      "classification": "complete_independent_negative_control",
+      "negative_type": "cex_funded_noncustodial_trading_wallet",
+      "independence_unit": {
+        "token": "0x970df17b9298f9bc9bf2b53570df9aae9411b8f2",
+        "token_symbol": "Crocodile",
+        "root_operator": "0x771c0eed71197e898c577191153208e98d392497",
+        "event_window_start_utc": "2023-12-22T21:48:27+00:00",
+        "event_window_end_utc": "2023-12-22T21:52:03+00:00",
+        "exchange_entity": "Bybit"
+      },
+      "official": [],
+      "onchain": {
+        "cex_native_ingress": {
+          "tx_hash": "0x15d13573b71db262f019408add4b1f832897f0b71613713a0413166c1e8d7e11",
+          "block_number": 34587431,
+          "timestamp_utc": "2023-12-22T21:48:27+00:00",
+          "from": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+          "to": "0x771c0eed71197e898c577191153208e98d392497",
+          "amount_bnb": "0.38077165",
+          "receipt_success": true,
+          "log_count": 0
+        },
+        "subsequent_dex_execution": {
+          "tx_hash": "0xcf9fca77dce03f7c586e180c09f714dc44f041de92313a1617b21a5b37291bf5",
+          "block_number": 34587503,
+          "timestamp_utc": "2023-12-22T21:52:03+00:00",
+          "seconds_after_native_ingress": 216,
+          "from": "0x771c0eed71197e898c577191153208e98d392497",
+          "to": "0xcecce97529effc360f68b3f26eef4ad74ebf5705",
+          "input_selector": "0x8fe965b3",
+          "amount_bnb": "0.37",
+          "receipt_success": true,
+          "log_count": 7,
+          "received_token": {
+            "contract": "0x970df17b9298f9bc9bf2b53570df9aae9411b8f2",
+            "symbol": "Crocodile",
+            "decimals": 5,
+            "amount_raw": 5013,
+            "log_index": 150
+          }
+        }
+      },
+      "market": [],
+      "social": [],
+      "inference": "The target controlled the next transaction and used the CEX-origin BNB in a token execution. The target is a non-custodial trading wallet for this event window, so CEX-origin native funding cannot establish CEX custody or action semantics.",
+      "coverage": {
+        "canonical_transactions_found": 2,
+        "successful_receipts": 2,
+        "strict_ordering": true,
+        "token_transfer_decoded": true,
+        "exact_cex_source_label_bound": true,
+        "complete_for_negative_claim": true,
+        "complete_address_history_claimed": false
+      },
+      "micro_gas_scope": "amount is above 0.001 BNB; this is a source-class and custody-semantics negative, not a micro-gas threshold false-positive observation"
+    },
+    {
+      "candidate_id": "gate_funded_ad7d_noncustodial_negative",
+      "status": "verified",
+      "classification": "complete_independent_negative_control",
+      "negative_type": "cex_funded_noncustodial_trading_wallet",
+      "independence_unit": {
+        "token": "0x432e1b949dec1976d035e3b810330852cffb4444",
+        "token_symbol": "币安队长",
+        "root_operator": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "event_window_start_utc": "2026-05-21T13:28:11+00:00",
+        "event_window_end_utc": "2026-05-21T13:31:37+00:00",
+        "exchange_entity": "Gate"
+      },
+      "official": [],
+      "onchain": {
+        "cex_native_ingress": {
+          "tx_hash": "0x051a92f204a70b188f4c2841b6a99176d2b6e61c3b62af921290e0d1b5ee779a",
+          "block_number": 99588632,
+          "timestamp_utc": "2026-05-21T13:28:11+00:00",
+          "from": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+          "to": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+          "amount_bnb": "0.0145971",
+          "receipt_success": true,
+          "log_count": 0
+        },
+        "subsequent_dex_execution": {
+          "tx_hash": "0x9ea53eba76e8cf7dc47838f3e3d66c60edf57ff5f2463a1cf65ef461655a2515",
+          "block_number": 99589088,
+          "timestamp_utc": "2026-05-21T13:31:37+00:00",
+          "seconds_after_native_ingress": 206,
+          "from": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+          "to": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+          "to_label": "OKX: DEX Router 2",
+          "input_selector": "0xf2c42696",
+          "amount_bnb": "0.007",
+          "receipt_success": true,
+          "log_count": 9,
+          "received_token": {
+            "contract": "0x432e1b949dec1976d035e3b810330852cffb4444",
+            "symbol": "币安队长",
+            "decimals": 18,
+            "amount_raw": 88138860838554658964179,
+            "log_index": 378
+          }
+        }
+      },
+      "market": [],
+      "social": [],
+      "inference": "The target controlled the next transaction and routed CEX-origin BNB through a labeled DEX router to receive a token. This independently rejects CEX custody or action semantics from native funding alone.",
+      "coverage": {
+        "canonical_transactions_found": 2,
+        "successful_receipts": 2,
+        "strict_ordering": true,
+        "token_transfer_decoded": true,
+        "exact_cex_source_label_bound": true,
+        "exact_dex_router_label_bound": true,
+        "complete_for_negative_claim": true,
+        "complete_address_history_claimed": false
+      },
+      "micro_gas_scope": "amount is above 0.001 BNB; this is a source-class and custody-semantics negative, not a micro-gas threshold false-positive observation"
+    },
+    {
+      "candidate_id": "gate_to_binance_9c94_cross_cex_route",
+      "status": "blocked",
+      "classification": "cex_internal_or_cross_cex_custody_unresolved",
+      "independence_unit": {
+        "token": "BNB",
+        "root_operator": "0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+        "event_window_start_utc": "2026-05-02T10:32:35+00:00",
+        "event_window_end_utc": "2026-05-02T10:40:01+00:00",
+        "exchange_entity": "Gate_to_Binance"
+      },
+      "official": [],
+      "onchain": {
+        "ingress": {
+          "tx_hash": "0xd2e5602a3481ac519e46fbda82486c75218487a465d92f505274b875cdb5651e",
+          "from_label": "Gate 1",
+          "amount_bnb": "0.486198",
+          "timestamp_utc": "2026-05-02T10:32:35+00:00",
+          "receipt_success": true
+        },
+        "outbound": {
+          "tx_hash": "0xa2bce93e61c5b0dd24e7804f377ad00cb63d08c7d3eb65f51d1ff555439a5510",
+          "to_label": "Binance 51",
+          "amount_bnb": "0.48616045925",
+          "timestamp_utc": "2026-05-02T10:40:01+00:00",
+          "seconds_after_ingress": 446,
+          "receipt_success": true
+        },
+        "amount_difference_bnb": "0.00003754075"
+      },
+      "market": [],
+      "social": [],
+      "inference": "The two successful native transfers establish a near-equal Gate-to-Binance route through an unlabeled EOA. They do not resolve account ownership, custody purpose, common control, or ultimate beneficiary.",
+      "gap": "no public evidence resolves whether the intermediate EOA is user-controlled, an exchange routing address, or another custody operator; do not count as a positive or negative calibration sample"
+    }
+  ],
+  "provenance": {
+    "tracked_sources": [
+      {
+        "path": "input/cex_sweep_manual_review_2026-07-08.json",
+        "sha256": "37e1bc9de1b08b208ff48b2717b1aac722b8d70f46237f651ab22f2414e92742"
+      },
+      {
+        "path": "input/cex_exact_address_micro_gas_calibration_2026-07-22.json",
+        "sha256": "2d2bc7ec8732258b3318a83730ddd4ea968690e815a30cf8406df2e781d05505"
+      },
+      {
+        "path": "cases/2026-07-22_CEX_exact_address_micro_gas_calibration.md",
+        "sha256": "23289ec84632880c261aa2b2964b5b4cf436cd84b7cf6a3f9d133e1619beab89"
+      }
+    ],
+    "public_exact_address_pages": [
+      {
+        "role": "target",
+        "address": "0x771c0eed71197e898c577191153208e98d392497",
+        "url": "https://bscscan.com/address/0x771c0eed71197e898c577191153208e98d392497",
+        "reader_sha256": "db23c95c3157a0da09646e628388dc2de818025b31c23d4db5eaa15b6a5bf028"
+      },
+      {
+        "role": "target",
+        "address": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "url": "https://bscscan.com/address/0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "reader_sha256": "3900fe450d9df5306b7cab1b30a497d64aeb67e87d57c7a8c5acdf3b0e50a876"
+      },
+      {
+        "role": "target",
+        "address": "0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+        "url": "https://bscscan.com/address/0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+        "reader_sha256": "19ca3bd28192e8c1f65dbb5ad4d80d288ea9f86cb856784993cf1dbec32215af"
+      },
+      {
+        "role": "cex_source",
+        "address": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "label": "Bybit: Hot Wallet",
+        "url": "https://bscscan.com/address/0xf89d7b9c864f589bbf53a82105107622b35eaa40",
+        "reader_sha256": "4facbb7a377a834966175b64f4c024ef42bdffc6bd73739104142838d7ab1f31"
+      },
+      {
+        "role": "cex_source",
+        "address": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "label": "Gate 1",
+        "url": "https://bscscan.com/address/0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+        "reader_sha256": "27b2690513578b74be59fe6a6fe53771188d09270815a43f1ef8ef37572cb785"
+      },
+      {
+        "role": "cex_destination",
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "label": "Binance 51",
+        "url": "https://bscscan.com/address/0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "reader_sha256": "b34037e9bebe1925d874027eb3cc2aad1fc647e9b7950ae146070792fbc8a078"
+      },
+      {
+        "role": "dex_router",
+        "address": "0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "label": "OKX: DEX Router 2",
+        "url": "https://bscscan.com/address/0x62ccef0b4545166f721caa9fee13c1d3767e27dc",
+        "reader_sha256": "5c7b3e0333fd08d391c9449c03e461a7bf4340afbd79fc9b2d846af8813953f1"
+      }
+    ],
+    "onchain_source": "BNB Smart Chain public JSON-RPC; canonical transaction, receipt, block timestamp, and ERC-20 Transfer log replay"
+  },
+  "independence_review": {
+    "verified_negative_pairs_share_token": false,
+    "verified_negative_pairs_share_root_operator": false,
+    "verified_negative_pairs_share_event_window": false,
+    "verified_negative_pairs_share_exchange_entity": false,
+    "blocked_candidate_counted": false
+  },
+  "updated_counts": {
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 2,
+    "blocked_candidates": 1
+  },
+  "threshold_gate": {
+    "required_independent_complete_positive_roots": 3,
+    "required_distinct_positive_tokens": 2,
+    "required_independent_complete_negative_controls": 3,
+    "all_requirements_met": false
+  },
+  "decision": "calibration_gap_no_runtime_change",
+  "runtime_policy": "CEX-origin native funding, including micro-gas, remains corroboration only and cannot independently produce custody, buy, sell, follow, reduce, or other action semantics"
+}
