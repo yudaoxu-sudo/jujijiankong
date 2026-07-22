@@ -1,0 +1,584 @@
+{
+  "builder_sha256": "b358a463aee6cb8d17e8991d5fafc7fe7c013415f70bad7c92461606076808b2",
+  "case_id": "CEX_EXACT_ADDRESS_MICRO_GAS_CALIBRATION_2026_07_22",
+  "continuity_binding": {
+    "expected_git_head": "87685093816addf6af6e1baef029e6422cc6c63c",
+    "start_checkpoint_id": "899958dd-6817-44ef-9f12-4f9054abdaa5",
+    "start_checkpoint_sha256": "ceda1c18b2ebfcfaaa38486ab3948f3f7739436f0325868b666fa2d293b7b961"
+  },
+  "corpus": {
+    "label_only_observations": {
+      "eligible_micro_gas_calibration_count": 0,
+      "reason": "no canonical gas-to-token-ingress pairing with complete timing and receipt coverage",
+      "sweep_path_address_count": 4,
+      "wallet_label_count": 10
+    },
+    "real_independent_complete_cases": [
+      {
+        "branch_observation_count": 2,
+        "branch_observations": [
+          {
+            "branch_id": "ake_sell_proceeds_506483_usdt_second_hop",
+            "coverage": {
+              "direct_native_balance_reconciles_24h_72h_7d": true,
+              "direct_native_complete": true,
+              "direct_native_identity_conflict_count": 0,
+              "direct_native_missing_pages": [],
+              "direct_native_receipt_mismatch_count": 0,
+              "internal_native": "unavailable_via_bounded_standard_public_rpc",
+              "token_canonical_identity": "chain_id:token_contract:tx_hash:log_index",
+              "token_identity_conflict_count": 0,
+              "token_missing_pages": [],
+              "token_receipt_mismatch_count": 0
+            },
+            "intermediate_code_state": {
+              "current": "empty",
+              "historical": "empty"
+            },
+            "intermediate_eoa": "0x3a36713f6a60cb32a66012f923602e9357191ea1",
+            "micro_gas": {
+              "amount_bnb": "0.000003487413",
+              "amount_covers_token_call_gas": true,
+              "amount_wei": 3487413000000,
+              "block_number": 109115914,
+              "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+              "identity": "56:0x460483c798c269400dada8f9cdfed8552f51af23bca450498598e8ccd371b641",
+              "receipt_success": true,
+              "seconds_before_token_ingress": 31,
+              "source_equals_exchange_address": true,
+              "target_equals_token_sender": true,
+              "timestamp_utc": "2026-07-10T05:30:03+00:00",
+              "to": "0x3a36713f6a60cb32a66012f923602e9357191ea1",
+              "token_call_gas_paid_bnb": "0.000003487227",
+              "transaction_index": 84,
+              "tx_hash": "0x460483c798c269400dada8f9cdfed8552f51af23bca450498598e8ccd371b641"
+            },
+            "token_ingress": {
+              "amount_raw": 506483000000000000000000,
+              "amount_token": "506483",
+              "block_number": 109115982,
+              "closure_confidence": "medium_exact_address_page_label",
+              "closure_kind": "public_explorer_cex_custody_ingress",
+              "explicit_swap_guard_passed": false,
+              "from": "0x3a36713f6a60cb32a66012f923602e9357191ea1",
+              "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xd72e692ffaaff0a06c026eab5a5dd19ec701ab04b1634991c6c9a2d7ebbd2cea:121",
+              "log_index": 121,
+              "receipt_success": true,
+              "same_receipt_quote_net": [],
+              "timestamp_utc": "2026-07-10T05:30:34+00:00",
+              "to": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+              "tx_hash": "0xd72e692ffaaff0a06c026eab5a5dd19ec701ab04b1634991c6c9a2d7ebbd2cea"
+            }
+          },
+          {
+            "branch_id": "ake_sell_proceeds_85594_usdt_second_hop",
+            "coverage": {
+              "direct_native_balance_reconciles_24h_72h_7d": true,
+              "direct_native_complete": true,
+              "direct_native_identity_conflict_count": 0,
+              "direct_native_missing_pages": [],
+              "direct_native_receipt_mismatch_count": 0,
+              "internal_native": "unavailable_via_bounded_standard_public_rpc",
+              "token_canonical_identity": "chain_id:token_contract:tx_hash:log_index",
+              "token_identity_conflict_count": 0,
+              "token_missing_pages": [],
+              "token_receipt_mismatch_count": 0
+            },
+            "intermediate_code_state": {
+              "current": "empty",
+              "historical": "empty"
+            },
+            "intermediate_eoa": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+            "micro_gas": {
+              "amount_bnb": "0.00000300262",
+              "amount_covers_token_call_gas": true,
+              "amount_wei": 3002620000000,
+              "block_number": 109147172,
+              "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+              "identity": "56:0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+              "receipt_success": true,
+              "seconds_before_token_ingress": 29,
+              "source_equals_exchange_address": true,
+              "target_equals_token_sender": true,
+              "timestamp_utc": "2026-07-10T09:24:34+00:00",
+              "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+              "token_call_gas_paid_bnb": "0.000003002427",
+              "transaction_index": 16,
+              "tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439"
+            },
+            "token_ingress": {
+              "amount_raw": 85594000000000000000000,
+              "amount_token": "85594",
+              "block_number": 109147238,
+              "closure_confidence": "medium_exact_address_page_label",
+              "closure_kind": "public_explorer_cex_custody_ingress",
+              "explicit_swap_guard_passed": false,
+              "from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+              "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378",
+              "log_index": 378,
+              "receipt_success": true,
+              "same_receipt_quote_net": [],
+              "timestamp_utc": "2026-07-10T09:25:03+00:00",
+              "to": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+              "tx_hash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518"
+            }
+          }
+        ],
+        "case_id": "ake_usdt_bitget6_micro_gas_2026_07_10",
+        "common_control": "unresolved",
+        "complete_positive": true,
+        "exact_address_label": {
+          "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "binding_valid": true,
+          "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811",
+          "class": "cex_or_exchange_labeled",
+          "confidence": "medium",
+          "current_code_state": "empty",
+          "entity": "Bitget",
+          "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+          "historical_code_state": "empty",
+          "label": "Bitget 6",
+          "page_sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+          "reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "source": "public_bscscan_exact_address_title",
+          "source_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan"
+        },
+        "ground_truth": "positive_exact_address_cex_ingress_with_micro_gas_corroboration",
+        "minimum_observed_micro_gas_bnb": "0.00000300262",
+        "ownership": "unresolved",
+        "sample_unit": {
+          "bounded_followup_end_utc": "2026-07-17T10:24:27+00:00",
+          "event_window_start_utc": "2026-07-10T05:28:38+00:00",
+          "exchange_address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "exchange_entity": "Bitget",
+          "root_operator": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+          "token_contract": "0x55d398326f99059ff775485246999027b3197955",
+          "token_decimals": 18,
+          "token_symbol": "USDT"
+        },
+        "ultimate_beneficiary": "unresolved"
+      }
+    ],
+    "real_observation_only": [
+      {
+        "anchor_relevant_cex_gas_topup_count": 0,
+        "anchor_target": "0x25370535a60d5e1761639009a837e5d0fe0a28df",
+        "closure_kind": null,
+        "exclusion_reason": "same AKE/operator root; mixed opening inventory; no exact CEX venue label",
+        "first_destination": "0xb96f988a818a782b47415e745a8da8a2d6fa3f7a",
+        "first_destination_class": "unlabeled_eoa",
+        "ground_truth": "path_only_unresolved",
+        "hard_stop": true,
+        "id": "ake_62835_plain_transfer_no_quote_no_venue",
+        "independent_negative_eligible": false,
+        "post_outbound_native_temporal_negative": {
+          "complete_for_temporal_guard": true,
+          "exclusion_reason": "strictly post-outbound and same correlated AKE root; cannot corroborate the earlier token path",
+          "independent_negative_eligible": false,
+          "native_amount_bnb": "0.000000001",
+          "native_receipt_success": true,
+          "native_source": "0xb96fec5e952a8d668721cc5c6a95f353cdac3f7a",
+          "native_source_class": "unlabeled_contract",
+          "native_timestamp_utc": "2026-07-15T13:24:39+00:00",
+          "native_tx_hash": "0x25e61da36e66c98495131d41baa7e996a50bbe7c8a0c1fc98a2f161b248f8d86",
+          "seconds_after_token_outbound": 28,
+          "token_outbound_log_index": 126,
+          "token_outbound_timestamp_utc": "2026-07-15T13:24:11+00:00",
+          "token_outbound_tx_hash": "0x9b9ec669eba5b69f159a1a33257b9740e5c65099ccb07040c4f554c425170eb9"
+        },
+        "receipt_success": true,
+        "root_case_id": "ake_confirmed_sell_out_usdt_three_correlated_branches",
+        "same_receipt_quote_net": [],
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "token_ingress_or_outbound_identity": "56:0x55d398326f99059ff775485246999027b3197955:0x9b9ec669eba5b69f159a1a33257b9740e5c65099ccb07040c4f554c425170eb9:126"
+      },
+      {
+        "address": "0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+        "address_history_complete": false,
+        "asset_type": "mixed",
+        "auto_promote_allowed": false,
+        "code_state": "eoa_or_empty_at_latest",
+        "decision": "keep_for_manual_review",
+        "exchange": null,
+        "exclusion_reason": "native amount/timing and subsequent token-ingress coverage are absent; address history is incomplete",
+        "ground_truth": "unknown",
+        "id": "cex_sweep_manual_0x9c94e59f2a6bcb13f48dd0d0483de66aef75e442",
+        "observed_path_count": 4,
+        "receipt_success_count": 4
+      },
+      {
+        "address": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "address_history_complete": false,
+        "asset_type": "native_bnb",
+        "auto_promote_allowed": false,
+        "code_state": "eoa_or_empty_at_latest",
+        "decision": "keep_for_manual_review",
+        "exchange": null,
+        "exclusion_reason": "native amount/timing and subsequent token-ingress coverage are absent; address history is incomplete",
+        "ground_truth": "unknown",
+        "id": "cex_sweep_manual_0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "observed_path_count": 3,
+        "receipt_success_count": 3
+      },
+      {
+        "address": "0x10a28ad09505030ba67436b4f5fd4e6d400c3aa5",
+        "address_history_complete": false,
+        "asset_type": "native_bnb",
+        "auto_promote_allowed": false,
+        "code_state": "eoa_or_empty_at_latest",
+        "decision": "keep_for_manual_review",
+        "exchange": "Bybit",
+        "exclusion_reason": "native amount/timing and subsequent token-ingress coverage are absent; address history is incomplete",
+        "ground_truth": "unknown",
+        "id": "cex_sweep_manual_0x10a28ad09505030ba67436b4f5fd4e6d400c3aa5",
+        "observed_path_count": 6,
+        "receipt_success_count": 6
+      },
+      {
+        "address": "0x771c0eed71197e898c577191153208e98d392497",
+        "address_history_complete": false,
+        "asset_type": "mixed",
+        "auto_promote_allowed": false,
+        "code_state": "eoa_or_empty_at_latest",
+        "decision": "keep_for_manual_review",
+        "exchange": null,
+        "exclusion_reason": "native amount/timing and subsequent token-ingress coverage are absent; address history is incomplete",
+        "ground_truth": "unknown",
+        "id": "cex_sweep_manual_0x771c0eed71197e898c577191153208e98d392497",
+        "observed_path_count": 5,
+        "receipt_success_count": 5
+      },
+      {
+        "exclusion_reason": "custody purpose, exact UI label mapping, economic external inflow, and gas pairing remain unresolved",
+        "gas_coverage": "absent",
+        "ground_truth": "unknown",
+        "id": "ake_alpha_custody_internal_report_only",
+        "matched_receipt_candidate_count": 3,
+        "path_role": "alpha_custody_movement_unresolved",
+        "receipt_success_count": 3,
+        "runtime_effect": "none",
+        "token": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "token_symbol": "AKE"
+      }
+    ],
+    "synthetic_controls": {
+      "configured_cex_positive": {
+        "all_thresholds_pass": true,
+        "amount_bnb": "0.002",
+        "limits": [
+          "no native receipt success assertion",
+          "no exact-address label provenance or source confidence assertion",
+          "no isolated threshold boundary fixture"
+        ],
+        "real_independent_eligible": false
+      },
+      "non_cex_control_input": {
+        "amount_bnb": "0.005",
+        "confounder": "same target is marked found after the preceding 0.002 CEX row, so the row is skipped before source-class rejection is exercised",
+        "isolated_negative_assertion": false,
+        "real_independent_eligible": false
+      }
+    }
+  },
+  "corpus_counts": {
+    "correlated_positive_branch_observations": 2,
+    "distinct_complete_positive_tokens": 1,
+    "isolated_synthetic_negative_controls": 0,
+    "real_independent_complete_negative_controls": 0,
+    "real_independent_complete_positive_roots": 1,
+    "real_observation_only_records": 6,
+    "synthetic_positive_controls": 1
+  },
+  "decision": "calibration_gap_no_runtime_change",
+  "eligibility_gate": [
+    "successful canonical native receipt",
+    "successful canonical token-ingress receipt and log identity",
+    "verified token contract and decimals",
+    "full-address CEX label binding with provenance and confidence",
+    "native source equals labeled CEX destination and target equals token sender",
+    "native event strictly precedes token ingress with comparable block/time",
+    "direct-native and token coverage complete with no identity or receipt mismatch",
+    "direct-native amount and balance/gas equation reconcile",
+    "independent root-case deduplication"
+  ],
+  "generated_at_utc": "2026-07-22T07:58:04.330631+00:00",
+  "minimum_runtime_change_requirements": {
+    "distinct_tokens_across_complete_positives": {
+      "observed": 1,
+      "pass": false,
+      "required": 2
+    },
+    "independent_complete_negative_controls": {
+      "observed": 0,
+      "pass": false,
+      "required": 3
+    },
+    "independent_complete_positive_roots": {
+      "observed": 1,
+      "pass": false,
+      "required": 3
+    }
+  },
+  "negative_type_coverage": [
+    {
+      "status": "gap_no_complete_fixture",
+      "type": "micro_gas_then_no_token_ingress"
+    },
+    {
+      "status": "complete_temporal_guard_but_correlated_same_ake_root",
+      "type": "gas_after_token_ingress"
+    },
+    {
+      "status": "gap_no_complete_fixture",
+      "type": "ambiguous_stale_or_invalid_explorer_label"
+    },
+    {
+      "status": "observation_only_incomplete_history",
+      "type": "non_custody_address"
+    },
+    {
+      "status": "observation_only_no_gas_pairing",
+      "type": "cex_internal_or_alpha_custody_movement"
+    },
+    {
+      "status": "complete_path_fact_but_correlated_same_ake_root",
+      "type": "plain_transfer_without_quote_or_venue_closure"
+    },
+    {
+      "status": "gap_no_tracked_fixture",
+      "type": "failed_native_or_token_receipt"
+    },
+    {
+      "status": "gap_no_isolated_micro_gas_fixture",
+      "type": "partial_rpc_or_block_coverage"
+    }
+  ],
+  "runtime_review": {
+    "cex_token_path_can_exist_without_gas_corroboration": true,
+    "current_default_divided_by_smallest_real_positive": "333.0424762374193204601314852",
+    "current_default_threshold_bnb": "0.001",
+    "current_threshold_misses_ake_micro_gas_corroboration": true,
+    "decision": "calibration_gap_no_runtime_change",
+    "deployment_required": false,
+    "gas_alone_creates_cex_inflow_or_trade_alert": false,
+    "runtime_empty_or_partial_block_coverage_distinguished_from_no_gas": false,
+    "runtime_exact_label_provenance_emitted_for_gas": false,
+    "runtime_native_receipt_success_gate": false,
+    "runtime_or_verifier_changed": false,
+    "runtime_same_block_transaction_order_supported": false,
+    "synthetic_non_cex_control_isolated": false,
+    "threshold_comparison": "amount_bnb >= threshold passes"
+  },
+  "schema_version": 1,
+  "scope": {
+    "canonical_token_identity": "chain_id:token_contract:tx_hash:log_index",
+    "external_retry_count": 0,
+    "network_requests": 0,
+    "sample_unit": "token + root path/operator + event window + exchange entity",
+    "source_policy": "explicit_git_tracked_evidence_only"
+  },
+  "source_artifacts": [
+    {
+      "path": "input/ake_usdt_506483_branch_2026-07-20.json",
+      "sha256": "9b08a2c807142251e2adb7670e1bfcd9e07bb892111c3c704b62479f227dc0bd"
+    },
+    {
+      "path": "input/ake_usdt_506483_branch_verification_2026-07-20.json",
+      "sha256": "f4edd7d5357e5b5ee22ffcc78e99c0a50d62c33d36c046ea44cf13316faa6446"
+    },
+    {
+      "path": "cases/2026-07-20_AKE_USDT_506483_branch.md",
+      "sha256": "3b0d79b83c5925db7bfa301cfa9ee0d0629ae1e40834a7ab4b2a046fde556056"
+    },
+    {
+      "path": "input/ake_usdt_85594_branch_2026-07-22.json",
+      "sha256": "44a6cc48c35bca5d370992f552569c3f02e6a476ba39881d5239a97d8f13d503"
+    },
+    {
+      "path": "input/ake_usdt_85594_branch_verification_2026-07-22.json",
+      "sha256": "c9ff64038779ddc9b63ac89847498b8959975cdd357e5836a87a5902184019ce"
+    },
+    {
+      "path": "cases/2026-07-22_AKE_USDT_85594_branch.md",
+      "sha256": "97ab1eb9690f7bd2c4ae58b6d489f83981477a97506f209ca351baf327474576"
+    },
+    {
+      "path": "input/ake_usdt_62835_branch_2026-07-22.json",
+      "sha256": "fb9abfdfadcc25005c41baa8a103e7c7d81934cea9dfb37f64340acdb25facf9"
+    },
+    {
+      "path": "input/ake_usdt_62835_branch_verification_2026-07-22.json",
+      "sha256": "1f8c7b27ede91ab1fd4db5cc839fa31a73c6413df60694eb8955406fce3b2949"
+    },
+    {
+      "path": "cases/2026-07-22_AKE_USDT_62835_branch.md",
+      "sha256": "b61baf28c622995cc2b20ee55ebad0a9ececb12a625bfc7ae7542ee4b49763c9"
+    },
+    {
+      "path": "input/cex_sweep_manual_review_2026-07-08.json",
+      "sha256": "37e1bc9de1b08b208ff48b2717b1aac722b8d70f46237f651ab22f2414e92742"
+    },
+    {
+      "path": "input/cex_sweep_paths_2026-07-08.json",
+      "sha256": "e41af0cdba785ca278ad7ea1c8fb0b3f7cb40f3f623cc07cb0cdb0ca59b5327c"
+    },
+    {
+      "path": "input/cex_wallet_labels_2026-07-08.json",
+      "sha256": "25c2590be9537648243563900cfb3bf3064d130c37d6cf5ff7553046fc782164"
+    },
+    {
+      "path": "input/binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
+      "sha256": "2c056ca2f866fc01a6ea661498ed0e4f741e56f6a8a85f86a753992eb31f27c7"
+    },
+    {
+      "path": "input/configured_cex_window_aggregation_verification_2026-07-18.json",
+      "sha256": "785b25921dd8cc8e534f705eda14efba198be6d98091a3aadd1cb11b00c4578d"
+    },
+    {
+      "path": "input/ake_usdt_second_hop_runtime_gap_2026-07-20.json",
+      "sha256": "c94540a04ffe1c66dd73ba6eea439827c1638f7e9f4a2c423493886b794cfd0b"
+    },
+    {
+      "path": "scripts/alpha_intraday_flow_watch.py",
+      "sha256": "6d5f78986b6d03944436c69ef05f30f6e64e7250432db17bac740f6b2bce9fe6"
+    },
+    {
+      "path": "scripts/verify_sniper_engine.py",
+      "sha256": "ddd2861c29f392c63070aa3fddc16ec80c744fc3b8cfae702102525c7d7f9890"
+    }
+  ],
+  "threshold_sweep": [
+    {
+      "case_detected_any_branch": true,
+      "complete_negative_denominator": 0,
+      "complete_positive_denominator": 1,
+      "confirmed_branch_recall_fraction": {
+        "denominator": 2,
+        "numerator": 2,
+        "rate": null,
+        "reason": "correlated branch observations are descriptive and do not add independent denominator units"
+      },
+      "eligible_real_independent_case_count": 1,
+      "false_negative_count": 0,
+      "false_positive_count": 0,
+      "false_positive_rate": null,
+      "isolated_synthetic_negative_count": 0,
+      "rate_reason": "independent positive N=1 and complete negative N=0; integer counts are reported without pseudo-precision",
+      "synthetic_0_002_positive_pass": true,
+      "threshold_bnb": "0.000001",
+      "true_negative_count": 0,
+      "true_positive_count": 1,
+      "true_positive_rate": null,
+      "unknown_candidate_record_count": 6
+    },
+    {
+      "case_detected_any_branch": true,
+      "complete_negative_denominator": 0,
+      "complete_positive_denominator": 1,
+      "confirmed_branch_recall_fraction": {
+        "denominator": 2,
+        "numerator": 2,
+        "rate": null,
+        "reason": "correlated branch observations are descriptive and do not add independent denominator units"
+      },
+      "eligible_real_independent_case_count": 1,
+      "false_negative_count": 0,
+      "false_positive_count": 0,
+      "false_positive_rate": null,
+      "isolated_synthetic_negative_count": 0,
+      "rate_reason": "independent positive N=1 and complete negative N=0; integer counts are reported without pseudo-precision",
+      "synthetic_0_002_positive_pass": true,
+      "threshold_bnb": "0.000003",
+      "true_negative_count": 0,
+      "true_positive_count": 1,
+      "true_positive_rate": null,
+      "unknown_candidate_record_count": 6
+    },
+    {
+      "case_detected_any_branch": false,
+      "complete_negative_denominator": 0,
+      "complete_positive_denominator": 1,
+      "confirmed_branch_recall_fraction": {
+        "denominator": 2,
+        "numerator": 0,
+        "rate": null,
+        "reason": "correlated branch observations are descriptive and do not add independent denominator units"
+      },
+      "eligible_real_independent_case_count": 1,
+      "false_negative_count": 1,
+      "false_positive_count": 0,
+      "false_positive_rate": null,
+      "isolated_synthetic_negative_count": 0,
+      "rate_reason": "independent positive N=1 and complete negative N=0; integer counts are reported without pseudo-precision",
+      "synthetic_0_002_positive_pass": true,
+      "threshold_bnb": "0.00001",
+      "true_negative_count": 0,
+      "true_positive_count": 0,
+      "true_positive_rate": null,
+      "unknown_candidate_record_count": 6
+    },
+    {
+      "case_detected_any_branch": false,
+      "complete_negative_denominator": 0,
+      "complete_positive_denominator": 1,
+      "confirmed_branch_recall_fraction": {
+        "denominator": 2,
+        "numerator": 0,
+        "rate": null,
+        "reason": "correlated branch observations are descriptive and do not add independent denominator units"
+      },
+      "eligible_real_independent_case_count": 1,
+      "false_negative_count": 1,
+      "false_positive_count": 0,
+      "false_positive_rate": null,
+      "isolated_synthetic_negative_count": 0,
+      "rate_reason": "independent positive N=1 and complete negative N=0; integer counts are reported without pseudo-precision",
+      "synthetic_0_002_positive_pass": true,
+      "threshold_bnb": "0.0001",
+      "true_negative_count": 0,
+      "true_positive_count": 0,
+      "true_positive_rate": null,
+      "unknown_candidate_record_count": 6
+    },
+    {
+      "case_detected_any_branch": false,
+      "complete_negative_denominator": 0,
+      "complete_positive_denominator": 1,
+      "confirmed_branch_recall_fraction": {
+        "denominator": 2,
+        "numerator": 0,
+        "rate": null,
+        "reason": "correlated branch observations are descriptive and do not add independent denominator units"
+      },
+      "eligible_real_independent_case_count": 1,
+      "false_negative_count": 1,
+      "false_positive_count": 0,
+      "false_positive_rate": null,
+      "isolated_synthetic_negative_count": 0,
+      "rate_reason": "independent positive N=1 and complete negative N=0; integer counts are reported without pseudo-precision",
+      "synthetic_0_002_positive_pass": true,
+      "threshold_bnb": "0.001",
+      "true_negative_count": 0,
+      "true_positive_count": 0,
+      "true_positive_rate": null,
+      "unknown_candidate_record_count": 6
+    }
+  ],
+  "verification": {
+    "checks": {
+      "ake_three_branches_count_once": true,
+      "all_prior_verification_pass": true,
+      "all_source_hashes_match": true,
+      "deployment_not_required": true,
+      "exact_address_label_binding_valid": true,
+      "no_complete_independent_negative_controls": true,
+      "positive_identity_and_coverage_complete": true,
+      "positive_native_receipts_success": true,
+      "positive_token_receipts_success": true,
+      "runtime_threshold_unchanged": true,
+      "threshold_sweep_five_rows": true
+    },
+    "result": "PASS"
+  }
+}
