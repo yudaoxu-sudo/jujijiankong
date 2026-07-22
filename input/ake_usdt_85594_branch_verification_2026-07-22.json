@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "case_id": "AKE_USDT_85594_BRANCH_VERIFICATION_2026-07-22",
+  "generated_at_utc": "2026-07-22T03:02:46.734207+00:00",
+  "builder_sha256": "c604a4a3b77b5809ff2eb4fb44b9b98cc856455d14f95aaeaf2c9b19d59ba023",
+  "prior_builder_sha256": "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942",
+  "template_builder_sha256": "22af24279adf834795255968611be1cfcecd6e34c8de4e307bc207b8b0be7d50",
+  "base_builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "source_hashes": {
+    "input/ake_usdt_second_hop_2026-07-20.json": "ba0292979a47b3f53a19e3b0f5569b5a5bc07dc203aee9400611c27088d792e2",
+    "input/ake_usdt_second_hop_ledger_2026-07-20.csv": "89662637ae4cca6a2084b4cf68a07dc0b1c1689f9f6b93a71d80b921811f6a78",
+    "input/ake_usdt_second_hop_verification_2026-07-20.json": "c7731c9633df88c9882670f89cad8e971961c64ff49ecc0cb9b8d29eb4612879",
+    "input/ake_usdt_second_hop_runtime_gap_2026-07-20.json": "c94540a04ffe1c66dd73ba6eea439827c1638f7e9f4a2c423493886b794cfd0b",
+    "cases/2026-07-20_AKE_USDT_second_hop.md": "c3c85e779ab310b81d871b5829e31b92348c09308afddffd3c45e5cf3bc7de46",
+    "scripts/alpha_intraday_flow_watch.py": "6d5f78986b6d03944436c69ef05f30f6e64e7250432db17bac740f6b2bce9fe6",
+    "scripts/verify_sniper_engine.py": "ddd2861c29f392c63070aa3fddc16ec80c744fc3b8cfae702102525c7d7f9890",
+    "input/ake_usdt_506483_branch_2026-07-20.json": "9b08a2c807142251e2adb7670e1bfcd9e07bb892111c3c704b62479f227dc0bd",
+    "input/ake_usdt_506483_branch_ledger_2026-07-20.csv": "49eb6ddf295360c995eded6301fc673da07746eed40a494cc816ad2d09183459",
+    "input/ake_usdt_506483_branch_verification_2026-07-20.json": "f4edd7d5357e5b5ee22ffcc78e99c0a50d62c33d36c046ea44cf13316faa6446",
+    "cases/2026-07-20_AKE_USDT_506483_branch.md": "3b0d79b83c5925db7bfa301cfa9ee0d0629ae1e40834a7ab4b2a046fde556056"
+  },
+  "labels_sha256": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55",
+  "expected_git_head": "ab2b53484b2e8f79c97d238300bd2e7a59c8b944",
+  "artifact_hashes": {
+    "input/ake_usdt_85594_branch_2026-07-22.json": "44a6cc48c35bca5d370992f552569c3f02e6a476ba39881d5239a97d8f13d503",
+    "input/ake_usdt_85594_branch_ledger_2026-07-22.csv": "02dbae4b6a381a67602e902872347a4382fb1231c09e0c45552ae6e20a7b7e79",
+    "cases/2026-07-22_AKE_USDT_85594_branch.md": "97ab1eb9690f7bd2c4ae58b6d489f83981477a97506f209ca351baf327474576"
+  },
+  "guards": {
+    "source_hashes_match": true,
+    "outer_preflight_git_head_matches": true,
+    "anchor_json_csv_case_verification_cross_check": true,
+    "fresh_anchor_receipt_exact": true,
+    "anchor_tx_log_identity": true,
+    "canonical_identity_unique": true,
+    "receipt_success_all": true,
+    "receipt_mismatch_count": 0,
+    "usdt_metadata_decimals_code": true,
+    "missing_pages": [],
+    "balance_equation_all_windows": true,
+    "fifo_conservation_all_windows": true,
+    "independent_fifo_all_windows": true,
+    "target_historical_code_empty": true,
+    "target_current_code_empty_supplemental": true,
+    "direct_native_page_coverage_complete": true,
+    "direct_native_7d_reconciles": true,
+    "public_cex_label_exact_address_page_bound": true,
+    "hard_stop_policy_applied": true,
+    "runtime_or_verifier_changed": false,
+    "deployment_required": false
+  },
+  "coverage_gaps": [
+    "complete address-level internal-native traces are unavailable through bounded standard public RPC",
+    "hard stop prevents recursion beyond any newly observed unlabeled EOA",
+    "public explorer labels are point-in-time metadata and do not establish ownership"
+  ],
+  "result": "PASS"
+}

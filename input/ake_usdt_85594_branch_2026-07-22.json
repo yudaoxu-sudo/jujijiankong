@@ -1,0 +1,2111 @@
+{
+  "schema_version": 1,
+  "case_id": "AKE_USDT_85594_BRANCH_2026-07-22",
+  "chain_id": 56,
+  "generated_at_utc": "2026-07-22T03:02:46.731506+00:00",
+  "builder_sha256": "c604a4a3b77b5809ff2eb4fb44b9b98cc856455d14f95aaeaf2c9b19d59ba023",
+  "prior_builder": {
+    "path": "/private/tmp/build_ake_second_hop_forensic.py",
+    "sha256": "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942"
+  },
+  "template_builder": {
+    "path": "/private/tmp/build_ake_506483_branch_forensic.py",
+    "sha256": "22af24279adf834795255968611be1cfcecd6e34c8de4e307bc207b8b0be7d50"
+  },
+  "base_builder_sha256": "98b51f18f93c988f398a46dd86e2510814bbc8dcb5dd87ae46632b4b7a94e66a",
+  "cache_compatible_builder_sha256": [
+    "22af24279adf834795255968611be1cfcecd6e34c8de4e307bc207b8b0be7d50",
+    "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9",
+    "c604a4a3b77b5809ff2eb4fb44b9b98cc856455d14f95aaeaf2c9b19d59ba023",
+    "d0597ec3efbd4a2c84832df5916859158ff0683cd28f167948e771ad1d631942",
+    "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+  ],
+  "source_artifacts": {
+    "input/ake_usdt_second_hop_2026-07-20.json": "ba0292979a47b3f53a19e3b0f5569b5a5bc07dc203aee9400611c27088d792e2",
+    "input/ake_usdt_second_hop_ledger_2026-07-20.csv": "89662637ae4cca6a2084b4cf68a07dc0b1c1689f9f6b93a71d80b921811f6a78",
+    "input/ake_usdt_second_hop_verification_2026-07-20.json": "c7731c9633df88c9882670f89cad8e971961c64ff49ecc0cb9b8d29eb4612879",
+    "input/ake_usdt_second_hop_runtime_gap_2026-07-20.json": "c94540a04ffe1c66dd73ba6eea439827c1638f7e9f4a2c423493886b794cfd0b",
+    "cases/2026-07-20_AKE_USDT_second_hop.md": "c3c85e779ab310b81d871b5829e31b92348c09308afddffd3c45e5cf3bc7de46",
+    "scripts/alpha_intraday_flow_watch.py": "6d5f78986b6d03944436c69ef05f30f6e64e7250432db17bac740f6b2bce9fe6",
+    "scripts/verify_sniper_engine.py": "ddd2861c29f392c63070aa3fddc16ec80c744fc3b8cfae702102525c7d7f9890",
+    "input/ake_usdt_506483_branch_2026-07-20.json": "9b08a2c807142251e2adb7670e1bfcd9e07bb892111c3c704b62479f227dc0bd",
+    "input/ake_usdt_506483_branch_ledger_2026-07-20.csv": "49eb6ddf295360c995eded6301fc673da07746eed40a494cc816ad2d09183459",
+    "input/ake_usdt_506483_branch_verification_2026-07-20.json": "f4edd7d5357e5b5ee22ffcc78e99c0a50d62c33d36c046ea44cf13316faa6446",
+    "cases/2026-07-20_AKE_USDT_506483_branch.md": "3b0d79b83c5925db7bfa301cfa9ee0d0629ae1e40834a7ab4b2a046fde556056"
+  },
+  "labels_sha256": "ab3d1250052ba9306e48cf0bfdf583814ced28f232868451a5bbcbe145ef9c55",
+  "continuity_binding": {
+    "expected_git_head": "ab2b53484b2e8f79c97d238300bd2e7a59c8b944",
+    "verified_by_outer_preflight": true
+  },
+  "upstream": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+  "target": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+  "token": "0x55d398326f99059ff775485246999027b3197955",
+  "anchor": {
+    "token": "0x55d398326f99059ff775485246999027b3197955",
+    "from": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+    "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+    "amount_raw": 85594000000000000000000,
+    "tx_hash": "0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7",
+    "log_index": 1266,
+    "block_number": 109146940,
+    "transaction_index": 84,
+    "removed": false,
+    "identity": "56:0x55d398326f99059ff775485246999027b3197955:0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7:1266",
+    "timestamp_utc": "2026-07-10T09:22:49+00:00",
+    "receipt_success": true,
+    "receipt_all_transfers": [
+      {
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "from": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+        "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "amount_raw": 85594000000000000000000,
+        "tx_hash": "0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7",
+        "log_index": 1266,
+        "block_number": 109146940,
+        "transaction_index": 84,
+        "removed": false
+      }
+    ],
+    "source_json_csv_case_verification_cross_check": true
+  },
+  "usdt_metadata": {
+    "contract": "0x55d398326f99059ff775485246999027b3197955",
+    "decimals": 18,
+    "symbol": "USDT",
+    "decimals_provenance": {
+      "provider": "https://bsc-mainnet.public.blastapi.io",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "df63dccbad54db1714baa54d6f0e03edc74335c9032c9a32d0910311b7192a15",
+      "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+    },
+    "symbol_provenance": {
+      "provider": "https://bsc-mainnet.public.blastapi.io",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "027052d8f3689c64b2010a015a3a06208bed029966c7b3b139c79cea2efd076f",
+      "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+    },
+    "fail_closed_metadata_errors": [],
+    "historical_code": {
+      "state": "code_present",
+      "byte_length": 4413,
+      "sha256": "a5a6d887c581c25cba4104e4281a530044ba59d718e62cdaa80ef89900299d50",
+      "runtime_bytecode": "0x608060405234801561001057600080fd5b506004361061012c5760003560e01c8063893d20e8116100ad578063a9059cbb11610071578063a9059cbb1461035a578063b09f126614610386578063d28d88521461038e578063dd62ed3e14610396578063f2fde38b146103c45761012c565b8063893d20e8146102dd5780638da5cb5b1461030157806395d89b4114610309578063a0712d6814610311578063a457c2d71461032e5761012c565b806332424aa3116100f457806332424aa31461025c578063395093511461026457806342966c681461029057806370a08231146102ad578063715018a6146102d35761012c565b806306fdde0314610131578063095ea7b3146101ae57806318160ddd146101ee57806323b872dd14610208578063313ce5671461023e575b600080fd5b6101396103ea565b6040805160208082528351818301528351919283929083019185019080838360005b8381101561017357818101518382015260200161015b565b50505050905090810190601f1680156101a05780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6101da600480360360408110156101c457600080fd5b506001600160a01b038135169060200135610480565b604080519115158252519081900360200190f35b6101f661049d565b60408051918252519081900360200190f35b6101da6004803603606081101561021e57600080fd5b506001600160a01b038135811691602081013590911690604001356104a3565b610246610530565b6040805160ff9092168252519081900360200190f35b610246610539565b6101da6004803603604081101561027a57600080fd5b506001600160a01b038135169060200135610542565b6101da600480360360208110156102a657600080fd5b5035610596565b6101f6600480360360208110156102c357600080fd5b50356001600160a01b03166105b1565b6102db6105cc565b005b6102e5610680565b604080516001600160a01b039092168252519081900360200190f35b6102e561068f565b61013961069e565b6101da6004803603602081101561032757600080fd5b50356106ff565b6101da6004803603604081101561034457600080fd5b506001600160a01b03813516906020013561077c565b6101da6004803603604081101561037057600080fd5b506001600160a01b0381351690602001356107ea565b6101396107fe565b61013961088c565b6101f6600480360360408110156103ac57600080fd5b506001600160a01b03813581169160200135166108e7565b6102db600480360360208110156103da57600080fd5b50356001600160a01b0316610912565b60068054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b820191906000526020600020905b81548152906001019060200180831161045957829003601f168201915b5050505050905090565b600061049461048d610988565b848461098c565b50600192915050565b60035490565b60006104b0848484610a78565b610526846104bc610988565b6105218560405180606001604052806028815260200161100e602891396001600160a01b038a166000908152600260205260408120906104fa610988565b6001600160a01b03168152602081019190915260400160002054919063ffffffff610bd616565b61098c565b5060019392505050565b60045460ff1690565b60045460ff1681565b600061049461054f610988565b846105218560026000610560610988565b6001600160a01b03908116825260208083019390935260409182016000908120918c16815292529020549063ffffffff610c6d16565b60006105a96105a3610988565b83610cce565b506001919050565b6001600160a01b031660009081526001602052604090205490565b6105d4610988565b6000546001600160a01b03908116911614610636576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b600080546040516001600160a01b03909116907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0908390a3600080546001600160a01b0319169055565b600061068a61068f565b905090565b6000546001600160a01b031690565b60058054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b6000610709610988565b6000546001600160a01b0390811691161461076b576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b6105a9610776610988565b83610dca565b6000610494610789610988565b846105218560405180606001604052806025815260200161107f60259139600260006107b3610988565b6001600160a01b03908116825260208083019390935260409182016000908120918d1681529252902054919063ffffffff610bd616565b60006104946107f7610988565b8484610a78565b6005805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b820191906000526020600020905b81548152906001019060200180831161086757829003601f168201915b505050505081565b6006805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b6001600160a01b03918216600090815260026020908152604080832093909416825291909152205490565b61091a610988565b6000546001600160a01b0390811691161461097c576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b61098581610ebc565b50565b3390565b6001600160a01b0383166109d15760405162461bcd60e51b8152600401808060200182810382526024815260200180610fc46024913960400191505060405180910390fd5b6001600160a01b038216610a165760405162461bcd60e51b81526004018080602001828103825260228152602001806110e76022913960400191505060405180910390fd5b6001600160a01b03808416600081815260026020908152604080832094871680845294825291829020859055815185815291517f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b9259281900390910190a3505050565b6001600160a01b038316610abd5760405162461bcd60e51b8152600401808060200182810382526025815260200180610f9f6025913960400191505060405180910390fd5b6001600160a01b038216610b025760405162461bcd60e51b815260040180806020018281038252602381526020018061105c6023913960400191505060405180910390fd5b610b4581604051806060016040528060268152602001611036602691396001600160a01b038616600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038085166000908152600160205260408082209390935590841681522054610b7a908263ffffffff610c6d16565b6001600160a01b0380841660008181526001602090815260409182902094909455805185815290519193928716927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef92918290030190a3505050565b60008184841115610c655760405162461bcd60e51b81526004018080602001828103825283818151815260200191508051906020019080838360005b83811015610c2a578181015183820152602001610c12565b50505050905090810190601f168015610c575780820380516001836020036101000a031916815260200191505b509250505060405180910390fd5b505050900390565b600082820183811015610cc7576040805162461bcd60e51b815260206004820152601b60248201527f536166654d6174683a206164646974696f6e206f766572666c6f770000000000604482015290519081900360640190fd5b9392505050565b6001600160a01b038216610d135760405162461bcd60e51b81526004018080602001828103825260218152602001806110a46021913960400191505060405180910390fd5b610d56816040518060600160405280602281526020016110c5602291396001600160a01b038516600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038316600090815260016020526040902055600354610d82908263ffffffff610f5c16565b6003556040805182815290516000916001600160a01b038516917fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9181900360200190a35050565b6001600160a01b038216610e25576040805162461bcd60e51b815260206004820152601f60248201527f42455032303a206d696e7420746f20746865207a65726f206164647265737300604482015290519081900360640190fd5b600354610e38908263ffffffff610c6d16565b6003556001600160a01b038216600090815260016020526040902054610e64908263ffffffff610c6d16565b6001600160a01b03831660008181526001602090815260408083209490945583518581529351929391927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9281900390910190a35050565b6001600160a01b038116610f015760405162461bcd60e51b8152600401808060200182810382526026815260200180610fe86026913960400191505060405180910390fd5b600080546040516001600160a01b03808516939216917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e091a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b6000610cc783836040518060400160405280601e81526020017f536166654d6174683a207375627472616374696f6e206f766572666c6f770000815250610bd656fe42455032303a207472616e736665722066726f6d20746865207a65726f206164647265737342455032303a20617070726f76652066726f6d20746865207a65726f20616464726573734f776e61626c653a206e6577206f776e657220697320746865207a65726f206164647265737342455032303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e636542455032303a207472616e7366657220616d6f756e7420657863656564732062616c616e636542455032303a207472616e7366657220746f20746865207a65726f206164647265737342455032303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f42455032303a206275726e2066726f6d20746865207a65726f206164647265737342455032303a206275726e20616d6f756e7420657863656564732062616c616e636542455032303a20617070726f766520746f20746865207a65726f2061646472657373a265627a7a72315820cbbd570ae478f6b7abf9c9a5c8c6884cf3f64dded74f7ec3e9b6d0b41122eaff64736f6c63430005100032",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "6139f2046ebc1b4bd9a60c79bdbafecf802a0394fb265862a700ccb89da9c794",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    }
+  },
+  "target_role": {
+    "classification": {
+      "class": "unlabeled_eoa",
+      "label": null,
+      "source": "onchain_code_state_and_absent_reviewed_label",
+      "confidence": "high_for_code_state_only",
+      "public_address_binding": {
+        "address": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "expected_url": "https://bscscan.com/address/0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "expected_title_fragment": "0x42d2138d...f3bdc7be0",
+        "title": "Address: 0x42d2138d...f3bdc7be0 | BscScan",
+        "fetched_at_utc": "2026-07-22T03:00:22.601084+00:00",
+        "page_sha256": "b67233b719678a0e4163c1b3da19fcaf767762f8f1d7f1ad841dacf26f54e8d6",
+        "cache_meta_sha256": "a5a11f7de0676d81f4e5448dc3a25d2edcd40f8a797af3a27ad9e97e7852e86f",
+        "checks": {
+          "available": true,
+          "url_matches_full_address": true,
+          "source_url_matches_full_address": true,
+          "reader_url_matches_full_address": true,
+          "title_address_fragment_matches": true,
+          "title_present": true,
+          "page_sha256_valid": true,
+          "cache_meta_sha256_valid": true,
+          "page_bytes_positive": true,
+          "fetched_at_utc_present": true
+        },
+        "valid": true
+      }
+    },
+    "public_browser": {
+      "url": "https://bscscan.com/address/0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "available": true,
+      "public_name": null,
+      "title": "Address: 0x42d2138d...f3bdc7be0 | BscScan",
+      "heading": null,
+      "page_provenance": {
+        "schema_version": 2,
+        "builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763",
+        "source_url": "https://bscscan.com/address/0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "reader_url": "https://r.jina.ai/https://bscscan.com/address/0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "sha256": "b67233b719678a0e4163c1b3da19fcaf767762f8f1d7f1ad841dacf26f54e8d6",
+        "bytes": 16094,
+        "errors_before_success": [],
+        "fetched_at_utc": "2026-07-22T03:00:22.601084+00:00",
+        "cache": "current",
+        "cache_meta_sha256": "a5a11f7de0676d81f4e5448dc3a25d2edcd40f8a797af3a27ad9e97e7852e86f"
+      }
+    },
+    "tracked_label": null
+  },
+  "windows": {
+    "24h": {
+      "start_position_inclusive": {
+        "block_number": 109146940,
+        "transaction_index": 84,
+        "log_index": 1266
+      },
+      "end_block_exclusive": 109338898,
+      "opening_block_minus_one_raw": 0,
+      "opening_block_minus_one_usdt": "0",
+      "pre_anchor_same_block_in_raw": 0,
+      "pre_anchor_same_block_out_raw": 0,
+      "opening_inventory_at_anchor_raw": 0,
+      "opening_inventory_at_anchor_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 600000138830000000000000,
+      "inbound_usdt": "600000.13883",
+      "outbound_raw": 600000138830000000000000,
+      "outbound_usdt": "600000.13883",
+      "net_raw": 0,
+      "net_usdt": "0",
+      "ending_balance_raw": 0,
+      "ending_balance_usdt": "0",
+      "event_count": 4,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "716b66fdb31143ba72429ba0b527401404ca57426c2d86e0ab8a9f095f17504c",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "6041a40bb4df15543dcb6366f5a39a647de4e9c1a3b3c4e9a1b916a16d7f3864",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "fifo": {
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "origin": "pre_anchor_ownership_unknown",
+            "initial_raw": 0,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "origin": "anchor",
+            "initial_raw": 85594000000000000000000,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+            "origin": "post_anchor",
+            "initial_raw": 514406138830000000000000,
+            "remaining_raw": 0
+          }
+        ],
+        "allocations_by_outbound_identity": {
+          "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378": [
+            {
+              "lot_id": "ake_sell_proceeds",
+              "consumed_raw": 85594000000000000000000
+            }
+          ],
+          "56:0x55d398326f99059ff775485246999027b3197955:0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de:41": [
+            {
+              "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+              "consumed_raw": 514406138830000000000000
+            }
+          ]
+        },
+        "proceeds_lot_initial_raw": 85594000000000000000000,
+        "proceeds_lot_consumed_raw": 85594000000000000000000,
+        "proceeds_lot_remaining_raw": 0,
+        "proceeds_lot_retention_ratio": "0",
+        "ending_lot_total_raw": 0
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 0,
+        "later_remaining_raw": 0,
+        "total_remaining_raw": 0
+      }
+    },
+    "72h": {
+      "start_position_inclusive": {
+        "block_number": 109146940,
+        "transaction_index": 84,
+        "log_index": 1266
+      },
+      "end_block_exclusive": 109722816,
+      "opening_block_minus_one_raw": 0,
+      "opening_block_minus_one_usdt": "0",
+      "pre_anchor_same_block_in_raw": 0,
+      "pre_anchor_same_block_out_raw": 0,
+      "opening_inventory_at_anchor_raw": 0,
+      "opening_inventory_at_anchor_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 600000138830000000000000,
+      "inbound_usdt": "600000.13883",
+      "outbound_raw": 600000138830000000000000,
+      "outbound_usdt": "600000.13883",
+      "net_raw": 0,
+      "net_usdt": "0",
+      "ending_balance_raw": 0,
+      "ending_balance_usdt": "0",
+      "event_count": 4,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "716b66fdb31143ba72429ba0b527401404ca57426c2d86e0ab8a9f095f17504c",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "36a5caa83d037762fa058ee19f3dddef45260f675aa7dd14774bfc602e7b7fd8",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "fifo": {
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "origin": "pre_anchor_ownership_unknown",
+            "initial_raw": 0,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "origin": "anchor",
+            "initial_raw": 85594000000000000000000,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+            "origin": "post_anchor",
+            "initial_raw": 514406138830000000000000,
+            "remaining_raw": 0
+          }
+        ],
+        "allocations_by_outbound_identity": {
+          "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378": [
+            {
+              "lot_id": "ake_sell_proceeds",
+              "consumed_raw": 85594000000000000000000
+            }
+          ],
+          "56:0x55d398326f99059ff775485246999027b3197955:0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de:41": [
+            {
+              "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+              "consumed_raw": 514406138830000000000000
+            }
+          ]
+        },
+        "proceeds_lot_initial_raw": 85594000000000000000000,
+        "proceeds_lot_consumed_raw": 85594000000000000000000,
+        "proceeds_lot_remaining_raw": 0,
+        "proceeds_lot_retention_ratio": "0",
+        "ending_lot_total_raw": 0
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 0,
+        "later_remaining_raw": 0,
+        "total_remaining_raw": 0
+      }
+    },
+    "7d": {
+      "start_position_inclusive": {
+        "block_number": 109146940,
+        "transaction_index": 84,
+        "log_index": 1266
+      },
+      "end_block_exclusive": 110490582,
+      "opening_block_minus_one_raw": 0,
+      "opening_block_minus_one_usdt": "0",
+      "pre_anchor_same_block_in_raw": 0,
+      "pre_anchor_same_block_out_raw": 0,
+      "opening_inventory_at_anchor_raw": 0,
+      "opening_inventory_at_anchor_usdt": "0",
+      "opening_inventory_ownership": "unknown",
+      "inbound_raw": 600000138830000000000000,
+      "inbound_usdt": "600000.13883",
+      "outbound_raw": 600000138830000000000000,
+      "outbound_usdt": "600000.13883",
+      "net_raw": 0,
+      "net_usdt": "0",
+      "ending_balance_raw": 0,
+      "ending_balance_usdt": "0",
+      "event_count": 4,
+      "balance_reconciles": true,
+      "opening_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "716b66fdb31143ba72429ba0b527401404ca57426c2d86e0ab8a9f095f17504c",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "ending_balance_provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "4d24be7edd753711d7a7284667b91f847ca4ae0686fee888e9c5575d3beb03ae",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      },
+      "fifo": {
+        "lots": [
+          {
+            "lot_id": "opening_inventory",
+            "origin": "pre_anchor_ownership_unknown",
+            "initial_raw": 0,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "ake_sell_proceeds",
+            "origin": "anchor",
+            "initial_raw": 85594000000000000000000,
+            "remaining_raw": 0
+          },
+          {
+            "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+            "origin": "post_anchor",
+            "initial_raw": 514406138830000000000000,
+            "remaining_raw": 0
+          }
+        ],
+        "allocations_by_outbound_identity": {
+          "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378": [
+            {
+              "lot_id": "ake_sell_proceeds",
+              "consumed_raw": 85594000000000000000000
+            }
+          ],
+          "56:0x55d398326f99059ff775485246999027b3197955:0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de:41": [
+            {
+              "lot_id": "later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+              "consumed_raw": 514406138830000000000000
+            }
+          ]
+        },
+        "proceeds_lot_initial_raw": 85594000000000000000000,
+        "proceeds_lot_consumed_raw": 85594000000000000000000,
+        "proceeds_lot_remaining_raw": 0,
+        "proceeds_lot_retention_ratio": "0",
+        "ending_lot_total_raw": 0
+      },
+      "independent_fifo_replay": {
+        "anchor_seen_count": 1,
+        "older_remaining_raw": 0,
+        "proceeds_remaining_raw": 0,
+        "later_remaining_raw": 0,
+        "total_remaining_raw": 0
+      }
+    }
+  },
+  "ledger": [
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7:1266",
+      "token": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "decimals": 18,
+      "tx_hash": "0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7",
+      "log_index": 1266,
+      "block_number": 109146940,
+      "transaction_index": 84,
+      "timestamp_utc": "2026-07-10T09:22:49+00:00",
+      "from": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "direction": "inbound",
+      "amount_raw": 85594000000000000000000,
+      "amount_usdt": "85594",
+      "counterparty": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "counterparty_label": "",
+      "counterparty_class": "unlabeled_eoa",
+      "label_source": "onchain_code_state_and_absent_reviewed_label",
+      "label_confidence": "high_for_code_state_only",
+      "counterparty_historical_code_state": "empty",
+      "transaction_from": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+      "transaction_to_class": "quote_token",
+      "method_selector": "0xa9059cbb",
+      "nonce": 1,
+      "receipt_success": true,
+      "same_receipt_transfer_count": 1,
+      "same_receipt_all_transfer_sha256": "c86fcad6636e95bb5de92cacd3bb07bff9f3424bf1aa8c6718ed6681a10f8aef",
+      "same_receipt_target_related_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0xb8210c25df20921538ea35729badc3e0a63520f1\",\"to\":\"0x42d2138d26cd9317da1953d069ab305f3bdc7be0\",\"amount_raw\":85594000000000000000000,\"tx_hash\":\"0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7\",\"log_index\":1266,\"block_number\":109146940,\"transaction_index\":84,\"removed\":false}]",
+      "same_receipt_quote_net": "[]",
+      "explicit_swap_guard_passed": false,
+      "closure_kind": "",
+      "closure_confidence": "",
+      "path_classification": "inbound_unlabeled_eoa",
+      "is_anchor": true,
+      "is_dust_under_fixed_threshold": false,
+      "fifo_allocations": "[]",
+      "proceeds_lot_consumed_raw": 0
+    },
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378",
+      "token": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "decimals": 18,
+      "tx_hash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+      "log_index": 378,
+      "block_number": 109147238,
+      "transaction_index": 49,
+      "timestamp_utc": "2026-07-10T09:25:03+00:00",
+      "from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "to": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "direction": "outbound",
+      "amount_raw": 85594000000000000000000,
+      "amount_usdt": "85594",
+      "counterparty": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "counterparty_label": "Bitget 6",
+      "counterparty_class": "cex_or_exchange_labeled",
+      "label_source": "public_bscscan_exact_address_title",
+      "label_confidence": "medium",
+      "counterparty_historical_code_state": "empty",
+      "transaction_from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+      "transaction_to_class": "quote_token",
+      "method_selector": "0xa9059cbb",
+      "nonce": 10,
+      "receipt_success": true,
+      "same_receipt_transfer_count": 1,
+      "same_receipt_all_transfer_sha256": "f6c80597b547355cda1482d7dc17c8bc8a505f77cc378d23b519006f48fb18f2",
+      "same_receipt_target_related_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x42d2138d26cd9317da1953d069ab305f3bdc7be0\",\"to\":\"0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23\",\"amount_raw\":85594000000000000000000,\"tx_hash\":\"0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518\",\"log_index\":378,\"block_number\":109147238,\"transaction_index\":49,\"removed\":false}]",
+      "same_receipt_quote_net": "[]",
+      "explicit_swap_guard_passed": false,
+      "closure_kind": "public_explorer_cex_custody_ingress",
+      "closure_confidence": "medium_exact_address_page_label",
+      "path_classification": "public_explorer_cex_custody_ingress",
+      "is_anchor": false,
+      "is_dust_under_fixed_threshold": false,
+      "fifo_allocations": "[{\"lot_id\":\"ake_sell_proceeds\",\"consumed_raw\":85594000000000000000000}]",
+      "proceeds_lot_consumed_raw": 85594000000000000000000
+    },
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414",
+      "token": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "decimals": 18,
+      "tx_hash": "0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276",
+      "log_index": 414,
+      "block_number": 109150743,
+      "transaction_index": 68,
+      "timestamp_utc": "2026-07-10T09:51:21+00:00",
+      "from": "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+      "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "direction": "inbound",
+      "amount_raw": 514406138830000000000000,
+      "amount_usdt": "514406.13883",
+      "counterparty": "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+      "counterparty_label": "",
+      "counterparty_class": "unlabeled_eoa",
+      "label_source": "onchain_code_state_and_absent_reviewed_label",
+      "label_confidence": "high_for_code_state_only",
+      "counterparty_historical_code_state": "empty",
+      "transaction_from": "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+      "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+      "transaction_to_class": "quote_token",
+      "method_selector": "0xa9059cbb",
+      "nonce": 1,
+      "receipt_success": true,
+      "same_receipt_transfer_count": 1,
+      "same_receipt_all_transfer_sha256": "0bd36a8ff39693af1bc5e60d8a1d969fe36baa7fd3206962a2ac6a0a444c63ce",
+      "same_receipt_target_related_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448\",\"to\":\"0x42d2138d26cd9317da1953d069ab305f3bdc7be0\",\"amount_raw\":514406138830000000000000,\"tx_hash\":\"0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276\",\"log_index\":414,\"block_number\":109150743,\"transaction_index\":68,\"removed\":false}]",
+      "same_receipt_quote_net": "[]",
+      "explicit_swap_guard_passed": false,
+      "closure_kind": "",
+      "closure_confidence": "",
+      "path_classification": "inbound_unlabeled_eoa",
+      "is_anchor": false,
+      "is_dust_under_fixed_threshold": false,
+      "fifo_allocations": "[]",
+      "proceeds_lot_consumed_raw": 0
+    },
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de:41",
+      "token": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "decimals": 18,
+      "tx_hash": "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de",
+      "log_index": 41,
+      "block_number": 109151035,
+      "transaction_index": 19,
+      "timestamp_utc": "2026-07-10T09:53:33+00:00",
+      "from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "to": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "direction": "outbound",
+      "amount_raw": 514406138830000000000000,
+      "amount_usdt": "514406.13883",
+      "counterparty": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "counterparty_label": "Bitget 6",
+      "counterparty_class": "cex_or_exchange_labeled",
+      "label_source": "public_bscscan_exact_address_title",
+      "label_confidence": "medium",
+      "counterparty_historical_code_state": "empty",
+      "transaction_from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+      "transaction_to": "0x55d398326f99059ff775485246999027b3197955",
+      "transaction_to_class": "quote_token",
+      "method_selector": "0xa9059cbb",
+      "nonce": 11,
+      "receipt_success": true,
+      "same_receipt_transfer_count": 1,
+      "same_receipt_all_transfer_sha256": "888d4620124ab232099cf54d42f1f6d28b9d2ea1079b1c10276322546da0ad9b",
+      "same_receipt_target_related_transfers": "[{\"token\":\"0x55d398326f99059ff775485246999027b3197955\",\"from\":\"0x42d2138d26cd9317da1953d069ab305f3bdc7be0\",\"to\":\"0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23\",\"amount_raw\":514406138830000000000000,\"tx_hash\":\"0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de\",\"log_index\":41,\"block_number\":109151035,\"transaction_index\":19,\"removed\":false}]",
+      "same_receipt_quote_net": "[]",
+      "explicit_swap_guard_passed": false,
+      "closure_kind": "public_explorer_cex_custody_ingress",
+      "closure_confidence": "medium_exact_address_page_label",
+      "path_classification": "public_explorer_cex_custody_ingress",
+      "is_anchor": false,
+      "is_dust_under_fixed_threshold": false,
+      "fifo_allocations": "[{\"lot_id\":\"later_inbound:56:0x55d398326f99059ff775485246999027b3197955:0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276:414\",\"consumed_raw\":514406138830000000000000}]",
+      "proceeds_lot_consumed_raw": 0
+    }
+  ],
+  "branch_outbounds": [
+    {
+      "identity": "56:0x55d398326f99059ff775485246999027b3197955:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518:378",
+      "tx_hash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+      "log_index": 378,
+      "block_number": 109147238,
+      "timestamp_utc": "2026-07-10T09:25:03+00:00",
+      "recipient": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "amount_raw": 85594000000000000000000,
+      "amount_usdt": "85594",
+      "proceeds_lot_consumed_raw": 85594000000000000000000,
+      "proceeds_lot_consumed_usdt": "85594",
+      "recipient_class": "cex_or_exchange_labeled",
+      "recipient_label": "Bitget 6",
+      "method_selector": "0xa9059cbb",
+      "nonce": 10,
+      "receipt_success": true,
+      "same_receipt_quote_net": [],
+      "explicit_swap_guard_passed": false,
+      "closure_kind": "public_explorer_cex_custody_ingress",
+      "closure_confidence": "medium_exact_address_page_label",
+      "path_classification": "public_explorer_cex_custody_ingress"
+    }
+  ],
+  "major_counterparties": [
+    {
+      "direction": "outbound",
+      "counterparty": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+      "counterparty_class": "cex_or_exchange_labeled",
+      "event_count": 2,
+      "amount_raw": 600000138830000000000000,
+      "amount_usdt": "600000.13883"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+      "counterparty_class": "unlabeled_eoa",
+      "event_count": 1,
+      "amount_raw": 514406138830000000000000,
+      "amount_usdt": "514406.13883"
+    },
+    {
+      "direction": "inbound",
+      "counterparty": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+      "counterparty_class": "unlabeled_eoa",
+      "event_count": 1,
+      "amount_raw": 85594000000000000000000,
+      "amount_usdt": "85594"
+    }
+  ],
+  "encountered_address_reviews": {
+    "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": {
+      "historical_code": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "97afbd93e6252c7614cb639ee9c968f2faa6636170e51d14174f403f67ead602",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "current_code_supplemental": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "00c1410b33cb722017f082cb3a768f4985d9f00240558f15f740d63eade02395",
+          "cache_builder_sha256": "22af24279adf834795255968611be1cfcecd6e34c8de4e307bc207b8b0be7d50"
+        }
+      },
+      "classification": {
+        "class": "cex_or_exchange_labeled",
+        "label": "Bitget 6",
+        "source": "public_bscscan_exact_address_title",
+        "confidence": "medium",
+        "public_address_binding": {
+          "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "expected_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "expected_title_fragment": "0x1ab4973a...7688f8f23",
+          "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+          "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+          "page_sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+          "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811",
+          "checks": {
+            "available": true,
+            "url_matches_full_address": true,
+            "source_url_matches_full_address": true,
+            "reader_url_matches_full_address": true,
+            "title_address_fragment_matches": true,
+            "title_present": true,
+            "page_sha256_valid": true,
+            "cache_meta_sha256_valid": true,
+            "page_bytes_positive": true,
+            "fetched_at_utc_present": true
+          },
+          "valid": true
+        }
+      },
+      "public_browser": {
+        "url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "available": true,
+        "public_name": null,
+        "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+        "heading": null,
+        "page_provenance": {
+          "schema_version": 2,
+          "builder_sha256": "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9",
+          "source_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+          "bytes": 179477,
+          "errors_before_success": [],
+          "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+          "cache": "current",
+          "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811"
+        }
+      }
+    },
+    "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448": {
+      "historical_code": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "fafd146d7ea1fde94cf789f4c7944d65045e8aa938f810bba4278f03c560ceca",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "current_code_supplemental": null,
+      "classification": {
+        "class": "unlabeled_eoa",
+        "label": null,
+        "source": "onchain_code_state_and_absent_reviewed_label",
+        "confidence": "high_for_code_state_only",
+        "public_address_binding": {
+          "address": "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+          "expected_url": "https://bscscan.com/address/0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+          "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+          "expected_title_fragment": "0x3e2bd24e...0ff52a448",
+          "title": "",
+          "fetched_at_utc": null,
+          "page_sha256": null,
+          "cache_meta_sha256": null,
+          "checks": {
+            "available": false,
+            "url_matches_full_address": false,
+            "source_url_matches_full_address": false,
+            "reader_url_matches_full_address": false,
+            "title_address_fragment_matches": false,
+            "title_present": false,
+            "page_sha256_valid": false,
+            "cache_meta_sha256_valid": false,
+            "page_bytes_positive": false,
+            "fetched_at_utc_present": false
+          },
+          "valid": false
+        }
+      },
+      "public_browser": null
+    },
+    "0xb8210c25df20921538ea35729badc3e0a63520f1": {
+      "historical_code": {
+        "state": "empty",
+        "byte_length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runtime_bytecode": "0x",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "e442c092ca40e9ac939a2eac6608e61e286199fa28662d64f6586c33e40ae312",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "current_code_supplemental": null,
+      "classification": {
+        "class": "unlabeled_eoa",
+        "label": null,
+        "source": "onchain_code_state_and_absent_reviewed_label",
+        "confidence": "high_for_code_state_only",
+        "public_address_binding": {
+          "address": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+          "expected_url": "https://bscscan.com/address/0xb8210c25df20921538ea35729badc3e0a63520f1",
+          "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0xb8210c25df20921538ea35729badc3e0a63520f1",
+          "expected_title_fragment": "0xb8210c25...0a63520f1",
+          "title": "",
+          "fetched_at_utc": null,
+          "page_sha256": null,
+          "cache_meta_sha256": null,
+          "checks": {
+            "available": false,
+            "url_matches_full_address": false,
+            "source_url_matches_full_address": false,
+            "reader_url_matches_full_address": false,
+            "title_address_fragment_matches": false,
+            "title_present": false,
+            "page_sha256_valid": false,
+            "cache_meta_sha256_valid": false,
+            "page_bytes_positive": false,
+            "fetched_at_utc_present": false
+          },
+          "valid": false
+        }
+      },
+      "public_browser": null
+    }
+  },
+  "route_reviews": {
+    "0x55d398326f99059ff775485246999027b3197955": {
+      "historical_code": {
+        "state": "code_present",
+        "byte_length": 4413,
+        "sha256": "a5a6d887c581c25cba4104e4281a530044ba59d718e62cdaa80ef89900299d50",
+        "runtime_bytecode": "0x608060405234801561001057600080fd5b506004361061012c5760003560e01c8063893d20e8116100ad578063a9059cbb11610071578063a9059cbb1461035a578063b09f126614610386578063d28d88521461038e578063dd62ed3e14610396578063f2fde38b146103c45761012c565b8063893d20e8146102dd5780638da5cb5b1461030157806395d89b4114610309578063a0712d6814610311578063a457c2d71461032e5761012c565b806332424aa3116100f457806332424aa31461025c578063395093511461026457806342966c681461029057806370a08231146102ad578063715018a6146102d35761012c565b806306fdde0314610131578063095ea7b3146101ae57806318160ddd146101ee57806323b872dd14610208578063313ce5671461023e575b600080fd5b6101396103ea565b6040805160208082528351818301528351919283929083019185019080838360005b8381101561017357818101518382015260200161015b565b50505050905090810190601f1680156101a05780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6101da600480360360408110156101c457600080fd5b506001600160a01b038135169060200135610480565b604080519115158252519081900360200190f35b6101f661049d565b60408051918252519081900360200190f35b6101da6004803603606081101561021e57600080fd5b506001600160a01b038135811691602081013590911690604001356104a3565b610246610530565b6040805160ff9092168252519081900360200190f35b610246610539565b6101da6004803603604081101561027a57600080fd5b506001600160a01b038135169060200135610542565b6101da600480360360208110156102a657600080fd5b5035610596565b6101f6600480360360208110156102c357600080fd5b50356001600160a01b03166105b1565b6102db6105cc565b005b6102e5610680565b604080516001600160a01b039092168252519081900360200190f35b6102e561068f565b61013961069e565b6101da6004803603602081101561032757600080fd5b50356106ff565b6101da6004803603604081101561034457600080fd5b506001600160a01b03813516906020013561077c565b6101da6004803603604081101561037057600080fd5b506001600160a01b0381351690602001356107ea565b6101396107fe565b61013961088c565b6101f6600480360360408110156103ac57600080fd5b506001600160a01b03813581169160200135166108e7565b6102db600480360360208110156103da57600080fd5b50356001600160a01b0316610912565b60068054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b820191906000526020600020905b81548152906001019060200180831161045957829003601f168201915b5050505050905090565b600061049461048d610988565b848461098c565b50600192915050565b60035490565b60006104b0848484610a78565b610526846104bc610988565b6105218560405180606001604052806028815260200161100e602891396001600160a01b038a166000908152600260205260408120906104fa610988565b6001600160a01b03168152602081019190915260400160002054919063ffffffff610bd616565b61098c565b5060019392505050565b60045460ff1690565b60045460ff1681565b600061049461054f610988565b846105218560026000610560610988565b6001600160a01b03908116825260208083019390935260409182016000908120918c16815292529020549063ffffffff610c6d16565b60006105a96105a3610988565b83610cce565b506001919050565b6001600160a01b031660009081526001602052604090205490565b6105d4610988565b6000546001600160a01b03908116911614610636576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b600080546040516001600160a01b03909116907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0908390a3600080546001600160a01b0319169055565b600061068a61068f565b905090565b6000546001600160a01b031690565b60058054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b6000610709610988565b6000546001600160a01b0390811691161461076b576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b6105a9610776610988565b83610dca565b6000610494610789610988565b846105218560405180606001604052806025815260200161107f60259139600260006107b3610988565b6001600160a01b03908116825260208083019390935260409182016000908120918d1681529252902054919063ffffffff610bd616565b60006104946107f7610988565b8484610a78565b6005805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b820191906000526020600020905b81548152906001019060200180831161086757829003601f168201915b505050505081565b6006805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b6001600160a01b03918216600090815260026020908152604080832093909416825291909152205490565b61091a610988565b6000546001600160a01b0390811691161461097c576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b61098581610ebc565b50565b3390565b6001600160a01b0383166109d15760405162461bcd60e51b8152600401808060200182810382526024815260200180610fc46024913960400191505060405180910390fd5b6001600160a01b038216610a165760405162461bcd60e51b81526004018080602001828103825260228152602001806110e76022913960400191505060405180910390fd5b6001600160a01b03808416600081815260026020908152604080832094871680845294825291829020859055815185815291517f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b9259281900390910190a3505050565b6001600160a01b038316610abd5760405162461bcd60e51b8152600401808060200182810382526025815260200180610f9f6025913960400191505060405180910390fd5b6001600160a01b038216610b025760405162461bcd60e51b815260040180806020018281038252602381526020018061105c6023913960400191505060405180910390fd5b610b4581604051806060016040528060268152602001611036602691396001600160a01b038616600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038085166000908152600160205260408082209390935590841681522054610b7a908263ffffffff610c6d16565b6001600160a01b0380841660008181526001602090815260409182902094909455805185815290519193928716927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef92918290030190a3505050565b60008184841115610c655760405162461bcd60e51b81526004018080602001828103825283818151815260200191508051906020019080838360005b83811015610c2a578181015183820152602001610c12565b50505050905090810190601f168015610c575780820380516001836020036101000a031916815260200191505b509250505060405180910390fd5b505050900390565b600082820183811015610cc7576040805162461bcd60e51b815260206004820152601b60248201527f536166654d6174683a206164646974696f6e206f766572666c6f770000000000604482015290519081900360640190fd5b9392505050565b6001600160a01b038216610d135760405162461bcd60e51b81526004018080602001828103825260218152602001806110a46021913960400191505060405180910390fd5b610d56816040518060600160405280602281526020016110c5602291396001600160a01b038516600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038316600090815260016020526040902055600354610d82908263ffffffff610f5c16565b6003556040805182815290516000916001600160a01b038516917fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9181900360200190a35050565b6001600160a01b038216610e25576040805162461bcd60e51b815260206004820152601f60248201527f42455032303a206d696e7420746f20746865207a65726f206164647265737300604482015290519081900360640190fd5b600354610e38908263ffffffff610c6d16565b6003556001600160a01b038216600090815260016020526040902054610e64908263ffffffff610c6d16565b6001600160a01b03831660008181526001602090815260408083209490945583518581529351929391927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9281900390910190a35050565b6001600160a01b038116610f015760405162461bcd60e51b8152600401808060200182810382526026815260200180610fe86026913960400191505060405180910390fd5b600080546040516001600160a01b03808516939216917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e091a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b6000610cc783836040518060400160405280601e81526020017f536166654d6174683a207375627472616374696f6e206f766572666c6f770000815250610bd656fe42455032303a207472616e736665722066726f6d20746865207a65726f206164647265737342455032303a20617070726f76652066726f6d20746865207a65726f20616464726573734f776e61626c653a206e6577206f776e657220697320746865207a65726f206164647265737342455032303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e636542455032303a207472616e7366657220616d6f756e7420657863656564732062616c616e636542455032303a207472616e7366657220746f20746865207a65726f206164647265737342455032303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f42455032303a206275726e2066726f6d20746865207a65726f206164647265737342455032303a206275726e20616d6f756e7420657863656564732062616c616e636542455032303a20617070726f766520746f20746865207a65726f2061646472657373a265627a7a72315820cbbd570ae478f6b7abf9c9a5c8c6884cf3f64dded74f7ec3e9b6d0b41122eaff64736f6c63430005100032",
+        "provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "6139f2046ebc1b4bd9a60c79bdbafecf802a0394fb265862a700ccb89da9c794",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "classification": {
+        "class": "quote_token",
+        "label": "BSC USDT",
+        "source": "tracked_global_address_labels",
+        "confidence": "high"
+      },
+      "public_browser": null
+    }
+  },
+  "tracked_taxonomy_checks": {
+    "configured_classes_checked": [
+      "cex_deposit",
+      "cex_hot_wallet",
+      "dex_quoter",
+      "dex_router",
+      "dex_vault",
+      "exchange_aggregator",
+      "lp_position_manager",
+      "permit2",
+      "pool_manager",
+      "quote_token"
+    ],
+    "label_keywords_checked": [
+      "Alpha",
+      "CEX",
+      "DEX",
+      "router",
+      "pool",
+      "bridge",
+      "custody"
+    ],
+    "matches": {
+      "alpha_or_custody": [],
+      "cex": [
+        "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23"
+      ],
+      "dex_router_pool": [],
+      "bridge": [],
+      "zero_address": [],
+      "unlabeled": [
+        "0x3e2bd24ea2aabf4311c3ca61bf5ce290ff52a448",
+        "0xb8210c25df20921538ea35729badc3e0a63520f1"
+      ]
+    }
+  },
+  "quote_token_metadata": {},
+  "endpoint_code_state_in_window": {
+    "upstream_anchor": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "e442c092ca40e9ac939a2eac6608e61e286199fa28662d64f6586c33e40ae312",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    },
+    "target_anchor_minus_one": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "e8804bf814c972e35142f813950340687403e534b3e6b7fd45d9fdef51810567",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    },
+    "target_anchor": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "623ef4d6a90024e16784803bad62c13a5af3d0a6c443dd67dfbb8bad9ce51650",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    },
+    "target_24h_end": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "91f8fab4c5273a23c116cfd8be7c1a87659b9bfbeedbfcff4387493ba23697b5",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    },
+    "target_72h_end": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "9d8681f3e1196ad8d5c130515a5793acb1cba77f747e0465f9560bb4111b1c2e",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    },
+    "target_7d_end": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-mainnet.public.blastapi.io",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "ed1ca6a8cbd8a92528c5f0e54b8ef0449d13e173e29ab62554b6cdf17585d42f",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    }
+  },
+  "current_code_state_supplemental": {
+    "observed_at_head_block": 111020349,
+    "used_for_7d_economics": false,
+    "upstream": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "44571b5a6f920c115d9e6ed5c36f87b490addc887c6bf92edd87fced5306ca73",
+        "cache_builder_sha256": "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9"
+      }
+    },
+    "target": {
+      "state": "empty",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_bytecode": "0x",
+      "provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "7a960a5462bb1482880514ff5cbd68350e598ec40ad6b6fe0ccf81e74975cc44",
+        "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+      }
+    }
+  },
+  "direct_native": {
+    "context_start_timestamp_utc": "2026-07-10T08:22:49+00:00",
+    "context_start_block_inclusive": 109138939,
+    "transactions": [
+      {
+        "identity": "56:0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+        "tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+        "block_number": 109147172,
+        "transaction_index": 16,
+        "timestamp_utc": "2026-07-10T09:24:34+00:00",
+        "timestamp": 1783675474,
+        "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "value_wei": 3002620000000,
+        "value_bnb": "0.00000300262",
+        "nonce": 11806778,
+        "method_selector": "0x",
+        "receipt_status": 1,
+        "receipt_success": true,
+        "gas_used": 21000,
+        "effective_gas_price_wei": 101000000,
+        "gas_paid_wei": 2121000000000,
+        "gas_paid_bnb": "0.000002121",
+        "direction": "inbound",
+        "index_row": {
+          "Txhash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+          "Status": "Success",
+          "Method": "Transfer",
+          "Blockno": "109147172",
+          "DateTime": "2026-07-10 09:24:34",
+          "Sender": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "SenderLable": "Bitget 6",
+          "Receiver": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+          "ReceiverLable": "",
+          "Amount": "0.000003002 BNB",
+          "Value": "$0.00",
+          "TxnFee": "0.00000212"
+        },
+        "counterparty": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "counterparty_label": "Bitget 6",
+        "counterparty_class": "cex_or_exchange_labeled",
+        "label_source": "public_bscscan_exact_address_title",
+        "label_confidence": "medium",
+        "counterparty_historical_code_state": "empty"
+      },
+      {
+        "identity": "56:0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+        "tx_hash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+        "block_number": 109147238,
+        "transaction_index": 49,
+        "timestamp_utc": "2026-07-10T09:25:03+00:00",
+        "timestamp": 1783675503,
+        "from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "to": "0x55d398326f99059ff775485246999027b3197955",
+        "value_wei": 0,
+        "value_bnb": "0",
+        "nonce": 10,
+        "method_selector": "0xa9059cbb",
+        "receipt_status": 1,
+        "receipt_success": true,
+        "gas_used": 29727,
+        "effective_gas_price_wei": 101000000,
+        "gas_paid_wei": 3002427000000,
+        "gas_paid_bnb": "0.000003002427",
+        "direction": "zero_value_or_failed",
+        "index_row": {
+          "Txhash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+          "Status": "Success",
+          "Method": "Transfer",
+          "Blockno": "109147238",
+          "DateTime": "2026-07-10 09:25:03",
+          "Sender": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+          "SenderLable": "",
+          "Receiver": "0x55d398326f99059ff775485246999027b3197955",
+          "ReceiverLable": "BUSD-T Stablecoin",
+          "Amount": "0 BNB",
+          "Value": "$0.00",
+          "TxnFee": "0.000003"
+        },
+        "counterparty": "0x55d398326f99059ff775485246999027b3197955",
+        "counterparty_label": "BSC USDT",
+        "counterparty_class": "quote_token",
+        "label_source": "tracked_global_address_labels",
+        "label_confidence": "high",
+        "counterparty_historical_code_state": "code_present"
+      },
+      {
+        "identity": "56:0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+        "tx_hash": "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+        "block_number": 109150969,
+        "transaction_index": 23,
+        "timestamp_utc": "2026-07-10T09:53:03+00:00",
+        "timestamp": 1783677183,
+        "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "to": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "value_wei": 3004085000000,
+        "value_bnb": "0.000003004085",
+        "nonce": 11807240,
+        "method_selector": "0x",
+        "receipt_status": 1,
+        "receipt_success": true,
+        "gas_used": 21000,
+        "effective_gas_price_wei": 101000000,
+        "gas_paid_wei": 2121000000000,
+        "gas_paid_bnb": "0.000002121",
+        "direction": "inbound",
+        "index_row": {
+          "Txhash": "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+          "Status": "Success",
+          "Method": "Transfer",
+          "Blockno": "109150969",
+          "DateTime": "2026-07-10 09:53:03",
+          "Sender": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "SenderLable": "Bitget 6",
+          "Receiver": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+          "ReceiverLable": "",
+          "Amount": "0.000003004 BNB",
+          "Value": "$0.00",
+          "TxnFee": "0.00000212"
+        },
+        "counterparty": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "counterparty_label": "Bitget 6",
+        "counterparty_class": "cex_or_exchange_labeled",
+        "label_source": "public_bscscan_exact_address_title",
+        "label_confidence": "medium",
+        "counterparty_historical_code_state": "empty"
+      },
+      {
+        "identity": "56:0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de",
+        "tx_hash": "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de",
+        "block_number": 109151035,
+        "transaction_index": 19,
+        "timestamp_utc": "2026-07-10T09:53:33+00:00",
+        "timestamp": 1783677213,
+        "from": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+        "to": "0x55d398326f99059ff775485246999027b3197955",
+        "value_wei": 0,
+        "value_bnb": "0",
+        "nonce": 11,
+        "method_selector": "0xa9059cbb",
+        "receipt_status": 1,
+        "receipt_success": true,
+        "gas_used": 29739,
+        "effective_gas_price_wei": 101000000,
+        "gas_paid_wei": 3003639000000,
+        "gas_paid_bnb": "0.000003003639",
+        "direction": "zero_value_or_failed",
+        "index_row": {
+          "Txhash": "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de",
+          "Status": "Success",
+          "Method": "Transfer",
+          "Blockno": "109151035",
+          "DateTime": "2026-07-10 09:53:33",
+          "Sender": "0x42d2138d26cd9317da1953d069ab305f3bdc7be0",
+          "SenderLable": "",
+          "Receiver": "0x55d398326f99059ff775485246999027b3197955",
+          "ReceiverLable": "BUSD-T Stablecoin",
+          "Amount": "0 BNB",
+          "Value": "$0.00",
+          "TxnFee": "0.000003"
+        },
+        "counterparty": "0x55d398326f99059ff775485246999027b3197955",
+        "counterparty_label": "BSC USDT",
+        "counterparty_class": "quote_token",
+        "label_source": "tracked_global_address_labels",
+        "label_confidence": "high",
+        "counterparty_historical_code_state": "code_present"
+      }
+    ],
+    "counterparties": {
+      "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23": {
+        "historical_code": {
+          "state": "empty",
+          "byte_length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "runtime_bytecode": "0x",
+          "provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "ee1991126f3d30fc805903d0bfc3b7ba7dbf3bc33f603b3881c564b49fba6837",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        },
+        "public_browser": {
+          "url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "available": true,
+          "public_name": null,
+          "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+          "heading": null,
+          "page_provenance": {
+            "schema_version": 2,
+            "builder_sha256": "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9",
+            "source_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+            "bytes": 179477,
+            "errors_before_success": [],
+            "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+            "cache": "current",
+            "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811"
+          }
+        },
+        "classification": {
+          "class": "cex_or_exchange_labeled",
+          "label": "Bitget 6",
+          "source": "public_bscscan_exact_address_title",
+          "confidence": "medium",
+          "public_address_binding": {
+            "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_title_fragment": "0x1ab4973a...7688f8f23",
+            "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+            "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+            "page_sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+            "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811",
+            "checks": {
+              "available": true,
+              "url_matches_full_address": true,
+              "source_url_matches_full_address": true,
+              "reader_url_matches_full_address": true,
+              "title_address_fragment_matches": true,
+              "title_present": true,
+              "page_sha256_valid": true,
+              "cache_meta_sha256_valid": true,
+              "page_bytes_positive": true,
+              "fetched_at_utc_present": true
+            },
+            "valid": true
+          }
+        }
+      },
+      "0x55d398326f99059ff775485246999027b3197955": {
+        "historical_code": {
+          "state": "code_present",
+          "byte_length": 4413,
+          "sha256": "a5a6d887c581c25cba4104e4281a530044ba59d718e62cdaa80ef89900299d50",
+          "runtime_bytecode": "0x608060405234801561001057600080fd5b506004361061012c5760003560e01c8063893d20e8116100ad578063a9059cbb11610071578063a9059cbb1461035a578063b09f126614610386578063d28d88521461038e578063dd62ed3e14610396578063f2fde38b146103c45761012c565b8063893d20e8146102dd5780638da5cb5b1461030157806395d89b4114610309578063a0712d6814610311578063a457c2d71461032e5761012c565b806332424aa3116100f457806332424aa31461025c578063395093511461026457806342966c681461029057806370a08231146102ad578063715018a6146102d35761012c565b806306fdde0314610131578063095ea7b3146101ae57806318160ddd146101ee57806323b872dd14610208578063313ce5671461023e575b600080fd5b6101396103ea565b6040805160208082528351818301528351919283929083019185019080838360005b8381101561017357818101518382015260200161015b565b50505050905090810190601f1680156101a05780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6101da600480360360408110156101c457600080fd5b506001600160a01b038135169060200135610480565b604080519115158252519081900360200190f35b6101f661049d565b60408051918252519081900360200190f35b6101da6004803603606081101561021e57600080fd5b506001600160a01b038135811691602081013590911690604001356104a3565b610246610530565b6040805160ff9092168252519081900360200190f35b610246610539565b6101da6004803603604081101561027a57600080fd5b506001600160a01b038135169060200135610542565b6101da600480360360208110156102a657600080fd5b5035610596565b6101f6600480360360208110156102c357600080fd5b50356001600160a01b03166105b1565b6102db6105cc565b005b6102e5610680565b604080516001600160a01b039092168252519081900360200190f35b6102e561068f565b61013961069e565b6101da6004803603602081101561032757600080fd5b50356106ff565b6101da6004803603604081101561034457600080fd5b506001600160a01b03813516906020013561077c565b6101da6004803603604081101561037057600080fd5b506001600160a01b0381351690602001356107ea565b6101396107fe565b61013961088c565b6101f6600480360360408110156103ac57600080fd5b506001600160a01b03813581169160200135166108e7565b6102db600480360360208110156103da57600080fd5b50356001600160a01b0316610912565b60068054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b820191906000526020600020905b81548152906001019060200180831161045957829003601f168201915b5050505050905090565b600061049461048d610988565b848461098c565b50600192915050565b60035490565b60006104b0848484610a78565b610526846104bc610988565b6105218560405180606001604052806028815260200161100e602891396001600160a01b038a166000908152600260205260408120906104fa610988565b6001600160a01b03168152602081019190915260400160002054919063ffffffff610bd616565b61098c565b5060019392505050565b60045460ff1690565b60045460ff1681565b600061049461054f610988565b846105218560026000610560610988565b6001600160a01b03908116825260208083019390935260409182016000908120918c16815292529020549063ffffffff610c6d16565b60006105a96105a3610988565b83610cce565b506001919050565b6001600160a01b031660009081526001602052604090205490565b6105d4610988565b6000546001600160a01b03908116911614610636576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b600080546040516001600160a01b03909116907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0908390a3600080546001600160a01b0319169055565b600061068a61068f565b905090565b6000546001600160a01b031690565b60058054604080516020601f60026000196101006001881615020190951694909404938401819004810282018101909252828152606093909290918301828280156104765780601f1061044b57610100808354040283529160200191610476565b6000610709610988565b6000546001600160a01b0390811691161461076b576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b6105a9610776610988565b83610dca565b6000610494610789610988565b846105218560405180606001604052806025815260200161107f60259139600260006107b3610988565b6001600160a01b03908116825260208083019390935260409182016000908120918d1681529252902054919063ffffffff610bd616565b60006104946107f7610988565b8484610a78565b6005805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b820191906000526020600020905b81548152906001019060200180831161086757829003601f168201915b505050505081565b6006805460408051602060026001851615610100026000190190941693909304601f810184900484028201840190925281815292918301828280156108845780601f1061085957610100808354040283529160200191610884565b6001600160a01b03918216600090815260026020908152604080832093909416825291909152205490565b61091a610988565b6000546001600160a01b0390811691161461097c576040805162461bcd60e51b815260206004820181905260248201527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604482015290519081900360640190fd5b61098581610ebc565b50565b3390565b6001600160a01b0383166109d15760405162461bcd60e51b8152600401808060200182810382526024815260200180610fc46024913960400191505060405180910390fd5b6001600160a01b038216610a165760405162461bcd60e51b81526004018080602001828103825260228152602001806110e76022913960400191505060405180910390fd5b6001600160a01b03808416600081815260026020908152604080832094871680845294825291829020859055815185815291517f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b9259281900390910190a3505050565b6001600160a01b038316610abd5760405162461bcd60e51b8152600401808060200182810382526025815260200180610f9f6025913960400191505060405180910390fd5b6001600160a01b038216610b025760405162461bcd60e51b815260040180806020018281038252602381526020018061105c6023913960400191505060405180910390fd5b610b4581604051806060016040528060268152602001611036602691396001600160a01b038616600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038085166000908152600160205260408082209390935590841681522054610b7a908263ffffffff610c6d16565b6001600160a01b0380841660008181526001602090815260409182902094909455805185815290519193928716927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef92918290030190a3505050565b60008184841115610c655760405162461bcd60e51b81526004018080602001828103825283818151815260200191508051906020019080838360005b83811015610c2a578181015183820152602001610c12565b50505050905090810190601f168015610c575780820380516001836020036101000a031916815260200191505b509250505060405180910390fd5b505050900390565b600082820183811015610cc7576040805162461bcd60e51b815260206004820152601b60248201527f536166654d6174683a206164646974696f6e206f766572666c6f770000000000604482015290519081900360640190fd5b9392505050565b6001600160a01b038216610d135760405162461bcd60e51b81526004018080602001828103825260218152602001806110a46021913960400191505060405180910390fd5b610d56816040518060600160405280602281526020016110c5602291396001600160a01b038516600090815260016020526040902054919063ffffffff610bd616565b6001600160a01b038316600090815260016020526040902055600354610d82908263ffffffff610f5c16565b6003556040805182815290516000916001600160a01b038516917fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9181900360200190a35050565b6001600160a01b038216610e25576040805162461bcd60e51b815260206004820152601f60248201527f42455032303a206d696e7420746f20746865207a65726f206164647265737300604482015290519081900360640190fd5b600354610e38908263ffffffff610c6d16565b6003556001600160a01b038216600090815260016020526040902054610e64908263ffffffff610c6d16565b6001600160a01b03831660008181526001602090815260408083209490945583518581529351929391927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9281900390910190a35050565b6001600160a01b038116610f015760405162461bcd60e51b8152600401808060200182810382526026815260200180610fe86026913960400191505060405180910390fd5b600080546040516001600160a01b03808516939216917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e091a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b6000610cc783836040518060400160405280601e81526020017f536166654d6174683a207375627472616374696f6e206f766572666c6f770000815250610bd656fe42455032303a207472616e736665722066726f6d20746865207a65726f206164647265737342455032303a20617070726f76652066726f6d20746865207a65726f20616464726573734f776e61626c653a206e6577206f776e657220697320746865207a65726f206164647265737342455032303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e636542455032303a207472616e7366657220616d6f756e7420657863656564732062616c616e636542455032303a207472616e7366657220746f20746865207a65726f206164647265737342455032303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f42455032303a206275726e2066726f6d20746865207a65726f206164647265737342455032303a206275726e20616d6f756e7420657863656564732062616c616e636542455032303a20617070726f766520746f20746865207a65726f2061646472657373a265627a7a72315820cbbd570ae478f6b7abf9c9a5c8c6884cf3f64dded74f7ec3e9b6d0b41122eaff64736f6c63430005100032",
+          "provenance": {
+            "provider": "https://bsc-mainnet.public.blastapi.io",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "135169788ef612c1f5f4e85c7ec2d46709c93f9f6cb5e5a357acec8b6658e5a8",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        },
+        "public_browser": null,
+        "classification": {
+          "class": "quote_token",
+          "label": "BSC USDT",
+          "source": "tracked_global_address_labels",
+          "confidence": "high"
+        }
+      }
+    },
+    "coverage": {
+      "source_type": "bscscan_public_full_address_normal_pages_plus_canonical_rpc",
+      "page_size": 100,
+      "pages": [
+        {
+          "page": 1,
+          "source_url": "https://bscscan.com/txs?a=0x42d2138d26cd9317da1953d069ab305f3bdc7be0&p=1&ps=100",
+          "row_count": 23,
+          "html_sha256": "38e024cd7eebd128d6d67544d5afc329595b306b4ffdb0be7c71f48eb93f95f9",
+          "html_bytes": 247359,
+          "cache": "current",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763",
+          "cache_meta_sha256": "c878dc10caac23bf4e4ec4026c717c531789c77b1424ab106386030e569a1898",
+          "retry_count": 0,
+          "errors_before_success": []
+        },
+        {
+          "page": 2,
+          "source_url": "https://bscscan.com/txs?a=0x42d2138d26cd9317da1953d069ab305f3bdc7be0&p=2&ps=100",
+          "row_count": 0,
+          "html_sha256": "39fcee02303796b578863ae8da255a42f7cebb5a22f9493f50b14bff70d4a5e1",
+          "html_bytes": 113565,
+          "cache": "current",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763",
+          "cache_meta_sha256": "f313a070fe1209a9157fe3722a6957951fe39a86f9017cee4340ed084e0dbaa9",
+          "retry_count": 0,
+          "errors_before_success": []
+        }
+      ],
+      "missing_pages": [],
+      "terminal_empty_page": 2,
+      "full_address_indexed_row_count": 23,
+      "context_start_block_inclusive": 109138939,
+      "end_block_exclusive": 110490582,
+      "selected_index_row_count": 4,
+      "canonical_transaction_count": 4,
+      "excluded_before_context_count": 19,
+      "excluded_before_context_rows_sha256": "c1f6469c084b37d3277bff62973443ab15d14afbaeb3801922f2887ddd26cf32",
+      "excluded_at_or_after_7d_count": 0,
+      "excluded_at_or_after_7d_rows_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "canonical_identity_conflict_count": 0,
+      "receipt_mismatch_count": 0,
+      "rpc_provenance_by_transaction": {
+        "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de": {
+          "transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "d108a182015ecd9a3d21216967d1f09730509dd0417dfdd9016ca90a398d04df",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "receipt": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "18b35a3517d4b38723c946ca3959fc5bbd7afb9b44108d7a0c6afed7451ef79f",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "3b36517284c0ee549101417f871d8d57abee03c175c3299362a2447ec4efbd05",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block_position_transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "6dc156d111dc78e8728302ea5a5661d78a8295cb5fd47e2e6fa9249e5c59c35a",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        },
+        "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7": {
+          "transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "8bf59453cf2f5720bea3f9bd17bc733535d5c922fa945bc491872813d53b8c97",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "receipt": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "899c467b39e18014b9bd9650f8954c780c8256e1deb924cbe0ed2ca0a917a76a",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "474a13153c1c166b69e1fc0440b9afc2c8ed75b51bb10c73021012b03d6b8ab6",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block_position_transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "0bcb7231f3b8cd9f9ad96e1b6b55cab977cfc9835600a511151f501b15f15cff",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        },
+        "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518": {
+          "transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "2501da1b0ae09adfb42821770a0ef94b15197fe1fe65ebab577a5622db8bf8bc",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "receipt": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "16b14835886463ef86c5180501127fcb53e0e053678a0176db65acfce6d1a58b",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "d6765230f556ba7a16aa76eb28d96afcaa4f7ad9232401ebfe0ec7ea36b20891",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block_position_transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "81d2939c6f0dae41db7806b96d933ed80b3c96303518865d9dfa77072b93dfef",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        },
+        "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439": {
+          "transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "30754fc70c08d4323f3de89672c9228f577337da93308bdb5d4febe1f2d8ebb7",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "receipt": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "e0866e721ba6d6fe2406c6d398baffe6b04174c6c71d7a15773020e052216459",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "8fa978461e6d671822d1ab821182f37f1725aea503ca6875e685fea9a11edee8",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          },
+          "block_position_transaction": {
+            "provider": "https://bsc-dataseed.binance.org",
+            "errors_before_success": [],
+            "cache": "current",
+            "cache_schema_version": 2,
+            "cache_sha256": "6b1af1dcd0ff1e32dec8810f35cadcf62f9d2ba82b2bdd103a723a8ade5314ce",
+            "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+          }
+        }
+      },
+      "coverage_complete": true
+    },
+    "windows": {
+      "24h": {
+        "start_block_inclusive": 109146940,
+        "end_block_exclusive": 109338898,
+        "opening_balance_wei": 1333797000000,
+        "opening_balance_bnb": "0.000001333797",
+        "direct_in_wei": 6006705000000,
+        "direct_in_bnb": "0.000006006705",
+        "direct_out_wei": 0,
+        "direct_out_bnb": "0",
+        "gas_paid_wei": 6006066000000,
+        "gas_paid_bnb": "0.000006006066",
+        "ending_balance_wei": 1334436000000,
+        "ending_balance_bnb": "0.000001334436",
+        "unexplained_state_residual_wei": 0,
+        "unexplained_state_residual_bnb": "0",
+        "direct_plus_gas_reconciles": true,
+        "normal_transaction_count": 4,
+        "opening_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9e7a1bfc9092432b62d9bb9cc3b3407c771527449efc502e274147317779e3ed",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "ending_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "55db23f075d50a991995b143ba621c4639cc8bd1e163235a12aab513765be0c6",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "internal_native_coverage": "unavailable_via_bounded_standard_public_rpc"
+      },
+      "72h": {
+        "start_block_inclusive": 109146940,
+        "end_block_exclusive": 109722816,
+        "opening_balance_wei": 1333797000000,
+        "opening_balance_bnb": "0.000001333797",
+        "direct_in_wei": 6006705000000,
+        "direct_in_bnb": "0.000006006705",
+        "direct_out_wei": 0,
+        "direct_out_bnb": "0",
+        "gas_paid_wei": 6006066000000,
+        "gas_paid_bnb": "0.000006006066",
+        "ending_balance_wei": 1334436000000,
+        "ending_balance_bnb": "0.000001334436",
+        "unexplained_state_residual_wei": 0,
+        "unexplained_state_residual_bnb": "0",
+        "direct_plus_gas_reconciles": true,
+        "normal_transaction_count": 4,
+        "opening_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9e7a1bfc9092432b62d9bb9cc3b3407c771527449efc502e274147317779e3ed",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "ending_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "b77fb3d867390148150bb904038a13a432fdb2f9164ba84f666fa6da12e51496",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "internal_native_coverage": "unavailable_via_bounded_standard_public_rpc"
+      },
+      "7d": {
+        "start_block_inclusive": 109146940,
+        "end_block_exclusive": 110490582,
+        "opening_balance_wei": 1333797000000,
+        "opening_balance_bnb": "0.000001333797",
+        "direct_in_wei": 6006705000000,
+        "direct_in_bnb": "0.000006006705",
+        "direct_out_wei": 0,
+        "direct_out_bnb": "0",
+        "gas_paid_wei": 6006066000000,
+        "gas_paid_bnb": "0.000006006066",
+        "ending_balance_wei": 1334436000000,
+        "ending_balance_bnb": "0.000001334436",
+        "unexplained_state_residual_wei": 0,
+        "unexplained_state_residual_bnb": "0",
+        "direct_plus_gas_reconciles": true,
+        "normal_transaction_count": 4,
+        "opening_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "9e7a1bfc9092432b62d9bb9cc3b3407c771527449efc502e274147317779e3ed",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "ending_balance_provenance": {
+          "provider": "https://bsc-mainnet.public.blastapi.io",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "3fb0e28e3f6c860fa3e27dd9d88c8bd179d4e74642ceec7714898669f5953748",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "internal_native_coverage": "unavailable_via_bounded_standard_public_rpc"
+      }
+    },
+    "role_evidence": {
+      "cex_labeled_gas_topups": [
+        {
+          "tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+          "timestamp_utc": "2026-07-10T09:24:34+00:00",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_wei": 3002620000000,
+          "value_bnb": "0.00000300262",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        },
+        {
+          "tx_hash": "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+          "timestamp_utc": "2026-07-10T09:53:03+00:00",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_wei": 3004085000000,
+          "value_bnb": "0.000003004085",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        }
+      ],
+      "other_direct_inbound": [],
+      "interpretation": "direct gas-funding path fact; ownership and common control remain unresolved"
+    },
+    "internal_native": {
+      "coverage": "gap",
+      "reason": "bounded standard public RPC does not provide a complete address-level internal trace index",
+      "used_for_economic_disposition": false
+    }
+  },
+  "dust": {
+    "threshold_raw_inclusive": 10000000000000000,
+    "threshold_usdt": "0.01",
+    "fixed_before_event_review": true,
+    "opening_inventory_at_anchor_raw": 0,
+    "opening_inventory_at_anchor_usdt": "0",
+    "opening_inventory_is_under_threshold": true,
+    "opening_inventory_ownership": "unknown",
+    "post_anchor_event_count": 0,
+    "event_count": 0,
+    "inbound_raw": 0,
+    "outbound_raw": 0,
+    "events": [],
+    "similarity": [],
+    "address_mimic_event_count": 0,
+    "interpretation": "address_poisoning_or_route_residue_candidate_unresolved",
+    "ownership_or_common_control": "unresolved"
+  },
+  "disposition": {
+    "branch_amount_raw": 85594000000000000000000,
+    "branch_amount_usdt": "85594",
+    "confirmed_sell_out_upstream_fact_retained": true,
+    "closed_by_explicit_economic_evidence_raw": 85594000000000000000000,
+    "closed_by_explicit_economic_evidence_usdt": "85594",
+    "retained_at_target_7d_raw": 0,
+    "retained_at_target_7d_usdt": "0",
+    "transferred_without_closure_raw": 0,
+    "transferred_without_closure_usdt": "0",
+    "state": "closed_by_explicit_economic_evidence",
+    "economic_disposition_closed": true,
+    "hard_stop_triggered": false,
+    "hard_stop_paths": [],
+    "recursion_beyond_unlabeled_eoa_performed": false,
+    "ownership": "unresolved",
+    "common_control": "unresolved",
+    "ultimate_beneficiary": "unresolved",
+    "balance_decline_alone_is_cash_out": false
+  },
+  "strategy_gap": {
+    "decision": "evidence_only_no_runtime_or_verifier_change",
+    "prior_positive_fixture_retained": {
+      "id": "ake_sell_proceeds_506483_usdt_second_hop",
+      "coverage": "target_24h_72h_7d_with_fifo_balance_receipt_and_public-explorer Bitget custody ingress",
+      "source_verification": "input/ake_usdt_506483_branch_verification_2026-07-20.json"
+    },
+    "current_branch_fixture": {
+      "id": "ake_sell_proceeds_85594_usdt_second_hop",
+      "disposition_state": "closed_by_explicit_economic_evidence",
+      "economic_disposition_closed": true,
+      "closure_kinds": [
+        "public_explorer_cex_custody_ingress"
+      ],
+      "public_labels": [
+        {
+          "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "class": "cex_or_exchange_labeled",
+          "label": "Bitget 6",
+          "source": "public_bscscan_exact_address_title",
+          "confidence": "medium",
+          "public_address_binding": {
+            "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_title_fragment": "0x1ab4973a...7688f8f23",
+            "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+            "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+            "page_sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+            "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811",
+            "checks": {
+              "available": true,
+              "url_matches_full_address": true,
+              "source_url_matches_full_address": true,
+              "reader_url_matches_full_address": true,
+              "title_address_fragment_matches": true,
+              "title_present": true,
+              "page_sha256_valid": true,
+              "cache_meta_sha256_valid": true,
+              "page_bytes_positive": true,
+              "fetched_at_utc_present": true
+            },
+            "valid": true
+          }
+        }
+      ],
+      "cex_labeled_direct_topups": [
+        {
+          "tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_bnb": "0.00000300262",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        },
+        {
+          "tx_hash": "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_bnb": "0.000003004085",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        }
+      ],
+      "pure_transfer_without_same_receipt_quote_observed": true,
+      "guard": "DEX closure requires same-receipt quote recovery; CEX closure requires a tracked high-confidence label or a fully bound, custody-semantic exact-address public label"
+    },
+    "runtime_gap_retained": "token-driven AKE runtime does not provide an independent post-sell USDT proceeds ledger and FIFO coverage gate",
+    "public_explorer_label_policy_gap": {
+      "state": "policy_fixtures_insufficient",
+      "current_observations": [
+        {
+          "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "class": "cex_or_exchange_labeled",
+          "label": "Bitget 6",
+          "source": "public_bscscan_exact_address_title",
+          "confidence": "medium",
+          "public_address_binding": {
+            "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_url": "https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_reader_url": "https://r.jina.ai/https://bscscan.com/address/0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+            "expected_title_fragment": "0x1ab4973a...7688f8f23",
+            "title": "Bitget 6 | Address: 0x1ab4973a...7688f8f23 | BscScan",
+            "fetched_at_utc": "2026-07-20T03:39:25.190437+00:00",
+            "page_sha256": "56a02c3efba2c7afe5e91a1f550e67af5b1693bec0834421ac8166f8865e3f0e",
+            "cache_meta_sha256": "ad4b905f1a364a8498e50619bcb8faadbe463ab01b3b286d0107a917178c4811",
+            "checks": {
+              "available": true,
+              "url_matches_full_address": true,
+              "source_url_matches_full_address": true,
+              "reader_url_matches_full_address": true,
+              "title_address_fragment_matches": true,
+              "title_present": true,
+              "page_sha256_valid": true,
+              "cache_meta_sha256_valid": true,
+              "page_bytes_positive": true,
+              "fetched_at_utc_present": true
+            },
+            "valid": true
+          }
+        }
+      ],
+      "missing_negative_fixtures": [
+        "label disappears or changes across snapshots",
+        "ambiguous or spoofed exchange-like title",
+        "page unavailable partial or hash mismatch",
+        "exchange service address that is not custody ingress"
+      ]
+    },
+    "micro_cex_gas_priming_threshold_gap": {
+      "state": "policy_fixtures_insufficient",
+      "observed_current_cex_topups": [
+        {
+          "tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_bnb": "0.00000300262",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        },
+        {
+          "tx_hash": "0x4e478b02f18e0046606eec6065c573db1b46a33b1669e63eedcb8810e10d5df7",
+          "from": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+          "value_bnb": "0.000003004085",
+          "label": "Bitget 6",
+          "label_source": "public_bscscan_exact_address_title"
+        }
+      ],
+      "runtime_default_min_bnb": "0.001",
+      "runtime_default_is_times_smallest_observed": "333.042476237419320460131485169618533147717659910344965396886718932132604192338690876634406",
+      "verifier_current_positive_bnb": "0.002",
+      "runtime_source": "scripts/alpha_intraday_flow_watch.py",
+      "verifier_source": "scripts/verify_sniper_engine.py",
+      "rule_change_authorized": false,
+      "missing_negative_fixtures": [
+        "non-CEX micro transfer",
+        "timing-window miss",
+        "funding amount inconsistent with subsequent gas",
+        "no subsequent token deposit",
+        "failed transaction and internal-native partial coverage"
+      ]
+    },
+    "fixtures_still_required": [
+      "tracked/configured CEX closure paired with stale or ambiguous public-label negatives",
+      "same-receipt USDT-out plus verified quote-in DEX closure",
+      "explicit bridge and custody closure",
+      "opening inventory above zero with multiple proceeds lots",
+      "failed removed reorged metadata-incomplete and page-partial observations",
+      "paired direct-native and complete internal-native trace coverage"
+    ],
+    "deployment_required": false
+  },
+  "coverage": {
+    "hard_stop": "7d",
+    "observation_start_utc": "2026-07-10T09:22:49+00:00",
+    "observation_end_utc": "2026-07-17T09:22:49+00:00",
+    "boundary_blocks": {
+      "24h": 109338898,
+      "72h": 109722816,
+      "7d": 110490582
+    },
+    "pre_anchor_same_block_event_count": 0,
+    "pre_anchor_same_block_events": [],
+    "logs": {
+      "source_type": "bscscan_public_full_address_token_pages_plus_canonical_receipts",
+      "start_block_inclusive": 109146940,
+      "end_block_exclusive": 110490582,
+      "page_size": 100,
+      "fetched_pages": 2,
+      "missing_pages": [],
+      "terminal_empty_page": 2,
+      "single_data_page_guard_passed": true,
+      "full_address_token_history_row_count": 34,
+      "exact_token_contract_row_count": 14,
+      "exact_token_contract_unique_transaction_count": 14,
+      "receipt_reconstructed_exact_event_count": 14,
+      "excluded_exact_events_outside_requested_range": 10,
+      "canonical_event_count": 4,
+      "canonical_identity_conflict_count": 0,
+      "same_filter_duplicate_count": 0,
+      "direction_overlap_count": 0,
+      "deduplicated_observation_count": 0,
+      "pages": [
+        {
+          "page": 1,
+          "source_url": "https://bscscan.com/tokentxns?a=0x42d2138d26cd9317da1953d069ab305f3bdc7be0&p=1&ps=100",
+          "row_count": 34,
+          "exact_token_contract_row_count": 14,
+          "html_sha256": "802275a02a8701ab3902fe82457323f50bdf71090f803fc9bc1557594ffee5b5",
+          "html_bytes": 308742,
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763",
+          "cache_meta_sha256": "7c4f0ddbd59d29af1fbd35538b9eebde55d14cbb161a94ddedf419e26a8a678a",
+          "cache": "current",
+          "retry_count": 0,
+          "errors_before_success": []
+        },
+        {
+          "page": 2,
+          "source_url": "https://bscscan.com/tokentxns?a=0x42d2138d26cd9317da1953d069ab305f3bdc7be0&p=2&ps=100",
+          "row_count": 0,
+          "exact_token_contract_row_count": 0,
+          "html_sha256": "0cab8462bcc08b7b8428b7dbece626dbef21627fb58a8a13fee51ef55cd32f8f",
+          "html_bytes": 86463,
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763",
+          "cache_meta_sha256": "14e0f838ada19477757f96db4729d6ff90c6f74559e2c7a50036ebfa405f337f",
+          "cache": "current",
+          "retry_count": 0,
+          "errors_before_success": []
+        }
+      ],
+      "index_receipt_provenance": {
+        "0x0590355b7467a4331861f805358e1126dc633df723aa6af90d25ce74b21614ce": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "42eed56418a68faa11a092986681597723267b5fa771fda43060e4c7f9c351f0",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0x13bfb234a86553cd88f1614953a2988cf0f3a0762f4e62a7e64dbc6b24d2ff34": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5048b2801400f29f5591493c08e53cc7860882416df8f58244b9ebd1f2dbdc2f",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0x158ca04ec1ca696dcae37f36babc5032fa1c7221ae8c1d99d15d65284b5ef019": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "94bb5fbf717be21b5d5f4848968155a4c1a96df40afac925493dff4c6f4f677c",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "62adfc8ec08e9455c920410af4440d51f23940f47c1158c320cd253a81bd5e10",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0x5fca988be56cd567cc4654a06301fc505685b40fa5a9fafc0dc340e3e1b0a64e": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "345dcf8447f2ae308713fdf4a3b3bcc994097fe7c015ddf28ed6998285fc8396",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "18b35a3517d4b38723c946ca3959fc5bbd7afb9b44108d7a0c6afed7451ef79f",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xad83a16fc506c37af1abee90d16f6325c8770baa35a888a54e0342c9aff18b23": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "4251418a49c40af0a2d46ed6bbdc6282ffdd50705492f727dccd0c120a83f0bf",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xb629cc04d5dc603e8a9825946b0fc0ccbb506617db78d14afd7009e4d206e1ed": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5ee044901e768f0d8b11d8092310184dc782f4ae93b5e4194945ca09f7490e75",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xc45dd5d6a27c00e7ef15615ea2c6434925ffdf560fc6056af6f589b7cc32262d": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "4004e8bf85496289bcd48237c9ccf92b4c81fe328c293faa71e989516c7c2e99",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xd207fb201279fc1654754e5c82d99108fe4dc0972b7b293c181aeadecd127756": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "49bd309879f2c377d589914e2974b49629e5d1e7d418e565c6d9ac47cdadf229",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5c034d06beb640fd5899650f3204d1af41573781565924f46fef538dfbce9a85",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xd9499a98cb159e1e8a1aaf72f16fcabe83c7992af69f4951df9510f37b658f57": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5e1f85e6c4648d5936e022c3d1a430b43b09ef0d2856adeb1069c8765f5208bf",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "16b14835886463ef86c5180501127fcb53e0e053678a0176db65acfce6d1a58b",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "0xed061e7813ffdad736e0200b5440eecc76d6b44e744288d957d40abaff50d0c0": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "aee3ad9a08505a763b982e5dc947673eb15e8c3fe3b51f8baf646723702b1758",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "coverage_complete": true,
+      "post_anchor_position_canonical_event_count": 4
+    },
+    "canonical_identity": "chain_id:token_contract:tx_hash:log_index",
+    "canonical_identity_conflict_count": 0,
+    "receipt_success_count": 4,
+    "receipt_mismatch_count": 0,
+    "rpc_provenance_by_transaction": {
+      "0x15db0ea36fe55e0b9fbcf3e5f5463af4290681eadd4e31896b7255b58762c5e7": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f6efc7d6dc29b939f4b1f0bc2225b0e30e02a0640d9df17bf528b5c9dc51761c",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "62adfc8ec08e9455c920410af4440d51f23940f47c1158c320cd253a81bd5e10",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "f3035938c63289267ebc42b486f4fe3abf0ff1233cb8621ff3ce3050209970ed",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "2d90af05067dbd0c1516f51b20c698fc08e1a91987feb93cbd5fc77603fd1a3b",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "0x8df8ea64c5b747260bf4a8fded1b76d8a9e52f93f806450d6f324278a02be6de": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d108a182015ecd9a3d21216967d1f09730509dd0417dfdd9016ca90a398d04df",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "18b35a3517d4b38723c946ca3959fc5bbd7afb9b44108d7a0c6afed7451ef79f",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "3b36517284c0ee549101417f871d8d57abee03c175c3299362a2447ec4efbd05",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "6dc156d111dc78e8728302ea5a5661d78a8295cb5fd47e2e6fa9249e5c59c35a",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "0xd2694e218a873e2b4db9e23c0df9b3b34b793b14c46ae741cf5026c6d7bb9276": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "2c6051985e7fd66a0fa92f9eddc0823a0dbb6a9d671f54c9bb95d27508934c16",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "5c034d06beb640fd5899650f3204d1af41573781565924f46fef538dfbce9a85",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "023920f85d53b9e606a1929058a4e8fa284a218a805b268d15010de464df4e97",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "147798dbd3d643721f80072c4e3cf3fe88957b17204204949026bf9c1210eb83",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      },
+      "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518": {
+        "transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "2501da1b0ae09adfb42821770a0ef94b15197fe1fe65ebab577a5622db8bf8bc",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "receipt": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "16b14835886463ef86c5180501127fcb53e0e053678a0176db65acfce6d1a58b",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "d6765230f556ba7a16aa76eb28d96afcaa4f7ad9232401ebfe0ec7ea36b20891",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        },
+        "block_position_transaction": {
+          "provider": "https://bsc-dataseed.binance.org",
+          "errors_before_success": [],
+          "cache": "current",
+          "cache_schema_version": 2,
+          "cache_sha256": "81d2939c6f0dae41db7806b96d933ed80b3c96303518865d9dfa77072b93dfef",
+          "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+        }
+      }
+    },
+    "missing_pages": [],
+    "head_probe": {
+      "block_number": 111020349,
+      "timestamp_utc": "2026-07-20T03:37:24+00:00",
+      "block_number_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "83f8684d4b53ad301a8641d596893bc078fcf53ad822b87f2cd7b7e565d52406",
+        "cache_builder_sha256": "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9"
+      },
+      "block_provenance": {
+        "provider": "https://bsc-dataseed.binance.org",
+        "errors_before_success": [],
+        "cache": "current",
+        "cache_schema_version": 2,
+        "cache_sha256": "5079bc2f8edf7366069298d7eb3342e23fb1a0c19eda6cbfdd2d24f31845331b",
+        "cache_builder_sha256": "27795631bcbda667df751ed876d752507ab87dd0c5f0f8b8587db89cb00a1df9"
+      }
+    },
+    "anchor_block_provenance": {
+      "provider": "https://bsc-dataseed.binance.org",
+      "errors_before_success": [],
+      "cache": "current",
+      "cache_schema_version": 2,
+      "cache_sha256": "f3035938c63289267ebc42b486f4fe3abf0ff1233cb8621ff3ce3050209970ed",
+      "cache_builder_sha256": "fadd6b5727098e280466a5f41f162d82b7b00da7a8345ca3c03b96c1822c0763"
+    },
+    "provider_retry_policy": "maximum three attempts per identical external query; unresolved failure remains a coverage gap",
+    "coverage_gaps": [
+      "complete address-level internal-native traces are unavailable through bounded standard public RPC",
+      "hard stop prevents recursion beyond any newly observed unlabeled EOA",
+      "public explorer labels are point-in-time metadata and do not establish ownership"
+    ]
+  }
+}
