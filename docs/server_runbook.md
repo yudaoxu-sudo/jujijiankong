@@ -242,6 +242,8 @@ FIFO 归因只覆盖当前抓取窗口内可见的 Transfer，窗口开始前余
 
 每个已抽样 receipt 的 `cex_path_sample` 在 `latest.json` 保存完整 from/to/角色，`latest.md` 保存对应完整 tx 和路径明细。
 
+全量 Transfer 层另行生成 event 顶层 `report_only_cex_micro_gas_samples`，并把发现的 blocked candidates 按稳定 ID 去重保存在 `output/alpha_intraday_flow_watch/cex_micro_gas_candidate_history.json`，最多保留 200 条。单个 event 每轮最多审查 5 个 token-ingress 窗口，取证预算为 4 秒；保存 native tx/receipt/value/block/time/source-label provenance、token tx/log/contract/decimals/raw 与 normalized amount/block/time/receipt、严格顺序、窗口 coverage、歧义和独立性字段。该路径固定 `alert_policy=report_only`、`runtime_effect=none`、`action_guard=no_runtime_action_mutation`，不进入 `analyze_rows`、alert key 或 Telegram；现有 `ALPHA_INTRADAY_GAS_PRIMING_MIN_BNB` 动作阈值保持不变。空的 bounded scan 只表示本轮范围内未形成候选，不表示链上 absence。
+
 Binance Alpha 尽调中心的 `CEX 钱包归集资金动态` 可作为 `official` 发现源。界面中的 `+归集` 不直接映射为吸筹、买入、项目方派发或已确认卖出。取得 TXID 并核对 receipt、token contract、from/to、decimals 和已配置 CEX 目标后，未标记来源进入 `unlabeled_to_cex_inflow_candidate` 供给风险门槛；明确项目、operator、mint 或 token-contract 来源进入 `external_to_cex_inflow`。来源实体、经济外部入金、出售意图和下一跳继续独立标记。无法取得 TXID 或目标地址标签冲突时保持 pending，并进入人工复核。
 
 其中 `cex_withdrawal_cluster` 只生成 `report_only` 候选。提款集群与 runtime CEX 候选链路共用一轮带 coverage 的 Token Transfer 分段抓取；模块原有的主交易抽样查询仍是独立读取。coverage 记录请求区间、完成分段数、最后覆盖块、返回日志数和上限。只有请求区间完整覆盖且未触发日志上限时才移除 `log_window_completeness`。同一批日志会计算每个候选收款地址在首次集群入账前的同币种入账次数；`new_to_token_in_window` 只表示完整扫描窗口内未见更早的同币种入账，不代表新钱包或全链历史完整。

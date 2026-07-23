@@ -281,6 +281,7 @@ def quick_rpc_call(chain: str, method: str, params: list[Any], timeout: int) -> 
 
 def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
     topics = log.get("topics", [])
+    amount_raw = int(log.get("data") or "0x0", 16)
     return {
         "token": norm(log.get("address")),
         "block": int(log.get("blockNumber") or "0x0", 16),
@@ -288,7 +289,9 @@ def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
         "log_index": int(log.get("logIndex") or "0x0", 16),
         "from": topic_addr(topics[1]) if len(topics) > 1 else "",
         "to": topic_addr(topics[2]) if len(topics) > 2 else "",
-        "amount": decimal_amount(int(log.get("data") or "0x0", 16), decimals),
+        "amount_raw": str(amount_raw),
+        "decimals": decimals,
+        "amount": decimal_amount(amount_raw, decimals),
     }
 
 

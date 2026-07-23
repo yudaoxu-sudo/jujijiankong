@@ -3274,6 +3274,200 @@ gas_analysis = module.analyze_rows(
 gas_text = module.telegram_text({'events': [{**event, 'analysis': gas_analysis}], 'new_alert_count': 1})
 assert 'CEX打gas后代币进入CEX充值/热钱包' in gas_analysis['trade_signal'], gas_analysis
 assert 'CEX打gas≈0.002 BNB / 1 次' in gas_text and '买卖信号: ❗' in gas_text, gas_text
+
+micro_recipient = '0x' + '7' * 40
+micro_gas_tx = '0x' + '6' * 64
+micro_after_tx = '0x' + '4' * 64
+micro_token_tx = '0x' + '5' * 64
+micro_transfer = {
+    'token': event['token']['address'],
+    'from': micro_recipient,
+    'to': hot,
+    'amount_raw': str(123456 * 10**18),
+    'decimals': 18,
+    'amount': module.Decimal('123456'),
+    'block': 150,
+    'log_index': 7,
+    'tx': micro_token_tx,
+}
+micro_path = module.classify_cex_transfer_paths(path_event, [micro_transfer])[0]
+assert micro_path['tx'] == micro_token_tx and micro_path['log_index'] == 7, micro_path
+assert micro_path['token_contract'] == event['token']['address'], micro_path
+assert micro_path['token_decimals'] == 18, micro_path
+
+real_block_transactions = module.block_transactions
+real_block_timestamp_utc = module.block_timestamp_utc
+real_global_address_label = module.opening.global_address_label
+real_micro_quick_rpc = module.opening.quick_rpc_call
+old_gas_lookback = os.environ.get('ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS')
+os.environ['ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS'] = '2'
+module.block_transactions = lambda chain, block, timeout: (
+    [{
+        'from': hot,
+        'to': micro_recipient,
+        'value': hex(3_000_000_000_000),
+        'hash': micro_gas_tx,
+        'transactionIndex': '0x3',
+    }]
+    if block == 149
+    else [{
+        'from': hot,
+        'to': micro_recipient,
+        'value': hex(2_000_000_000_000),
+        'hash': micro_after_tx,
+        'transactionIndex': '0x5',
+    }]
+    if block == 150
+    else []
+)
+module.block_timestamp_utc = lambda chain, block, timeout: (
+    '2026-07-23T00:00:03Z' if block == 150 else '2026-07-23T00:00:00Z'
+)
+module.opening.global_address_label = lambda chain, address: (
+    {
+        'address': hot,
+        'class': 'cex_hot_wallet',
+        'exchange': 'FixtureEx',
+        'label': 'Fixture Hot',
+        'evidence': 'fixture exact-address label',
+    }
+    if address == hot
+    else None
+)
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: (
+    {
+        'transactionHash': micro_gas_tx,
+        'blockNumber': hex(149),
+        'transactionIndex': '0x3',
+        'status': '0x1',
+        'from': hot,
+        'to': micro_recipient,
+    }
+    if method == 'eth_getTransactionReceipt' and params == [micro_gas_tx]
+    else {
+        'transactionHash': micro_token_tx,
+        'blockNumber': hex(150),
+        'transactionIndex': '0x4',
+        'status': '0x1',
+        'logs': [{
+            'address': event['token']['address'],
+            'blockNumber': hex(150),
+            'transactionHash': micro_token_tx,
+            'logIndex': hex(7),
+            'topics': [
+                module.opening.TRANSFER_TOPIC,
+                '0x' + '0' * 24 + micro_recipient[2:],
+                '0x' + '0' * 24 + hot[2:],
+            ],
+            'data': hex(123456 * 10**18),
+        }],
+    }
+    if method == 'eth_getTransactionReceipt' and params == [micro_token_tx]
+    else real_micro_quick_rpc(chain, method, params, timeout)
+)
+expired_rows, expired_coverage = module.native_micro_gas_rows(
+    path_event,
+    micro_recipient,
+    150,
+    4,
+    module.time.monotonic() - 1,
+)
+assert expired_rows == [], expired_rows
+assert expired_coverage['state'] == 'partial_time_budget', expired_coverage
+assert expired_coverage['completed_block_count'] == 0, expired_coverage
+micro_coverage = {
+    'state': 'requested_window_complete',
+    'complete': True,
+    'requested_from_block': 100,
+    'requested_to_block': 200,
+    'covered_through_block': 200,
+    'returned_log_count': 1,
+    'max_logs': 12000,
+}
+micro_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event,
+    [micro_transfer],
+    micro_coverage,
+    {},
+)
+partial_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event,
+    [micro_transfer],
+    {**micro_coverage, 'state': 'partial_rpc_error', 'complete': False},
+    {},
+)
+module.block_transactions = real_block_transactions
+module.block_timestamp_utc = real_block_timestamp_utc
+module.opening.global_address_label = real_global_address_label
+module.opening.quick_rpc_call = real_micro_quick_rpc
+if old_gas_lookback is None:
+    os.environ.pop('ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS', None)
+else:
+    os.environ['ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS'] = old_gas_lookback
+
+assert micro_bundle['candidate_count'] == 1, micro_bundle
+assert micro_bundle['window_reviews'][0]['native_scan_coverage']['state'] == 'requested_window_complete', micro_bundle
+assert micro_bundle['window_reviews'][0]['native_scan_coverage']['after_or_equal_transaction_count'] == 1, micro_bundle
+micro_candidate = micro_bundle['candidates'][0]
+assert micro_candidate['status'] == 'blocked', micro_candidate
+assert micro_candidate['alert_policy'] == 'report_only' and micro_candidate['runtime_effect'] == 'none', micro_candidate
+assert micro_candidate['action_guard'] == 'no_runtime_action_mutation', micro_candidate
+assert micro_candidate['native_gas']['tx'] == micro_gas_tx, micro_candidate
+assert micro_candidate['native_gas']['receipt_status'] == 1, micro_candidate
+assert micro_candidate['native_gas']['value_wei'] == '3000000000000', micro_candidate
+assert micro_candidate['native_gas']['value_native'] == '0.000003', micro_candidate
+assert micro_candidate['native_gas']['source_label']['label'] == 'Fixture Hot', micro_candidate
+assert micro_candidate['token_ingress']['tx'] == micro_token_tx, micro_candidate
+assert micro_candidate['token_ingress']['log_index'] == 7, micro_candidate
+assert micro_candidate['token_ingress']['decimals'] == 18, micro_candidate
+assert micro_candidate['token_ingress']['amount_raw'] == str(123456 * 10**18), micro_candidate
+assert micro_candidate['token_ingress']['amount_normalized'] == '123456', micro_candidate
+assert micro_candidate['token_ingress']['destination_label']['exchange'] == 'FixtureEx', micro_candidate
+assert micro_candidate['pairing']['gas_before_token_seconds'] == 3, micro_candidate
+assert micro_candidate['pairing']['recipient_match'] is True, micro_candidate
+assert micro_candidate['pairing']['exchange_entity_match'] is True, micro_candidate
+assert micro_candidate['independence']['exchange_entity'] == 'FixtureEx', micro_candidate
+assert micro_candidate['pairing']['unique_pairing'] is True, micro_candidate
+assert micro_candidate['pairing']['ambiguity_reasons'] == ['same_block_after_or_equal_native_transfer_observed'], micro_candidate
+assert micro_candidate['coverage']['coverage_complete'] is True, micro_candidate
+assert micro_candidate['independence']['independence_eligible'] is False, micro_candidate
+assert 'unique_gas_to_token_pairing' not in micro_candidate['unresolved_fields'], micro_candidate
+assert 'independent_positive_root_review' in micro_candidate['unresolved_fields'], micro_candidate
+partial_candidate = partial_bundle['candidates'][0]
+assert partial_candidate['status'] == 'blocked' and partial_candidate['pairing']['unique_pairing'] is False, partial_candidate
+assert 'token_transfer_window_coverage_incomplete' in partial_candidate['pairing']['ambiguity_reasons'], partial_candidate
+assert 'unique_gas_to_token_pairing' in partial_candidate['unresolved_fields'], partial_candidate
+micro_event = {
+    **quiet_event,
+    'report_only_cex_micro_gas_samples': micro_bundle,
+}
+assert module.event_alert_keys(micro_event) == []
+assert module.telegram_text({'events': [micro_event], 'new_alert_count': 0}) == module.telegram_text({
+    'events': [quiet_event],
+    'new_alert_count': 0,
+})
+
+micro_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_history_')) / 'cex_micro_gas_candidate_history.json'
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = micro_history_path
+micro_snapshot = {
+    'generated_at': '2026-07-23T00:00:03+00:00',
+    'events': [{
+        **event,
+        'report_only_cex_micro_gas_samples': micro_bundle,
+    }],
+}
+assert module.record_cex_micro_gas_candidate_history(micro_snapshot) == 1
+assert module.record_cex_micro_gas_candidate_history(micro_snapshot) == 1
+micro_history = json.loads(micro_history_path.read_text(encoding='utf-8'))
+assert micro_history['schema'] == 'cex_micro_gas_candidate_history.v1', micro_history
+assert micro_history['max_candidates'] == module.CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX, micro_history
+assert len(micro_history['candidates']) == 1, micro_history
+assert micro_history['candidates'][0]['observation_count'] == 2, micro_history
+assert module.record_cex_micro_gas_candidate_history({
+    'generated_at': '2026-07-23T00:05:03+00:00',
+    'events': [],
+}) == 0
+assert len(json.loads(micro_history_path.read_text(encoding='utf-8'))['candidates']) == 1
 """
     alpha_intraday_cex_result = subprocess.run(
         [sys.executable, "-c", alpha_intraday_cex_code],

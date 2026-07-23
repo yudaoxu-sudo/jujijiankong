@@ -30,6 +30,10 @@ SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 WITHDRAWAL_CANDIDATE_HISTORY_PATH = OUT_DIR / "withdrawal_candidate_history.json"
 WITHDRAWAL_CANDIDATE_HISTORY_MAX = 200
+CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = OUT_DIR / "cex_micro_gas_candidate_history.json"
+CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX = 200
+CEX_MICRO_GAS_ACQUISITION_MAX_WINDOWS = 5
+CEX_MICRO_GAS_ACQUISITION_MAX_SECONDS = 4
 WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS = max(
     1,
     min(int(os.environ.get("ALPHA_INTRADAY_WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS", "2")), 3),
@@ -43,6 +47,7 @@ WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS = 4
 WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
 TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
+BLOCK_TIME_CACHE: dict[tuple[str, int], str | None] = {}
 WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
 
 
@@ -1537,6 +1542,11 @@ def classify_cex_transfer_paths(
             gas_watch_addresses.append(to_addr)
         rows.append(
             {
+                "tx": str(row.get("tx") or ""),
+                "block": int(row.get("block") or 0),
+                "log_index": int(row.get("log_index") or 0),
+                "token_contract": token_address,
+                "token_decimals": int(row.get("decimals") if row.get("decimals") is not None else event["token"]["decimals"]),
                 "from": from_addr,
                 "to": to_addr,
                 "amount": decimal_from(row.get("amount")),
@@ -1729,6 +1739,526 @@ def block_transactions(chain: str, block_number: int, timeout: int) -> list[dict
     return BLOCK_TX_CACHE[key]
 
 
+def rpc_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+    return int(str(value), 16)
+
+
+def acquisition_rpc_timeout(chain: str, deadline: float, configured_timeout: int) -> float | None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    rpc_url_count = max(1, len(opening.rpc_urls(chain)))
+    return min(float(configured_timeout), remaining / rpc_url_count)
+
+
+def block_timestamp_utc(chain: str, block_number: int, timeout: int) -> str | None:
+    key = (chain, block_number)
+    if key not in BLOCK_TIME_CACHE:
+        try:
+            block = opening.quick_rpc_call(
+                chain,
+                "eth_getBlockByNumber",
+                [hex(block_number), False],
+                timeout,
+            ) or {}
+            timestamp = rpc_int(block.get("timestamp")) if isinstance(block, dict) else None
+            BLOCK_TIME_CACHE[key] = (
+                datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+                if timestamp and timestamp > 0
+                else None
+            )
+        except Exception:
+            BLOCK_TIME_CACHE[key] = None
+    return BLOCK_TIME_CACHE[key]
+
+
+def cex_label_provenance(event: dict[str, Any], address: str) -> dict[str, Any]:
+    address = norm(address)
+    row = opening.global_address_label(event["chain"], address) or {}
+    source = "config/global_address_labels.json" if row else None
+    if not row:
+        for container_name, container in (
+            ("event.known_contracts", event),
+            ("event.market_context.known_contracts", event.get("market_context", {}) or {}),
+        ):
+            for candidate in container.get("known_contracts", []) or []:
+                if isinstance(candidate, dict) and norm(candidate.get("address")) == address:
+                    row = candidate
+                    source = container_name
+                    break
+            if row:
+                break
+    provenance_sha256 = None
+    if source == "config/global_address_labels.json":
+        try:
+            provenance_sha256 = hashlib.sha256(
+                (ROOT / "config" / "global_address_labels.json").read_bytes()
+            ).hexdigest()
+        except OSError:
+            provenance_sha256 = None
+    return {
+        "address": address,
+        "label": row.get("label"),
+        "exchange": row.get("exchange"),
+        "class": row.get("class") or opening.configured_address_class(event, address),
+        "confidence": row.get("confidence"),
+        "evidence": row.get("evidence"),
+        "source_url": row.get("source_url"),
+        "label_source": source,
+        "provenance_sha256": row.get("provenance_sha256") or provenance_sha256,
+    }
+
+
+def receipt_transfer_evidence(
+    event: dict[str, Any],
+    transfer: dict[str, Any],
+    timeout: int,
+    deadline: float,
+) -> dict[str, Any]:
+    tx_hash = str(transfer.get("tx") or "")
+    rpc_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
+    if rpc_timeout is None:
+        receipt = {}
+    else:
+        try:
+            receipt = opening.quick_rpc_call(
+                event["chain"],
+                "eth_getTransactionReceipt",
+                [tx_hash],
+                rpc_timeout,
+            ) or {}
+        except Exception:
+            receipt = {}
+    receipt_rows = (
+        opening.receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
+        if receipt
+        else []
+    )
+    matching_rows = [
+        row
+        for row in receipt_rows
+        if int(row.get("log_index") or 0) == int(transfer.get("log_index") or 0)
+        and norm(row.get("token")) == norm(transfer.get("token"))
+        and norm(row.get("from")) == norm(transfer.get("from"))
+        and norm(row.get("to")) == norm(transfer.get("to"))
+        and str(row.get("amount_raw") or "") == str(transfer.get("amount_raw") or "")
+    ]
+    block_number = int(transfer.get("block") or 0)
+    timestamp_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
+    return {
+        "receipt": receipt,
+        "receipt_status": rpc_int(receipt.get("status")) if receipt else None,
+        "receipt_block": rpc_int(receipt.get("blockNumber")) if receipt else None,
+        "transaction_index": rpc_int(receipt.get("transactionIndex")) if receipt else None,
+        "receipt_identity_match": bool(
+            receipt
+            and norm(receipt.get("transactionHash")) == norm(tx_hash)
+            and rpc_int(receipt.get("blockNumber")) == block_number
+        ),
+        "receipt_log_match": len(matching_rows) == 1,
+        "timestamp_utc": (
+            block_timestamp_utc(event["chain"], block_number, timestamp_timeout)
+            if timestamp_timeout is not None
+            else None
+        ),
+    }
+
+
+def native_micro_gas_rows(
+    event: dict[str, Any],
+    recipient: str,
+    token_block: int,
+    token_tx_index: int | None,
+    deadline: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    lookback = max(0, int(os.environ.get("ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS", "1200")))
+    minimum_runtime_bnb = Decimal(os.environ.get("ALPHA_INTRADAY_GAS_PRIMING_MIN_BNB", "0.001"))
+    max_hits = max(1, int(os.environ.get("ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS", "20")))
+    configured_timeout = int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6"))
+    from_block = max(0, token_block - lookback)
+    requested_count = token_block - from_block + 1
+    completed = 0
+    scan_error = None
+    after_or_equal_count = 0
+    capped_count = 0
+    rows: list[dict[str, Any]] = []
+    for block_number in range(token_block, from_block - 1, -1):
+        timeout = acquisition_rpc_timeout(event["chain"], deadline, configured_timeout)
+        if timeout is None:
+            scan_error = "time_budget_exhausted"
+            break
+        try:
+            transactions = block_transactions(event["chain"], block_number, timeout)
+        except Exception:
+            scan_error = "rpc_error"
+            break
+        completed += 1
+        for tx in transactions:
+            if norm(tx.get("to")) != recipient:
+                continue
+            amount_bnb = decimal_from_wei(tx.get("value"))
+            if amount_bnb <= 0 or amount_bnb > minimum_runtime_bnb:
+                continue
+            source = norm(tx.get("from"))
+            if opening.destination_class(event, source) not in {"cex_deposit", "cex_hot_wallet"}:
+                continue
+            tx_index = rpc_int(tx.get("transactionIndex"))
+            if block_number == token_block and token_tx_index is not None and (
+                tx_index is None or tx_index >= token_tx_index
+            ):
+                after_or_equal_count += 1
+                continue
+            row = {
+                "tx": str(tx.get("hash") or ""),
+                "from": source,
+                "to": recipient,
+                "value_wei": str(int(str(tx.get("value") or "0x0"), 16)),
+                "value_native": opening.decimal_str(amount_bnb),
+                "block": block_number,
+                "transaction_index": tx_index,
+                "strict_order": (
+                    True
+                    if block_number < token_block
+                    else (tx_index is not None and token_tx_index is not None and tx_index < token_tx_index)
+                ),
+            }
+            if len(rows) < max_hits:
+                rows.append(row)
+            else:
+                capped_count += 1
+    complete = completed == requested_count and scan_error is None
+    state = (
+        "requested_window_complete"
+        if complete
+        else "partial_time_budget"
+        if scan_error == "time_budget_exhausted"
+        else "partial_rpc_error"
+    )
+    return rows, {
+        "state": state,
+        "complete": complete,
+        "requested_from_block": from_block,
+        "requested_to_block": token_block,
+        "requested_block_count": requested_count,
+        "completed_block_count": completed,
+        "after_or_equal_transaction_count": after_or_equal_count,
+        "capped_candidate_count": capped_count,
+        "scan_error": scan_error,
+    }
+
+
+def micro_gas_candidate_id(event: dict[str, Any], native: dict[str, Any], transfer: dict[str, Any]) -> str:
+    identity = {
+        "chain": event["chain"],
+        "token": norm(event["token"]["address"]),
+        "gas_tx": norm(native.get("tx")),
+        "token_tx": norm(transfer.get("tx")),
+        "token_log_index": int(transfer.get("log_index") or 0),
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"cex_micro_gas_{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def time_delta_seconds(start: str | None, end: str | None) -> int | None:
+    if not start or not end:
+        return None
+    try:
+        return int(
+            (
+                datetime.fromisoformat(end.replace("Z", "+00:00"))
+                - datetime.fromisoformat(start.replace("Z", "+00:00"))
+            ).total_seconds()
+        )
+    except ValueError:
+        return None
+
+
+def collect_report_only_cex_micro_gas_samples(
+    event: dict[str, Any],
+    transfers: list[dict[str, Any]],
+    transfer_coverage: dict[str, Any],
+    runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    runtime_cex_candidates = runtime_cex_candidates or {}
+    eligible: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for transfer in transfers:
+        path = next(
+            (
+                row
+                for row in classify_cex_transfer_paths(event, [transfer], runtime_cex_candidates)
+                if row.get("runtime_effect") in {"cex_inflow_risk", "aggregate_only"}
+            ),
+            None,
+        )
+        if path and int(transfer.get("block") or 0) > 0 and str(transfer.get("tx") or ""):
+            eligible.append((transfer, path))
+    eligible.sort(
+        key=lambda item: (
+            int(item[0].get("block") or 0),
+            int(item[0].get("log_index") or 0),
+            str(item[0].get("tx") or ""),
+        ),
+        reverse=True,
+    )
+    reviewed = eligible[:CEX_MICRO_GAS_ACQUISITION_MAX_WINDOWS]
+    timeout = int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6"))
+    deadline = time.monotonic() + CEX_MICRO_GAS_ACQUISITION_MAX_SECONDS
+    transfer_coverage_complete = bool(
+        transfer_coverage.get("state") == "requested_window_complete"
+        and transfer_coverage.get("complete") is True
+    )
+    candidates: list[dict[str, Any]] = []
+    window_reviews: list[dict[str, Any]] = []
+    for transfer, path in reviewed:
+        token_evidence = receipt_transfer_evidence(event, transfer, timeout, deadline)
+        native_rows, native_coverage = native_micro_gas_rows(
+            event,
+            norm(transfer.get("from")),
+            int(transfer.get("block") or 0),
+            token_evidence["transaction_index"],
+            deadline,
+        )
+        gas_identities = [
+            {
+                "tx": row["tx"],
+                "block": row["block"],
+                "transaction_index": row["transaction_index"],
+            }
+            for row in native_rows
+        ]
+        window_reviews.append(
+            {
+                "token_tx": str(transfer.get("tx") or ""),
+                "token_log_index": int(transfer.get("log_index") or 0),
+                "native_candidate_count": len(native_rows),
+                "native_scan_coverage": native_coverage,
+                "interpretation": (
+                    "bounded_candidates_observed"
+                    if native_rows
+                    else "no_candidate_in_bounded_scan_not_chain_absence"
+                ),
+            }
+        )
+        destination_label = cex_label_provenance(event, path["to"])
+        for native in native_rows:
+            receipt_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
+            if receipt_timeout is None:
+                native_receipt = {}
+            else:
+                try:
+                    native_receipt = opening.quick_rpc_call(
+                        event["chain"],
+                        "eth_getTransactionReceipt",
+                        [native["tx"]],
+                        receipt_timeout,
+                    ) or {}
+                except Exception:
+                    native_receipt = {}
+            timestamp_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
+            native_time = (
+                block_timestamp_utc(event["chain"], native["block"], timestamp_timeout)
+                if timestamp_timeout is not None
+                else None
+            )
+            source_label = cex_label_provenance(event, native["from"])
+            native_receipt_match = bool(
+                native_receipt
+                and norm(native_receipt.get("transactionHash")) == norm(native["tx"])
+                and rpc_int(native_receipt.get("blockNumber")) == native["block"]
+                and norm(native_receipt.get("from")) == native["from"]
+                and norm(native_receipt.get("to")) == native["to"]
+            )
+            delta_seconds = time_delta_seconds(native_time, token_evidence["timestamp_utc"])
+            exchange_match = bool(
+                source_label.get("exchange")
+                and destination_label.get("exchange")
+                and source_label["exchange"] == destination_label["exchange"]
+            )
+            amount_equation_valid = bool(
+                transfer.get("amount_raw") not in (None, "")
+                and transfer.get("decimals") is not None
+                and decimal_from(transfer.get("amount"))
+                == Decimal(str(transfer.get("amount_raw"))) / (Decimal(10) ** int(transfer["decimals"]))
+            )
+            pairing_unique = bool(
+                len(native_rows) == 1
+                and native_coverage["complete"]
+                and transfer_coverage_complete
+                and token_evidence["receipt_status"] == 1
+                and token_evidence["receipt_identity_match"]
+                and token_evidence["receipt_log_match"]
+                and native_receipt_match
+                and rpc_int(native_receipt.get("status")) == 1
+                and native["strict_order"]
+                and delta_seconds is not None
+                and delta_seconds >= 0
+            )
+            ambiguity_reasons: list[str] = []
+            if len(native_rows) != 1:
+                ambiguity_reasons.append("multiple_prior_micro_gas_candidates")
+            if not native_coverage["complete"]:
+                ambiguity_reasons.append("native_scan_coverage_incomplete")
+            if not transfer_coverage_complete:
+                ambiguity_reasons.append("token_transfer_window_coverage_incomplete")
+            if native_coverage["after_or_equal_transaction_count"]:
+                ambiguity_reasons.append("same_block_after_or_equal_native_transfer_observed")
+            unresolved = ["root_operator_linkage", "independent_positive_root_review"]
+            if not source_label.get("label") or not source_label.get("label_source"):
+                unresolved.append("cex_source_exact_label_provenance")
+            if not destination_label.get("label") or not destination_label.get("label_source"):
+                unresolved.append("cex_destination_exact_label_provenance")
+            if not exchange_match:
+                unresolved.append("exchange_entity_match")
+            if not native_receipt_match or rpc_int(native_receipt.get("status")) != 1:
+                unresolved.append("native_receipt_success_and_identity")
+            if (
+                token_evidence["receipt_status"] != 1
+                or not token_evidence["receipt_identity_match"]
+                or not token_evidence["receipt_log_match"]
+            ):
+                unresolved.append("token_receipt_log_success_and_identity")
+            if not amount_equation_valid:
+                unresolved.append("token_raw_normalized_amount_equation")
+            if not native["strict_order"] or delta_seconds is None or delta_seconds < 0:
+                unresolved.append("strict_gas_before_token_order")
+            if not pairing_unique:
+                unresolved.append("unique_gas_to_token_pairing")
+            candidates.append(
+                {
+                    "candidate_id": micro_gas_candidate_id(event, native, transfer),
+                    "classification": "candidate",
+                    "status": "blocked",
+                    "alert_policy": "report_only",
+                    "runtime_effect": "none",
+                    "action_guard": "no_runtime_action_mutation",
+                    "native_gas": {
+                        **native,
+                        "timestamp_utc": native_time,
+                        "receipt_status": rpc_int(native_receipt.get("status")) if native_receipt else None,
+                        "receipt_identity_match": native_receipt_match,
+                        "source_label": source_label,
+                    },
+                    "token_ingress": {
+                        "tx": str(transfer.get("tx") or ""),
+                        "log_index": int(transfer.get("log_index") or 0),
+                        "token_contract": norm(transfer.get("token")),
+                        "decimals": transfer.get("decimals"),
+                        "amount_raw": str(transfer.get("amount_raw") or ""),
+                        "amount_normalized": opening.decimal_str(decimal_from(transfer.get("amount"))),
+                        "from": norm(transfer.get("from")),
+                        "to": norm(transfer.get("to")),
+                        "block": int(transfer.get("block") or 0),
+                        "transaction_index": token_evidence["transaction_index"],
+                        "timestamp_utc": token_evidence["timestamp_utc"],
+                        "receipt_status": token_evidence["receipt_status"],
+                        "receipt_identity_match": token_evidence["receipt_identity_match"],
+                        "receipt_log_match": token_evidence["receipt_log_match"],
+                        "amount_equation_valid": amount_equation_valid,
+                        "destination_class": path["class"],
+                        "destination_label": destination_label,
+                    },
+                    "pairing": {
+                        "method": "configured_cex_native_to_recipient_before_token_ingress",
+                        "recipient_match": native["to"] == norm(transfer.get("from")),
+                        "gas_before_token_seconds": delta_seconds,
+                        "strict_order": native["strict_order"],
+                        "exchange_entity_match": exchange_match,
+                        "all_candidate_gas_identities": gas_identities,
+                        "unique_pairing": pairing_unique,
+                        "ambiguity_reasons": ambiguity_reasons,
+                    },
+                    "coverage": {
+                        "token_transfer_window": dict(transfer_coverage),
+                        "native_scan_window": native_coverage,
+                        "coverage_complete": transfer_coverage_complete and native_coverage["complete"],
+                    },
+                    "independence": {
+                        "token_contract": norm(event["token"]["address"]),
+                        "root_operator_id": None,
+                        "event_window_start_utc": native_time,
+                        "event_window_end_utc": token_evidence["timestamp_utc"],
+                        "exchange_entity": source_label.get("exchange"),
+                        "independence_eligible": False,
+                    },
+                    "evidence_layers": {
+                        "official": "not_collected",
+                        "onchain": "canonical_fields_collected_or_explicitly_blocked",
+                        "market": "not_collected",
+                        "social": "not_collected",
+                        "inference": "micro_gas_before_token_ingress_candidate_only",
+                    },
+                    "unresolved_fields": sorted(set(unresolved)),
+                }
+            )
+    return {
+        "schema": "report_only_cex_micro_gas_samples.v1",
+        "status": "candidates_observed" if candidates else "bounded_observation_no_candidate",
+        "alert_policy": "report_only",
+        "runtime_effect": "none",
+        "action_guard": "no_runtime_action_mutation",
+        "eligible_token_ingress_window_count": len(eligible),
+        "reviewed_token_ingress_window_count": len(reviewed),
+        "window_limit": CEX_MICRO_GAS_ACQUISITION_MAX_WINDOWS,
+        "window_limit_reached": len(eligible) > len(reviewed),
+        "candidate_count": len(candidates),
+        "window_reviews": window_reviews,
+        "candidates": candidates,
+    }
+
+
+def record_cex_micro_gas_candidate_history(snapshot: dict[str, Any]) -> int:
+    observed_at = str(snapshot.get("generated_at") or now_iso())
+    observed = [
+        candidate
+        for event in snapshot.get("events", []) or []
+        for candidate in (
+            (event.get("report_only_cex_micro_gas_samples", {}) or {}).get("candidates", []) or []
+        )
+        if isinstance(candidate, dict) and candidate.get("candidate_id")
+    ]
+    if not observed:
+        return 0
+    payload = read_json(
+        CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH,
+        {"schema": "cex_micro_gas_candidate_history.v1", "candidates": []},
+    )
+    if payload.get("schema") != "cex_micro_gas_candidate_history.v1":
+        payload = {"schema": "cex_micro_gas_candidate_history.v1", "candidates": []}
+    by_id = {
+        row["candidate_id"]: row
+        for row in payload.get("candidates", []) or []
+        if isinstance(row, dict) and row.get("candidate_id")
+    }
+    for candidate in observed:
+        candidate_id = str(candidate["candidate_id"])
+        previous = by_id.get(candidate_id, {})
+        by_id[candidate_id] = {
+            **candidate,
+            "first_seen_at": previous.get("first_seen_at") or observed_at,
+            "last_seen_at": observed_at,
+            "observation_count": int(previous.get("observation_count") or 0) + 1,
+        }
+    candidates = sorted(
+        by_id.values(),
+        key=lambda row: (str(row.get("last_seen_at") or ""), str(row.get("candidate_id") or "")),
+    )[-CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX:]
+    write_json(
+        CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH,
+        {
+            "schema": "cex_micro_gas_candidate_history.v1",
+            "updated_at": observed_at,
+            "max_candidates": CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        },
+    )
+    return len(observed)
+
+
 def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: int, to_block: int, logs: int, txs: int) -> dict[str, Any]:
     address_net: dict[str, Decimal] = {}
     address_buy: dict[str, Decimal] = {}
@@ -1863,6 +2393,12 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         transfer_coverage["state"] = "invalid_transfer_log_identity"
         transfer_coverage["complete"] = False
     runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
+    report_only_cex_micro_gas_samples = collect_report_only_cex_micro_gas_samples(
+        event,
+        transfer_rows,
+        transfer_coverage,
+        runtime_candidates,
+    )
     withdrawal_cluster = cex_withdrawal_cluster(
         event,
         transfer_rows,
@@ -1904,6 +2440,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         "from_block": from_block,
         "to_block": to_block,
         "runtime_cex_deposit_candidates": list(runtime_candidates.values())[:20],
+        "report_only_cex_micro_gas_samples": report_only_cex_micro_gas_samples,
         "runtime_cex_candidate_aggregate_rows": runtime_candidate_rows[:20],
         "configured_cex_inflow_aggregate_rows": configured_cex_inflow_rows[:20],
         "rows": rows,
@@ -2215,6 +2752,7 @@ def render(snapshot: dict[str, Any]) -> str:
     for event in snapshot.get("events", []):
         analysis = event.get("analysis", {})
         withdrawal = analysis.get("cex_withdrawal_cluster", {}) or {}
+        micro_gas = event.get("report_only_cex_micro_gas_samples", {}) or {}
         lines.extend(
             [
                 f"## {event['symbol']}",
@@ -2244,6 +2782,7 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- cex_internal_aggregation_measure: `{analysis.get('cex_internal_aggregation_measure')}`",
                 f"- cex_gas_priming_bnb: `{analysis.get('cex_gas_priming_bnb')}`",
                 f"- cex_gas_priming_count: `{analysis.get('cex_gas_priming_count')}`",
+                f"- report_only_cex_micro_gas_candidates: `{micro_gas.get('candidate_count', 0)}`",
                 f"- cex_withdrawal_cluster_status: `{withdrawal.get('status')}`",
                 f"- cex_withdrawal_cluster_candidates: `{withdrawal.get('candidate_count', 0)}`",
                 f"- cex_withdrawal_alert_policy: `{withdrawal.get('alert_policy', 'report_only')}`",
@@ -2282,6 +2821,28 @@ def render(snapshot: dict[str, Any]) -> str:
                     f"sources=`{row.get('source_roles', '')}`, method=`{row.get('attribution_method', '')}`, "
                     f"coverage=`{row.get('coverage_state', '')}`, runtime_effect=`{row.get('runtime_effect', '')}`, "
                     f"destinations=" + ",".join(row.get("destinations", []) or [])
+                )
+        micro_candidates = micro_gas.get("candidates", []) or []
+        if micro_candidates:
+            lines.extend(
+                [
+                    "",
+                    "### Report-only CEX Micro-gas Candidates",
+                    "",
+                    "Blocked acquisition evidence. It does not change actions, alert keys, or Telegram.",
+                    "",
+                ]
+            )
+            for candidate in micro_candidates[:20]:
+                native = candidate.get("native_gas", {}) or {}
+                token_ingress = candidate.get("token_ingress", {}) or {}
+                lines.append(
+                    f"- `{candidate.get('candidate_id', '')}`: gas `{native.get('tx', '')}` "
+                    f"{native.get('value_native', '')} BNB -> `{native.get('to', '')}`; "
+                    f"token `{token_ingress.get('tx', '')}:{token_ingress.get('log_index', '')}` "
+                    f"{token_ingress.get('amount_normalized', '')} {event['token']['symbol']} -> "
+                    f"`{token_ingress.get('to', '')}`; unresolved="
+                    + ",".join(candidate.get("unresolved_fields", []) or [])
                 )
         if int(analysis.get("cex_internal_aggregation_count") or 0):
             lines.extend(
@@ -2346,6 +2907,7 @@ def main() -> int:
     forward_scans: list[dict[str, Any]] = []
     snapshot = build_snapshot(forward_scans)
     write_json(LATEST_PATH, snapshot)
+    record_cex_micro_gas_candidate_history(snapshot)
     record_withdrawal_candidate_history(snapshot, forward_scans)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)

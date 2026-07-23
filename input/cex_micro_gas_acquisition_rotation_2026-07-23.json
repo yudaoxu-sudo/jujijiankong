@@ -1,0 +1,194 @@
+{
+  "schema": "cex_micro_gas_acquisition_rotation.v1",
+  "case_id": "CEX_MICRO_GAS_ACQUISITION_ROTATION_2026_07_23",
+  "generated_at_utc": "2026-07-23T16:11:04Z",
+  "scope": {
+    "chain": "bsc",
+    "mode": "report_only_acquisition",
+    "runtime_changed": true,
+    "notifications_sent": false,
+    "transactions_signed_or_broadcast": false,
+    "event_window_review_limit": 5,
+    "reviewed_event_window_count": 0
+  },
+  "recovery": {
+    "checkpoint_id": "d6c60605-89cf-45d4-addb-bd7919749862",
+    "checkpoint_sha256": "3db41cbcb0dd13655405c42a56145aef48c59c304c77803e8b4740be8dd56db0",
+    "expected_git_head": "5e9d08261a86bcd429dff6bf9126d0079395dfe0",
+    "resume_hash_valid": true,
+    "continuity_audit": "pass",
+    "git_head_matched": true,
+    "worktree_at_recovery": "clean"
+  },
+  "runtime_observations": {
+    "local": {
+      "intraday_generated_at": "2026-07-10T04:33:01Z",
+      "event_count": 0,
+      "interpretation": "stale_local_snapshot_no_coverage_after_2026_07_22"
+    },
+    "remote_before_patch": {
+      "intraday_generated_at": "2026-07-23T15:25:45Z",
+      "event_count": 0,
+      "withdrawal_candidate_history_exists": false,
+      "interpretation": "latest_window_observation_zero_post_2026_07_22_history_coverage_unavailable"
+    },
+    "remote_post_deploy_dry_run": {
+      "intraday_generated_at": "2026-07-23T15:59:14Z",
+      "event_count": 0,
+      "alert_count": 0,
+      "cex_micro_gas_candidate_history_exists": false,
+      "interpretation": "latest_window_observation_zero_history_file_waits_for_first_candidate"
+    },
+    "remote_post_deploy_production_cycle": {
+      "intraday_generated_at": "2026-07-23T16:10:56Z",
+      "event_count": 0,
+      "alert_count": 0,
+      "runtime_health_generated_at": "2026-07-23T16:11:04Z",
+      "runtime_health_status": "healthy",
+      "runtime_issue_count": 0,
+      "cex_micro_gas_candidate_history_exists": false,
+      "interpretation": "deployed_code_entered_normal_cycle_latest_window_observation_zero"
+    }
+  },
+  "evidence_layers": {
+    "official": {
+      "status": "observation",
+      "detail": "No new official candidate anchor was present in the reviewed runtime outputs."
+    },
+    "onchain": {
+      "status": "blocked",
+      "detail": "Fresh latest had zero events; complete post-2026-07-22 event-history coverage was unavailable."
+    },
+    "market": {
+      "status": "not_collected",
+      "detail": "No candidate token window existed for scoped market verification."
+    },
+    "social": {
+      "status": "not_collected",
+      "detail": "No candidate root existed for scoped social discovery."
+    },
+    "inference": {
+      "status": "observation",
+      "detail": "No new positive can be added; natural future candidates need durable pairing evidence."
+    }
+  },
+  "sampling_gap_audit": {
+    "previous_persisted_gas_fields": [
+      "cex_gas_priming_count",
+      "cex_gas_priming_bnb",
+      "cex_gas_priming_sources"
+    ],
+    "previous_missing_fields": [
+      "native receipt and timestamp",
+      "exact source label provenance",
+      "token log identity, decimals, and raw amount",
+      "strict same-block transaction ordering",
+      "native and token coverage",
+      "pairing ambiguity",
+      "root independence",
+      "bounded deduplicated history"
+    ],
+    "configured_and_runtime_aggregate_gap": "aggregate rows previously fixed gas counts to zero and did not retain per-log pairing evidence",
+    "decision": "implement_minimal_report_only_acquisition"
+  },
+  "implementation": {
+    "event_output_key": "report_only_cex_micro_gas_samples",
+    "history_path": "output/alpha_intraday_flow_watch/cex_micro_gas_candidate_history.json",
+    "history_max_candidates": 200,
+    "max_token_ingress_windows_per_event": 5,
+    "acquisition_budget_seconds_per_event": 4,
+    "native_candidate_ceiling": "current ALPHA_INTRADAY_GAS_PRIMING_MIN_BNB",
+    "action_threshold_changed": false,
+    "analyze_rows_changed": false,
+    "alert_key_changed": false,
+    "telegram_changed": false,
+    "runtime_effect": "none",
+    "alert_policy": "report_only",
+    "action_guard": "no_runtime_action_mutation"
+  },
+  "captured_candidate_fields": {
+    "native": [
+      "tx",
+      "from",
+      "to",
+      "value_wei",
+      "value_native",
+      "block",
+      "transaction_index",
+      "timestamp_utc",
+      "receipt_status",
+      "receipt_identity_match",
+      "source_label"
+    ],
+    "token_ingress": [
+      "tx",
+      "log_index",
+      "token_contract",
+      "decimals",
+      "amount_raw",
+      "amount_normalized",
+      "from",
+      "to",
+      "block",
+      "transaction_index",
+      "timestamp_utc",
+      "receipt_status",
+      "receipt_identity_match",
+      "receipt_log_match"
+    ],
+    "review": [
+      "strict_order",
+      "gas_before_token_seconds",
+      "all_candidate_gas_identities",
+      "unique_pairing",
+      "ambiguity_reasons",
+      "coverage",
+      "independence",
+      "unresolved_fields"
+    ]
+  },
+  "counts": {
+    "new_verified_positive_roots": 0,
+    "new_verified_positive_tokens": 0,
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 3
+  },
+  "verification": {
+    "project_verifier": {
+      "pass": 190,
+      "fail": 0
+    },
+    "celue_audit": {
+      "pass": 101,
+      "fail": 0
+    },
+    "local_dry_run": "events=0 alerts=0",
+    "remote_dry_run": "events=0 alerts=0",
+    "remote_production_cycle": "healthy events=0 alerts=0 issues=0",
+    "remote_acceptance": "pass issues=0 advisories=0"
+  },
+  "deployment": {
+    "deployed": true,
+    "target": "/home/ubuntu/sniper",
+    "remote_verifier_fail_count": 0,
+    "telegram_forced_disabled_for_dry_run": true,
+    "post_deploy_production_cycle_accepted": true,
+    "deployed_source_hashes_match_local": true
+  },
+  "source_hashes": {
+    "scripts/alpha_intraday_flow_watch.py": "f5ba3ebea1fd8db0a14a43810a4e438a753ef17f9a26cea08eb3dae7c7107056",
+    "scripts/alpha_opening_block_watch.py": "402b1a71d45b2765953c7be2ad1ec5f5a2387bf43d543347621087726cad338c",
+    "scripts/verify_sniper_engine.py": "f88004e16318081a4231d16117bf89ffe5cf9a41f31f2e0b7fab997ca41109cc",
+    "docs/server_runbook.md": "dae5300785477f934efdf4a7ed59a2d653da21095073ed09ddee97d3cb6bbc77"
+  },
+  "waiting_conditions": [
+    "first natural event-level report_only_cex_micro_gas_samples candidate",
+    "complete native and token coverage",
+    "successful canonical native and token receipts",
+    "exact CEX label provenance",
+    "unique pairing after ambiguity review",
+    "independent root operator linkage across at least two additional roots and one additional token"
+  ],
+  "decision": "acquisition_deployed_counts_unchanged"
+}
