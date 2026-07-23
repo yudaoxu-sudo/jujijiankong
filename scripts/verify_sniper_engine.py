@@ -1816,7 +1816,9 @@ print(f"raw={module.pct_sum(raw_rows)} effective={module.pct_sum(effective_rows)
     alpha_intraday_cex_code = """
 import importlib.util
 import json
+import multiprocessing
 import os
+import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1928,7 +1930,9 @@ def raw_transfer_log(block, log_index, recipient):
     return {
         'address': event['token']['address'],
         'blockNumber': hex(block),
+        'blockHash': f"0x{block:064x}",
         'transactionHash': f"0x{block:064x}",
+        'transactionIndex': '0x0',
         'logIndex': hex(log_index),
         'topics': [
             module.opening.TRANSFER_TOPIC,
@@ -3149,6 +3153,7 @@ def fake_get_logs(chain, query, chunk_blocks, max_logs, timeout):
             'topics': [module.opening.TRANSFER_TOPIC, module.opening.address_topic(user), module.opening.address_topic(candidate)],
             'data': amount,
             'blockNumber': hex(101),
+            'blockHash': '0x' + '1' * 64,
             'transactionIndex': '0x1',
             'logIndex': '0x1',
             'transactionHash': '0x' + 'a' * 64,
@@ -3158,6 +3163,7 @@ def fake_get_logs(chain, query, chunk_blocks, max_logs, timeout):
             'topics': [module.opening.TRANSFER_TOPIC, module.opening.address_topic(candidate), module.opening.address_topic(hot)],
             'data': amount,
             'blockNumber': hex(102),
+            'blockHash': '0x' + '2' * 64,
             'transactionIndex': '0x1',
             'logIndex': '0x2',
             'transactionHash': '0x' + 'b' * 64,
@@ -3250,19 +3256,28 @@ candidate_only = {**quiet_event, 'analysis': {**quiet_analysis, 'cex_withdrawal_
 assert module.event_alert_keys(candidate_only) == [], module.event_alert_keys(candidate_only)
 module.BLOCK_TX_CACHE.clear()
 real_quick_rpc = module.opening.quick_rpc_call
+gas_block_rpc_calls = []
 def fake_quick_rpc(chain, method, params, timeout):
     if method == 'eth_getBlockByNumber':
+        gas_block_rpc_calls.append(params[0])
+        fixture_block_number = int(params[0], 16)
+        fixture_block_hash = f"0x{fixture_block_number:064x}"
+        block_tx_fields = {'blockNumber': params[0], 'blockHash': fixture_block_hash}
         return {
+            'number': params[0],
+            'hash': fixture_block_hash,
             'transactions': [
-                {'from': '0x' + 'd' * 40, 'to': '0x' + '1' * 40, 'value': hex(2 * 10**15), 'hash': '0x' + '9' * 64},
-                {'from': '0x' + '5' * 40, 'to': '0x' + '1' * 40, 'value': hex(5 * 10**15), 'hash': '0x' + '8' * 64},
+                {'from': '0x' + 'd' * 40, 'to': '0x' + '1' * 40, 'value': hex(2 * 10**15), 'hash': '0x' + '9' * 64, 'transactionIndex': '0x0', **block_tx_fields},
+                {'from': '0x' + '5' * 40, 'to': '0x' + '1' * 40, 'value': hex(5 * 10**15), 'hash': '0x' + '8' * 64, 'transactionIndex': '0x1', **block_tx_fields},
             ]
         }
     return real_quick_rpc(chain, method, params, timeout)
 module.opening.quick_rpc_call = fake_quick_rpc
 gas_rows = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
+gas_rows_cached = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
 module.opening.quick_rpc_call = real_quick_rpc
 assert len(gas_rows) == 1 and gas_rows[0]['amount_bnb'] == module.Decimal('0.002'), gas_rows
+assert gas_rows_cached == gas_rows and gas_block_rpc_calls == [hex(149)], (gas_rows_cached, gas_block_rpc_calls)
 gas_analysis = module.analyze_rows(
     event,
     [{'cex_token_deposit': '300000', 'cex_quote_estimate': '15000', 'cex_deposit_count': 1, 'cex_gas_priming_count': 1, 'cex_gas_priming_bnb': '0.002'}],
@@ -3279,6 +3294,8 @@ micro_recipient = '0x' + '7' * 40
 micro_gas_tx = '0x' + '6' * 64
 micro_after_tx = '0x' + '4' * 64
 micro_token_tx = '0x' + '5' * 64
+micro_gas_block_hash = '0x' + 'a' * 64
+micro_token_block_hash = '0x' + 'b' * 64
 micro_transfer = {
     'token': event['token']['address'],
     'from': micro_recipient,
@@ -3287,6 +3304,8 @@ micro_transfer = {
     'decimals': 18,
     'amount': module.Decimal('123456'),
     'block': 150,
+    'block_hash': micro_token_block_hash,
+    'transaction_index': 4,
     'log_index': 7,
     'tx': micro_token_tx,
 }
@@ -3295,18 +3314,20 @@ assert micro_path['tx'] == micro_token_tx and micro_path['log_index'] == 7, micr
 assert micro_path['token_contract'] == event['token']['address'], micro_path
 assert micro_path['token_decimals'] == 18, micro_path
 
-real_block_transactions = module.block_transactions
+real_report_only_block_transactions = module.report_only_block_transactions
 real_block_timestamp_utc = module.block_timestamp_utc
 real_global_address_label = module.opening.global_address_label
 real_micro_quick_rpc = module.opening.quick_rpc_call
 old_gas_lookback = os.environ.get('ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS')
 os.environ['ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS'] = '2'
-module.block_transactions = lambda chain, block, timeout: (
+module.report_only_block_transactions = lambda chain, block, timeout: (
     [{
         'from': hot,
         'to': micro_recipient,
         'value': hex(3_000_000_000_000),
         'hash': micro_gas_tx,
+        'blockNumber': hex(149),
+        'blockHash': micro_gas_block_hash,
         'transactionIndex': '0x3',
     }]
     if block == 149
@@ -3315,12 +3336,14 @@ module.block_transactions = lambda chain, block, timeout: (
         'to': micro_recipient,
         'value': hex(2_000_000_000_000),
         'hash': micro_after_tx,
+        'blockNumber': hex(150),
+        'blockHash': micro_token_block_hash,
         'transactionIndex': '0x5',
     }]
     if block == 150
     else []
 )
-module.block_timestamp_utc = lambda chain, block, timeout: (
+module.block_timestamp_utc = lambda chain, block, block_hash, timeout: (
     '2026-07-23T00:00:03Z' if block == 150 else '2026-07-23T00:00:00Z'
 )
 module.opening.global_address_label = lambda chain, address: (
@@ -3330,6 +3353,7 @@ module.opening.global_address_label = lambda chain, address: (
         'exchange': 'FixtureEx',
         'label': 'Fixture Hot',
         'evidence': 'fixture exact-address label',
+        'confidence': 'high',
     }
     if address == hot
     else None
@@ -3338,6 +3362,7 @@ module.opening.quick_rpc_call = lambda chain, method, params, timeout: (
     {
         'transactionHash': micro_gas_tx,
         'blockNumber': hex(149),
+        'blockHash': micro_gas_block_hash,
         'transactionIndex': '0x3',
         'status': '0x1',
         'from': hot,
@@ -3347,6 +3372,7 @@ module.opening.quick_rpc_call = lambda chain, method, params, timeout: (
     else {
         'transactionHash': micro_token_tx,
         'blockNumber': hex(150),
+        'blockHash': micro_token_block_hash,
         'transactionIndex': '0x4',
         'status': '0x1',
         'logs': [{
@@ -3396,7 +3422,81 @@ partial_bundle = module.collect_report_only_cex_micro_gas_samples(
     {**micro_coverage, 'state': 'partial_rpc_error', 'complete': False},
     {},
 )
-module.block_transactions = real_block_transactions
+baseline_receipt_rpc = module.opening.quick_rpc_call
+def conflict_receipt_rpc(chain, method, params, timeout):
+    receipt = baseline_receipt_rpc(chain, method, params, timeout)
+    if method == 'eth_getTransactionReceipt' and params in ([micro_gas_tx], [micro_token_tx]):
+        receipt = dict(receipt)
+        if params == [micro_gas_tx]:
+            receipt['transactionIndex'] = '0x2'
+        else:
+            receipt['blockHash'] = '0x' + 'c' * 64
+    return receipt
+module.opening.quick_rpc_call = conflict_receipt_rpc
+conflict_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event,
+    [micro_transfer],
+    micro_coverage,
+    {},
+)
+module.opening.quick_rpc_call = baseline_receipt_rpc
+def short_hash_receipt_rpc(chain, method, params, timeout):
+    receipt = baseline_receipt_rpc(chain, method, params, timeout)
+    if method == 'eth_getTransactionReceipt' and params == [micro_token_tx]:
+        return {**receipt, 'blockHash': '0x1'}
+    return receipt
+module.opening.quick_rpc_call = short_hash_receipt_rpc
+short_hash_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event,
+    [{**micro_transfer, 'block_hash': '0x1'}],
+    micro_coverage,
+    {},
+)
+module.opening.quick_rpc_call = baseline_receipt_rpc
+baseline_micro_blocks = module.report_only_block_transactions
+def capped_micro_blocks(chain, block, timeout):
+    rows = list(baseline_micro_blocks(chain, block, timeout))
+    if block == 149:
+        rows.append({
+            **rows[0],
+            'hash': '0x' + 'e' * 64,
+            'transactionIndex': '0x2',
+        })
+    return rows
+old_micro_max_hits = os.environ.get('ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS')
+os.environ['ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS'] = '1'
+module.report_only_block_transactions = capped_micro_blocks
+capped_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event, [micro_transfer], micro_coverage, {}
+)
+module.report_only_block_transactions = baseline_micro_blocks
+if old_micro_max_hits is None:
+    os.environ.pop('ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS', None)
+else:
+    os.environ['ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS'] = old_micro_max_hits
+def malformed_receipt_rpc(chain, method, params, timeout):
+    receipt = baseline_receipt_rpc(chain, method, params, timeout)
+    if method == 'eth_getTransactionReceipt' and params == [micro_gas_tx]:
+        return {**receipt, 'transactionIndex': 'bad'}
+    return receipt
+module.opening.quick_rpc_call = malformed_receipt_rpc
+malformed_receipt_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event, [micro_transfer], micro_coverage, {}
+)
+module.opening.quick_rpc_call = baseline_receipt_rpc
+baseline_label_lookup = module.opening.global_address_label
+module.opening.global_address_label = lambda chain, address: (
+    {**baseline_label_lookup(chain, address), 'confidence': None}
+    if baseline_label_lookup(chain, address)
+    else None
+)
+weak_provenance_bundle = module.collect_report_only_cex_micro_gas_samples(
+    path_event,
+    [micro_transfer],
+    micro_coverage,
+    {},
+)
+module.report_only_block_transactions = real_report_only_block_transactions
 module.block_timestamp_utc = real_block_timestamp_utc
 module.opening.global_address_label = real_global_address_label
 module.opening.quick_rpc_call = real_micro_quick_rpc
@@ -3433,29 +3533,43 @@ assert micro_candidate['coverage']['coverage_complete'] is True, micro_candidate
 assert micro_candidate['independence']['independence_eligible'] is False, micro_candidate
 assert 'unique_gas_to_token_pairing' not in micro_candidate['unresolved_fields'], micro_candidate
 assert 'independent_positive_root_review' in micro_candidate['unresolved_fields'], micro_candidate
+assert 'cex_source_exact_label_provenance' not in micro_candidate['unresolved_fields'], micro_candidate
+assert 'cex_destination_exact_label_provenance' not in micro_candidate['unresolved_fields'], micro_candidate
 partial_candidate = partial_bundle['candidates'][0]
 assert partial_candidate['status'] == 'blocked' and partial_candidate['pairing']['unique_pairing'] is False, partial_candidate
 assert 'token_transfer_window_coverage_incomplete' in partial_candidate['pairing']['ambiguity_reasons'], partial_candidate
 assert 'unique_gas_to_token_pairing' in partial_candidate['unresolved_fields'], partial_candidate
-micro_event = {
-    **quiet_event,
-    'report_only_cex_micro_gas_samples': micro_bundle,
-}
-assert module.event_alert_keys(micro_event) == []
-assert module.telegram_text({'events': [micro_event], 'new_alert_count': 0}) == module.telegram_text({
-    'events': [quiet_event],
-    'new_alert_count': 0,
-})
+conflict_candidate = conflict_bundle['candidates'][0]
+assert conflict_candidate['pairing']['unique_pairing'] is False, conflict_candidate
+assert 'native_receipt_block_transaction_conflict' in conflict_candidate['pairing']['ambiguity_reasons'], conflict_candidate
+assert 'token_receipt_block_transaction_conflict' in conflict_candidate['pairing']['ambiguity_reasons'], conflict_candidate
+assert 'unique_gas_to_token_pairing' in conflict_candidate['unresolved_fields'], conflict_candidate
+assert short_hash_bundle['candidates'][0]['pairing']['unique_pairing'] is False, short_hash_bundle
+capped_candidate = capped_bundle['candidates'][0]
+assert capped_candidate['coverage']['native_scan_window']['capped_candidate_count'] == 1, capped_candidate
+assert capped_candidate['pairing']['unique_pairing'] is False, capped_candidate
+assert 'native_candidate_limit_reached' in capped_candidate['pairing']['ambiguity_reasons'], capped_candidate
+malformed_receipt_candidate = malformed_receipt_bundle['candidates'][0]
+assert malformed_receipt_candidate['status'] == 'blocked', malformed_receipt_candidate
+assert malformed_receipt_candidate['pairing']['unique_pairing'] is False, malformed_receipt_candidate
+assert 'native_receipt_success_and_identity' in malformed_receipt_candidate['unresolved_fields'], malformed_receipt_candidate
+weak_provenance_candidate = weak_provenance_bundle['candidates'][0]
+assert 'cex_source_exact_label_provenance' in weak_provenance_candidate['unresolved_fields'], weak_provenance_candidate
+assert 'cex_destination_exact_label_provenance' in weak_provenance_candidate['unresolved_fields'], weak_provenance_candidate
+assert module.exact_label_provenance_complete({
+    'label': 'container-only',
+    'confidence': 'high',
+    'label_source': 'event.known_contracts',
+}) is False
 
 micro_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_history_')) / 'cex_micro_gas_candidate_history.json'
 module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = micro_history_path
-micro_snapshot = {
-    'generated_at': '2026-07-23T00:00:03+00:00',
-    'events': [{
+def micro_history_snapshot(candidate, generated_at):
+    return {'generated_at': generated_at, 'events': [{
         **event,
-        'report_only_cex_micro_gas_samples': micro_bundle,
-    }],
-}
+        'report_only_cex_micro_gas_samples': {**micro_bundle, 'candidates': [candidate]},
+    }]}
+micro_snapshot = micro_history_snapshot(micro_candidate, '2026-07-23T00:00:03+00:00')
 assert module.record_cex_micro_gas_candidate_history(micro_snapshot) == 1
 assert module.record_cex_micro_gas_candidate_history(micro_snapshot) == 1
 micro_history = json.loads(micro_history_path.read_text(encoding='utf-8'))
@@ -3468,6 +3582,404 @@ assert module.record_cex_micro_gas_candidate_history({
     'events': [],
 }) == 0
 assert len(json.loads(micro_history_path.read_text(encoding='utf-8'))['candidates']) == 1
+
+invalid_history_snapshot = micro_history_snapshot(micro_candidate, '2026-07-23T00:06:03+00:00')
+for invalid_bytes in (
+    b'{"schema":"cex_micro_gas_candidate_history.v1","candidates":',
+    b'{"schema":"unrelated_history.v1","candidates":[]}',
+):
+    invalid_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_invalid_history_')) / 'history.json'
+    invalid_history_path.write_bytes(invalid_bytes)
+    module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = invalid_history_path
+    invalid_snapshot = {**invalid_history_snapshot}
+    assert module.record_cex_micro_gas_candidate_history(invalid_snapshot) == 0
+    assert invalid_snapshot['collector_errors'][-1]['code'] == 'invalid_cex_micro_gas_history', invalid_snapshot
+    assert invalid_history_path.read_bytes() == invalid_bytes, invalid_history_path.read_bytes()
+
+empty_invalid_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_empty_invalid_history_')) / 'history.json'
+empty_invalid_bytes = b'{"schema":"wrong.v1","candidates":[]}'
+empty_invalid_path.write_bytes(empty_invalid_bytes)
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = empty_invalid_path
+empty_invalid_snapshot = {'generated_at': '2026-07-23T00:06:04+00:00', 'events': []}
+assert module.record_cex_micro_gas_candidate_history(empty_invalid_snapshot) == 0
+assert empty_invalid_snapshot['collector_errors'][-1]['code'] == 'invalid_cex_micro_gas_history'
+assert empty_invalid_path.read_bytes() == empty_invalid_bytes
+
+invalid_count_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_invalid_count_')) / 'history.json'
+invalid_count_bytes = json.dumps({
+    'schema': 'cex_micro_gas_candidate_history.v1',
+    'candidates': [{
+        **micro_candidate,
+        'first_seen_at': '2026-07-23T00:00:00+00:00',
+        'last_seen_at': '2026-07-23T00:00:00+00:00',
+        'observation_count': 'bad',
+    }],
+}).encode()
+invalid_count_path.write_bytes(invalid_count_bytes)
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = invalid_count_path
+invalid_count_snapshot = micro_history_snapshot(micro_candidate, '2026-07-23T00:01:00+00:00')
+assert module.record_cex_micro_gas_candidate_history(invalid_count_snapshot) == 0
+assert invalid_count_snapshot['collector_errors'][-1]['code'] == 'invalid_cex_micro_gas_history'
+assert invalid_count_path.read_bytes() == invalid_count_bytes
+invalid_new_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_invalid_new_count_')) / 'history.json'
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = invalid_new_path
+invalid_new_snapshot = micro_history_snapshot(
+    {**micro_candidate, 'observation_count': -1},
+    '2026-07-23T00:01:00+00:00',
+)
+assert module.record_cex_micro_gas_candidate_history(invalid_new_snapshot) == 0
+assert invalid_new_snapshot['collector_errors'][-1]['code'] == 'invalid_cex_micro_gas_candidate'
+assert not invalid_new_path.exists()
+
+concurrent_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_concurrent_history_')) / 'history.json'
+process_context = multiprocessing.get_context('fork')
+def process_history_writer(path, candidate_id, marker, observed_at, delay, result_queue, parent_lock_fd):
+    os.close(parent_lock_fd)
+    module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = Path(path)
+    module.time.sleep(delay)
+    candidate = {**micro_candidate, 'candidate_id': candidate_id, 'marker': marker}
+    result_queue.put(module.record_cex_micro_gas_candidate_history(
+        micro_history_snapshot(candidate, observed_at)
+    ))
+def run_competing_writers(path, specifications):
+    queue = process_context.Queue()
+    lock_path = path.with_name(f'{path.name}.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+') as lock_handle:
+        module.fcntl.flock(lock_handle.fileno(), module.fcntl.LOCK_EX)
+        processes = [
+            process_context.Process(
+                target=process_history_writer,
+                args=(str(path), *specification, queue, lock_handle.fileno()),
+            )
+            for specification in specifications
+        ]
+        for process in processes:
+            process.start()
+        module.time.sleep(0.2)
+        assert not path.exists(), path
+        module.fcntl.flock(lock_handle.fileno(), module.fcntl.LOCK_UN)
+    for process in processes:
+        process.join(10)
+        assert process.exitcode == 0, process.exitcode
+    assert sorted(queue.get(timeout=2) for _ in processes) == [1] * len(processes)
+run_competing_writers(concurrent_history_path, [
+    ('concurrent-a', 'a', '2026-07-23T00:07:00+00:00', 0),
+    ('concurrent-b', 'b', '2026-07-23T00:07:01+00:00', 0),
+])
+concurrent_history = json.loads(concurrent_history_path.read_text(encoding='utf-8'))
+assert {row['candidate_id'] for row in concurrent_history['candidates']} == {'concurrent-a', 'concurrent-b'}, concurrent_history
+concurrent_same_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_concurrent_same_')) / 'history.json'
+run_competing_writers(concurrent_same_path, [
+    ('same-id', 'newer', '2026-07-23T00:10:00+00:00', 0),
+    ('same-id', 'older', '2026-07-23T00:05:00+00:00', 0.1),
+])
+concurrent_same_history = json.loads(concurrent_same_path.read_text())
+concurrent_same_row = concurrent_same_history['candidates'][0]
+assert concurrent_same_row['marker'] == 'newer', concurrent_same_row
+assert concurrent_same_row['first_seen_at'] == '2026-07-23T00:05:00+00:00', concurrent_same_row
+assert concurrent_same_row['last_seen_at'] == '2026-07-23T00:10:00+00:00', concurrent_same_row
+assert concurrent_same_row['observation_count'] == 2, concurrent_same_row
+assert concurrent_same_history['updated_at'] == '2026-07-23T00:10:00+00:00', concurrent_same_history
+
+atomic_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_atomic_history_')) / 'history.json'
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = atomic_history_path
+real_replace = module.os.replace
+real_fsync = module.os.fsync
+replace_calls = []
+io_events = []
+def recording_replace(source, destination):
+    replace_calls.append((Path(source), Path(destination)))
+    io_events.append('replace')
+    return real_replace(source, destination)
+def recording_fsync(fd):
+    io_events.append('fsync_dir' if stat.S_ISDIR(os.fstat(fd).st_mode) else 'fsync_file')
+    return real_fsync(fd)
+module.os.replace = recording_replace
+module.os.fsync = recording_fsync
+try:
+    assert module.record_cex_micro_gas_candidate_history(micro_snapshot) == 1
+finally:
+    module.os.replace = real_replace
+    module.os.fsync = real_fsync
+assert replace_calls and replace_calls[-1][1] == atomic_history_path, replace_calls
+assert replace_calls[-1][0].parent == atomic_history_path.parent, replace_calls
+assert io_events == ['fsync_file', 'replace', 'fsync_dir'], io_events
+assert not replace_calls[-1][0].exists(), replace_calls[-1][0]
+atomic_before_failure = atomic_history_path.read_bytes()
+module.os.replace = lambda source, destination: (_ for _ in ()).throw(OSError('replace fixture failure'))
+replace_failure_snapshot = micro_history_snapshot(micro_candidate, '2026-07-23T00:02:00+00:00')
+try:
+    assert module.record_cex_micro_gas_candidate_history(replace_failure_snapshot) == 0
+finally:
+    module.os.replace = real_replace
+assert replace_failure_snapshot['collector_errors'][-1]['code'] == 'cex_micro_gas_history_io_error'
+assert atomic_history_path.read_bytes() == atomic_before_failure
+assert list(atomic_history_path.parent.glob(f'.{atomic_history_path.name}.*.tmp')) == []
+
+bounded_history_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_bounded_history_')) / 'history.json'
+bulk_rows = [
+    {
+        **micro_candidate,
+        'candidate_id': f'bulk-{index:03d}',
+        'first_seen_at': f'2026-07-23T00:{index // 60:02d}:{index % 60:02d}+00:00',
+        'last_seen_at': f'2026-07-23T00:{index // 60:02d}:{index % 60:02d}+00:00',
+        'observation_count': 1,
+    }
+    for index in range(205)
+]
+newer_duplicate = {
+    **bulk_rows[0],
+    'last_seen_at': '2099-01-01T00:00:00+00:00',
+    'observation_count': 9,
+}
+bounded_history_path.write_text(json.dumps({
+    'schema': 'cex_micro_gas_candidate_history.v1',
+    'candidates': [newer_duplicate, *bulk_rows],
+}), encoding='utf-8')
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = bounded_history_path
+bounded_candidate = {**micro_candidate, 'candidate_id': 'bulk-trigger'}
+assert module.record_cex_micro_gas_candidate_history(
+    micro_history_snapshot(bounded_candidate, '2100-01-01T00:00:00+00:00')
+) == 1
+bounded_history = json.loads(bounded_history_path.read_text(encoding='utf-8'))
+bounded_ids = [row['candidate_id'] for row in bounded_history['candidates']]
+assert len(bounded_ids) == module.CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX, len(bounded_ids)
+assert len(set(bounded_ids)) == len(bounded_ids), bounded_ids
+assert 'bulk-000' in bounded_ids and bounded_history['candidates'][-2]['candidate_id'] == 'bulk-000', bounded_ids
+assert set(f'bulk-{index:03d}' for index in range(1, 6)).isdisjoint(bounded_ids), bounded_ids
+assert bounded_history['candidates'][-1]['candidate_id'] == 'bulk-trigger', bounded_ids
+empty_cap_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_empty_cap_')) / 'history.json'
+empty_cap_path.write_text(json.dumps({
+    'schema': 'cex_micro_gas_candidate_history.v1',
+    'candidates': [newer_duplicate, *bulk_rows],
+}))
+module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = empty_cap_path
+assert module.record_cex_micro_gas_candidate_history({
+    'generated_at': '2026-07-23T00:08:00+00:00',
+    'events': [],
+}) == 0
+empty_capped_history = json.loads(empty_cap_path.read_text())
+assert len(empty_capped_history['candidates']) == module.CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX
+assert len({row['candidate_id'] for row in empty_capped_history['candidates']}) == module.CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX
+assert empty_capped_history['candidates'][-1]['candidate_id'] == 'bulk-000'
+
+for invalid_time in (
+    'zzz',
+    '0001-01-01T00:00:00+14:00',
+    '9999-12-31T23:59:59-14:00',
+):
+    invalid_time_path = Path(tempfile.mkdtemp(prefix='cex_micro_gas_invalid_time_')) / 'history.json'
+    invalid_time_bytes = json.dumps({
+        'schema': 'cex_micro_gas_candidate_history.v1',
+        'candidates': [{
+            **micro_candidate,
+            'first_seen_at': '2026-07-23T00:00:00+00:00',
+            'last_seen_at': invalid_time,
+            'observation_count': 1,
+        }],
+    }).encode()
+    invalid_time_path.write_bytes(invalid_time_bytes)
+    module.CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = invalid_time_path
+    invalid_time_snapshot = micro_history_snapshot(micro_candidate, '2026-07-23T00:09:00+00:00')
+    assert module.record_cex_micro_gas_candidate_history(invalid_time_snapshot) == 0
+    assert invalid_time_snapshot['collector_errors'][-1]['code'] == 'invalid_cex_micro_gas_history'
+    assert invalid_time_path.read_bytes() == invalid_time_bytes
+
+real_shape_quick_rpc = module.opening.quick_rpc_call
+malformed_raw_log = {
+    'address': event['token']['address'],
+    'blockNumber': hex(300),
+    'blockHash': '0x' + 'f' * 64,
+    'transactionHash': '0x' + '1' * 64,
+    'transactionIndex': 'bad',
+    'logIndex': '0x0',
+    'topics': [],
+    'data': '0x0',
+}
+short_hash_raw_log = {
+    **malformed_raw_log,
+    'transactionIndex': '0x0',
+    'blockHash': '0x1',
+}
+for invalid_logs_result in (None, {'unexpected': 'object'}, [malformed_raw_log], [short_hash_raw_log]):
+    module.opening.quick_rpc_call = lambda chain, method, params, timeout, result=invalid_logs_result: result
+    invalid_logs, invalid_logs_coverage = module.token_transfer_logs_with_coverage(path_event, 300, 300)
+    assert invalid_logs == [], invalid_logs
+    assert invalid_logs_coverage['state'] == 'partial_rpc_error', invalid_logs_coverage
+    assert invalid_logs_coverage['completed_chunk_count'] == 0, invalid_logs_coverage
+    assert invalid_logs_coverage['covered_through_block'] is None, invalid_logs_coverage
+    assert invalid_logs_coverage['complete'] is False, invalid_logs_coverage
+
+old_shape_lookback = os.environ.get('ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS')
+old_shape_rpc_timeout = os.environ.get('ALPHA_INTRADAY_RPC_TIMEOUT')
+os.environ['ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS'] = '0'
+invalid_block_results = [
+    (301, None),
+    (302, []),
+    (303, {'number': hex(302), 'hash': '0x' + 'd' * 64, 'transactions': []}),
+    (304, {'number': hex(304), 'hash': '0x' + 'd' * 64, 'transactions': None}),
+    (305, {'number': hex(305), 'hash': '0x' + 'd' * 64, 'transactions': {}}),
+    (306, {'number': hex(306), 'hash': '0x' + 'd' * 64, 'transactions': [None]}),
+    (307, {
+        'number': hex(307),
+        'hash': '0x' + 'd' * 64,
+        'transactions': [{
+            'hash': '0x' + '1' * 64,
+            'blockNumber': hex(307),
+            'blockHash': '0x' + 'd' * 64,
+            'transactionIndex': 'bad',
+        }],
+    }),
+    (308, {
+        'number': hex(308),
+        'hash': '0x1',
+        'transactions': [],
+    }),
+    (309, {
+        'number': hex(309),
+        'hash': '0x' + 'g' * 64,
+        'transactions': [],
+    }),
+    (310, {
+        'number': hex(310),
+        'hash': '0x' + 'd' * 64,
+        'transactions': [{
+            'hash': '0x' + '1' * 64,
+            'blockNumber': hex(310),
+            'blockHash': '0x' + 'd' * 64,
+            'transactionIndex': '0x0',
+            'from': hot,
+            'to': micro_recipient,
+            'value': 3_000_000_000_000,
+        }],
+    }),
+]
+for block_number, invalid_block_result in invalid_block_results:
+    module.BLOCK_TX_CACHE.clear()
+    module.opening.quick_rpc_call = lambda chain, method, params, timeout, result=invalid_block_result: result
+    invalid_native_rows, invalid_block_coverage = module.native_micro_gas_rows(
+        path_event,
+        micro_recipient,
+        block_number,
+        4,
+        module.time.monotonic() + 5,
+    )
+    assert invalid_native_rows == [], invalid_native_rows
+    assert invalid_block_coverage['state'] == 'partial_rpc_error', invalid_block_coverage
+    assert invalid_block_coverage['completed_block_count'] == 0, invalid_block_coverage
+    assert not any(key[:2] == (path_event['chain'], block_number) for key in module.BLOCK_TX_CACHE), module.BLOCK_TX_CACHE
+
+def canonical_block(block_number, block_hash):
+    return {
+        'number': hex(block_number),
+        'hash': block_hash,
+        'transactions': [{
+            'hash': '0x' + block_hash[2] * 64,
+            'blockNumber': hex(block_number),
+            'blockHash': block_hash,
+            'transactionIndex': '0x3',
+            'from': hot,
+            'to': micro_recipient,
+            'value': hex(3_000_000_000_000),
+        }],
+    }
+block_view = {'value': canonical_block(400, '0x' + '1' * 64)}
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: block_view['value']
+module.BLOCK_TX_CACHE.clear()
+assert module.report_only_block_transactions(path_event['chain'], 400, 1)[0]['blockHash'] == '0x' + '1' * 64
+block_view['value'] = canonical_block(400, '0x' + '2' * 64)
+assert module.report_only_block_transactions(path_event['chain'], 400, 1)[0]['blockHash'] == '0x' + '2' * 64
+module.BLOCK_TX_CACHE.clear()
+report_rows, report_coverage = module.native_micro_gas_rows(
+    path_event, micro_recipient, 400, 4, module.time.monotonic() + 5
+)
+assert report_rows and report_coverage['complete'] is True, (report_rows, report_coverage)
+assert module.BLOCK_TX_CACHE == {}, module.BLOCK_TX_CACHE
+module.BLOCK_TIME_CACHE.clear()
+header_view = {
+    'value': {
+        'number': hex(400),
+        'hash': '0x' + '1' * 64,
+        'timestamp': '0x1',
+    },
+}
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: header_view['value']
+assert module.block_timestamp_utc(
+    path_event['chain'], 400, '0x' + '1' * 64, 1
+) == '1970-01-01T00:00:01Z'
+header_view['value'] = {
+    'number': hex(400),
+    'hash': '0x' + '2' * 64,
+    'timestamp': '0x2',
+}
+assert module.block_timestamp_utc(
+    path_event['chain'], 400, '0x' + '2' * 64, 1
+) == '1970-01-01T00:00:02Z'
+
+for configured_timeout, deadline in (
+    (0, module.time.monotonic() + 5),
+    (-1, module.time.monotonic() + 5),
+    (6, module.time.monotonic() - 1),
+):
+    module.opening.quick_rpc_call = lambda *args, **kwargs: (
+        (_ for _ in ()).throw(AssertionError('RPC must not be called without positive timeout budget'))
+    )
+    os.environ['ALPHA_INTRADAY_RPC_TIMEOUT'] = str(configured_timeout)
+    no_budget_evidence = module.receipt_transfer_evidence(
+        path_event,
+        micro_transfer,
+        configured_timeout,
+        deadline,
+    )
+    assert no_budget_evidence['receipt'] == {}, no_budget_evidence
+
+module.opening.quick_rpc_call = real_shape_quick_rpc
+if old_shape_lookback is None:
+    os.environ.pop('ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS', None)
+else:
+    os.environ['ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS'] = old_shape_lookback
+if old_shape_rpc_timeout is None:
+    os.environ.pop('ALPHA_INTRADAY_RPC_TIMEOUT', None)
+else:
+    os.environ['ALPHA_INTRADAY_RPC_TIMEOUT'] = old_shape_rpc_timeout
+
+scan_originals = {
+    name: getattr(module, name)
+    for name in (
+        'aggregate_candidate_txs',
+        'token_transfer_logs_with_coverage',
+        'runtime_cex_deposit_candidates',
+        'collect_report_only_cex_micro_gas_samples',
+        'cex_withdrawal_cluster',
+        'runtime_cex_candidate_aggregate_rows',
+        'configured_cex_inflow_aggregate_rows',
+    )
+}
+scan_fixture_event = {**path_event, 'opening_block': 100, 'latest_block': 100}
+module.aggregate_candidate_txs = lambda event, start, end: ([], 0, 0)
+module.token_transfer_logs_with_coverage = lambda event, start, end: ([], micro_coverage)
+module.runtime_cex_deposit_candidates = lambda event, start, end, rows: {}
+module.collect_report_only_cex_micro_gas_samples = lambda *args: micro_bundle
+module.cex_withdrawal_cluster = lambda *args: {'candidate_count': 0, 'clusters': []}
+module.runtime_cex_candidate_aggregate_rows = lambda *args: []
+module.configured_cex_inflow_aggregate_rows = lambda *args: []
+baseline_scan_event = module.scan_event(scan_fixture_event)
+module.collect_report_only_cex_micro_gas_samples = lambda *args: (
+    (_ for _ in ()).throw(ValueError('malformed report-only receipt fixture'))
+)
+guarded_scan_event = module.scan_event(scan_fixture_event)
+for name, original in scan_originals.items():
+    setattr(module, name, original)
+assert guarded_scan_event['analysis'] == baseline_scan_event['analysis']
+assert guarded_scan_event['report_only_cex_micro_gas_samples']['status'] == 'collector_error'
+assert module.action_marker(guarded_scan_event['analysis']) == module.action_marker(baseline_scan_event['analysis'])
+assert module.event_alert_keys(guarded_scan_event) == module.event_alert_keys(baseline_scan_event)
+assert module.push_signature({'events': [guarded_scan_event]}) == module.push_signature({'events': [baseline_scan_event]})
+assert module.telegram_text({'events': [guarded_scan_event], 'new_alert_count': 0}) == module.telegram_text({
+    'events': [baseline_scan_event],
+    'new_alert_count': 0,
+})
 """
     alpha_intraday_cex_result = subprocess.run(
         [sys.executable, "-c", alpha_intraday_cex_code],

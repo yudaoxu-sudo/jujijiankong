@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+import fcntl
 import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -47,7 +49,7 @@ WITHDRAWAL_CONTRACT_RPC_MAX_ATTEMPTS = 4
 WITHDRAWAL_CONTRACT_RPC_ATTEMPTS_USED = 0
 TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
-BLOCK_TIME_CACHE: dict[tuple[str, int], str | None] = {}
+BLOCK_TIME_CACHE: dict[tuple[str, int, str], str | None] = {}
 WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
 
 
@@ -63,6 +65,29 @@ def norm(value: str | None) -> str:
     return opening.norm(value)
 
 
+def canonical_rpc_hash(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 66
+        or not value.startswith("0x")
+        or any(character not in "0123456789abcdefABCDEF" for character in value[2:])
+    ):
+        return None
+    return value.lower()
+
+
+def canonical_rpc_quantity(value: Any) -> int | None:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("0x")
+        or len(value) <= 2
+        or (len(value) > 3 and value[2] == "0")
+        or any(character not in "0123456789abcdefABCDEF" for character in value[2:])
+    ):
+        return None
+    return int(value[2:], 16)
+
+
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -75,6 +100,42 @@ def read_json(path: Path, default: Any) -> Any:
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def record_collector_error(snapshot: dict[str, Any], collector: str, code: str, detail: str) -> int:
+    snapshot.setdefault("collector_errors", []).append(
+        {"collector": collector, "code": code, "detail": detail}
+    )
+    return 0
+
+
+def atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def withdrawal_candidate_id(event: dict[str, Any], cluster: dict[str, Any]) -> str:
@@ -744,6 +805,8 @@ def token_transfer_logs_with_coverage(
         "topics": [opening.TRANSFER_TOPIC],
     }
     logs: list[dict[str, Any]] = []
+    transfer_rows: list[dict[str, Any]] = []
+    decimals = int(event["token"]["decimals"])
     start = from_block
     covered_through_block: int | None = None
     completed_chunk_count = 0
@@ -754,7 +817,36 @@ def token_transfer_logs_with_coverage(
         chunk_query["fromBlock"] = hex(start)
         chunk_query["toBlock"] = hex(end)
         try:
-            logs.extend(opening.quick_rpc_call(event["chain"], "eth_getLogs", [chunk_query], timeout) or [])
+            chunk_logs = opening.quick_rpc_call(event["chain"], "eth_getLogs", [chunk_query], timeout)
+            if not isinstance(chunk_logs, list) or any(not isinstance(log, dict) for log in chunk_logs):
+                raise ValueError("invalid log response")
+            parsed_chunk: list[dict[str, Any]] = []
+            for log in chunk_logs:
+                block_number = rpc_int(log.get("blockNumber"))
+                transaction_index = rpc_int(log.get("transactionIndex"))
+                log_index = rpc_int(log.get("logIndex"))
+                block_hash = canonical_rpc_hash(log.get("blockHash"))
+                transaction_hash = canonical_rpc_hash(log.get("transactionHash"))
+                if (
+                    block_number is None
+                    or not start <= block_number <= end
+                    or transaction_index is None
+                    or transaction_index < 0
+                    or log_index is None
+                    or log_index < 0
+                    or block_hash is None
+                    or transaction_hash is None
+                    or not isinstance(log.get("topics"), list)
+                    or not isinstance(log.get("data"), str)
+                ):
+                    raise ValueError("invalid canonical log fields")
+                row = opening.transfer_log(log, decimals)
+                row["tx"] = transaction_hash
+                row["transaction_index"] = transaction_index
+                row["block_hash"] = block_hash
+                parsed_chunk.append(row)
+            logs.extend(chunk_logs)
+            transfer_rows.extend(parsed_chunk)
         except Exception:
             rpc_failed = True
             break
@@ -763,6 +855,7 @@ def token_transfer_logs_with_coverage(
         start = end + 1
 
     retained_logs = logs[:max_logs]
+    retained_transfer_rows = transfer_rows[:max_logs]
     max_log_limit_reached = len(logs) >= max_logs
     complete = (
         not rpc_failed
@@ -774,11 +867,10 @@ def token_transfer_logs_with_coverage(
     elif max_log_limit_reached:
         coverage_state = "max_log_limit_reached"
     elif rpc_failed:
-        coverage_state = "partial_rpc_error" if completed_chunk_count else "rpc_error_no_coverage"
+        coverage_state = "partial_rpc_error"
     else:
         coverage_state = "unknown"
-    decimals = int(event["token"]["decimals"])
-    return [opening.transfer_log(log, decimals) for log in retained_logs], {
+    return retained_transfer_rows, {
         "state": coverage_state,
         "requested_from_block": from_block,
         "requested_to_block": to_block,
@@ -1739,24 +1831,70 @@ def block_transactions(chain: str, block_number: int, timeout: int) -> list[dict
     return BLOCK_TX_CACHE[key]
 
 
+def report_only_block_transactions(
+    chain: str,
+    block_number: int,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    block = opening.quick_rpc_call(chain, "eth_getBlockByNumber", [hex(block_number), True], timeout)
+    if not isinstance(block, dict) or rpc_int(block.get("number")) != block_number:
+        raise ValueError("partial_rpc_error: invalid block response")
+    block_hash = canonical_rpc_hash(block.get("hash"))
+    txs = block.get("transactions")
+    if block_hash is None or not isinstance(txs, list) or any(not isinstance(tx, dict) for tx in txs):
+        raise ValueError("partial_rpc_error: invalid block transactions")
+    for tx in txs:
+        transaction_index = rpc_int(tx.get("transactionIndex"))
+        value = canonical_rpc_quantity(tx.get("value"))
+        if (
+            rpc_int(tx.get("blockNumber")) != block_number
+            or canonical_rpc_hash(tx.get("blockHash")) != block_hash
+            or transaction_index is None
+            or transaction_index < 0
+            or value is None
+            or value < 0
+            or canonical_rpc_hash(tx.get("hash")) is None
+        ):
+            raise ValueError("partial_rpc_error: inconsistent block transaction")
+    return txs
+
+
 def rpc_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
         return value
-    return int(str(value), 16)
+    if not isinstance(value, str) or not value.startswith("0x"):
+        return None
+    try:
+        return int(value, 16)
+    except (TypeError, ValueError):
+        return None
 
 
 def acquisition_rpc_timeout(chain: str, deadline: float, configured_timeout: int) -> float | None:
+    if configured_timeout <= 0:
+        return None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
     rpc_url_count = max(1, len(opening.rpc_urls(chain)))
-    return min(float(configured_timeout), remaining / rpc_url_count)
+    per_url_budget = remaining / rpc_url_count
+    return min(float(configured_timeout), per_url_budget) if per_url_budget > 0 else None
 
 
-def block_timestamp_utc(chain: str, block_number: int, timeout: int) -> str | None:
-    key = (chain, block_number)
+def block_timestamp_utc(
+    chain: str,
+    block_number: int,
+    block_hash: Any,
+    timeout: int,
+) -> str | None:
+    expected_block_hash = canonical_rpc_hash(block_hash)
+    if expected_block_hash is None:
+        return None
+    key = (chain, block_number, expected_block_hash)
     if key not in BLOCK_TIME_CACHE:
         try:
             block = opening.quick_rpc_call(
@@ -1764,8 +1902,14 @@ def block_timestamp_utc(chain: str, block_number: int, timeout: int) -> str | No
                 "eth_getBlockByNumber",
                 [hex(block_number), False],
                 timeout,
-            ) or {}
-            timestamp = rpc_int(block.get("timestamp")) if isinstance(block, dict) else None
+            )
+            if (
+                not isinstance(block, dict)
+                or rpc_int(block.get("number")) != block_number
+                or canonical_rpc_hash(block.get("hash")) != expected_block_hash
+            ):
+                raise ValueError("partial_rpc_error: inconsistent block timestamp")
+            timestamp = rpc_int(block.get("timestamp"))
             BLOCK_TIME_CACHE[key] = (
                 datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
                 if timestamp and timestamp > 0
@@ -1813,31 +1957,49 @@ def cex_label_provenance(event: dict[str, Any], address: str) -> dict[str, Any]:
     }
 
 
+def exact_label_provenance_complete(provenance: dict[str, Any]) -> bool:
+    return bool(
+        provenance.get("label")
+        and provenance.get("confidence")
+        and (
+            provenance.get("provenance_sha256")
+            or provenance.get("source_url")
+            or provenance.get("evidence")
+        )
+    )
+
+
 def receipt_transfer_evidence(
     event: dict[str, Any],
     transfer: dict[str, Any],
     timeout: int,
     deadline: float,
 ) -> dict[str, Any]:
-    tx_hash = str(transfer.get("tx") or "")
+    tx_hash = canonical_rpc_hash(transfer.get("tx")) or ""
     rpc_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
     if rpc_timeout is None:
         receipt = {}
     else:
         try:
-            receipt = opening.quick_rpc_call(
+            receipt_result = opening.quick_rpc_call(
                 event["chain"],
                 "eth_getTransactionReceipt",
                 [tx_hash],
                 rpc_timeout,
-            ) or {}
+            )
+            receipt = receipt_result if isinstance(receipt_result, dict) else {}
         except Exception:
             receipt = {}
-    receipt_rows = (
-        opening.receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
-        if receipt
-        else []
-    )
+    try:
+        receipt_rows = (
+            opening.receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
+            if receipt
+            else []
+        )
+        if not isinstance(receipt_rows, list):
+            receipt_rows = []
+    except Exception:
+        receipt_rows = []
     matching_rows = [
         row
         for row in receipt_rows
@@ -1848,6 +2010,16 @@ def receipt_transfer_evidence(
         and str(row.get("amount_raw") or "") == str(transfer.get("amount_raw") or "")
     ]
     block_number = int(transfer.get("block") or 0)
+    expected_transaction_index = transfer.get("transaction_index")
+    expected_block_hash = canonical_rpc_hash(transfer.get("block_hash"))
+    expected_transaction_index = rpc_int(expected_transaction_index)
+    receipt_block_transaction_match = bool(
+        receipt
+        and expected_transaction_index is not None
+        and expected_block_hash is not None
+        and rpc_int(receipt.get("transactionIndex")) == expected_transaction_index
+        and canonical_rpc_hash(receipt.get("blockHash")) == expected_block_hash
+    )
     timestamp_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
     return {
         "receipt": receipt,
@@ -1856,12 +2028,18 @@ def receipt_transfer_evidence(
         "transaction_index": rpc_int(receipt.get("transactionIndex")) if receipt else None,
         "receipt_identity_match": bool(
             receipt
-            and norm(receipt.get("transactionHash")) == norm(tx_hash)
+            and canonical_rpc_hash(receipt.get("transactionHash")) == tx_hash
             and rpc_int(receipt.get("blockNumber")) == block_number
         ),
+        "receipt_block_transaction_match": receipt_block_transaction_match,
         "receipt_log_match": len(matching_rows) == 1,
         "timestamp_utc": (
-            block_timestamp_utc(event["chain"], block_number, timestamp_timeout)
+            block_timestamp_utc(
+                event["chain"],
+                block_number,
+                expected_block_hash,
+                timestamp_timeout,
+            )
             if timestamp_timeout is not None
             else None
         ),
@@ -1892,7 +2070,11 @@ def native_micro_gas_rows(
             scan_error = "time_budget_exhausted"
             break
         try:
-            transactions = block_transactions(event["chain"], block_number, timeout)
+            transactions = report_only_block_transactions(
+                event["chain"],
+                block_number,
+                timeout,
+            )
         except Exception:
             scan_error = "rpc_error"
             break
@@ -1900,7 +2082,11 @@ def native_micro_gas_rows(
         for tx in transactions:
             if norm(tx.get("to")) != recipient:
                 continue
-            amount_bnb = decimal_from_wei(tx.get("value"))
+            value_wei = canonical_rpc_quantity(tx.get("value"))
+            if value_wei is None:
+                scan_error = "rpc_error"
+                break
+            amount_bnb = Decimal(value_wei) / (Decimal(10) ** 18)
             if amount_bnb <= 0 or amount_bnb > minimum_runtime_bnb:
                 continue
             source = norm(tx.get("from"))
@@ -1913,12 +2099,13 @@ def native_micro_gas_rows(
                 after_or_equal_count += 1
                 continue
             row = {
-                "tx": str(tx.get("hash") or ""),
+                "tx": canonical_rpc_hash(tx.get("hash")) or "",
                 "from": source,
                 "to": recipient,
-                "value_wei": str(int(str(tx.get("value") or "0x0"), 16)),
+                "value_wei": str(value_wei),
                 "value_native": opening.decimal_str(amount_bnb),
                 "block": block_number,
+                "block_hash": canonical_rpc_hash(tx.get("blockHash")),
                 "transaction_index": tx_index,
                 "strict_order": (
                     True
@@ -1930,10 +2117,12 @@ def native_micro_gas_rows(
                 rows.append(row)
             else:
                 capped_count += 1
-    complete = completed == requested_count and scan_error is None
+    complete = completed == requested_count and scan_error is None and capped_count == 0
     state = (
         "requested_window_complete"
         if complete
+        else "candidate_limit_reached"
+        if capped_count
         else "partial_time_budget"
         if scan_error == "time_budget_exhausted"
         else "partial_rpc_error"
@@ -2026,6 +2215,7 @@ def collect_report_only_cex_micro_gas_samples(
             {
                 "tx": row["tx"],
                 "block": row["block"],
+                "block_hash": row["block_hash"],
                 "transaction_index": row["transaction_index"],
             }
             for row in native_rows
@@ -2050,27 +2240,42 @@ def collect_report_only_cex_micro_gas_samples(
                 native_receipt = {}
             else:
                 try:
-                    native_receipt = opening.quick_rpc_call(
+                    native_receipt_result = opening.quick_rpc_call(
                         event["chain"],
                         "eth_getTransactionReceipt",
                         [native["tx"]],
                         receipt_timeout,
-                    ) or {}
+                    )
+                    native_receipt = (
+                        native_receipt_result
+                        if isinstance(native_receipt_result, dict)
+                        else {}
+                    )
                 except Exception:
                     native_receipt = {}
             timestamp_timeout = acquisition_rpc_timeout(event["chain"], deadline, timeout)
             native_time = (
-                block_timestamp_utc(event["chain"], native["block"], timestamp_timeout)
+                block_timestamp_utc(
+                    event["chain"],
+                    native["block"],
+                    native["block_hash"],
+                    timestamp_timeout,
+                )
                 if timestamp_timeout is not None
                 else None
             )
             source_label = cex_label_provenance(event, native["from"])
             native_receipt_match = bool(
                 native_receipt
-                and norm(native_receipt.get("transactionHash")) == norm(native["tx"])
+                and canonical_rpc_hash(native_receipt.get("transactionHash")) == native["tx"]
                 and rpc_int(native_receipt.get("blockNumber")) == native["block"]
                 and norm(native_receipt.get("from")) == native["from"]
                 and norm(native_receipt.get("to")) == native["to"]
+            )
+            native_receipt_block_transaction_match = bool(
+                native_receipt
+                and rpc_int(native_receipt.get("transactionIndex")) == native["transaction_index"]
+                and canonical_rpc_hash(native_receipt.get("blockHash")) == native["block_hash"]
             )
             delta_seconds = time_delta_seconds(native_time, token_evidence["timestamp_utc"])
             exchange_match = bool(
@@ -2090,8 +2295,10 @@ def collect_report_only_cex_micro_gas_samples(
                 and transfer_coverage_complete
                 and token_evidence["receipt_status"] == 1
                 and token_evidence["receipt_identity_match"]
+                and token_evidence["receipt_block_transaction_match"]
                 and token_evidence["receipt_log_match"]
                 and native_receipt_match
+                and native_receipt_block_transaction_match
                 and rpc_int(native_receipt.get("status")) == 1
                 and native["strict_order"]
                 and delta_seconds is not None
@@ -2102,22 +2309,33 @@ def collect_report_only_cex_micro_gas_samples(
                 ambiguity_reasons.append("multiple_prior_micro_gas_candidates")
             if not native_coverage["complete"]:
                 ambiguity_reasons.append("native_scan_coverage_incomplete")
+            if native_coverage["capped_candidate_count"]:
+                ambiguity_reasons.append("native_candidate_limit_reached")
             if not transfer_coverage_complete:
                 ambiguity_reasons.append("token_transfer_window_coverage_incomplete")
             if native_coverage["after_or_equal_transaction_count"]:
                 ambiguity_reasons.append("same_block_after_or_equal_native_transfer_observed")
+            if native_receipt and not native_receipt_block_transaction_match:
+                ambiguity_reasons.append("native_receipt_block_transaction_conflict")
+            if token_evidence["receipt"] and not token_evidence["receipt_block_transaction_match"]:
+                ambiguity_reasons.append("token_receipt_block_transaction_conflict")
             unresolved = ["root_operator_linkage", "independent_positive_root_review"]
-            if not source_label.get("label") or not source_label.get("label_source"):
+            if not exact_label_provenance_complete(source_label):
                 unresolved.append("cex_source_exact_label_provenance")
-            if not destination_label.get("label") or not destination_label.get("label_source"):
+            if not exact_label_provenance_complete(destination_label):
                 unresolved.append("cex_destination_exact_label_provenance")
             if not exchange_match:
                 unresolved.append("exchange_entity_match")
-            if not native_receipt_match or rpc_int(native_receipt.get("status")) != 1:
+            if (
+                not native_receipt_match
+                or not native_receipt_block_transaction_match
+                or rpc_int(native_receipt.get("status")) != 1
+            ):
                 unresolved.append("native_receipt_success_and_identity")
             if (
                 token_evidence["receipt_status"] != 1
                 or not token_evidence["receipt_identity_match"]
+                or not token_evidence["receipt_block_transaction_match"]
                 or not token_evidence["receipt_log_match"]
             ):
                 unresolved.append("token_receipt_log_success_and_identity")
@@ -2140,6 +2358,7 @@ def collect_report_only_cex_micro_gas_samples(
                         "timestamp_utc": native_time,
                         "receipt_status": rpc_int(native_receipt.get("status")) if native_receipt else None,
                         "receipt_identity_match": native_receipt_match,
+                        "receipt_block_transaction_match": native_receipt_block_transaction_match,
                         "source_label": source_label,
                     },
                     "token_ingress": {
@@ -2156,6 +2375,7 @@ def collect_report_only_cex_micro_gas_samples(
                         "timestamp_utc": token_evidence["timestamp_utc"],
                         "receipt_status": token_evidence["receipt_status"],
                         "receipt_identity_match": token_evidence["receipt_identity_match"],
+                        "receipt_block_transaction_match": token_evidence["receipt_block_transaction_match"],
                         "receipt_log_match": token_evidence["receipt_log_match"],
                         "amount_equation_valid": amount_equation_valid,
                         "destination_class": path["class"],
@@ -2210,8 +2430,69 @@ def collect_report_only_cex_micro_gas_samples(
     }
 
 
+def micro_gas_history_timestamp(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
+def micro_gas_history_body(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in {"first_seen_at", "last_seen_at", "observation_count"}
+    }
+
+
+def stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def valid_micro_gas_history_row(row: Any) -> bool:
+    if (
+        not isinstance(row, dict)
+        or not isinstance(row.get("candidate_id"), str)
+        or not row["candidate_id"]
+        or isinstance(row.get("observation_count"), bool)
+        or not isinstance(row.get("observation_count"), int)
+        or row["observation_count"] < 0
+    ):
+        return False
+    first_seen = micro_gas_history_timestamp(row.get("first_seen_at"))
+    last_seen = micro_gas_history_timestamp(row.get("last_seen_at"))
+    return first_seen is not None and last_seen is not None and first_seen <= last_seen
+
+
+def merge_micro_gas_history_rows(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    observation_count: int,
+) -> dict[str, Any]:
+    previous_body = micro_gas_history_body(previous)
+    current_body = micro_gas_history_body(current)
+    newest_body = max(
+        (
+            (previous["last_seen_at"], stable_json(previous_body), previous_body),
+            (current["last_seen_at"], stable_json(current_body), current_body),
+        ),
+        key=lambda item: item[:2],
+    )[2]
+    return {
+        **newest_body,
+        "first_seen_at": min(previous["first_seen_at"], current["first_seen_at"]),
+        "last_seen_at": max(previous["last_seen_at"], current["last_seen_at"]),
+        "observation_count": observation_count,
+    }
+
+
 def record_cex_micro_gas_candidate_history(snapshot: dict[str, Any]) -> int:
-    observed_at = str(snapshot.get("generated_at") or now_iso())
+    observed_at = micro_gas_history_timestamp(snapshot.get("generated_at") or now_iso())
     observed = [
         candidate
         for event in snapshot.get("events", []) or []
@@ -2220,43 +2501,141 @@ def record_cex_micro_gas_candidate_history(snapshot: dict[str, Any]) -> int:
         )
         if isinstance(candidate, dict) and candidate.get("candidate_id")
     ]
-    if not observed:
+    path = CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH
+    if observed_at is None or any(
+        not isinstance(candidate.get("candidate_id"), str)
+        or (
+            "observation_count" in candidate
+            and (
+                isinstance(candidate["observation_count"], bool)
+                or not isinstance(candidate["observation_count"], int)
+                or candidate["observation_count"] < 0
+            )
+        )
+        for candidate in observed
+    ):
+        return record_collector_error(
+            snapshot,
+            "cex_micro_gas_candidate_history",
+            "invalid_cex_micro_gas_candidate",
+            "candidate id, observation_count, or observed_at is invalid",
+        )
+    if not observed and not path.exists():
         return 0
-    payload = read_json(
-        CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH,
-        {"schema": "cex_micro_gas_candidate_history.v1", "candidates": []},
-    )
-    if payload.get("schema") != "cex_micro_gas_candidate_history.v1":
-        payload = {"schema": "cex_micro_gas_candidate_history.v1", "candidates": []}
-    by_id = {
-        row["candidate_id"]: row
-        for row in payload.get("candidates", []) or []
-        if isinstance(row, dict) and row.get("candidate_id")
-    }
-    for candidate in observed:
-        candidate_id = str(candidate["candidate_id"])
-        previous = by_id.get(candidate_id, {})
-        by_id[candidate_id] = {
-            **candidate,
-            "first_seen_at": previous.get("first_seen_at") or observed_at,
-            "last_seen_at": observed_at,
-            "observation_count": int(previous.get("observation_count") or 0) + 1,
-        }
-    candidates = sorted(
-        by_id.values(),
-        key=lambda row: (str(row.get("last_seen_at") or ""), str(row.get("candidate_id") or "")),
-    )[-CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX:]
-    write_json(
-        CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH,
-        {
-            "schema": "cex_micro_gas_candidate_history.v1",
-            "updated_at": observed_at,
-            "max_candidates": CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX,
-            "candidate_count": len(candidates),
-            "candidates": candidates,
-        },
-    )
-    return len(observed)
+    lock_path = path.with_name(f"{path.name}.lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                if path.exists():
+                    try:
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        return record_collector_error(
+                            snapshot,
+                            "cex_micro_gas_candidate_history",
+                            "invalid_cex_micro_gas_history",
+                            f"cannot read valid history: {exc}",
+                        )
+                else:
+                    payload = {"schema": "cex_micro_gas_candidate_history.v1", "candidates": []}
+                payload_updated_at = (
+                    micro_gas_history_timestamp(payload.get("updated_at"))
+                    if isinstance(payload, dict) and payload.get("updated_at") is not None
+                    else None
+                )
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("schema") != "cex_micro_gas_candidate_history.v1"
+                    or not isinstance(payload.get("candidates"), list)
+                    or (payload.get("updated_at") is not None and payload_updated_at is None)
+                    or any(not valid_micro_gas_history_row(row) for row in payload.get("candidates", []))
+                ):
+                    return record_collector_error(
+                        snapshot,
+                        "cex_micro_gas_candidate_history",
+                        "invalid_cex_micro_gas_history",
+                        "history schema or candidates are invalid",
+                    )
+                by_id: dict[str, dict[str, Any]] = {}
+                for raw_row in payload["candidates"]:
+                    row = {
+                        **raw_row,
+                        "first_seen_at": micro_gas_history_timestamp(raw_row["first_seen_at"]),
+                        "last_seen_at": micro_gas_history_timestamp(raw_row["last_seen_at"]),
+                    }
+                    candidate_id = str(row["candidate_id"])
+                    previous = by_id.get(candidate_id)
+                    if previous is None:
+                        by_id[candidate_id] = dict(row)
+                        continue
+                    by_id[candidate_id] = merge_micro_gas_history_rows(
+                        previous,
+                        row,
+                        max(previous["observation_count"], row["observation_count"]),
+                    )
+
+                observed_by_id: dict[str, dict[str, Any]] = {}
+                for candidate in observed:
+                    candidate_id = str(candidate["candidate_id"])
+                    body = micro_gas_history_body(candidate)
+                    previous_body = observed_by_id.get(candidate_id)
+                    if previous_body is None or stable_json(body) > stable_json(previous_body):
+                        observed_by_id[candidate_id] = body
+                for candidate_id, candidate in observed_by_id.items():
+                    previous = by_id.get(candidate_id)
+                    current = {
+                        **candidate,
+                        "first_seen_at": observed_at,
+                        "last_seen_at": observed_at,
+                        "observation_count": 1,
+                    }
+                    by_id[candidate_id] = (
+                        current
+                        if previous is None
+                        else merge_micro_gas_history_rows(
+                            previous,
+                            current,
+                            previous["observation_count"] + 1,
+                        )
+                    )
+                candidates = sorted(
+                    by_id.values(),
+                    key=lambda row: (row["last_seen_at"], row["candidate_id"]),
+                )[-CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX:]
+                updated_at = max(
+                    [observed_at, *(row["last_seen_at"] for row in candidates)]
+                    + ([payload_updated_at] if payload_updated_at is not None else [])
+                )
+                try:
+                    atomic_write_json(
+                        path,
+                        {
+                            "schema": "cex_micro_gas_candidate_history.v1",
+                            "updated_at": updated_at,
+                            "max_candidates": CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX,
+                            "candidate_count": len(candidates),
+                            "candidates": candidates,
+                        },
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    return record_collector_error(
+                        snapshot,
+                        "cex_micro_gas_candidate_history",
+                        "cex_micro_gas_history_io_error",
+                        f"cannot atomically write history: {exc}",
+                    )
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        return record_collector_error(
+            snapshot,
+            "cex_micro_gas_candidate_history",
+            "cex_micro_gas_history_io_error",
+            f"cannot access history lock: {exc}",
+        )
+    return len(observed_by_id)
 
 
 def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: int, to_block: int, logs: int, txs: int) -> dict[str, Any]:
@@ -2393,12 +2772,28 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         transfer_coverage["state"] = "invalid_transfer_log_identity"
         transfer_coverage["complete"] = False
     runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
-    report_only_cex_micro_gas_samples = collect_report_only_cex_micro_gas_samples(
-        event,
-        transfer_rows,
-        transfer_coverage,
-        runtime_candidates,
-    )
+    try:
+        report_only_cex_micro_gas_samples = collect_report_only_cex_micro_gas_samples(
+            event,
+            transfer_rows,
+            transfer_coverage,
+            runtime_candidates,
+        )
+    except Exception as exc:
+        report_only_cex_micro_gas_samples = {
+            "schema": "report_only_cex_micro_gas_samples.v1",
+            "status": "collector_error",
+            "alert_policy": "report_only",
+            "runtime_effect": "none",
+            "action_guard": "no_runtime_action_mutation",
+            "candidate_count": 0,
+            "window_reviews": [],
+            "candidates": [],
+            "collector_error": {
+                "code": "report_only_collector_error",
+                "detail": f"{type(exc).__name__}: {exc}",
+            },
+        }
     withdrawal_cluster = cex_withdrawal_cluster(
         event,
         transfer_rows,
@@ -2906,8 +3301,8 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     forward_scans: list[dict[str, Any]] = []
     snapshot = build_snapshot(forward_scans)
-    write_json(LATEST_PATH, snapshot)
     record_cex_micro_gas_candidate_history(snapshot)
+    write_json(LATEST_PATH, snapshot)
     record_withdrawal_candidate_history(snapshot, forward_scans)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)
