@@ -1,0 +1,149 @@
+{
+  "schema": "cex_micro_gas_calibration_corpus.v1",
+  "case_id": "CEX_MICRO_GAS_CALIBRATION_CORPUS_2026_07_24",
+  "generated_at_utc": "2026-07-24T09:20:00Z",
+  "scope": {
+    "chain_id": 56,
+    "mode": "offline_identity_gate",
+    "runtime_changed": false,
+    "notifications_sent": false,
+    "transactions_signed_or_broadcast": false
+  },
+  "identity_model": {
+    "independence_key_fields": [
+      "chain_id",
+      "token_contract",
+      "root_operator",
+      "exchange_entity",
+      "event_window_start_utc",
+      "event_window_end_utc"
+    ],
+    "observation_key_fields": [
+      "chain_id",
+      "native_tx_hash",
+      "token_or_execution_tx_hash",
+      "token_log_index"
+    ],
+    "rules": [
+      "Every counted unit must bind to one tracked source record.",
+      "Positive branches sharing one independence key count as one positive root.",
+      "Every counted independence key and observation key must be unique.",
+      "Blocked, observation-only, correlated, and synthetic rows do not enter counted_units.",
+      "Token and address identities are lowercase canonical chain-56 addresses.",
+      "This corpus is an offline evidence gate and cannot change runtime actions, alerts, or thresholds."
+    ]
+  },
+  "minimum_runtime_change_requirements": {
+    "independent_complete_positive_roots": 3,
+    "distinct_complete_positive_tokens": 2,
+    "independent_complete_negative_controls": 3
+  },
+  "counted_units": [
+    {
+      "unit_id": "positive:ake_usdt_bitget6_micro_gas_2026_07_10",
+      "outcome": "complete_positive_root",
+      "source_path": "input/cex_exact_address_micro_gas_calibration_2026-07-22.json",
+      "source_bucket": "corpus.real_independent_complete_cases",
+      "source_record_id": "ake_usdt_bitget6_micro_gas_2026_07_10",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0x55d398326f99059ff775485246999027b3197955",
+        "root_operator": "0xb8210c25df20921538ea35729badc3e0a63520f1",
+        "exchange_entity": "Bitget",
+        "event_window_start_utc": "2026-07-10T05:28:38+00:00",
+        "event_window_end_utc": "2026-07-17T10:24:27+00:00"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x460483c798c269400dada8f9cdfed8552f51af23bca450498598e8ccd371b641",
+          "token_or_execution_tx_hash": "0xd72e692ffaaff0a06c026eab5a5dd19ec701ab04b1634991c6c9a2d7ebbd2cea",
+          "token_log_index": 121
+        },
+        {
+          "native_tx_hash": "0xa614d7f68b53f3d27fdcdc4c533c52b7111710aa9fd2e89203f2130e5b471439",
+          "token_or_execution_tx_hash": "0xdbdba0fbdff65075d06e5562e2618b9a0b1134c5a426d43758c72ba59f2c0518",
+          "token_log_index": 378
+        }
+      ]
+    },
+    {
+      "unit_id": "negative:bybit_funded_771c_noncustodial_negative",
+      "outcome": "complete_independent_negative",
+      "source_path": "input/cex_exact_address_micro_gas_calibration_expansion_2026-07-22.json",
+      "source_bucket": "candidate_results",
+      "source_record_id": "bybit_funded_771c_noncustodial_negative",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0x970df17b9298f9bc9bf2b53570df9aae9411b8f2",
+        "root_operator": "0x771c0eed71197e898c577191153208e98d392497",
+        "exchange_entity": "Bybit",
+        "event_window_start_utc": "2023-12-22T21:48:27+00:00",
+        "event_window_end_utc": "2023-12-22T21:52:03+00:00"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x15d13573b71db262f019408add4b1f832897f0b71613713a0413166c1e8d7e11",
+          "token_or_execution_tx_hash": "0xcf9fca77dce03f7c586e180c09f714dc44f041de92313a1617b21a5b37291bf5",
+          "token_log_index": 150
+        }
+      ]
+    },
+    {
+      "unit_id": "negative:gate_funded_ad7d_noncustodial_negative",
+      "outcome": "complete_independent_negative",
+      "source_path": "input/cex_exact_address_micro_gas_calibration_expansion_2026-07-22.json",
+      "source_bucket": "candidate_results",
+      "source_record_id": "gate_funded_ad7d_noncustodial_negative",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0x432e1b949dec1976d035e3b810330852cffb4444",
+        "root_operator": "0xad7d539e3a6f491b5ed5602194fd3f98baaf1a14",
+        "exchange_entity": "Gate",
+        "event_window_start_utc": "2026-05-21T13:28:11+00:00",
+        "event_window_end_utc": "2026-05-21T13:31:37+00:00"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x051a92f204a70b188f4c2841b6a99176d2b6e61c3b62af921290e0d1b5ee779a",
+          "token_or_execution_tx_hash": "0x9ea53eba76e8cf7dc47838f3e3d66c60edf57ff5f2463a1cf65ef461655a2515",
+          "token_log_index": 378
+        }
+      ]
+    },
+    {
+      "unit_id": "negative:non_cex_00005_after_ake_ingress",
+      "outcome": "complete_independent_negative",
+      "source_path": "input/cex_micro_gas_low_value_negative_calibration_2026-07-22.json",
+      "source_bucket": "candidates",
+      "source_record_id": "non_cex_00005_after_ake_ingress",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db",
+        "root_operator": "0xd49ef7def42f4633cd55cb874e016a570ea99f04",
+        "exchange_entity": "none_unlabeled_non_cex_source",
+        "event_window_start_utc": "2026-07-07T11:40:12+00:00",
+        "event_window_end_utc": "2026-07-07T11:41:10+00:00"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x5aeaf516cfb61a70c97ad1d4c7fd0944769486150968e119c983002d196f1642",
+          "token_or_execution_tx_hash": "0xf5c8332a3ec0e7d0db05df8b8c238987530b5cc4841d3163a596174c00e41908",
+          "token_log_index": 187
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "independent_complete_positive_roots": 1,
+    "distinct_complete_positive_tokens": 1,
+    "independent_complete_negative_controls": 3,
+    "positive_branch_observations": 2
+  },
+  "gate": {
+    "identity_schema_complete": true,
+    "source_bindings_complete": true,
+    "runtime_change_requirements_met": false,
+    "runtime_effect": "none",
+    "decision": "identity_gate_complete_wait_for_two_positive_roots_and_one_additional_token"
+  }
+}

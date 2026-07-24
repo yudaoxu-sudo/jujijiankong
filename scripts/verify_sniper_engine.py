@@ -112,6 +112,8 @@ def main() -> int:
         ROOT / "input" / "binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
         ROOT / "input" / "ake_gate_cex_wallet_aggregation_batch_2026-07-23.json",
         ROOT / "cases" / "2026-07-17_binance_alpha_cex_wallet_aggregation.md",
+        ROOT / "input" / "cex_micro_gas_calibration_corpus_2026-07-24.json",
+        ROOT / "cases" / "2026-07-24_CEX_micro_gas_calibration_corpus.md",
         ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
         ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json",
@@ -151,6 +153,107 @@ def main() -> int:
     except Exception as exc:
         config_msg = str(exc)
     checks.append(("watchlist example JSON parses", config_ok, config_msg))
+
+    micro_gas_corpus_ok = False
+    micro_gas_corpus_msg = ""
+    try:
+        corpus = json.loads(
+            (ROOT / "input" / "cex_micro_gas_calibration_corpus_2026-07-24.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        units = corpus["counted_units"]
+        identity_fields = corpus["identity_model"]["independence_key_fields"]
+        independence_keys = [
+            tuple(unit["identity"][field] for field in identity_fields)
+            for unit in units
+        ]
+        observation_keys = [
+            (
+                unit["identity"]["chain_id"],
+                observation["native_tx_hash"],
+                observation["token_or_execution_tx_hash"],
+                observation["token_log_index"],
+            )
+            for unit in units
+            for observation in unit["observations"]
+        ]
+        source_documents = {
+            path: json.loads((ROOT / path).read_text(encoding="utf-8"))
+            for path in {unit["source_path"] for unit in units}
+        }
+        for unit in units:
+            source = source_documents[unit["source_path"]]
+            if unit["source_bucket"] == "corpus.real_independent_complete_cases":
+                rows = source["corpus"]["real_independent_complete_cases"]
+                source_row = next(
+                    row for row in rows if row["case_id"] == unit["source_record_id"]
+                )
+                source_identity = {
+                    "token_contract": source_row["sample_unit"]["token_contract"],
+                    "root_operator": source_row["sample_unit"]["root_operator"],
+                    "exchange_entity": source_row["sample_unit"]["exchange_entity"],
+                    "event_window_start_utc": source_row["sample_unit"]["event_window_start_utc"],
+                    "event_window_end_utc": source_row["sample_unit"]["bounded_followup_end_utc"],
+                }
+            else:
+                source_row = next(
+                    row
+                    for row in source[unit["source_bucket"]]
+                    if row["candidate_id"] == unit["source_record_id"]
+                )
+                source_identity = source_row["independence_unit"]
+                source_identity = {
+                    "token_contract": source_identity["token"],
+                    "root_operator": source_identity["root_operator"],
+                    "exchange_entity": source_identity["exchange_entity"],
+                    "event_window_start_utc": source_identity["event_window_start_utc"],
+                    "event_window_end_utc": source_identity["event_window_end_utc"],
+                }
+            assert all(
+                unit["identity"][field] == value
+                for field, value in source_identity.items()
+            )
+        outcomes = [unit["outcome"] for unit in units]
+        positive_tokens = {
+            unit["identity"]["token_contract"]
+            for unit in units
+            if unit["outcome"] == "complete_positive_root"
+        }
+        expected_counts = {
+            "independent_complete_positive_roots": outcomes.count("complete_positive_root"),
+            "distinct_complete_positive_tokens": len(positive_tokens),
+            "independent_complete_negative_controls": outcomes.count(
+                "complete_independent_negative"
+            ),
+            "positive_branch_observations": sum(
+                len(unit["observations"])
+                for unit in units
+                if unit["outcome"] == "complete_positive_root"
+            ),
+        }
+        assert corpus["schema"] == "cex_micro_gas_calibration_corpus.v1"
+        assert len(independence_keys) == len(set(independence_keys))
+        assert len(observation_keys) == len(set(observation_keys))
+        assert corpus["counts"] == expected_counts
+        assert corpus["gate"]["runtime_change_requirements_met"] is False
+        assert corpus["gate"]["runtime_effect"] == "none"
+        micro_gas_corpus_ok = True
+        micro_gas_corpus_msg = (
+            f"positive_roots={expected_counts['independent_complete_positive_roots']}, "
+            f"positive_tokens={expected_counts['distinct_complete_positive_tokens']}, "
+            f"complete_negatives={expected_counts['independent_complete_negative_controls']}, "
+            f"observations={len(observation_keys)}"
+        )
+    except Exception as exc:
+        micro_gas_corpus_msg = str(exc)
+    checks.append(
+        (
+            "CEX micro-gas calibration corpus identity gate",
+            micro_gas_corpus_ok,
+            micro_gas_corpus_msg,
+        )
+    )
 
     cex_aggregation_review_ok = False
     cex_aggregation_review_msg = ""
