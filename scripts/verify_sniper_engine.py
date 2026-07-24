@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -109,6 +110,7 @@ def main() -> int:
         ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json",
         ROOT / "cases" / "2026-07-16_elonkely_latest_100_review.md",
         ROOT / "input" / "binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
+        ROOT / "input" / "ake_gate_cex_wallet_aggregation_batch_2026-07-23.json",
         ROOT / "cases" / "2026-07-17_binance_alpha_cex_wallet_aggregation.md",
         ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
@@ -161,6 +163,7 @@ def main() -> int:
         verified_rows = cex_review.get("verified_ui_records", [])
         alpha_candidate_rows = cex_review.get("matched_alpha_onchain_candidates", [])
         pending_linkage_rows = cex_review.get("pending_ui_linkage_records", [])
+        resolved_linkage_rows = cex_review.get("resolved_ui_linkage_records", [])
         runtime_integration = cex_review.get("runtime_integration", {})
         verified_by_tx = {row.get("txid"): row for row in verified_rows}
         alpha_candidate_by_tx = {row.get("txid"): row for row in alpha_candidate_rows}
@@ -288,10 +291,12 @@ def main() -> int:
                 and row.get("custody_purpose_verified") is False
                 and row.get("economic_external_inflow_verified") is False
                 and row.get("sale_intent_verified") is False
-                and row.get("ui_record_linkage_verified") is False
-                and row.get("screenshot_label_exact_mapping_verified") is False
-                and row.get("match_status")
-                == "unique_date_amount_destination_candidate_within_bounded_search"
+                and row.get("ui_record_linkage_verified") is True
+                and row.get("screenshot_label_exact_mapping_verified") is True
+                and row.get("general_label_semantics_verified") is False
+                and row.get("ui_txid_linkage_provenance")
+                == "user_supplied_direct_binance_app_txid_jump_url"
+                and row.get("match_status") == "direct_ui_txid_verified"
                 and row.get("runtime_effect") == "none"
                 and row.get("alert_policy") == "report_only"
                 and row.get("same_tx_secondary_log", {}).get("is_ake_transfer") is False
@@ -305,12 +310,15 @@ def main() -> int:
                 is False
                 for row in alpha_candidate_rows
             )
-            and len(pending_linkage_rows) == 3
-            and {row.get("record_id"): row.get("matched_candidate_txid") for row in pending_linkage_rows}
+            and pending_linkage_rows == []
+            and len(resolved_linkage_rows) == 3
+            and {row.get("record_id"): row.get("txid") for row in resolved_linkage_rows}
             == {expected["record_id"]: txid for txid, expected in expected_alpha_records.items()}
             and all(
-                row.get("pending_fact") == "direct screenshot-row TXID comparison"
-                for row in pending_linkage_rows
+                row.get("linkage_status") == "verified"
+                and row.get("linkage_provenance")
+                == "user_supplied_direct_binance_app_txid_jump_url"
+                for row in resolved_linkage_rows
             )
             and cex_review.get("bounded_search", {}).get("address_filter", {}).get("pages_succeeded") == 73
             and cex_review.get("bounded_search", {}).get("address_filter", {}).get("missing_pages") == 0
@@ -326,7 +334,10 @@ def main() -> int:
             ]
             and cex_review.get("semantic_conclusion", {}).get("matched_alpha_onchain_candidate_count")
             == 3
-            and cex_review.get("semantic_conclusion", {}).get("verified_alpha_ui_mapping_count") == 0
+            and cex_review.get("semantic_conclusion", {}).get("verified_alpha_ui_mapping_count") == 3
+            and cex_review.get("semantic_conclusion", {}).get("verified_sample_count") == 5
+            and cex_review.get("supplementary_gate_batch_evidence")
+            == "input/ake_gate_cex_wallet_aggregation_batch_2026-07-23.json"
             and runtime_integration.get("unlabeled_to_cex_inflow_candidate", {}).get("runtime_effect")
             == "cex_inflow_risk"
             and runtime_integration.get("cex_internal_aggregation", {}).get("alert_policy") == "report_only"
@@ -336,7 +347,8 @@ def main() -> int:
         )
         cex_aggregation_review_msg = (
             f"gate_verified={len(verified_rows)}, alpha_candidates={len(alpha_candidate_rows)}, "
-            f"pending_ui_linkage={len(pending_linkage_rows)}"
+            f"pending_ui_linkage={len(pending_linkage_rows)}, "
+            f"resolved_ui_linkage={len(resolved_linkage_rows)}"
         )
     except Exception as exc:
         cex_aggregation_review_msg = str(exc)
@@ -345,6 +357,224 @@ def main() -> int:
             "Binance Alpha CEX wallet aggregation review parses with safe path roles",
             cex_aggregation_review_ok,
             cex_aggregation_review_msg,
+        )
+    )
+
+    ake_gate_batch_ok = False
+    ake_gate_batch_msg = ""
+    try:
+        ake_gate_batch = json.loads(
+            (ROOT / "input" / "ake_gate_cex_wallet_aggregation_batch_2026-07-23.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        gate_ui_rows = ake_gate_batch.get("user_linked_ui_records", [])
+        gate_ui_by_tx = {row.get("txid"): row for row in gate_ui_rows}
+        all_transfer_coverage = ake_gate_batch.get("all_token_transfer_coverage", {})
+        gate_subset = ake_gate_batch.get("bounded_gate_destination_subset", {})
+        gate_transfer_rows = gate_subset.get("transfer_rows", [])
+        verified_source_labels = ake_gate_batch.get("verified_source_labels", [])
+        verified_source_by_address = {
+            row.get("address"): row for row in verified_source_labels
+        }
+        path_partition = gate_subset.get("verified_path_partition", {})
+        internal_partition = path_partition.get("cex_internal_aggregation", {})
+        risk_partition = path_partition.get("unlabeled_to_cex_inflow_candidate", {})
+        classification = ake_gate_batch.get("classification", {})
+        gate5_source = "0xc882b111a75c0c657fc507c04fbfcd2cc984f071"
+        gate5_txid = "0x8a8a89d0fdb5818ebdbaaff4fb2ae31feb8bbc5c4c20463a9527c3e6d811f27b"
+        gate5_row = next(
+            (
+                row
+                for row in gate_transfer_rows
+                if row.get("transfer_from") == gate5_source
+                and row.get("txid") == gate5_txid
+            ),
+            {},
+        )
+        unlabeled_risk_rows = [
+            row for row in gate_transfer_rows if row.get("transfer_from") != gate5_source
+        ]
+        expected_gate_ui = {
+            "0xd37e4a6c36885937206ceec6a100239da94ce018bdd217f355dd1fcff85590a6": {
+                "from": "0x96973f7b83a3c785d94e0a6d8712174abb81b748",
+                "raw": "83318937289999999133810688",
+                "block": 111711401,
+                "log_index": 335,
+            },
+            "0xd4255c2574d8238a03e73743a646b759c93ace882b96a789a82c465b11b6e0fe": {
+                "from": "0xdd04f596569b09bb967ab9f20cdc1b7bc7495afd",
+                "raw": "96877789587090000000000000",
+                "block": 111711399,
+                "log_index": 69,
+            },
+            "0x14391ef5504ee51c54fd74ec48cf908a4cefc7ebc686e6e2659c2b02ba56f3a6": {
+                "from": "0x1f7e66dbf2fbf30e9f00ae7968369e455934e28c",
+                "raw": "100000000000000000000000000",
+                "block": 111711397,
+                "log_index": 69,
+            },
+            "0xb750d367f56d0f940367b3f7094f56bc978a9dbd6f3b9f4847bdf2f783dcd120": {
+                "from": "0xd5da17a84314194e348649c89a65143a061f7190",
+                "raw": "131841852507135962884603904",
+                "block": 111711391,
+                "log_index": 413,
+            },
+            "0x3702cee10855560a71832ff6a6668194b44cbf513a018886339eb71eec80fd33": {
+                "from": "0xcdcc1d4c1b2f55a9c4444b2968699b5abacc9898",
+                "raw": "149845354671000000000000000",
+                "block": 111711384,
+                "log_index": 9,
+            },
+        }
+        canonical_gate_rows = json.dumps(
+            gate_transfer_rows,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        gate_row_identities = {
+            (row.get("txid"), row.get("log_index")) for row in gate_transfer_rows
+        }
+        ake_gate_batch_ok = (
+            ake_gate_batch.get("schema") == "ake_gate_cex_wallet_aggregation_batch.v1"
+            and ake_gate_batch.get("token", {}).get("chain_id") == 56
+            and ake_gate_batch.get("token", {}).get("decimals") == 18
+            and ake_gate_batch.get("token", {}).get("contract")
+            == "0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db"
+            and ake_gate_batch.get("destination", {}).get("address")
+            == "0x0d0707963952f2fba59dd06f2b425ace40b492fe"
+            and ake_gate_batch.get("destination", {}).get("public_explorer_label") == "Gate 1"
+            and len(gate_ui_rows) == 5
+            and set(gate_ui_by_tx) == set(expected_gate_ui)
+            and all(
+                gate_ui_by_tx[txid].get("transfer_from") == expected["from"]
+                and gate_ui_by_tx[txid].get("exact_amount_raw") == expected["raw"]
+                and gate_ui_by_tx[txid].get("block_number") == expected["block"]
+                and gate_ui_by_tx[txid].get("transfer_log_index") == expected["log_index"]
+                for txid, expected in expected_gate_ui.items()
+            )
+            and all(row.get("receipt_status") == "success" for row in gate_ui_rows)
+            and all(row.get("receipt_log_count") == 1 for row in gate_ui_rows)
+            and all(row.get("ui_amount_rounding_match") is True for row in gate_ui_rows)
+            and all(row.get("ui_txid_linkage_verified") is True for row in gate_ui_rows)
+            and all(
+                row.get("ui_txid_linkage_provenance")
+                == "user_supplied_direct_binance_app_txid_jump_url"
+                for row in gate_ui_rows
+            )
+            and all(
+                row.get("path_role") == "unlabeled_to_cex_inflow_candidate"
+                and row.get("runtime_effect") == "cex_inflow_risk"
+                and row.get("source_entity_role") == "unresolved"
+                and row.get("entity_linkage_verified") is False
+                and row.get("economic_external_inflow_verified") is False
+                and row.get("sale_intent_verified") is False
+                for row in gate_ui_rows
+            )
+            and ake_gate_batch.get("user_linked_summary", {}).get("exact_amount_token")
+            == "561883934.055225962018414592"
+            and sum(int(row.get("exact_amount_raw") or 0) for row in gate_ui_rows)
+            == 561883934055225962018414592
+            and all_transfer_coverage.get("state") == "requested_window_complete"
+            and all_transfer_coverage.get("complete") is True
+            and all_transfer_coverage.get("requested_from_block") == 111711300
+            and all_transfer_coverage.get("requested_to_block") == 111711650
+            and all_transfer_coverage.get("covered_through_block") == 111711650
+            and all_transfer_coverage.get("returned_log_count") == 2596
+            and all_transfer_coverage.get("max_logs") == 12000
+            and all_transfer_coverage.get("all_chunks_succeeded") is True
+            and all_transfer_coverage.get("completed_chunk_count") == 36
+            and all_transfer_coverage.get("conflicting_duplicate_log_count") == 0
+            and all_transfer_coverage.get("missing_log_identity_count") == 0
+            and all_transfer_coverage.get("canonical_rows_sha256")
+            == "468c652760e13998a596977d30c8c785923049ef4bed2e8d7396f03c8d3f6da2"
+            and len(gate_transfer_rows) == 47
+            and len(gate_row_identities) == 47
+            and len({row.get("txid") for row in gate_transfer_rows}) == 47
+            and len({row.get("transfer_from") for row in gate_transfer_rows}) == 47
+            and all(
+                row.get("transfer_to") == "0x0d0707963952f2fba59dd06f2b425ace40b492fe"
+                for row in gate_transfer_rows
+            )
+            and set(gate_ui_by_tx).issubset({row.get("txid") for row in gate_transfer_rows})
+            and sum(int(row.get("exact_amount_raw") or 0) for row in gate_transfer_rows)
+            == 6634139634780252285016825276
+            and gate_subset.get("exact_amount_token")
+            == "6634139634.780252285016825276"
+            and gate_subset.get("first_block") == 111711359
+            and gate_subset.get("last_block") == 111711606
+            and gate_subset.get("duration_seconds") == 111
+            and gate_subset.get("observed_transfer_count") == 47
+            and gate_subset.get("other_destination_subset_tx_count") == 42
+            and gate_subset.get("ordered_transfer_rows_sha256")
+            == hashlib.sha256(canonical_gate_rows).hexdigest()
+            and gate_subset.get("ordered_transfer_rows_sha256")
+            == "2ca151663603953cf4ddb9ecacfb7f57e2a3efa4fa39d3553ba0386487544e0f"
+            and len(verified_source_labels) == 1
+            and verified_source_by_address.get(gate5_source, {}).get("public_explorer_label")
+            == "Gate 5"
+            and verified_source_by_address.get(gate5_source, {}).get("configured_class")
+            == "cex_hot_wallet"
+            and verified_source_by_address.get(gate5_source, {}).get("exchange") == "Gate"
+            and verified_source_by_address.get(gate5_source, {}).get("linked_txid")
+            == gate5_txid
+            and verified_source_by_address.get(gate5_source, {}).get("path_role")
+            == "cex_internal_aggregation"
+            and verified_source_by_address.get(gate5_source, {}).get("runtime_effect")
+            == "none"
+            and gate5_row.get("block_number") == 111711557
+            and gate5_row.get("log_index") == 134
+            and gate5_row.get("exact_amount_raw") == "2646151218672768590000000000"
+            and internal_partition.get("transfer_count") == 1
+            and internal_partition.get("exact_amount_token") == "2646151218.67276859"
+            and internal_partition.get("txid") == gate5_txid
+            and internal_partition.get("source_address") == gate5_source
+            and internal_partition.get("runtime_effect") == "none"
+            and internal_partition.get("alert_policy") == "report_only"
+            and len(unlabeled_risk_rows) == 46
+            and sum(
+                int(row.get("exact_amount_raw") or 0) for row in unlabeled_risk_rows
+            )
+            == 3987988416107483695016825276
+            and risk_partition.get("transfer_count") == 46
+            and risk_partition.get("exact_amount_token")
+            == "3987988416.107483695016825276"
+            and risk_partition.get("runtime_effect") == "cex_inflow_risk"
+            and risk_partition.get("direction") == "bearish_risk_candidate"
+            and risk_partition.get("economic_external_inflow_verified") is False
+            and risk_partition.get("sale_intent_verified") is False
+            and ake_gate_batch.get("cross_batch_observations", {}).get(
+                "reused_source_address_count_from_2026_07_14_verified_rows"
+            )
+            == 2
+            and set(classification.get("path_roles", []))
+            == {"cex_internal_aggregation", "unlabeled_to_cex_inflow_candidate"}
+            and classification.get("cex_internal_aggregation_verified") is True
+            and classification.get("verified_internal_transfer_count") == 1
+            and classification.get("verified_internal_exact_amount_token")
+            == "2646151218.67276859"
+            and classification.get("unlabeled_risk_transfer_count") == 46
+            and classification.get("unlabeled_risk_exact_amount_token")
+            == "3987988416.107483695016825276"
+            and classification.get("runtime_effect") == "mixed_cex_path_roles"
+            and classification.get("historical_real_onchain_replay_status") == "pass"
+            and classification.get("production_natural_observation_status") == "pending"
+            and classification.get("current_watchlist_token_present") is False
+            and classification.get("telegram_direct_row_count") == 0
+            and classification.get("automatic_trade_action") is False
+        )
+        ake_gate_batch_msg = (
+            f"all_ake_logs={all_transfer_coverage.get('returned_log_count')}, "
+            f"gate_rows={len(gate_transfer_rows)}, internal={bool(gate5_row)}, "
+            f"risk_rows={len(unlabeled_risk_rows)}, ui_links={len(gate_ui_rows)}"
+        )
+    except Exception as exc:
+        ake_gate_batch_msg = str(exc)
+    checks.append(
+        (
+            "AKE Gate App links and bounded all-transfer batch evidence parse",
+            ake_gate_batch_ok,
+            ake_gate_batch_msg,
         )
     )
 
@@ -661,6 +891,7 @@ def main() -> int:
             "0x28c6c06298d514db089934071355e5743bf21d60": "cex_hot_wallet",
             "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "cex_hot_wallet",
             "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "cex_hot_wallet",
+            "0xc882b111a75c0c657fc507c04fbfcd2cc984f071": "cex_hot_wallet",
             "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23": "cex_hot_wallet",
             "0xdd3cb5c974601bc3974d908ea4a86020f9999e0c": "cex_hot_wallet",
             "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": "cex_deposit",
@@ -2625,6 +2856,123 @@ assert all(row['path_role'] == 'unlabeled_to_cex_inflow_candidate' for row in ga
 assert all(row['runtime_effect'] == 'cex_inflow_risk' for row in gate_evidence_rows), gate_evidence_rows
 assert all(row['source_role'] == 'unlabeled' for row in gate_evidence_rows), gate_evidence_rows
 assert all(row['direction'] == 'bearish_risk_candidate' for row in gate_evidence_rows), gate_evidence_rows
+real_gate_batch = json.loads(
+    (root / 'input' / 'ake_gate_cex_wallet_aggregation_batch_2026-07-23.json').read_text(
+        encoding='utf-8'
+    )
+)
+real_gate_token = real_gate_batch['token']['contract']
+real_gate_destination = real_gate_batch['destination']['address']
+real_gate5_source = '0xc882b111a75c0c657fc507c04fbfcd2cc984f071'
+real_gate5_txid = '0x8a8a89d0fdb5818ebdbaaff4fb2ae31feb8bbc5c4c20463a9527c3e6d811f27b'
+real_gate5_label = module.opening.global_address_label('bsc', real_gate5_source)
+assert real_gate5_label.get('class') == 'cex_hot_wallet', real_gate5_label
+assert real_gate5_label.get('exchange') == 'Gate', real_gate5_label
+real_gate_event = {
+    **event,
+    'symbol': 'AKE',
+    'token': {'address': real_gate_token, 'symbol': 'AKE', 'decimals': 18},
+    'known_contracts': [
+        {
+            'address': real_gate_destination,
+            'class': 'cex_hot_wallet',
+            'exchange': 'Gate',
+            'label': 'Gate 1 Hot Wallet',
+        }
+    ],
+}
+real_gate_transfers = [
+    {
+        'tx': row['txid'],
+        'block': row['block_number'],
+        'log_index': row['log_index'],
+        'token': real_gate_token,
+        'from': row['transfer_from'],
+        'to': row['transfer_to'],
+        'amount': module.Decimal(row['exact_amount_token']),
+        'decimals': 18,
+    }
+    for row in real_gate_batch['bounded_gate_destination_subset']['transfer_rows']
+]
+real_gate_paths = module.classify_cex_transfer_paths(real_gate_event, real_gate_transfers)
+real_gate_internal_paths = [
+    row for row in real_gate_paths if row['runtime_effect'] == 'none'
+]
+real_gate_risk_paths = [
+    row for row in real_gate_paths if row['runtime_effect'] == 'cex_inflow_risk'
+]
+assert len(real_gate_internal_paths) == 1, real_gate_internal_paths
+assert real_gate_internal_paths[0]['tx'] == real_gate5_txid, real_gate_internal_paths
+assert real_gate_internal_paths[0]['from'] == real_gate5_source, real_gate_internal_paths
+assert real_gate_internal_paths[0]['amount'] == module.Decimal('2646151218.67276859'), real_gate_internal_paths
+assert real_gate_internal_paths[0]['source_class'] == 'cex_hot_wallet', real_gate_internal_paths
+assert real_gate_internal_paths[0]['path_role'] == 'cex_internal_aggregation', real_gate_internal_paths
+assert real_gate_internal_paths[0]['direction'] == 'unknown', real_gate_internal_paths
+assert real_gate_internal_paths[0]['alert_policy'] == 'report_only', real_gate_internal_paths
+assert len(real_gate_risk_paths) == 46, real_gate_risk_paths
+assert {
+    row['path_role'] for row in real_gate_risk_paths
+} == {'unlabeled_to_cex_inflow_candidate'}, real_gate_risk_paths
+assert sum(
+    (row['amount'] for row in real_gate_risk_paths),
+    module.Decimal(0),
+) == module.Decimal('3987988416.107483695016825276'), real_gate_risk_paths
+real_gate_coverage = real_gate_batch['all_token_transfer_coverage']
+real_gate_expected = real_gate_batch['classification']['historical_replay_expected']
+real_gate_aggregate = module.configured_cex_inflow_aggregate_rows(
+    real_gate_event,
+    real_gate_transfers,
+    real_gate_coverage['requested_from_block'],
+    real_gate_coverage['requested_to_block'],
+    real_gate_coverage,
+)
+assert len(real_gate_aggregate) == 1, real_gate_aggregate
+assert real_gate_aggregate[0]['path_role'] == 'unlabeled_to_cex_inflow_candidate', real_gate_aggregate
+assert real_gate_aggregate[0]['runtime_effect'] == 'cex_inflow_risk', real_gate_aggregate
+assert real_gate_aggregate[0]['coverage_complete'] is True, real_gate_aggregate
+assert real_gate_aggregate[0]['observed_transfer_count'] == real_gate_expected['without_receipt_rows']['observed_transfer_count'], real_gate_aggregate
+assert real_gate_aggregate[0]['observed_external_token'] == real_gate_expected['without_receipt_rows']['observed_external_token'], real_gate_aggregate
+assert real_gate_aggregate[0]['first_block'] == real_gate_expected['without_receipt_rows']['first_block'], real_gate_aggregate
+assert real_gate_aggregate[0]['last_block'] == real_gate_expected['without_receipt_rows']['last_block'], real_gate_aggregate
+real_gate_five_receipts = [
+    {
+        'tx': row['txid'],
+        'cex_token_deposit': row['exact_amount_token'],
+        'cex_deposit_count': 1,
+    }
+    for row in real_gate_batch['user_linked_ui_records']
+]
+real_gate_residual = module.configured_cex_inflow_aggregate_rows(
+    real_gate_event,
+    real_gate_transfers,
+    real_gate_coverage['requested_from_block'],
+    real_gate_coverage['requested_to_block'],
+    real_gate_coverage,
+    receipt_rows=real_gate_five_receipts,
+)
+assert len(real_gate_residual) == 1, real_gate_residual
+assert real_gate_residual[0]['observed_transfer_count'] == real_gate_expected['with_five_user_linked_receipts_accounted']['observed_transfer_count'], real_gate_residual
+assert real_gate_residual[0]['observed_external_token'] == real_gate_expected['with_five_user_linked_receipts_accounted']['observed_external_token'], real_gate_residual
+real_gate_all_risk_receipts = [
+    {
+        'tx': row['tx'],
+        'cex_token_deposit': module.opening.decimal_str(row['amount']),
+        'cex_deposit_count': 1,
+    }
+    for row in real_gate_risk_paths
+]
+real_gate_fully_accounted = module.configured_cex_inflow_aggregate_rows(
+    real_gate_event,
+    real_gate_transfers,
+    real_gate_coverage['requested_from_block'],
+    real_gate_coverage['requested_to_block'],
+    real_gate_coverage,
+    receipt_rows=real_gate_all_risk_receipts,
+)
+assert real_gate_fully_accounted == [], real_gate_fully_accounted
+assert real_gate_expected['with_all_46_risk_receipts_accounted']['aggregate_row_count'] == 0, real_gate_expected
+assert real_gate_batch['classification']['historical_real_onchain_replay_status'] == 'pass', real_gate_batch['classification']
+assert real_gate_batch['classification']['production_natural_observation_status'] == 'pending', real_gate_batch['classification']
 real_internal_quick_rpc = module.opening.quick_rpc_call
 real_internal_receipt_transfers = module.opening.receipt_transfers_from_receipt
 real_internal_gas_priming = module.cex_gas_priming_transfers

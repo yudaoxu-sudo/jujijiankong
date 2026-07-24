@@ -78,6 +78,13 @@
         "evidence": "2026-06-29 external BSC exchange wallet report: BscScan label Gate 1. Used as CEX destination, never as funding cluster parent."
       },
       {
+        "address": "0xc882b111a75c0c657fc507c04fbfcd2cc984f071",
+        "label": "Gate 5 Wallet",
+        "class": "cex_hot_wallet",
+        "exchange": "Gate",
+        "evidence": "2026-07-24 AKE aggregation review: BscScan exact-address label Gate 5; canonical transfer 0x8a8a89d0fdb5818ebdbaaff4fb2ae31feb8bbc5c4c20463a9527c3e6d811f27b moved 2,646,151,218.67276859 AKE from Gate 5 to configured Gate 1."
+      },
+      {
         "address": "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23",
         "label": "KuCoin Hot Wallet 2",
         "class": "cex_hot_wallet",

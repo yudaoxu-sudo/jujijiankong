@@ -1,6 +1,6 @@
 {
   "schema": "binance_alpha_cex_wallet_aggregation_review.v2",
-  "reviewed_at": "2026-07-18T12:49:23Z",
+  "reviewed_at": "2026-07-24T07:19:15Z",
   "scope": "Evaluate Binance Alpha due-diligence CEX wallet aggregation records as a discovery source and prevent CEX-internal transfers from being counted as new exchange inflow.",
   "screenshot": {
     "path": "/Users/xuyufan/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_e9f0ddf3eaf9b399fb3ce8b753370f57/nt_data/Pic/2026-07/Thumb/de80784f0d0d6fa1570f86770ac5cbff_720.png",
@@ -8,6 +8,7 @@
     "provenance": "user_supplied_binance_app_capture",
     "visible_module": "CEX 钱包归集资金动态"
   },
+  "supplementary_gate_batch_evidence": "input/ake_gate_cex_wallet_aggregation_batch_2026-07-23.json",
   "token": {
     "symbol": "AKE",
     "name": "AKE",
@@ -124,10 +125,12 @@
       "destination_class_tracked": "exchange_aggregator",
       "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
       "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
-      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
-      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
-      "ui_record_linkage_verified": false,
-      "screenshot_label_exact_mapping_verified": false,
+      "match_status": "direct_ui_txid_verified",
+      "match_basis": "the user supplied the direct Binance App TXID jump URL for this exact row; the full hash matches the unique bounded candidate and its canonical receipt",
+      "ui_txid_linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "ui_record_linkage_verified": true,
+      "screenshot_label_exact_mapping_verified": true,
+      "general_label_semantics_verified": false,
       "transfer_direction_verified": true,
       "custody_purpose_verified": false,
       "economic_external_inflow_verified": false,
@@ -191,10 +194,12 @@
       "destination_class_tracked": "exchange_aggregator",
       "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
       "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
-      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
-      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
-      "ui_record_linkage_verified": false,
-      "screenshot_label_exact_mapping_verified": false,
+      "match_status": "direct_ui_txid_verified",
+      "match_basis": "the user supplied the direct Binance App TXID jump URL for this exact row; the full hash matches the unique bounded candidate and its canonical receipt",
+      "ui_txid_linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "ui_record_linkage_verified": true,
+      "screenshot_label_exact_mapping_verified": true,
+      "general_label_semantics_verified": false,
       "transfer_direction_verified": true,
       "custody_purpose_verified": false,
       "economic_external_inflow_verified": false,
@@ -258,10 +263,12 @@
       "destination_class_tracked": "exchange_aggregator",
       "destination_public_explorer_label": "Binance: Alpha 2.0 Router Proxy",
       "destination_public_explorer_url": "https://bscscan.com/address/0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
-      "match_status": "unique_date_amount_destination_candidate_within_bounded_search",
-      "match_basis": "one transfer in the UI rounding interval within the scanned date window for the tracked Alpha Proxy/Custody destination, followed by exact receipt verification",
-      "ui_record_linkage_verified": false,
-      "screenshot_label_exact_mapping_verified": false,
+      "match_status": "direct_ui_txid_verified",
+      "match_basis": "the user supplied the direct Binance App TXID jump URL for this exact row; the full hash matches the unique bounded candidate and its canonical receipt",
+      "ui_txid_linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "ui_record_linkage_verified": true,
+      "screenshot_label_exact_mapping_verified": true,
+      "general_label_semantics_verified": false,
       "transfer_direction_verified": true,
       "custody_purpose_verified": false,
       "economic_external_inflow_verified": false,
@@ -291,21 +298,31 @@
       "explorer_url": "https://bscscan.com/tx/0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87"
     }
   ],
-  "pending_ui_linkage_records": [
+  "pending_ui_linkage_records": [],
+  "resolved_ui_linkage_records": [
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-07",
-      "matched_candidate_txid": "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727",
-      "pending_fact": "direct screenshot-row TXID comparison"
+      "txid": "0x7321a5f87f0709502c7ed8c27bcb398bef779599cee5c090190f405fae871727",
+      "ui_displayed_amount": "+972.54M AKE",
+      "linkage_status": "verified",
+      "linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "verified_at": "2026-07-24"
     },
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-05",
-      "matched_candidate_txid": "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8",
-      "pending_fact": "direct screenshot-row TXID comparison"
+      "txid": "0x4b2d3173498afd9b056a41347276ca32fad9494eeece7e01384a755099615af8",
+      "ui_displayed_amount": "+822.99M AKE",
+      "linkage_status": "verified",
+      "linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "verified_at": "2026-07-24"
     },
     {
       "record_id": "AKE-BINANCE-ALPHA-HOT-2026-07-04",
-      "matched_candidate_txid": "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87",
-      "pending_fact": "direct screenshot-row TXID comparison"
+      "txid": "0x288e360dc637295457af65ba3515108e4bf6342f7d2fb9efa40393540c3f8f87",
+      "ui_displayed_amount": "+670.00M AKE",
+      "linkage_status": "verified",
+      "linkage_provenance": "user_supplied_direct_binance_app_txid_jump_url",
+      "verified_at": "2026-07-24"
     }
   ],
   "bounded_search": {
@@ -379,16 +396,16 @@
     "supplementary_address_coverage": {
       "alpha_router_0x6aba": "sampled only; available page depth did not fully cover 2026-07-04",
       "configured_binance_hot_wallets": "first of eight total supplementary addresses hit a Cloudflare challenge on page 1; scan stopped without bypass; attempted=1, complete=0",
-      "scope_limit": "exact transaction details are proven for three unique direct-transfer candidates to 0x73d8; direct screenshot-row linkage and exhaustive coverage across every possible screenshot-label address are unresolved"
+      "scope_limit": "exact transaction details and direct screenshot-row TXID linkage are proven for three records to 0x73d8; exhaustive coverage across every possible screenshot-label address remains unresolved"
     }
   },
   "semantic_conclusion": {
-    "verified_sample_count": 2,
+    "verified_sample_count": 5,
     "verified_gate_sample_count": 2,
     "matched_alpha_onchain_candidate_count": 3,
-    "verified_alpha_ui_mapping_count": 0,
-    "verified_plus_sign_meaning": "the Gate destination received AKE in both directly linked samples; the three Alpha candidates also transfer AKE into the matched destination while direct UI linkage remains pending",
-    "generalization_limit": "The three Alpha candidates are direct transfers to the tracked Alpha Proxy/Custody address; direct screenshot-row linkage and the exact Alpha Hot Wallet label mapping remain unresolved.",
+    "verified_alpha_ui_mapping_count": 3,
+    "verified_plus_sign_meaning": "the destination received AKE in all five directly linked records: two Gate rows and three Binance Alpha rows",
+    "generalization_limit": "The three exact Binance Alpha screenshot rows now map directly to their TXIDs and 0x73d8. A permanent field-level dictionary for every Binance: Alpha Hot Wallet row or address remains unverified.",
     "source_role_limit": "All three Alpha senders are EOAs at latest state; sender ownership, custody purpose, economic external inflow, market-maker role, and unrelated-source roles remain unresolved.",
     "trade_direction_limit": "The receipts prove token direction into the tracked Alpha custody path. Sale intent, same-batch next hop, quote recovery, and later execution remain unresolved."
   },
@@ -424,7 +441,6 @@
     "inference": "Path roles and runtime effects are assigned only after official discovery and on-chain direction are separated."
   },
   "remaining_gates": [
-    "Open each screenshot row's TXID link in the Binance app and compare it with the three bounded-search candidate hashes.",
     "Obtain a public or official field-level mapping from the screenshot's exact Binance: Alpha Hot Wallet label to 0x73d8.",
     "Keep sender ownership, custody purpose, economic external inflow, same-batch next hop, sale intent, and quote recovery unresolved until direct evidence exists.",
     "Complete the supplementary Alpha Router and configured Binance hot-wallet scan only when an auditable public source permits bounded access without challenge bypass.",
