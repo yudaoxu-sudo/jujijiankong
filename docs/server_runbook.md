@@ -1,6 +1,6 @@
 # Server Runbook
 
-更新日期：2026-07-10
+更新日期：2026-07-26
 
 当前版本已经覆盖本地推文评分、Telegram/项目线索摄取、Alpha 项目级监控、预发布窗口、Alpha 开盘首批买家回溯、首批买家 funding source、Alpha 官方价格动量、Alpha 盘中大额流监控、holder 集中度、合约 OI/funding/盘口/强平、Surf 外部市场辅助层、外部辅助源 readiness、预测市场、日报、系统自检和失败才推送的运行健康告警。
 
@@ -496,7 +496,12 @@ PY
       "name": "alpha news",
       "entity": "https://t.me/example_channel",
       "enabled": true,
-      "limit": 30
+      "limit": 30,
+      "bootstrap_on_first_seen": true,
+      "state_key": "alpha news",
+      "evidence_layer": "social",
+      "authority": "context_only",
+      "context_only": true
     }
   ]
 }
@@ -509,6 +514,9 @@ PY
 - 不放资产。
 - 不保存私人聊天。
 - 采集器只处理配置里的频道。
+- 私密邀请链接仅用于一次性解析，配置只保存公开 entity 或稳定数字 peer ID。
+- `context_only=true` 的来源会保留隔离原文、解析结果和 per-source offset，同时硬阻断 canonical project registry、watchlist 自动应用及二次 Telegram 分析推送。
+- `bootstrap_on_first_seen=true` 会在新来源第一次出现且没有游标时只记录最新 message id，避免 cron 抢先处理历史消息。
 
 查看定时任务：
 
@@ -524,8 +532,10 @@ tail -n 80 /home/ubuntu/sniper/logs/server_run_once.log
 ```bash
 cd /home/ubuntu/sniper
 python3 scripts/add_telegram_source.py "alpha news" "https://t.me/example_channel"
-python3 scripts/telegram_user_signal_collector.py --bootstrap
+python3 scripts/telegram_user_signal_collector.py --bootstrap --source-key "alpha news"
 ```
+
+`add_telegram_source.py` 默认写入 `social/context_only` 来源。只有经过独立验收且明确需要二次动作时，才使用 `--allow-secondary-actions`。
 
 确认配置：
 

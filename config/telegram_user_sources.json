@@ -1,11 +1,27 @@
 {
-  "generated_at": "2026-06-21",
+  "generated_at": "2026-07-26",
   "sources": [
     {
       "name": "alpha news",
       "entity": 3164733440,
       "enabled": true,
-      "limit": 30
+      "limit": 30,
+      "bootstrap_on_first_seen": true,
+      "state_key": "alpha news",
+      "evidence_layer": "social",
+      "authority": "social_discovery",
+      "context_only": false
+    },
+    {
+      "name": "敖丙禁言群",
+      "entity": -1004299049232,
+      "enabled": true,
+      "limit": 30,
+      "bootstrap_on_first_seen": true,
+      "state_key": "aobing_readonly",
+      "evidence_layer": "social",
+      "authority": "context_only",
+      "context_only": true
     }
   ]
 }

@@ -6,7 +6,12 @@
       "entity": "https://t.me/example_channel",
       "enabled": true,
       "limit": 30,
-      "notes": "Use a public t.me link, @username, channel id, or group id."
+      "bootstrap_on_first_seen": true,
+      "state_key": "alpha news",
+      "evidence_layer": "social",
+      "authority": "context_only",
+      "context_only": true,
+      "notes": "Private invites are resolved once; persist only a public entity or stable numeric peer id."
     }
   ]
 }

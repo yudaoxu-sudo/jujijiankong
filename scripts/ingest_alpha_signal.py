@@ -54,6 +54,10 @@ HEADER_PREFIXES = {
     "source_forward:",
     "source_name:",
     "source_entity:",
+    "source_state_key:",
+    "source_evidence_layer:",
+    "source_authority:",
+    "source_context_only:",
     "telegram_update_id:",
     "telegram_message_id:",
     "telegram_message_link:",
@@ -88,6 +92,7 @@ def source_files(paths: list[str]) -> list[Path]:
 
 
 def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
+    source_policy = source_policy_from_headers(text)
     text = strip_signal_headers(text)
     urls = unique(URL_RE.findall(text))
     pool_ids = normalize_pool_ids(POOL_ID_RE.findall(text) + extract_pool_ids_from_urls(urls))
@@ -130,7 +135,30 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
         "prediction_proposals": build_prediction_proposals(primary_symbol, title, prediction_urls),
         "next_checks": next_checks(addresses, txs, pool_ids, prediction_urls, prices),
     }
+    if source_policy:
+        parsed["source_policy"] = source_policy
     return apply_token_aliases(parsed)
+
+
+def source_policy_from_headers(text: str) -> dict[str, Any]:
+    fields: dict[str, str] = {}
+    for line in text.splitlines()[:16]:
+        if not line.strip():
+            break
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        normalized_key = key.strip().lower()
+        if normalized_key in {"source_evidence_layer", "source_authority", "source_context_only"} and normalized_key not in fields:
+            fields[normalized_key] = value.strip()
+    if "source_context_only" not in fields:
+        return {}
+    context_only = fields["source_context_only"].lower() != "false"
+    return {
+        "evidence_layer": "social",
+        "authority": "context_only" if context_only else "social_discovery",
+        "context_only": context_only,
+    }
 
 
 def strip_signal_headers(text: str) -> str:
@@ -500,6 +528,9 @@ def unique_dicts(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def apply_proposals(parsed: dict[str, Any]) -> None:
+    source_policy = parsed.get("source_policy", {})
+    if isinstance(source_policy, dict) and source_policy.get("context_only") is True:
+        return
     watchlist = read_json(WATCHLIST_PATH, {"generated_at": now_iso(), "items": []})
     prediction = read_json(PREDICTION_PATH, {"generated_at": now_iso(), "items": []})
 
@@ -614,8 +645,11 @@ def main() -> int:
         text = path.read_text(encoding="utf-8")
         parsed = parse_signal(text, path)
         if args.registry:
-            from sniper_engine.project_registry import merge_signal
-            parsed["project_registry"] = merge_signal(parsed, {"collector": "manual_ingest", "source_path": str(path)})
+            if parsed.get("source_policy", {}).get("context_only") is True:
+                parsed["project_registry"] = {"status": "context_only_archived", "added": []}
+            else:
+                from sniper_engine.project_registry import merge_signal
+                parsed["project_registry"] = merge_signal(parsed, {"collector": "manual_ingest", "source_path": str(path)})
         stem = path.stem.replace(" ", "_")
         json_path = OUT_DIR / f"{stem}.json"
         md_path = OUT_DIR / f"{stem}.md"

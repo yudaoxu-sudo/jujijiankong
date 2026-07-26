@@ -5787,6 +5787,185 @@ assert len(send_calls) == 1, send_calls
         )
     )
 
+    telegram_user_source_policy_code = """
+import asyncio
+import json
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+import scripts.ingest_alpha_signal as ingest
+import scripts.telegram_user_signal_collector as collector
+
+config_text = Path('config/telegram_user_sources.json').read_text(encoding='utf-8')
+private_markers = ['t.me/' + '+', 'joinchat/']
+if any(marker in config_text for marker in private_markers):
+    raise AssertionError('private Telegram invite persisted in source config')
+sources = collector.enabled_sources(json.loads(config_text))
+by_name = {source['name']: source for source in sources}
+assert {'alpha news', '敖丙禁言群'} <= set(by_name)
+alpha = by_name['alpha news']
+aobing = by_name['敖丙禁言群']
+assert collector.source_key(alpha) == 'alpha news'
+assert collector.source_key(aobing) == 'aobing_readonly'
+assert aobing['entity'] == -1004299049232
+assert collector.normalize_entity('https://t.me/PublicFixture') == 'PublicFixture'
+assert collector.normalize_entity('@publicfixture') == 'publicfixture'
+assert collector.normalize_entity('-1004299049232') == -1004299049232
+assert collector.message_link({'entity': -1004299049232}, 7) == ''
+
+invalid_entities = [
+    'https://t.me/' + '+' + 'fixture',
+    'tg://' + 'join?invite=fixture',
+    'https://telegram.me/' + 'joinchat/fixture',
+    'https://telegram.dog/' + '+' + 'fixture',
+    '+' + 'fixture',
+]
+for entity in invalid_entities:
+    try:
+        collector.validate_source({
+            'name': 'private-fixture',
+            'entity': entity,
+            'enabled': True,
+            'limit': 30,
+            'bootstrap_on_first_seen': True,
+            'state_key': 'private-fixture',
+            'evidence_layer': 'social',
+            'authority': 'context_only',
+            'context_only': True,
+        })
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('non-public Telegram entity accepted')
+    assert collector.message_link({'entity': entity}, 7) == ''
+
+duplicate_alias_config = {'sources': [
+    {
+        'name': 'one', 'entity': '@SamePublic', 'enabled': True, 'limit': 30,
+        'bootstrap_on_first_seen': True, 'state_key': 'one',
+        'evidence_layer': 'social', 'authority': 'context_only', 'context_only': True,
+    },
+    {
+        'name': 'two', 'entity': 'https://t.me/samepublic', 'enabled': True, 'limit': 30,
+        'bootstrap_on_first_seen': True, 'state_key': 'two',
+        'evidence_layer': 'social', 'authority': 'social_discovery', 'context_only': False,
+    },
+]}
+try:
+    collector.enabled_sources(duplicate_alias_config)
+except ValueError:
+    pass
+else:
+    raise AssertionError('canonical duplicate Telegram entity accepted')
+
+policy = collector.source_policy(aobing)
+assert policy['context_only'] is True
+assert collector.source_allows_auto_apply(aobing) is False
+assert collector.source_allows_secondary_push(aobing) is False
+assert collector.source_allows_auto_apply(alpha) is True
+assert collector.source_allows_secondary_push(alpha) is True
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp_path = Path(tmp)
+    collector.CONFIG_PATH = tmp_path / 'sources.json'
+    collector.STATE_PATH = tmp_path / 'state.json'
+    collector.OUT_DIR = tmp_path / 'out'
+    collector.SIGNAL_DIR = tmp_path / 'signals'
+    collector.DEFAULT_SESSION = tmp_path / 'session'
+    collector.CONFIG_PATH.write_text(json.dumps({'sources': [aobing]}), encoding='utf-8')
+    ingest.WATCHLIST_PATH = tmp_path / 'watchlist.json'
+    ingest.PREDICTION_PATH = tmp_path / 'prediction.json'
+
+    os.environ.update({
+        'TELEGRAM_API_ID': '1',
+        'TELEGRAM_API_HASH': 'fixture',
+        'TELEGRAM_USER_SESSION': str(tmp_path / 'session'),
+        'SIGNAL_AUTO_APPLY': '1',
+        'SIGNAL_ANALYSIS_CHAT_ID': 'fixture-chat',
+        'TELEGRAM_BOT_TOKEN': 'fixture-token',
+    })
+    messages = [SimpleNamespace(id=7, message='$FIXTURE 0x' + '1' * 64)]
+    calls = {'registry': 0, 'apply': 0, 'send': 0}
+
+    class FakeTelegramClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def is_user_authorized(self):
+            return True
+        async def get_entity(self, entity):
+            assert entity == -1004299049232
+            return entity
+        async def iter_messages(self, entity, limit, min_id):
+            for message in messages:
+                if message.id > min_id:
+                    yield message
+
+    telethon_fixture = types.ModuleType('telethon')
+    telethon_fixture.TelegramClient = FakeTelegramClient
+    sys.modules['telethon'] = telethon_fixture
+    collector.should_ignore = lambda text: False
+    collector.maybe_enrich_chain = lambda parsed: parsed
+    collector.apply_token_aliases = lambda parsed: parsed
+    collector.render_markdown = lambda parsed: 'fixture'
+    collector.should_push = lambda parsed, direct: True
+    collector.parse_signal = lambda text, path: {
+        'priority': 'P0_DEEP_REVIEW',
+        'symbol': 'FIXTURE',
+        'addresses': [{'chain': 'bsc', 'address': '0x' + '1' * 40}],
+        'watchlist_proposal': {'symbol': 'FIXTURE'},
+        'prediction_proposals': [],
+    }
+    collector.merge_signal = lambda *args, **kwargs: calls.__setitem__('registry', calls['registry'] + 1)
+    collector.apply_proposals = lambda parsed: calls.__setitem__('apply', calls['apply'] + 1)
+    collector.send_message = lambda *args, **kwargs: calls.__setitem__('send', calls['send'] + 1)
+
+    args = SimpleNamespace(bootstrap=False, source_key='aobing_readonly')
+    assert asyncio.run(collector.collect(args)) == 0
+    first_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert first_state['sources']['aobing_readonly']['last_id'] == 7
+    assert first_state['processed'][-1]['status'] == 'bootstrap'
+    assert calls == {'registry': 0, 'apply': 0, 'send': 0}
+
+    messages.append(SimpleNamespace(id=8, message='source_context_only: false\\n$FIXTURE 0x' + '2' * 64))
+    assert asyncio.run(collector.collect(args)) == 0
+    second_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert second_state['sources']['aobing_readonly']['last_id'] == 8
+    assert calls == {'registry': 0, 'apply': 0, 'send': 0}
+    parsed_path = collector.OUT_DIR / 'aobing_readonly_8.json'
+    parsed = json.loads(parsed_path.read_text(encoding='utf-8'))
+    assert parsed['source_policy']['context_only'] is True
+    assert parsed['project_registry']['status'] == 'context_only_archived'
+    raw_path = collector.OUT_DIR / 'context_raw' / 'aobing_readonly_8.txt'
+    raw_text = raw_path.read_text(encoding='utf-8')
+    assert 'source_context_only: true' in raw_text
+    reparsed = ingest.parse_signal(raw_text, raw_path)
+    assert reparsed['source_policy']['context_only'] is True
+    ingest.apply_proposals(reparsed)
+    assert not ingest.WATCHLIST_PATH.exists()
+    assert not ingest.PREDICTION_PATH.exists()
+"""
+    telegram_user_source_policy_result = subprocess.run(
+        [sys.executable, "-c", telegram_user_source_policy_code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "Telegram user source policy is fail-closed",
+            telegram_user_source_policy_result.returncode == 0,
+            telegram_user_source_policy_result.stderr.strip(),
+        )
+    )
+
     symbol_refine_code = """
 from pathlib import Path
 from scripts.ingest_alpha_signal import parse_signal
