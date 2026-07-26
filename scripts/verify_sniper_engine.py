@@ -5901,7 +5901,7 @@ with tempfile.TemporaryDirectory() as tmp:
         async def is_user_authorized(self):
             return True
         async def get_entity(self, entity):
-            assert entity == -1004299049232
+            assert entity in {-1004299049232, 3164733440}
             return entity
         async def iter_messages(self, entity, limit, min_id):
             for message in messages:
@@ -5911,6 +5911,7 @@ with tempfile.TemporaryDirectory() as tmp:
     telethon_fixture = types.ModuleType('telethon')
     telethon_fixture.TelegramClient = FakeTelegramClient
     sys.modules['telethon'] = telethon_fixture
+    real_should_ignore = collector.should_ignore
     collector.should_ignore = lambda text: False
     collector.maybe_enrich_chain = lambda parsed: parsed
     collector.apply_token_aliases = lambda parsed: parsed
@@ -5939,6 +5940,14 @@ with tempfile.TemporaryDirectory() as tmp:
     second_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
     assert second_state['sources']['aobing_readonly']['last_id'] == 8
     assert calls == {'registry': 0, 'apply': 0, 'send': 0}
+    assert second_state['message_audit'][-1] == {
+        'source': 'aobing_readonly',
+        'status': 'signal',
+        'message_id': 8,
+        'priority': 'P0_DEEP_REVIEW',
+        'registry_status': 'context_only_archived',
+        'pushed': False,
+    }
     parsed_path = collector.OUT_DIR / 'aobing_readonly_8.json'
     parsed = json.loads(parsed_path.read_text(encoding='utf-8'))
     assert parsed['source_policy']['context_only'] is True
@@ -5951,6 +5960,81 @@ with tempfile.TemporaryDirectory() as tmp:
     ingest.apply_proposals(reparsed)
     assert not ingest.WATCHLIST_PATH.exists()
     assert not ingest.PREDICTION_PATH.exists()
+
+    collector.should_ignore = real_should_ignore
+    messages.append(SimpleNamespace(id=9, message='ordinary context without a signal keyword'))
+    assert asyncio.run(collector.collect(args)) == 0
+    ignored_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert ignored_state['sources']['aobing_readonly']['last_id'] == 9
+    assert ignored_state['message_audit'][-1] == {
+        'source': 'aobing_readonly',
+        'status': 'ignored',
+        'message_id': 9,
+        'reason': 'not_signal',
+    }
+    assert not (collector.OUT_DIR / 'aobing_readonly_9.json').exists()
+    assert not (collector.OUT_DIR / 'context_raw' / 'aobing_readonly_9.txt').exists()
+
+    messages.append(SimpleNamespace(id=10, message=''))
+    assert asyncio.run(collector.collect(args)) == 0
+    empty_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert empty_state['sources']['aobing_readonly']['last_id'] == 10
+    assert empty_state['message_audit'][-2:] == [
+        {
+            'source': 'aobing_readonly',
+            'status': 'ignored',
+            'message_id': 9,
+            'reason': 'not_signal',
+        },
+        {
+            'source': 'aobing_readonly',
+            'status': 'ignored',
+            'message_id': 10,
+            'reason': 'empty_message',
+        },
+    ]
+    assert asyncio.run(collector.collect(args)) == 0
+    retained_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert retained_state['message_audit'][-2:] == empty_state['message_audit'][-2:]
+
+    seeded_audit = [
+        {
+            'source': 'aobing_readonly',
+            'status': 'ignored',
+            'message_id': message_id,
+            'reason': 'not_signal',
+            'text': 'must not persist',
+        }
+        for message_id in range(1, collector.MESSAGE_AUDIT_LIMIT + 2)
+    ]
+    collector.STATE_PATH.write_text(json.dumps({
+        'sources': {'aobing_readonly': {'last_id': 10}},
+        'message_audit': seeded_audit,
+    }), encoding='utf-8')
+    assert asyncio.run(collector.collect(args)) == 0
+    bounded_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert len(bounded_state['message_audit']) == collector.MESSAGE_AUDIT_LIMIT
+    assert bounded_state['message_audit'][0]['message_id'] == 2
+    assert bounded_state['message_audit'][-1]['message_id'] == collector.MESSAGE_AUDIT_LIMIT + 1
+    assert all(set(row) <= set(collector.MESSAGE_AUDIT_FIELDS) for row in bounded_state['message_audit'])
+
+    collector.CONFIG_PATH.write_text(json.dumps({'sources': [alpha]}), encoding='utf-8')
+    collector.STATE_PATH = tmp_path / 'alpha_state.json'
+    collector.STATE_PATH.write_text(json.dumps({
+        'sources': {'alpha news': {'last_id': 0}},
+    }), encoding='utf-8')
+    messages[:] = [SimpleNamespace(id=1, message='ordinary update without a signal keyword')]
+    alpha_args = SimpleNamespace(bootstrap=False, source_key='alpha news')
+    assert asyncio.run(collector.collect(alpha_args)) == 0
+    alpha_state = json.loads(collector.STATE_PATH.read_text(encoding='utf-8'))
+    assert alpha_state['sources']['alpha news']['last_id'] == 1
+    assert alpha_state['message_audit'] == [{
+        'source': 'alpha news',
+        'status': 'ignored',
+        'message_id': 1,
+        'reason': 'not_signal',
+    }]
+    assert calls == {'registry': 0, 'apply': 0, 'send': 0}
 """
     telegram_user_source_policy_result = subprocess.run(
         [sys.executable, "-c", telegram_user_source_policy_code],

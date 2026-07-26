@@ -29,10 +29,24 @@ DEFAULT_SESSION = ROOT / ".secrets" / "telegram_user.session"
 VALID_SOURCE_AUTHORITIES = {"social_discovery", "context_only"}
 PUBLIC_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
 PUBLIC_TME_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{4,31})/?", re.IGNORECASE)
+MESSAGE_AUDIT_LIMIT = 200
+MESSAGE_AUDIT_FIELDS = (
+    "source",
+    "status",
+    "message_id",
+    "reason",
+    "priority",
+    "registry_status",
+    "pushed",
+)
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def message_audit_row(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: record[key] for key in MESSAGE_AUDIT_FIELDS if key in record}
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -246,6 +260,14 @@ async def collect(args: argparse.Namespace) -> int:
     session_path.parent.mkdir(parents=True, exist_ok=True)
     source_state = state.get("sources", {})
     processed = []
+    saved_message_audit = state.get("message_audit", [])
+    message_audit = []
+    if isinstance(saved_message_audit, list):
+        message_audit = [
+            message_audit_row(row)
+            for row in saved_message_audit
+            if isinstance(row, dict)
+        ][-MESSAGE_AUDIT_LIMIT:]
 
     async with TelegramClient(str(session_path), int(api_id), api_hash) as client:
         if not await client.is_user_authorized():
@@ -285,7 +307,21 @@ async def collect(args: argparse.Namespace) -> int:
                 msg_id = int(getattr(message, "id", 0))
                 max_id = max(max_id, msg_id)
                 text = message_text(message)
-                if should_ignore(text):
+                if not text:
+                    ignore_reason = "empty_message"
+                elif should_ignore(text):
+                    ignore_reason = "not_signal"
+                else:
+                    ignore_reason = ""
+                if ignore_reason:
+                    ignored = {
+                        "source": key,
+                        "status": "ignored",
+                        "message_id": msg_id,
+                        "reason": ignore_reason,
+                    }
+                    processed.append(ignored)
+                    message_audit.append(message_audit_row(ignored))
                     continue
                 signal_path = save_signal(source, message, text, policy)
                 parsed = parse_signal(text, signal_path)
@@ -324,21 +360,30 @@ async def collect(args: argparse.Namespace) -> int:
                     result = send_message(token, target_chat, analysis_message(parsed, applied))
                     pushed = bool(result.get("ok") and not result.get("disabled"))
                 source_processed += 1
-                processed.append(
-                    {
-                        "source": key,
-                        "status": "signal",
-                        "message_id": msg_id,
-                        "priority": parsed.get("priority"),
-                        "registry_status": parsed.get("project_registry", {}).get("status"),
-                        "registry_added": parsed.get("project_registry", {}).get("added", []),
-                        "pushed": pushed,
-                    }
-                )
+                signal_record = {
+                    "source": key,
+                    "status": "signal",
+                    "message_id": msg_id,
+                    "priority": parsed.get("priority"),
+                    "registry_status": parsed.get("project_registry", {}).get("status"),
+                    "registry_added": parsed.get("project_registry", {}).get("added", []),
+                    "pushed": pushed,
+                }
+                processed.append(signal_record)
+                message_audit.append(message_audit_row(signal_record))
             source_state[key] = {"last_id": max_id, "updated_at": now_iso()}
             processed.append({"source": key, "status": "processed", "seen": len(messages), "signals": source_processed, "last_id": max_id})
 
-    write_json(STATE_PATH, {"updated_at": now_iso(), "status": "ok", "sources": source_state, "processed": processed[-200:]})
+    write_json(
+        STATE_PATH,
+        {
+            "updated_at": now_iso(),
+            "status": "ok",
+            "sources": source_state,
+            "processed": processed[-200:],
+            "message_audit": message_audit[-MESSAGE_AUDIT_LIMIT:],
+        },
+    )
     print(STATE_PATH)
     print(json.dumps({"status": "ok", "processed": processed}, ensure_ascii=False))
     return 0

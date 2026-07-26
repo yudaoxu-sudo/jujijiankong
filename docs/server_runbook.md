@@ -517,6 +517,7 @@ PY
 - 私密邀请链接仅用于一次性解析，配置只保存公开 entity 或稳定数字 peer ID。
 - `context_only=true` 的来源会保留隔离原文、解析结果和 per-source offset，同时硬阻断 canonical project registry、watchlist 自动应用及二次 Telegram 分析推送。
 - `bootstrap_on_first_seen=true` 会在新来源第一次出现且没有游标时只记录最新 message id，避免 cron 抢先处理历史消息。
+- `output/telegram_user_signals/state.json` 的 `message_audit` 仅保留最近 200 条消息处理元数据；被过滤的消息记录 message id 与 `empty_message` / `not_signal` 原因，不保存正文。
 
 查看定时任务：
 
