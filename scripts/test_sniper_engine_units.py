@@ -547,6 +547,128 @@ class PancakeV4RoundtripSyntheticBoundaryTests(unittest.TestCase):
         self.assertIs(gate["can_sell_proven"], False)
 
 
+ALPHA_OPENING_SCRIPT = ROOT / "scripts" / "alpha_opening_block_watch.py"
+
+
+class AlphaOpeningInfinityParityTests(unittest.TestCase):
+    """In-memory parity checks for the production cron entry's recovery gate."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "alpha_opening_block_watch_under_test", ALPHA_OPENING_SCRIPT
+        )
+        cls.module = importlib.util.module_from_spec(spec)
+        with patch("sniper_engine.env.load_local_env"):
+            spec.loader.exec_module(cls.module)
+
+    def run_case(
+        self,
+        *,
+        block: int,
+        sell_amount: int,
+        blacklist_block: int | None = None,
+        max_sell_amount: int | None = None,
+        recoverable_quote: int = 1000,
+    ) -> dict[str, str]:
+        def execute(event, holder, override, fixture, timeout):
+            if blacklist_block is not None and event["synthetic_block"] >= blacklist_block:
+                return False, "synthetic delayed blacklist"
+            if max_sell_amount is not None and fixture["sell_amount"] > max_sell_amount:
+                return False, "synthetic max-tx"
+            if fixture["sell_amount_out_minimum"] > recoverable_quote:
+                return False, "synthetic quote minimum exceeds recovery"
+            return True, ""
+
+        def fixture(args):
+            return {
+                "sell_amount": args.sell_amount,
+                "sell_amount_out_minimum": args.sell_amount_out_minimum,
+            }
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_INFINITY_RECOVERY_ITERATIONS": "16",
+                    "ALPHA_OPENING_INFINITY_RECOVERY_HIGH_RAW": "1000",
+                },
+            ),
+            patch.object(self.module, "build_fixture", side_effect=fixture),
+            patch.object(
+                self.module, "execute_infinity_roundtrip_call", side_effect=execute
+            ),
+            patch.object(
+                self.module,
+                "quick_rpc_call",
+                side_effect=AssertionError("production parity test attempted network access"),
+            ),
+        ):
+            return self.module.estimate_infinity_quote_recovery(
+                {"synthetic_block": block},
+                "synthetic-holder",
+                {"synthetic": True},
+                SimpleNamespace(sell_amount=sell_amount),
+                1000,
+                1,
+            )
+
+    def assert_follow_blocked(self, recovery: dict[str, str]) -> None:
+        self.assertEqual(recovery["recovery_rate"], "0")
+        summary = self.module.sell_safety_summary(
+            [
+                {
+                    "buyer_trace": {
+                        "transfer_safety_status": "transfer_verified",
+                        "dex_quote_status": "infinity_cl_quote_verified",
+                        "router_sell_status": "infinity_roundtrip_low_recovery",
+                        "router_sell_detail": (
+                            f"synthetic recovery_rate={recovery['recovery_rate']}"
+                        ),
+                    }
+                }
+            ]
+        )
+        self.assertEqual(summary["gate"], "blocked_infinity_low_recovery")
+        self.assertEqual(summary["status"], "v4往返回收率过低；禁止跟随")
+
+    def test_delayed_blacklist_degrades_recovery_and_blocks_follow(self) -> None:
+        blacklist_block = 105
+        before = self.run_case(
+            block=blacklist_block - 1,
+            sell_amount=100,
+            blacklist_block=blacklist_block,
+        )
+        after = self.run_case(
+            block=blacklist_block,
+            sell_amount=100,
+            blacklist_block=blacklist_block,
+        )
+
+        self.assertEqual(before["recovery_rate"], "1")
+        self.assertIn("synthetic delayed blacklist", after["last_failure"])
+        self.assert_follow_blocked(after)
+
+    def test_max_tx_degrades_recovery_and_blocks_follow(self) -> None:
+        max_sell_amount = 100
+        within_limit = self.run_case(
+            block=200,
+            sell_amount=max_sell_amount,
+            max_sell_amount=max_sell_amount,
+            recoverable_quote=900,
+        )
+        oversized = self.run_case(
+            block=200,
+            sell_amount=max_sell_amount + 1,
+            max_sell_amount=max_sell_amount,
+            recoverable_quote=900,
+        )
+
+        self.assertEqual(within_limit["recovery_rate"], "0.9")
+        self.assertIn("synthetic max-tx", oversized["last_failure"])
+        self.assert_follow_blocked(oversized)
+
+
 VERIFY_SCRIPT = ROOT / "scripts" / "verify_sniper_engine.py"
 
 
