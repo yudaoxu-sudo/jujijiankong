@@ -4,7 +4,8 @@ import json
 import os
 import urllib.request
 import time
-from urllib.error import HTTPError, URLError
+from http.client import HTTPException
+from urllib.error import HTTPError
 from typing import Any
 
 from sniper_engine.env import load_local_env
@@ -18,6 +19,12 @@ DEFAULT_RPCS = {
 }
 
 DISABLED_NODE_REAL = False
+
+
+class RpcHTTPError(RuntimeError):
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"rpc http {status}")
 
 
 def rpc_url(chain: str) -> str:
@@ -50,23 +57,33 @@ def rpc_urls(chain: str) -> list[str]:
 def rpc_call(chain: str, method: str, params: list[Any]) -> Any:
     global DISABLED_NODE_REAL
     errors: list[str] = []
-    for index, url in enumerate(rpc_urls(chain)):
+    nodereal_key = os.environ.get("NODEREAL_API_KEY")
+    nodereal_url = (
+        f"https://bsc-mainnet.nodereal.io/v1/{nodereal_key}"
+        if chain == "bsc" and nodereal_key and not DISABLED_NODE_REAL
+        else None
+    )
+    # Snapshot the URL list once: disabling NodeReal mid-call shrinks rpc_urls()
+    # and would otherwise cut the failover walk short of the remaining URLs.
+    urls = rpc_urls(chain)
+    for index, url in enumerate(urls):
         try:
             return rpc_call_url(url, method, params)
-        except HTTPError as exc:
-            errors.append(f"{exc.code} {url}")
-            if chain == "bsc" and os.environ.get("NODEREAL_API_KEY") and exc.code in {401, 403}:
+        except (HTTPError, RpcHTTPError) as exc:
+            status = exc.code if isinstance(exc, HTTPError) else exc.status
+            errors.append(f"{chain} rpc[{index + 1}] http {status}")
+            if url == nodereal_url and status in {401, 403}:
                 DISABLED_NODE_REAL = True
-            if exc.code in {401, 403, 429, 500, 502, 503, 504} and index + 1 < len(rpc_urls(chain)):
-                if exc.code == 429:
+            if status in {401, 403, 429, 500, 502, 503, 504} and index + 1 < len(urls):
+                if status == 429:
                     time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
                 continue
-            raise
-        except RuntimeError as exc:
-            errors.append(str(exc))
-            if index + 1 < len(rpc_urls(chain)):
+            raise RuntimeError("; ".join(errors)) from None
+        except RuntimeError:
+            errors.append(f"{chain} rpc[{index + 1}] runtime_error")
+            if index + 1 < len(urls):
                 continue
-            raise RuntimeError("; ".join(errors)) from exc
+            raise RuntimeError("; ".join(errors)) from None
     raise RuntimeError("; ".join(errors) or f"no rpc url for {chain}")
 
 
@@ -77,21 +94,37 @@ def rpc_call_url(url: str, method: str, params: list[Any], timeout: int = 30) ->
         "method": method,
         "params": params,
     }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "sniper-monitor/1.0"},
-    )
     try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "sniper-monitor/1.0"},
+        )
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.load(response)
-    except HTTPError:
-        raise
-    except URLError as exc:
-        raise RuntimeError(str(exc)) from exc
-    if data.get("error"):
-        raise RuntimeError(data["error"])
-    return data.get("result")
+        response = None
+    except HTTPError as exc:
+        raise RpcHTTPError(exc.code) from None
+    # OSError covers URLError plus raw socket timeouts/resets surfaced while the
+    # body is read; HTTPException covers truncated/invalid HTTP framing;
+    # ValueError covers non-JSON 200 bodies and malformed URLs, whose native
+    # messages would echo the endpoint. All become one sanitized, retryable error.
+    except (OSError, HTTPException, ValueError):
+        raise RuntimeError("rpc transport error") from None
+    if not isinstance(data, dict):
+        raise RuntimeError("rpc response shape error")
+    if "error" in data and data["error"] is not None:
+        # Provider error bodies are untrusted and may echo endpoint credentials.
+        # Drop the parsed response before raising so the exception does not
+        # retain the provider-supplied error body.
+        data = {}
+        raise RuntimeError("rpc response error")
+    if "result" not in data or data["result"] is None:
+        # A null/missing result is incomplete coverage for every RPC method used
+        # by this project. Treat it as retryable so the next configured endpoint
+        # gets a chance instead of letting callers mistake absence for evidence.
+        raise RuntimeError("rpc null result")
+    return data["result"]
 
 
 def get_block_by_number(chain: str, block_number: int, full_transactions: bool = True) -> dict[str, Any]:

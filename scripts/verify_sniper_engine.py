@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
@@ -15,8 +16,442 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "output" / "sniper_engine" / "verification_report.md"
 PYCACHE_DIR = Path(tempfile.gettempdir()) / "sniper_pycache"
 
+OFFLINE_FLAG_ENV = "SNIPER_OFFLINE"
+OFFLINE_REPO_ROOT_ENV = "SNIPER_OFFLINE_REPO_ROOT"
+OFFLINE_TMP_ROOT_ENV = "SNIPER_OFFLINE_TMP_ROOT"
 
-def main() -> int:
+# Single source of truth for the strict offline guard. The same code text runs
+# in this process (install_offline_guard) and in every spawned python child via
+# a sitecustomize.py placed first on PYTHONPATH, so children inherit the guard.
+OFFLINE_GUARD_SOURCE = '''
+import os as _os
+import functools as _functools
+import shutil as _shutil
+import sys as _sys
+import threading as _threading
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+
+_BLOCKED_SOCKET_EVENTS = frozenset({
+    "socket.connect",
+    "socket.connect_ex",
+    "socket.getaddrinfo",
+    "socket.gethostbyname",
+    "socket.gethostbyaddr",
+    "socket.getnameinfo",
+    "socket.sendto",
+    "socket.sendmsg",
+})
+_SINGLE_PATH_MUTATIONS = {
+    "os.remove": (0, 1),
+    "os.rmdir": (0, 1),
+    "os.mkdir": (0, 2),
+    "os.chmod": (0, 2),
+    "os.utime": (0, 3),
+    "os.truncate": (0, None),
+}
+_WRITE_FLAGS = _os.O_WRONLY | _os.O_RDWR | _os.O_APPEND | _os.O_CREAT | _os.O_TRUNC
+
+
+def _guard_text(value):
+    if value is None or isinstance(value, int):
+        return None
+    try:
+        value = _os.fspath(value)
+    except TypeError:
+        return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode(_sys.getfilesystemencoding(), "surrogateescape")
+        except Exception:
+            return None
+    if not isinstance(value, str):
+        return None
+    return value
+
+
+def install_guard(repo_root, offline_tmp_root):
+    repo_root = _os.path.realpath(_os.path.abspath(repo_root))
+    offline_tmp_root = _os.path.realpath(_os.path.abspath(offline_tmp_root))
+    guard_dir = _os.path.realpath(_os.path.join(offline_tmp_root, "guard"))
+    repo_example_env = _os.path.join(repo_root, ".env.example")
+    temp_roots = [offline_tmp_root]
+
+    def _in_temp(path):
+        for troot in temp_roots:
+            if path == troot or path.startswith(troot + _os.sep):
+                return True
+        return False
+
+    def _fd_base(dir_fd):
+        if not isinstance(dir_fd, int) or dir_fd < 0:
+            return None
+        if _fcntl is not None and _sys.platform == "darwin":
+            try:
+                raw = _fcntl.fcntl(dir_fd, 50, b"\\0" * 1024)
+                path = raw.split(b"\\0", 1)[0].decode(
+                    _sys.getfilesystemencoding(), "surrogateescape"
+                )
+                if path:
+                    return _os.path.realpath(path)
+            except (OSError, ValueError):
+                pass
+        for prefix in ("/proc/self/fd", "/dev/fd"):
+            try:
+                base = _os.path.realpath(_os.path.join(prefix, str(dir_fd)))
+            except OSError:
+                continue
+            if base and base != _os.path.join(prefix, str(dir_fd)):
+                return base
+        return None
+
+    def _resolved_path(raw, dir_fd=None):
+        raw_text = _guard_text(raw)
+        if raw_text is None:
+            return None
+        if _os.path.isabs(raw_text):
+            return _os.path.realpath(raw_text)
+        base = _fd_base(dir_fd) if isinstance(dir_fd, int) and dir_fd >= 0 else _os.getcwd()
+        if base is None:
+            return None
+        return _os.path.realpath(_os.path.join(base, raw_text))
+
+    def _require_temp_path(raw, event, dir_fd=None):
+        path = _resolved_path(raw, dir_fd)
+        if path is None or not _in_temp(path):
+            raise RuntimeError(
+                "sniper-offline-guard: mutation outside offline temp blocked (%s)" % event
+            )
+
+    def _reject_env_path(path):
+        name = _os.path.basename(path)
+        if name.lower().startswith(".env") and path != repo_example_env:
+            raise RuntimeError("sniper-offline-guard: env file access blocked")
+
+    _real_os_open = _os.open
+    _os_open_state = _threading.local()
+
+    def _guarded_os_open(path, flags, mode=0o777, dir_fd=None):
+        resolved = _resolved_path(path, dir_fd)
+        if resolved is None:
+            raise RuntimeError("sniper-offline-guard: unresolved os.open path blocked")
+        _reject_env_path(resolved)
+        if flags & _WRITE_FLAGS:
+            _require_temp_path(path, "os.open", dir_fd)
+        depth = getattr(_os_open_state, "depth", 0)
+        _os_open_state.depth = depth + 1
+        try:
+            if dir_fd is None:
+                return _real_os_open(path, flags, mode)
+            return _real_os_open(path, flags, mode, dir_fd=dir_fd)
+        finally:
+            _os_open_state.depth = depth
+
+    # A partial is callable without becoming a descriptor when pathlib stores
+    # os.open on its accessor class during a child interpreter's imports.
+    _os.open = _functools.partial(_guarded_os_open)
+
+    def _executable_path(raw):
+        text = _guard_text(raw)
+        if not text:
+            return None
+        if _os.path.isabs(text) or _os.sep in text:
+            return _os.path.realpath(text)
+        resolved = _shutil.which(text)
+        return _os.path.realpath(resolved) if resolved else None
+
+    def _child_env_value(env, name):
+        source = _os.environ if env is None else env
+        try:
+            return _guard_text(source.get(name))
+        except AttributeError:
+            return None
+
+    def _python_guard_disabled(argv):
+        if not isinstance(argv, (list, tuple)):
+            return True
+        skip_option_value = False
+        for raw in argv[1:]:
+            text = _guard_text(raw)
+            if text is None:
+                return True
+            if skip_option_value:
+                skip_option_value = False
+                continue
+            if text in {"-c", "-m", "-", "--"} or not text.startswith("-"):
+                return False
+            if text in {"--ignore-environment", "--isolated", "--no-site"}:
+                return True
+            if text in {"-W", "-X"}:
+                skip_option_value = True
+                continue
+            if text.startswith(("-W", "-X")):
+                continue
+            if text.startswith(("-c", "-m")):
+                return False
+            if not text.startswith("--") and any(flag in text[1:] for flag in "EIS"):
+                return True
+        return False
+
+    def _require_guarded_python_child(executable, argv, env):
+        if _executable_path(executable) != _os.path.realpath(_sys.executable):
+            raise RuntimeError("sniper-offline-guard: non-python child blocked")
+        if _python_guard_disabled(argv):
+            raise RuntimeError("sniper-offline-guard: python child guard bypass blocked")
+        if _child_env_value(env, "SNIPER_OFFLINE") != "1":
+            raise RuntimeError("sniper-offline-guard: python child missing offline flag")
+        child_repo = _child_env_value(env, "SNIPER_OFFLINE_REPO_ROOT")
+        child_tmp = _child_env_value(env, "SNIPER_OFFLINE_TMP_ROOT")
+        if (
+            child_repo is None
+            or _os.path.realpath(_os.path.abspath(child_repo)) != repo_root
+            or child_tmp is None
+            or _os.path.realpath(_os.path.abspath(child_tmp)) != offline_tmp_root
+        ):
+            raise RuntimeError("sniper-offline-guard: python child guard roots changed")
+        pythonpath = _child_env_value(env, "PYTHONPATH")
+        first_path = pythonpath.split(_os.pathsep, 1)[0] if pythonpath else ""
+        if not first_path or _os.path.realpath(_os.path.abspath(first_path)) != guard_dir:
+            raise RuntimeError("sniper-offline-guard: python child guard bootstrap missing")
+
+    def _hook(event, args):
+        if event in _BLOCKED_SOCKET_EVENTS:
+            raise RuntimeError("sniper-offline-guard: network attempt blocked (%s)" % event)
+        if event == "subprocess.Popen":
+            argv = args[1] if len(args) > 1 else None
+            env = args[3] if len(args) > 3 else None
+            _require_guarded_python_child(args[0], argv, env)
+            return
+        if event == "os.system":
+            raise RuntimeError("sniper-offline-guard: non-python child blocked")
+        if event in {"os.exec", "os.posix_spawn"}:
+            executable = args[0] if args else None
+            argv = args[1] if len(args) > 1 else None
+            env = args[2] if len(args) > 2 else None
+            _require_guarded_python_child(executable, argv, env)
+            return
+        if event in _SINGLE_PATH_MUTATIONS:
+            path_index, dir_fd_index = _SINGLE_PATH_MUTATIONS[event]
+            dir_fd = (
+                args[dir_fd_index]
+                if dir_fd_index is not None and len(args) > dir_fd_index
+                else None
+            )
+            _require_temp_path(args[path_index], event, dir_fd)
+            return
+        if event == "os.rename":
+            src_fd = args[2] if len(args) > 2 else None
+            dst_fd = args[3] if len(args) > 3 else None
+            _require_temp_path(args[0], event, src_fd)
+            _require_temp_path(args[1], event, dst_fd)
+            return
+        if event == "os.link":
+            src_fd = args[2] if len(args) > 2 else None
+            dst_fd = args[3] if len(args) > 3 else None
+            _require_temp_path(args[0], event, src_fd)
+            _require_temp_path(args[1], event, dst_fd)
+            return
+        if event == "os.symlink":
+            dst_fd = args[2] if len(args) > 2 else None
+            _require_temp_path(args[1], event, dst_fd)
+            return
+        if event != "open":
+            return
+        raw_text = _guard_text(args[0])
+        path = _resolved_path(raw_text)
+        if path is None:
+            return
+        name = _os.path.basename(path)
+        _reject_env_path(path)
+        mode = args[1]
+        if isinstance(mode, str):
+            writing = any(ch in mode for ch in "wax+")
+        else:
+            writing = bool((args[2] or 0) & _WRITE_FLAGS)
+            if writing and getattr(_os_open_state, "depth", 0):
+                return
+            if writing and raw_text is not None and not _os.path.isabs(raw_text):
+                raise RuntimeError(
+                    "sniper-offline-guard: unguarded relative os.open blocked"
+                )
+        if writing and not _in_temp(path):
+            raise RuntimeError(
+                "sniper-offline-guard: write outside offline temp blocked (%s)" % name
+            )
+
+    _sys.addaudithook(_hook)
+'''
+
+SITECUSTOMIZE_ACTIVATION = '''
+
+import os as _bootstrap_os
+import sys as _bootstrap_sys
+
+if _bootstrap_os.environ.get("{flag}") == "1":
+    _guard_repo_root = _bootstrap_os.environ.get("{repo}", "")
+    _guard_tmp_root = _bootstrap_os.environ.get("{tmp}", "")
+    if not _guard_repo_root or not _guard_tmp_root:
+        # Fail closed. site.py swallows exceptions from sitecustomize, so a
+        # raise would leave this child running unguarded; exit hard instead.
+        _bootstrap_sys.stderr.write("sniper-offline-guard: offline flag set but guard roots missing\\n")
+        _bootstrap_sys.stderr.flush()
+        _bootstrap_os._exit(2)
+    install_guard(_guard_repo_root, _guard_tmp_root)
+'''.format(flag=OFFLINE_FLAG_ENV, repo=OFFLINE_REPO_ROOT_ENV, tmp=OFFLINE_TMP_ROOT_ENV)
+
+# Offline replacement for the plain sniper_score_local.py run: same module and
+# entry point, with its outputs pointed at the offline temp root.
+OFFLINE_SCORE_CODE = """
+import importlib.util
+import os
+from pathlib import Path
+
+root = Path.cwd()
+out_dir = Path(os.environ['SNIPER_OFFLINE_TMP_ROOT']) / 'output' / 'sniper_engine'
+out_dir.mkdir(parents=True, exist_ok=True)
+spec = importlib.util.spec_from_file_location('sniper_score_local_offline', root / 'scripts' / 'sniper_score_local.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.OUT_DIR = out_dir
+module.CSV_OUT = out_dir / 'signal_scores.csv'
+module.MD_OUT = out_dir / 'signal_scores.md'
+module.main()
+"""
+
+CELUE_AUDIT_CODE = """
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+out = Path(tempfile.mkdtemp(prefix='celue_audit_'))
+source_skill = Path('/Users/xuyufan/Documents/蒸馏技能/celue')
+installed_skill = Path('/Users/xuyufan/.codex/skills/celue')
+cmd = [
+    sys.executable,
+    str(root / 'scripts' / 'audit_celue_integration.py'),
+    '--out-dir',
+    str(out),
+]
+# Offline mode must stay deterministic: the source/installed skill dirs live
+# outside the repo and drift with machine state, so audit the project only.
+if os.environ.get('SNIPER_OFFLINE') == '1' or not (source_skill.exists() and installed_skill.exists()):
+    cmd.append('--project-only')
+result = subprocess.run(
+    cmd,
+    cwd=root,
+    capture_output=True,
+    text=True,
+)
+assert result.returncode == 0, result.stderr or result.stdout
+payload = json.loads((out / 'latest.json').read_text(encoding='utf-8'))
+assert payload['schema'] == 'celue_integration_audit.v1', payload
+assert payload['failed_count'] == 0, payload
+assert payload['check_count'] >= 10, payload
+assert (out / 'latest.md').exists(), out
+"""
+
+OFFLINE_CRON_INSTALLER_CODE = r"""
+from pathlib import Path
+
+root = Path.cwd()
+source = (root / 'scripts' / 'install_server_cron.sh').read_text(encoding='utf-8')
+required_contract = (
+    'set -euo pipefail',
+    'project_dir="${SNIPER_PROJECT_DIR:-/home/ubuntu/sniper}"',
+    'mkdir -p "$project_dir/logs"',
+    'crontab -l >"$current" 2>/dev/null || true',
+    '*"$project_dir/scripts/server_run_once.sh"*|*"$project_dir/scripts/server_health_watchdog.sh"*)',
+    '*/5 * * * * $project_dir/scripts/server_run_once.sh',
+    '*/10 * * * * $project_dir/scripts/server_health_watchdog.sh',
+    'crontab "$next"',
+)
+assert all(item in source for item in required_contract), 'cron installer contract drifted'
+
+
+def apply_contract(lines, project_dir):
+    run_once = project_dir + '/scripts/server_run_once.sh'
+    watchdog = project_dir + '/scripts/server_health_watchdog.sh'
+    kept = [line for line in lines if run_once not in line and watchdog not in line]
+    return kept + [
+        '*/5 * * * * ' + run_once + ' >> ' + project_dir + '/logs/server_run_once.log 2>&1',
+        '*/10 * * * * ' + watchdog + ' >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1',
+    ]
+
+
+project_dir = '/offline/synthetic/sniper'
+initial = [
+    '17 3 * * * /usr/local/bin/unrelated-job',
+    '1 1 * * * ' + project_dir + '/scripts/server_run_once.sh',
+]
+once = apply_contract(initial, project_dir)
+twice = apply_contract(once, project_dir)
+assert once == twice, (once, twice)
+assert once.count('*/5 * * * * ' + project_dir + '/scripts/server_run_once.sh >> ' + project_dir + '/logs/server_run_once.log 2>&1') == 1
+assert once.count('*/10 * * * * ' + project_dir + '/scripts/server_health_watchdog.sh >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1') == 1
+assert '17 3 * * * /usr/local/bin/unrelated-job' in once
+print('PURE_PYTHON_OFFLINE_CRON_CONTRACT_OK')
+"""
+
+
+def parse_offline(argv: list[str] | None = None) -> bool:
+    parser = argparse.ArgumentParser(description="Run the sniper engine verification suite.")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Strict offline mode: block network, skip .env.local, write only under a temp dir.",
+    )
+    return parser.parse_args(argv).offline
+
+
+def resolve_report_path(offline_root: Path | None) -> Path:
+    if offline_root is None:
+        return REPORT
+    return offline_root / "output" / "sniper_engine" / "verification_report.md"
+
+
+def install_offline_guard(offline_root: Path) -> None:
+    namespace = {"__name__": "sniper_offline_guard"}
+    exec(compile(OFFLINE_GUARD_SOURCE, "<sniper-offline-guard>", "exec"), namespace)
+    namespace["install_guard"](str(ROOT), str(offline_root))
+
+
+def prepare_offline_environment() -> Path:
+    offline_root = Path(tempfile.mkdtemp(prefix="sniper_verify_offline_"))
+    guard_dir = offline_root / "guard"
+    guard_dir.mkdir()
+    (guard_dir / "sitecustomize.py").write_text(
+        OFFLINE_GUARD_SOURCE + SITECUSTOMIZE_ACTIVATION, encoding="utf-8"
+    )
+    os.environ[OFFLINE_FLAG_ENV] = "1"
+    os.environ[OFFLINE_REPO_ROOT_ENV] = str(ROOT)
+    os.environ[OFFLINE_TMP_ROOT_ENV] = str(offline_root)
+    # Route all tempfile users (this process and every child) under the
+    # offline root so scratch dirs cannot scatter across the system temp.
+    scratch_dir = offline_root / "tmp"
+    scratch_dir.mkdir()
+    for var in ("TMPDIR", "TEMP", "TMP"):
+        os.environ[var] = str(scratch_dir)
+    tempfile.tempdir = str(scratch_dir)
+    os.environ["PYTHONPYCACHEPREFIX"] = str(offline_root / "pycache")
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = str(guard_dir) + (
+        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+    )
+    return offline_root
+
+
+def main(argv: list[str] | None = None) -> int:
+    offline_root: Path | None = None
+    if parse_offline(argv):
+        offline_root = prepare_offline_environment()
+        install_offline_guard(offline_root)
+
     checks: list[tuple[str, bool, str]] = []
 
     required_files = [
@@ -52,6 +487,12 @@ def main() -> int:
         ROOT / "scripts" / "project_continuity_local.py",
         ROOT / "scripts" / "project_continuity_acceptance.py",
         ROOT / "scripts" / "test_project_continuity_acceptance.py",
+        ROOT / "scripts" / "test_sniper_engine_units.py",
+        ROOT / "scripts" / "test_micro_gas_boundaries.py",
+        ROOT / "scripts" / "test_micro_gas_identity_gate.py",
+        ROOT / "scripts" / "test_wash_volume_fixtures.py",
+        ROOT / "scripts" / "test_distribution_fixtures.py",
+        ROOT / "scripts" / "fixtures" / "micro_gas_boundary_synthetic_fixtures.json",
         ROOT / "scripts" / "server_health_watchdog.sh",
         ROOT / "scripts" / "install_server_cron.sh",
         ROOT / "scripts" / "audit_celue_integration.py",
@@ -867,6 +1308,41 @@ def main() -> int:
         )
     )
 
+    sniper_unit_test = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "test_sniper_engine_units.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "sniper engine offline unit regression tests",
+            sniper_unit_test.returncode == 0,
+            sniper_unit_test.stderr.strip() or sniper_unit_test.stdout.strip(),
+        )
+    )
+
+    fixture_test_scripts = (
+        ("CEX micro-gas synthetic boundary regression tests", "test_micro_gas_boundaries.py"),
+        ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
+        ("wash-volume deferred synthetic fixture tests", "test_wash_volume_fixtures.py"),
+        ("distribution deferred synthetic fixture tests", "test_distribution_fixtures.py"),
+    )
+    for check_name, script_name in fixture_test_scripts:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / script_name)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        checks.append(
+            (
+                check_name,
+                result.returncode == 0,
+                result.stderr.strip() or result.stdout.strip(),
+            )
+        )
+
     external_aux_config_ok = False
     external_aux_config_msg = ""
     try:
@@ -1342,8 +1818,11 @@ assert fixture['calldata'].startswith('0x3593564c'), fixture['calldata'][:20]
         )
     )
 
+    pancake_fixture_verify_cmd = [sys.executable, str(ROOT / "scripts" / "verify_pancake_v4_roundtrip_fixture.py")]
+    if offline_root is not None:
+        pancake_fixture_verify_cmd += ["--out-dir", str(offline_root / "output" / "pancake_v4_roundtrip_verify")]
     pancake_v4_roundtrip_fixture_verify = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "verify_pancake_v4_roundtrip_fixture.py")],
+        pancake_fixture_verify_cmd,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -1842,6 +2321,11 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "position_cost_watch.py"),
         str(ROOT / "scripts" / "project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
+        str(ROOT / "scripts" / "test_sniper_engine_units.py"),
+        str(ROOT / "scripts" / "test_micro_gas_boundaries.py"),
+        str(ROOT / "scripts" / "test_micro_gas_identity_gate.py"),
+        str(ROOT / "scripts" / "test_wash_volume_fixtures.py"),
+        str(ROOT / "scripts" / "test_distribution_fixtures.py"),
         str(ROOT / "scripts" / "decode_pancake_v4_execute.py"),
         str(ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py"),
         str(ROOT / "scripts" / "probe_pancake_v4_state_override.py"),
@@ -1865,7 +2349,8 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "summarize_hertzflow_skeleton.py"),
     ]
     compile_env = os.environ.copy()
-    compile_env["PYTHONPYCACHEPREFIX"] = str(PYCACHE_DIR)
+    if offline_root is None:
+        compile_env["PYTHONPYCACHEPREFIX"] = str(PYCACHE_DIR)
     compile_result = subprocess.run(compile_cmd, cwd=ROOT, env=compile_env, capture_output=True, text=True)
     checks.append(("python files compile", compile_result.returncode == 0, compile_result.stderr.strip()))
 
@@ -4912,8 +5397,11 @@ assert text.count(str(project_dir / 'scripts' / 'server_health_watchdog.sh')) ==
 assert '/usr/local/bin/unrelated-job' in text, text
 assert (project_dir / 'logs').is_dir(), project_dir
 """
+    cron_installer_test_code = (
+        cron_installer_code if offline_root is None else OFFLINE_CRON_INSTALLER_CODE
+    )
     cron_installer_result = subprocess.run(
-        [sys.executable, "-c", cron_installer_code],
+        [sys.executable, "-c", cron_installer_test_code],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -4922,44 +5410,12 @@ assert (project_dir / 'logs').is_dir(), project_dir
         (
             "server cron installer is idempotent and preserves unrelated jobs",
             cron_installer_result.returncode == 0,
-            cron_installer_result.stderr.strip(),
+            cron_installer_result.stderr.strip() or cron_installer_result.stdout.strip(),
         )
     )
 
-    celue_audit_code = """
-import json
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-
-root = Path.cwd()
-out = Path(tempfile.mkdtemp(prefix='celue_audit_'))
-source_skill = Path('/Users/xuyufan/Documents/蒸馏技能/celue')
-installed_skill = Path('/Users/xuyufan/.codex/skills/celue')
-cmd = [
-    sys.executable,
-    str(root / 'scripts' / 'audit_celue_integration.py'),
-    '--out-dir',
-    str(out),
-]
-if not (source_skill.exists() and installed_skill.exists()):
-    cmd.append('--project-only')
-result = subprocess.run(
-    cmd,
-    cwd=root,
-    capture_output=True,
-    text=True,
-)
-assert result.returncode == 0, result.stderr or result.stdout
-payload = json.loads((out / 'latest.json').read_text(encoding='utf-8'))
-assert payload['schema'] == 'celue_integration_audit.v1', payload
-assert payload['failed_count'] == 0, payload
-assert payload['check_count'] >= 10, payload
-assert (out / 'latest.md').exists(), out
-"""
     celue_audit_result = subprocess.run(
-        [sys.executable, "-c", celue_audit_code],
+        [sys.executable, "-c", CELUE_AUDIT_CODE],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -6119,8 +6575,17 @@ print(len(text))
     )
     checks.append(("signal analysis message hides machine ids", signal_message_result.returncode == 0, signal_message_result.stdout.strip() or signal_message_result.stderr.strip()))
 
+    score_output_dir = (
+        ROOT / "output" / "sniper_engine"
+        if offline_root is None
+        else offline_root / "output" / "sniper_engine"
+    )
+    if offline_root is None:
+        score_cmd = [sys.executable, str(ROOT / "scripts" / "sniper_score_local.py")]
+    else:
+        score_cmd = [sys.executable, "-c", OFFLINE_SCORE_CODE]
     score_result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "sniper_score_local.py")],
+        score_cmd,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -7166,7 +7631,7 @@ print(len(text))
     daily_perp_section_msg = daily_perp_section.stdout.strip() or daily_perp_section.stderr.strip()
     checks.append(("daily report includes market and holder auxiliary sections", daily_perp_section_ok, daily_perp_section_msg))
 
-    csv_path = ROOT / "output" / "sniper_engine" / "signal_scores.csv"
+    csv_path = score_output_dir / "signal_scores.csv"
     rows: list[dict[str, str]] = []
     if csv_path.exists():
         with csv_path.open("r", encoding="utf-8", newline="") as f:
@@ -7220,9 +7685,10 @@ print(len(text))
     checks.append(("O1 front buyers traced", front_trace_ok, front_trace_msg))
 
     report = render_report(checks, lane_counts, o1_rows)
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(report, encoding="utf-8")
-    print(REPORT)
+    report_path = resolve_report_path(offline_root)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding="utf-8")
+    print(report_path)
 
     failed = [name for name, ok, _ in checks if not ok]
     if failed:

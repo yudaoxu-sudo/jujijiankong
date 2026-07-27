@@ -220,8 +220,18 @@ def merge_facts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         if value in (None, "", []):
             continue
         if isinstance(value, list):
-            out[key] = merge_dicts(out.get(key, []), value, sorted(value[0].keys()) if value and isinstance(value[0], dict) else ["value"]) if value and isinstance(value[0], dict) else merge_scalars(out.get(key, []), value)
-        elif key not in out:
+            # A key may have arrived as a scalar earlier; wrap it so list merges
+            # never iterate a bare string character by character.
+            current = out.get(key, [])
+            if current in (None, ""):
+                current = []
+            elif not isinstance(current, list):
+                current = [current]
+            # Facts lists are freeform: they may mix dicts with scalars or carry
+            # dicts with differing key sets, so dedupe by full content instead of
+            # the first item's keys — key-field collisions silently drop entries.
+            out[key] = merge_scalars(current, value)
+        elif key not in out or out[key] in (None, "", []):
             out[key] = value
         elif out[key] != value:
             out[key] = merge_scalars(out[key] if isinstance(out[key], list) else [out[key]], [value])

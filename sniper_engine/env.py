@@ -9,6 +9,8 @@ ENV_PATH = ROOT / ".env.local"
 
 
 def load_local_env(path: Path = ENV_PATH) -> None:
+    if os.environ.get("SNIPER_OFFLINE") == "1":
+        return
     if not path.exists():
         return
     for raw_line in path.read_text(encoding="utf-8").splitlines():

@@ -1,0 +1,200 @@
+{
+  "schema": "micro_gas_boundary_synthetic_fixtures.v1",
+  "synthetic": true,
+  "origin": "offline_synthetic_test_fixture",
+  "created_for": "scripts/test_micro_gas_boundaries.py",
+  "purpose": "Pure-offline synthetic negative samples and boundary fixtures for CEX micro-gas calibration tests. Every address, hash, timestamp, and amount below is fabricated. Nothing here is a chain observation, and nothing here may ever enter calibration counted_units or positive/negative root counts.",
+  "guarantees": {
+    "network_calls": "none",
+    "rpc_calls": "none",
+    "credential_reads": "none",
+    "runtime_effect": "none",
+    "alerts": "none",
+    "threshold_changes": "none",
+    "corpus_writes": "none",
+    "calibration_count_eligible": false
+  },
+  "chain": "bsc",
+  "chain_id": 56,
+  "synthetic_addresses": {
+    "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "quote_contract": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "recipient": "0x7777777777777777777777777777777777777777",
+    "hot_wallet_synthex_a": "0x9999999999999999999999999999999999999999",
+    "hot_wallet_synthex_b": "0x8888888888888888888888888888888888888888",
+    "unlabeled_source": "0xcccccccccccccccccccccccccccccccccccccccc"
+  },
+  "synthetic_hashes": {
+    "gas_tx_at_threshold": "0x6161616161616161616161616161616161616161616161616161616161616161",
+    "gas_tx_above_threshold_by_one": "0x6262626262626262626262626262626262626262626262626262626262626262",
+    "gas_tx_zero_value": "0x6363636363636363636363636363636363636363636363636363636363636363",
+    "gas_tx_one_wei": "0x6464646464646464646464646464646464646464646464646464646464646464",
+    "gas_tx_unlabeled_source": "0x6565656565656565656565656565656565656565656565656565656565656565",
+    "gas_tx_same_block": "0x6666666666666666666666666666666666666666666666666666666666666666",
+    "gas_tx_second_candidate": "0x6767676767676767676767676767676767676767676767676767676767676767",
+    "token_egress_tx": "0x5151515151515151515151515151515151515151515151515151515151515151",
+    "gas_block_hash": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "token_block_hash": "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+  },
+  "synthetic_geometry": {
+    "gas_block": 149,
+    "token_block": 150,
+    "gas_transaction_index": 3,
+    "token_transaction_index": 4,
+    "token_log_index": 7,
+    "token_amount_raw": "123456000000000000000000",
+    "token_decimals": 18
+  },
+  "threshold_boundary": {
+    "default_min_bnb": "0.001",
+    "wei_at_threshold": "1000000000000000",
+    "wei_above_threshold_by_one": "1000000000000001",
+    "wei_zero": "0",
+    "wei_one": "1",
+    "expectation": "amount must satisfy 0 < amount <= 0.001 BNB: at-threshold and one-wei qualify, above-by-one-wei and zero do not"
+  },
+  "timing_negative": {
+    "control_gas_arrival_utc": "2026-07-24T00:00:00Z",
+    "token_egress_utc": "2026-07-24T00:00:03Z",
+    "late_gas_arrival_utc": "2026-07-24T00:00:31Z",
+    "gas_arrival_after_token_egress_seconds": 28,
+    "expectation": "gas credited 28 seconds after the token egress despite an earlier block number must fail strict_gas_before_token_order and can never be a unique pairing"
+  },
+  "corpus_exclusion_probe_rows": [
+    {
+      "unit_id": "synthetic:adversarial_complete_positive_root_claim",
+      "synthetic": true,
+      "counted_unit_eligible": false,
+      "outcome": "complete_positive_root",
+      "status": "synthetic_fixture",
+      "note": "adversarial probe: claims a countable outcome with a complete identity and two branch observations; the synthetic flag, unit_id prefix, and untracked source_path must each independently exclude it from counted_units",
+      "source_path": "scripts/fixtures/micro_gas_boundary_synthetic_fixtures.json",
+      "source_bucket": "corpus_exclusion_probe_rows",
+      "source_record_id": "synthetic:adversarial_complete_positive_root_claim",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "root_operator": "0x7777777777777777777777777777777777777777",
+        "exchange_entity": "SynthExA",
+        "event_window_start_utc": "2026-07-24T00:00:00Z",
+        "event_window_end_utc": "2026-07-24T00:00:03Z"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x6161616161616161616161616161616161616161616161616161616161616161",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 7
+        },
+        {
+          "native_tx_hash": "0x6464646464646464646464646464646464646464646464646464646464646464",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 8
+        }
+      ]
+    },
+    {
+      "unit_id": "synthetic:timing_gas_28s_after_token_negative",
+      "synthetic": true,
+      "counted_unit_eligible": false,
+      "outcome": "complete_independent_negative",
+      "status": "synthetic_fixture",
+      "note": "timing negative sample: native micro gas credited 28 seconds after the token egress",
+      "source_path": "scripts/fixtures/micro_gas_boundary_synthetic_fixtures.json",
+      "source_bucket": "corpus_exclusion_probe_rows",
+      "source_record_id": "synthetic:timing_gas_28s_after_token_negative",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "root_operator": "0x7777777777777777777777777777777777777777",
+        "exchange_entity": "SynthExA",
+        "event_window_start_utc": "2026-07-24T00:00:03Z",
+        "event_window_end_utc": "2026-07-24T00:00:31Z"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x6767676767676767676767676767676767676767676767676767676767676767",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 9
+        }
+      ]
+    },
+    {
+      "unit_id": "synthetic:partial_native_coverage_fail_closed",
+      "synthetic": true,
+      "counted_unit_eligible": false,
+      "outcome": "complete_independent_negative",
+      "status": "blocked",
+      "note": "partial native scan coverage must fail closed; a blocked status alone already excludes the row",
+      "source_path": "scripts/fixtures/micro_gas_boundary_synthetic_fixtures.json",
+      "source_bucket": "corpus_exclusion_probe_rows",
+      "source_record_id": "synthetic:partial_native_coverage_fail_closed",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "root_operator": "0x7777777777777777777777777777777777777777",
+        "exchange_entity": "SynthExA",
+        "event_window_start_utc": "2026-07-24T00:01:00Z",
+        "event_window_end_utc": "2026-07-24T00:01:30Z"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x6262626262626262626262626262626262626262626262626262626262626262",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 10
+        }
+      ]
+    },
+    {
+      "unit_id": "synthetic:label_provenance_expired",
+      "synthetic": true,
+      "counted_unit_eligible": false,
+      "outcome": "observation_only",
+      "status": "synthetic_fixture",
+      "note": "detector label expired or ambiguous; observation-only outcomes never enter counted_units",
+      "source_path": "scripts/fixtures/micro_gas_boundary_synthetic_fixtures.json",
+      "source_bucket": "corpus_exclusion_probe_rows",
+      "source_record_id": "synthetic:label_provenance_expired",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "root_operator": "0x7777777777777777777777777777777777777777",
+        "exchange_entity": "SynthExB",
+        "event_window_start_utc": "2026-07-24T00:02:00Z",
+        "event_window_end_utc": "2026-07-24T00:02:30Z"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x6363636363636363636363636363636363636363636363636363636363636363",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 11
+        }
+      ]
+    },
+    {
+      "unit_id": "synthetic:native_receipt_missing",
+      "synthetic": true,
+      "counted_unit_eligible": false,
+      "outcome": "correlated",
+      "status": "synthetic_fixture",
+      "note": "native receipt missing; correlated outcomes never enter counted_units",
+      "source_path": "scripts/fixtures/micro_gas_boundary_synthetic_fixtures.json",
+      "source_bucket": "corpus_exclusion_probe_rows",
+      "source_record_id": "synthetic:native_receipt_missing",
+      "identity": {
+        "chain_id": 56,
+        "token_contract": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "root_operator": "0x7777777777777777777777777777777777777777",
+        "exchange_entity": "SynthExA",
+        "event_window_start_utc": "2026-07-24T00:03:00Z",
+        "event_window_end_utc": "2026-07-24T00:03:30Z"
+      },
+      "observations": [
+        {
+          "native_tx_hash": "0x6565656565656565656565656565656565656565656565656565656565656565",
+          "token_or_execution_tx_hash": "0x5151515151515151515151515151515151515151515151515151515151515151",
+          "token_log_index": 12
+        }
+      ]
+    }
+  ]
+}
