@@ -83,9 +83,11 @@ class RpcFailoverTests(unittest.TestCase):
         self._saved_env = {key: os.environ.get(key) for key in RPC_ENV_KEYS}
         self._saved_urlopen = urllib.request.urlopen
         self._saved_disabled = rpc.DISABLED_NODE_REAL
+        self._saved_disabled_urls = set(rpc.DISABLED_RPC_URLS)
         for key in RPC_ENV_KEYS:
             os.environ.pop(key, None)
         rpc.DISABLED_NODE_REAL = False
+        rpc.DISABLED_RPC_URLS.clear()
 
     def tearDown(self) -> None:
         for key, value in self._saved_env.items():
@@ -95,6 +97,8 @@ class RpcFailoverTests(unittest.TestCase):
                 os.environ[key] = value
         urllib.request.urlopen = self._saved_urlopen
         rpc.DISABLED_NODE_REAL = self._saved_disabled
+        rpc.DISABLED_RPC_URLS.clear()
+        rpc.DISABLED_RPC_URLS.update(self._saved_disabled_urls)
 
     def test_nodereal_auth_failure_fails_over_to_next_url(self) -> None:
         os.environ["NODEREAL_API_KEY"] = "regression-test-key"
@@ -172,7 +176,6 @@ class RpcFailoverTests(unittest.TestCase):
             calls,
             [
                 "https://primary.invalid/rpc",
-                "https://bsc-mainnet.nodereal.io/v1/regression-test-key",
                 "https://fallback.invalid/rpc",
                 public_fallback,
             ],
@@ -180,7 +183,10 @@ class RpcFailoverTests(unittest.TestCase):
         self.assertNotIn(rpc.DEFAULT_RPCS["bsc"], calls)
 
     def test_non_log_calls_keep_existing_bsc_default(self) -> None:
-        self.assertEqual(rpc.rpc_urls("bsc", "eth_blockNumber"), [rpc.DEFAULT_RPCS["bsc"]])
+        self.assertEqual(
+            rpc.rpc_urls("bsc", "eth_blockNumber"),
+            [rpc.DEFAULT_RPCS["bsc"], *rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"]],
+        )
 
     def test_method_defaults_are_deduped_against_configured_fallbacks(self) -> None:
         public_fallback = rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"][0]
@@ -192,7 +198,26 @@ class RpcFailoverTests(unittest.TestCase):
 
         default_fallback = rpc.DEFAULT_RPCS["bsc"]
         os.environ["BSC_RPC_FALLBACK_URLS"] = f"{default_fallback},{default_fallback}"
-        self.assertEqual(rpc.rpc_urls("bsc", "eth_blockNumber"), [default_fallback])
+        self.assertEqual(
+            rpc.rpc_urls("bsc", "eth_blockNumber"),
+            [default_fallback, *rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"]],
+        )
+
+    def test_rate_limited_url_is_skipped_for_later_calls(self) -> None:
+        os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            if req.full_url == "https://primary.invalid/rpc":
+                raise HTTPError(req.full_url, 429, "Too Many Requests", hdrs=None, fp=io.BytesIO(b""))
+            return _FakeResponse({"jsonrpc": "2.0", "id": 1, "result": "0x10"})
+
+        urllib.request.urlopen = fake_urlopen
+        self.assertEqual(rpc.rpc_call("bsc", "eth_blockNumber", []), "0x10")
+        self.assertEqual(rpc.rpc_call("bsc", "eth_blockNumber", []), "0x10")
+        self.assertEqual(calls.count("https://primary.invalid/rpc"), 1)
+        self.assertIn("https://primary.invalid/rpc", rpc.DISABLED_RPC_URLS)
 
     def test_null_receipt_result_raises_runtime_error(self) -> None:
         os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"

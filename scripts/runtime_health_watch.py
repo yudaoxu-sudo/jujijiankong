@@ -262,15 +262,6 @@ def output_row_coverage_issue(
         }
         if "contract_error" in states:
             return "project operator attribution contract error"
-        unresolved = states & {
-            "owner_unresolved",
-            "conflicting_owner_selectors",
-            "unresolved",
-        }
-        if unresolved:
-            return "project operator attribution unresolved=" + ",".join(
-                sorted(unresolved)
-            )
     elif output_name == "opening":
         if row.get("status") == "opened":
             traces = [
@@ -280,25 +271,11 @@ def output_row_coverage_issue(
             ]
             if any(trace.get("status") == "trace_failed" for trace in traces):
                 return "opening buyer trace failed"
-            partial_statuses = {
-                "unknown_incomplete_coverage",
-                "confirmed_sell_partial_coverage",
-            }
-            if any(
-                trace.get("coverage_complete") is False
-                or trace.get("coverage_status") == "partial"
-                or trace.get("status") in partial_statuses
-                for trace in traces
-            ):
-                return "opening buyer trace coverage incomplete"
         elif row.get("status") not in {"waiting", "opened"}:
             return f"opening status={row.get('status', 'missing')}"
     elif output_name == "intraday":
         if row.get("status") != "scanned":
             return f"intraday status={row.get('status', 'missing')}"
-        analysis = row.get("analysis") or {}
-        if analysis.get("scan_limited"):
-            return "intraday receipt scan limited"
         coverage = row.get("transfer_coverage") or {}
         if coverage.get("state") != "requested_window_complete" or coverage.get("complete") is not True:
             return f"intraday transfer coverage={coverage.get('state', 'missing')}"
@@ -317,6 +294,11 @@ def output_row_coverage_warning(
     row: dict[str, Any],
     target_contract: str = "",
 ) -> str:
+    if output_name == "intraday" and row.get("status") == "scanned":
+        analysis = row.get("analysis") or {}
+        if analysis.get("scan_limited"):
+            return "intraday receipt scan limited; complete transfer evidence only"
+        return ""
     if output_name == "opening" and row.get("status") == "opened":
         traces = [
             item.get("buyer_trace") or {}
@@ -684,6 +666,16 @@ def alert_text(snapshot: dict[str, Any]) -> str:
 
 
 def recovery_text(snapshot: dict[str, Any]) -> str:
+    warnings = snapshot.get("warnings") or []
+    if warnings:
+        lines = [
+            "狙击系统阻断性故障已解除",
+            f"时间: {snapshot['generated_at']}",
+            f"仍有 {len(warnings)} 项非阻断覆盖告警；相关结论保持仅报告。",
+        ]
+        for row in warnings[:3]:
+            lines.append(f"- {row.get('detail', '')[:260]}")
+        return "\n".join(lines)
     return "\n".join(
         [
             "狙击系统已恢复",

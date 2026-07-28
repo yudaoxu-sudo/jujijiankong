@@ -24,8 +24,12 @@ LOG_CAPABLE_PUBLIC_RPCS = {
         "https://bsc-rpc.publicnode.com",
     ),
 }
+READ_CAPABLE_PUBLIC_RPCS = {
+    "bsc": LOG_CAPABLE_PUBLIC_RPCS["bsc"],
+}
 
 DISABLED_NODE_REAL = False
+DISABLED_RPC_URLS: set[str] = set()
 LOG_SPLIT_HTTP_STATUSES = {400, 413, 422}
 
 
@@ -58,17 +62,33 @@ def rpc_urls(chain: str, method: str | None = None) -> list[str]:
     env_name = f"{chain.upper()}_RPC_URL"
     if os.environ.get(env_name):
         urls.append(os.environ[env_name])
-    if chain == "bsc" and os.environ.get("NODEREAL_API_KEY") and not DISABLED_NODE_REAL:
-        urls.append(f"https://bsc-mainnet.nodereal.io/v1/{os.environ['NODEREAL_API_KEY']}")
+    nodereal_url = (
+        f"https://bsc-mainnet.nodereal.io/v1/{os.environ['NODEREAL_API_KEY']}"
+        if chain == "bsc"
+        and os.environ.get("NODEREAL_API_KEY")
+        and not DISABLED_NODE_REAL
+        else None
+    )
     fallback_env = os.environ.get(f"{chain.upper()}_RPC_FALLBACK_URLS", "")
-    urls.extend(url.strip() for url in fallback_env.split(",") if url.strip())
+    configured_fallbacks = [
+        url.strip()
+        for url in fallback_env.split(",")
+        if url.strip()
+    ]
     if method == "eth_getLogs" and chain in LOG_CAPABLE_PUBLIC_RPCS:
+        urls.extend(configured_fallbacks)
         urls.extend(LOG_CAPABLE_PUBLIC_RPCS[chain])
+        if nodereal_url:
+            urls.append(nodereal_url)
     else:
+        if nodereal_url:
+            urls.append(nodereal_url)
+        urls.extend(configured_fallbacks)
         urls.append(DEFAULT_RPCS[chain])
+        urls.extend(READ_CAPABLE_PUBLIC_RPCS.get(chain, ()))
     deduped: list[str] = []
     for url in urls:
-        if url not in deduped:
+        if url not in DISABLED_RPC_URLS and url not in deduped:
             deduped.append(url)
     return deduped
 
@@ -77,6 +97,7 @@ def adaptive_get_logs(
     query: dict[str, Any],
     fetch: Callable[[dict[str, Any]], Any],
     max_attempts: int = 256,
+    max_split_depth: int = 4,
     max_transport_split_depth: int = 3,
 ) -> list[dict[str, Any]]:
     from_value = query.get("fromBlock")
@@ -94,12 +115,12 @@ def adaptive_get_logs(
         if from_block > to_block:
             return []
 
-    pending = [(from_block, to_block, 0)]
+    pending = [(from_block, to_block, 0, 0)]
     rows: list[dict[str, Any]] = []
     seen: dict[tuple[str, int], dict[str, Any]] = {}
     attempts = 0
     while pending:
-        start, end, transport_split_depth = pending.pop()
+        start, end, split_depth, transport_split_depth = pending.pop()
         if attempts >= max_attempts:
             raise LogCoverageError(start, end) from None
         attempts += 1
@@ -128,14 +149,15 @@ def adaptive_get_logs(
             )
             if transport_error:
                 splittable = transport_split_depth < max_transport_split_depth
-            if start == end or not splittable:
+            if start == end or split_depth >= max_split_depth or not splittable:
                 raise LogCoverageError(start, end, status) from None
             if not isinstance(start, int) or not isinstance(end, int):
                 raise LogCoverageError(start, end, status) from None
             midpoint = (start + end) // 2
+            next_split_depth = split_depth + 1
             next_transport_depth = transport_split_depth + 1 if transport_error else transport_split_depth
-            pending.append((midpoint + 1, end, next_transport_depth))
-            pending.append((start, midpoint, next_transport_depth))
+            pending.append((midpoint + 1, end, next_split_depth, next_transport_depth))
+            pending.append((start, midpoint, next_split_depth, next_transport_depth))
             continue
         for row in result:
             tx_hash = row.get("transactionHash")
@@ -192,8 +214,10 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
                 errors.append(f"{chain} rpc[{index + 1}] log_coverage_error")
                 if url == nodereal_url and exc.status in {401, 403}:
                     DISABLED_NODE_REAL = True
-                if exc.status == 429 and index + 1 < len(urls):
-                    time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
+                if exc.status == 429:
+                    DISABLED_RPC_URLS.add(url)
+                    if index + 1 < len(urls):
+                        time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
                 continue
         if last_coverage_error is not None:
             raise LogCoverageError(
@@ -211,6 +235,8 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
             errors.append(f"{chain} rpc[{index + 1}] http {status}")
             if url == nodereal_url and status in {401, 403}:
                 DISABLED_NODE_REAL = True
+            if status == 429:
+                DISABLED_RPC_URLS.add(url)
             if status in {401, 403, 429, 500, 502, 503, 504} and index + 1 < len(urls):
                 if status == 429:
                     time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))

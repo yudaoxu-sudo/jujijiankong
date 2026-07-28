@@ -147,6 +147,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             "catalog_listing_candidate",
         )
         self.assertGreaterEqual(item["opening_max_age_hours"], 72)
+        self.assertEqual(item["opening_max_logs"], 5000)
         self.assertEqual(item["opening_trace_buyers"], 8)
         self.assertEqual(item["opening_max_txs"], 24)
         self.assertGreaterEqual(item["opening_liquidity_max_age_seconds"], 72 * 3600)
@@ -674,8 +675,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(issues[0]["kind"], "alpha_catalog_budget_exceeded")
 
-    def test_health_rejects_partial_opening_buyer_trace_coverage(self) -> None:
-        from scripts.runtime_health_watch import output_row_coverage_issue
+    def test_health_warns_on_partial_opening_buyer_trace_coverage(self) -> None:
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            output_row_coverage_warning,
+        )
 
         for status in (
             "unknown_incomplete_coverage",
@@ -694,13 +698,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                         }
                     ],
                 }
+                self.assertEqual(output_row_coverage_issue("opening", row), "")
                 self.assertEqual(
-                    output_row_coverage_issue("opening", row),
+                    output_row_coverage_warning("opening", row),
                     "opening buyer trace coverage incomplete",
                 )
 
-    def test_health_rejects_unresolved_project_operator_attribution(self) -> None:
-        from scripts.runtime_health_watch import output_row_coverage_issue
+    def test_health_warns_on_unresolved_project_operator_attribution(self) -> None:
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            output_row_coverage_warning,
+        )
 
         row = {
             "contracts": [
@@ -717,7 +725,15 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 row,
                 target_contract="0x" + "1" * 40,
             ),
-            "project operator attribution unresolved=conflicting_owner_selectors",
+            "",
+        )
+        self.assertEqual(
+            output_row_coverage_warning(
+                "project",
+                row,
+                target_contract="0x" + "1" * 40,
+            ),
+            "project operator attribution warning=conflicting_owner_selectors",
         )
 
     def test_shared_pool_manager_event_requires_matching_pool_id(self) -> None:
@@ -742,6 +758,57 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 meta,
             )
         )
+
+    def test_liquidity_event_display_limit_does_not_truncate_coverage(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        target_pool = "0x" + "a" * 64
+        first = "0x" + "1" * 40
+        second = "0x" + "2" * 40
+        calls: list[tuple[str, int]] = []
+
+        def fetch(chain, query, chunk_blocks, max_logs, timeout):
+            calls.append((query["address"], max_logs))
+            direction_topic = (
+                opening.INCREASE_LIQUIDITY_TOPIC
+                if query["address"] == first
+                else opening.DECREASE_LIQUIDITY_TOPIC
+            )
+            return [
+                {
+                    "address": query["address"],
+                    "blockNumber": "0x64",
+                    "transactionHash": "0x" + query["address"][2:].rjust(64, "0"),
+                    "topics": [direction_topic, target_pool],
+                    "data": "0x" + "0" * 192,
+                }
+            ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_LIQUIDITY_EVENT_MAX_LOGS": "1",
+                    "ALPHA_OPENING_LIQUIDITY_EVENT_QUERY_MAX_LOGS": "5000",
+                },
+            ),
+            mock.patch.object(opening, "get_logs_quick", side_effect=fetch),
+        ):
+            result = opening.scan_liquidity_events(
+                {"chain": "bsc", "pool_id": target_pool},
+                100,
+                200,
+                {
+                    first: {"role": "pool_manager", "label": "first"},
+                    second: {"role": "pool_manager", "label": "second"},
+                },
+            )
+
+        self.assertEqual(calls, [(first, 5000), (second, 5000)])
+        self.assertEqual(result["rows"], 2)
+        self.assertEqual(result["risk"], "lp_remove")
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["label"], "second")
 
     def test_opening_owner_probe_rejects_owner_zero_conflict(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -822,8 +889,89 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
         )
 
+    def test_opening_trace_keeps_a_coverage_safe_log_floor(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_TRACE_MAX_LOGS": "80",
+                    "ALPHA_OPENING_INFINITY_QUOTE_PROBE": "0",
+                },
+            ),
+            mock.patch.object(opening, "token_balance", return_value=opening.Decimal("1")),
+            mock.patch.object(opening, "get_logs_quick", return_value=[]) as get_logs,
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            opening.trace_buyer(
+                event,
+                "0x" + "3" * 40,
+                100,
+                200,
+                opening.Decimal("1"),
+            )
+
+        self.assertEqual(get_logs.call_args.args[3], 1200)
+
     def test_opening_selection_keeps_large_middle_transfer(self) -> None:
-        from scripts.alpha_opening_block_watch import selected_tx_hashes
+        from scripts.alpha_opening_block_watch import (
+            capped_event_int_setting,
+            selected_tx_hashes,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ALPHA_OPENING_MAX_TXS": "8",
+                "ALPHA_OPENING_TRACE_BUYERS": "4",
+            },
+        ):
+            self.assertEqual(
+                capped_event_int_setting(
+                    {"opening_max_txs": 24},
+                    "opening_max_txs",
+                    "ALPHA_OPENING_MAX_TXS",
+                    25,
+                ),
+                8,
+            )
+            self.assertEqual(
+                capped_event_int_setting(
+                    {"opening_trace_buyers": 8},
+                    "opening_trace_buyers",
+                    "ALPHA_OPENING_TRACE_BUYERS",
+                    4,
+                ),
+                4,
+            )
 
         logs = []
         for index in range(30):
@@ -875,6 +1023,82 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "coverage truncated"):
                 opening.get_logs("bsc", capped_query, 1, 2)
+
+    def test_opening_transfer_ranges_cover_overlapping_recent_tail(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        calls: list[tuple[int, int, int]] = []
+
+        def fetch(chain, query, chunk_blocks, max_logs):
+            calls.append(
+                (
+                    int(query["fromBlock"], 16),
+                    int(query["toBlock"], 16),
+                    max_logs,
+                )
+            )
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "token": {"address": "0x" + "1" * 40},
+            "opening_max_logs": 5000,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_SCAN_BLOCKS": "240",
+                    "ALPHA_OPENING_RECENT_BLOCKS": "1200",
+                    "ALPHA_OPENING_MAX_LOGS": "1000",
+                },
+            ),
+            mock.patch.object(opening, "get_logs", side_effect=fetch),
+        ):
+            rows = opening.opening_transfer_logs(event, 1000)
+
+        self.assertEqual(rows, [])
+        self.assertEqual(calls, [(100, 1000, 1000)])
+
+    def test_opening_transfer_budget_cannot_hide_a_second_range(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        calls: list[tuple[int, int, int]] = []
+
+        def fetch(chain, query, chunk_blocks, max_logs):
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            calls.append((start, end, max_logs))
+            return [
+                {
+                    "transactionHash": "0x" + f"{index:064x}",
+                    "logIndex": hex(index),
+                }
+                for index in range(3)
+            ]
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "token": {"address": "0x" + "1" * 40},
+            "opening_max_logs": 3,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_SCAN_BLOCKS": "10",
+                    "ALPHA_OPENING_RECENT_BLOCKS": "20",
+                    "ALPHA_OPENING_MAX_LOGS": "3",
+                },
+            ),
+            mock.patch.object(opening, "get_logs", side_effect=fetch),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "coverage truncated"):
+                opening.opening_transfer_logs(event, 200)
+
+        self.assertEqual(calls, [(100, 110, 3)])
 
     def test_opening_log_coverage_adaptively_splits_failed_ranges(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -1316,7 +1540,303 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(detail, "intraday receipt scan limited")
+        self.assertEqual(detail, "intraday transfer coverage=partial_rpc_error")
+
+    def test_limited_intraday_receipts_are_report_only(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            output_row_coverage_warning,
+        )
+
+        row = {
+            "status": "scanned",
+            "analysis": {
+                "scan_limited": True,
+                "net_buy_quote": "50000",
+            },
+            "transfer_coverage": {
+                "state": "requested_window_complete",
+                "complete": True,
+            },
+        }
+        self.assertEqual(intraday.event_alert_keys({"symbol": "AEON", **row}), [])
+        self.assertEqual(output_row_coverage_issue("intraday", row), "")
+        self.assertEqual(
+            output_row_coverage_warning("intraday", row),
+            "intraday receipt scan limited; complete transfer evidence only",
+        )
+        self.assertEqual(
+            intraday.event_alert_keys(
+                {
+                    "symbol": "AEON",
+                    "analysis": {
+                        "scan_limited": False,
+                        "net_buy_quote": "50000",
+                    },
+                    "transfer_coverage": {
+                        "state": "partial_rpc_error",
+                        "complete": False,
+                    },
+                }
+            ),
+            [],
+        )
+
+    def test_intraday_receipt_coverage_guard_detects_caps_and_missing_receipts(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        event = {
+            "symbol": "AEON",
+            "chain": "bsc",
+            "token": {"address": "0x" + "1" * 40, "decimals": 8},
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "latest_block": 200,
+            "opening_block": 100,
+        }
+        strong_analysis = {
+            "direction": "偏空",
+            "trade_signal": "fixture signal",
+            "spot_action": "fixture action",
+            "perp_action": "fixture action",
+            "net_buy_quote": "0",
+            "net_sell_quote": "50000",
+            "cex_quote_estimate": "0",
+            "cex_token_deposit": "0",
+            "cex_deposit_count": 0,
+            "cex_gas_priming_count": 0,
+        }
+        quiet_analysis = {
+            **strong_analysis,
+            "direction": "观察",
+            "trade_signal": "fixture quiet",
+            "spot_action": "观察",
+            "perp_action": "观察",
+            "net_sell_quote": "0",
+        }
+        analyses = iter(
+            [
+                dict(strong_analysis),
+                dict(strong_analysis),
+                quiet_analysis,
+            ]
+        )
+        tx_hash = "0x" + "3" * 64
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0"},
+            ),
+            mock.patch.object(
+                intraday,
+                "aggregate_candidate_txs",
+                side_effect=[
+                    ([tx_hash], 2, 2),
+                    ([tx_hash], 1, 1),
+                    ([tx_hash], 1, 1),
+                ],
+            ),
+            mock.patch.object(
+                intraday,
+                "token_transfer_logs_with_coverage",
+                return_value=(
+                    [],
+                    {
+                        "state": "requested_window_complete",
+                        "complete": True,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                intraday,
+                "deduplicate_transfer_logs",
+                return_value=(
+                    [],
+                    {
+                        "duplicate_log_count": 0,
+                        "conflicting_duplicate_log_count": 0,
+                        "missing_log_identity_count": 0,
+                    },
+                ),
+            ),
+            mock.patch.object(intraday, "runtime_cex_deposit_candidates", return_value={}),
+            mock.patch.object(
+                intraday,
+                "collect_report_only_cex_micro_gas_samples",
+                return_value={},
+            ),
+            mock.patch.object(intraday, "cex_withdrawal_cluster", return_value={}),
+            mock.patch.object(
+                intraday,
+                "runtime_cex_candidate_aggregate_rows",
+                return_value=[],
+            ),
+            mock.patch.object(
+                intraday,
+                "configured_cex_inflow_aggregate_rows",
+                return_value=[],
+            ),
+            mock.patch.object(
+                intraday.opening,
+                "quick_rpc_call",
+                side_effect=[
+                    {"status": "0x1", "logs": []},
+                    None,
+                    {"status": "0x0", "logs": []},
+                ],
+            ),
+            mock.patch.object(intraday, "summarize_flow_tx", return_value={}),
+            mock.patch.object(
+                intraday,
+                "analyze_rows",
+                side_effect=lambda *args: next(analyses),
+            ),
+        ):
+            capped = intraday.scan_event(event)
+            missing = intraday.scan_event(event)
+            failed_transaction = intraday.scan_event(event)
+
+        self.assertTrue(capped["analysis"]["scan_limited"])
+        self.assertEqual(capped["analysis"]["selected_receipts"], 1)
+        self.assertEqual(capped["analysis"]["sampled_receipts"], 1)
+        self.assertEqual(capped["analysis"]["receipt_errors"], 0)
+        self.assertEqual(
+            capped["analysis"]["receipt_coverage"]["reasons"],
+            ["candidate_selection_limit"],
+        )
+        self.assertEqual(intraday.event_alert_keys(capped), [])
+        self.assertTrue(missing["analysis"]["scan_limited"])
+        self.assertEqual(missing["analysis"]["sampled_receipts"], 0)
+        self.assertEqual(missing["analysis"]["receipt_errors"], 1)
+        self.assertEqual(
+            missing["analysis"]["receipt_coverage"]["reasons"],
+            ["receipt_error"],
+        )
+        self.assertEqual(intraday.event_alert_keys(missing), [])
+        self.assertFalse(failed_transaction["analysis"]["scan_limited"])
+        self.assertEqual(failed_transaction["analysis"]["sampled_receipts"], 1)
+        self.assertEqual(failed_transaction["analysis"]["receipt_errors"], 0)
+        self.assertTrue(
+            failed_transaction["analysis"]["receipt_coverage"]["complete"]
+        )
+        self.assertEqual(intraday.event_alert_keys(failed_transaction), [])
+
+    def test_limited_receipts_keep_complete_cex_transfer_evidence(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        source = "0x" + "3" * 40
+        deposit = "0x" + "4" * 40
+        tx_hash = "0x" + "5" * 64
+        transfer_rows = [
+            {
+                "token": token,
+                "from": source,
+                "to": deposit,
+                "amount": intraday.Decimal("120000"),
+                "block": 150,
+                "log_index": 0,
+                "tx": tx_hash,
+            }
+        ]
+        transfer_coverage = {
+            "state": "requested_window_complete",
+            "complete": True,
+            "requested_from_block": 100,
+            "requested_to_block": 200,
+            "covered_through_block": 200,
+            "max_logs": 100,
+            "returned_log_count": 1,
+            "conflicting_duplicate_log_count": 0,
+            "missing_log_identity_count": 0,
+        }
+        receipt_row = {
+            "tx": tx_hash,
+            "cex_token_deposit": "120000",
+            "cex_deposit_count": 1,
+        }
+        event = {
+            "symbol": "AEON",
+            "chain": "bsc",
+            "token": {"address": token, "decimals": 8, "symbol": "AEON"},
+            "quote": {"address": quote, "decimals": 18, "symbol": "USDT"},
+            "market_context": {"observed_price_usdt": "1"},
+            "cex_deposit_addresses": [deposit],
+            "latest_block": 200,
+            "opening_block": 100,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0"},
+            ),
+            mock.patch.object(
+                intraday,
+                "aggregate_candidate_txs",
+                return_value=([tx_hash], 1, 2),
+            ),
+            mock.patch.object(
+                intraday,
+                "token_transfer_logs_with_coverage",
+                return_value=(transfer_rows, transfer_coverage),
+            ),
+            mock.patch.object(intraday, "runtime_cex_deposit_candidates", return_value={}),
+            mock.patch.object(
+                intraday,
+                "collect_report_only_cex_micro_gas_samples",
+                return_value={},
+            ),
+            mock.patch.object(intraday, "cex_withdrawal_cluster", return_value={}),
+            mock.patch.object(
+                intraday,
+                "runtime_cex_candidate_aggregate_rows",
+                return_value=[],
+            ),
+            mock.patch.object(
+                intraday.opening,
+                "quick_rpc_call",
+                return_value={"status": "0x1", "logs": []},
+            ),
+            mock.patch.object(
+                intraday,
+                "summarize_flow_tx",
+                return_value=receipt_row,
+            ),
+        ):
+            result = intraday.scan_event(event)
+
+        self.assertTrue(result["analysis"]["scan_limited"])
+        self.assertEqual(
+            result["analysis"]["alert_policy"],
+            "complete_transfer_evidence_only",
+        )
+        self.assertEqual(
+            result["configured_cex_inflow_aggregate_rows"][0][
+                "cex_token_deposit"
+            ],
+            "120000",
+        )
+        self.assertEqual(result["analysis"]["cex_token_deposit"], "120000")
+        self.assertTrue(intraday.event_alert_keys(result))
+
+    def test_runtime_recovery_text_preserves_warning_scope(self) -> None:
+        from scripts.runtime_health_watch import recovery_text
+
+        text = recovery_text(
+            {
+                "generated_at": "2026-07-28T00:00:00+00:00",
+                "warnings": [{"detail": "receipt coverage remains report only"}],
+            }
+        )
+        self.assertIn("阻断性故障已解除", text)
+        self.assertIn("仍有 1 项非阻断覆盖告警", text)
+        self.assertIn("receipt coverage remains report only", text)
+        self.assertNotIn("均恢复正常", text)
 
     def test_low_volume_peak_drawdown_still_alerts(self) -> None:
         import scripts.alpha_price_momentum_watch as price
@@ -1619,6 +2139,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
     def test_health_matches_the_target_project_contract_only(self) -> None:
         from scripts.runtime_health_watch import (
             output_row_coverage_issue,
+            output_row_coverage_warning,
             row_contract_addresses,
         )
 
@@ -1650,9 +2171,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 }
             ]
         }
+        self.assertEqual(
+            output_row_coverage_issue(
+                "project",
+                unresolved,
+                target_contract=target,
+            ),
+            "",
+        )
         self.assertIn(
             "owner_unresolved",
-            output_row_coverage_issue(
+            output_row_coverage_warning(
                 "project",
                 unresolved,
                 target_contract=target,

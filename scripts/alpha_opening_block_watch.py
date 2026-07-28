@@ -123,6 +123,22 @@ def event_int_setting(
         return default
 
 
+def capped_event_int_setting(
+    event: dict[str, Any],
+    item_key: str,
+    env_name: str,
+    default: int,
+) -> int:
+    value = event_int_setting(event, item_key, env_name, default)
+    raw_cap = os.environ.get(env_name)
+    if raw_cap in ("", None):
+        return value
+    try:
+        return min(value, max(1, int(raw_cap)))
+    except (TypeError, ValueError):
+        return value
+
+
 def norm(value: str | None) -> str:
     return (value or "").strip().lower()
 
@@ -368,7 +384,7 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "quote_out": Decimal(0),
         "rows": 0,
     }
-    max_logs = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_MAX_LOGS", "30"))
+    max_logs = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_MAX_LOGS", "5000"))
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000"))
     timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
     scan_optional = os.environ.get("ALPHA_OPENING_LIQUIDITY_SCAN_OPTIONAL_DIRECTIONS", "0") == "1"
@@ -544,10 +560,19 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
     }
     if not addresses:
         return {"summary": "未发现 LP 增减事件", "risk": "none", "rows": 0, "events": []}
-    max_logs = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_EVENT_MAX_LOGS", "20"))
+    display_limit = max(
+        1,
+        int(os.environ.get("ALPHA_OPENING_LIQUIDITY_EVENT_MAX_LOGS", "20")),
+    )
+    query_max_logs = max(
+        display_limit,
+        int(os.environ.get("ALPHA_OPENING_LIQUIDITY_EVENT_QUERY_MAX_LOGS", "5000")),
+    )
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000"))
     timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
     rows: list[dict[str, Any]] = []
+    direction_counts = {"add": 0, "remove": 0, "collect": 0}
+    matched_count = 0
     for address, meta in addresses.items():
         query = {
             "address": address,
@@ -555,17 +580,26 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
             "toBlock": hex(latest),
             "topics": [sorted(LIQUIDITY_EVENT_TOPICS)],
         }
-        for log in get_logs_quick(event["chain"], query, chunk_blocks, max_logs, timeout):
+        for log in get_logs_quick(
+            event["chain"],
+            query,
+            chunk_blocks,
+            query_max_logs,
+            timeout,
+        ):
             if not liquidity_event_matches(event, log, meta):
                 continue
-            rows.append(liquidity_event_row(log, meta))
-            if len(rows) >= max_logs:
-                break
-        if len(rows) >= max_logs:
-            break
-    remove_count = sum(1 for row in rows if row.get("direction") == "remove")
-    collect_count = sum(1 for row in rows if row.get("direction") == "collect")
-    add_count = sum(1 for row in rows if row.get("direction") == "add")
+            row = liquidity_event_row(log, meta)
+            direction = str(row.get("direction") or "")
+            if direction in direction_counts:
+                direction_counts[direction] += 1
+            matched_count += 1
+            rows.append(row)
+            if len(rows) > display_limit:
+                rows.pop(0)
+    remove_count = direction_counts["remove"]
+    collect_count = direction_counts["collect"]
+    add_count = direction_counts["add"]
     if remove_count:
         risk = "lp_remove"
     elif collect_count:
@@ -580,37 +614,59 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
     if collect_count:
         parts.append(f"LP收取/提取费用 {collect_count} 次")
     summary = "；".join(parts) if parts else "未发现 LP 增减事件"
-    return {"summary": summary, "risk": risk, "rows": len(rows), "events": rows[-10:]}
+    return {
+        "summary": summary,
+        "risk": risk,
+        "rows": matched_count,
+        "events": rows[-10:],
+    }
 
 
 def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, Any]]:
     scan_blocks = int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240"))
     recent_blocks = int(os.environ.get("ALPHA_OPENING_RECENT_BLOCKS", "1200"))
-    max_logs = int(os.environ.get("ALPHA_OPENING_MAX_LOGS", "500"))
+    max_logs = capped_event_int_setting(
+        event,
+        "opening_max_logs",
+        "ALPHA_OPENING_MAX_LOGS",
+        5000,
+    )
     opening_block = int(event["opening_block"])
-    ranges = [(opening_block, min(latest, opening_block + scan_blocks))]
+    opening_range = (opening_block, min(latest, opening_block + scan_blocks))
     recent_from = max(opening_block, latest - recent_blocks)
-    if recent_from > ranges[0][1]:
-        ranges.append((recent_from, latest))
+    recent_range = (recent_from, latest)
+    if recent_range[0] <= opening_range[1] + 1:
+        ranges = [(opening_block, latest)]
+    else:
+        ranges = [opening_range, recent_range]
 
     rows: list[dict[str, Any]] = []
     seen = set()
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_LOG_CHUNK_BLOCKS", "200"))
-    for from_block, to_block in ranges:
+    for range_index, (from_block, to_block) in enumerate(ranges):
+        remaining = max_logs - len(rows)
+        if remaining <= 0:
+            raise RuntimeError(
+                f"eth_getLogs coverage truncated at {max_logs} rows for "
+                f"{opening_block}-{latest}"
+            )
         query = {
             "address": event["token"]["address"],
             "fromBlock": hex(from_block),
             "toBlock": hex(to_block),
             "topics": [TRANSFER_TOPIC],
         }
-        for row in get_logs(event["chain"], query, chunk_blocks, max_logs):
+        for row in get_logs(event["chain"], query, chunk_blocks, remaining):
             key = (row.get("transactionHash"), row.get("logIndex"))
             if key in seen:
                 continue
             seen.add(key)
             rows.append(row)
-            if len(rows) >= max_logs:
-                return rows
+        if len(rows) >= max_logs and range_index + 1 < len(ranges):
+            raise RuntimeError(
+                f"eth_getLogs coverage truncated at {max_logs} rows for "
+                f"{opening_block}-{latest}"
+            )
     return rows
 
 
@@ -1998,7 +2054,7 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         event["chain"],
         query,
         int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000")),
-        int(os.environ.get("ALPHA_OPENING_TRACE_MAX_LOGS", "1200")),
+        max(1200, int(os.environ.get("ALPHA_OPENING_TRACE_MAX_LOGS", "1200"))),
         int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
     )
     parsed_logs = [transfer_log(row, int(event["token"]["decimals"])) for row in logs]
@@ -2567,6 +2623,7 @@ def build_events() -> list[dict[str, Any]]:
                     "required_checks": item.get("required_checks", []),
                     "opening_trace_buyers": item.get("opening_trace_buyers"),
                     "opening_max_txs": item.get("opening_max_txs"),
+                    "opening_max_logs": item.get("opening_max_logs"),
                     "opening_liquidity_max_age_seconds": item.get("opening_liquidity_max_age_seconds"),
                     "opening_classify_out_txs": item.get("opening_classify_out_txs"),
                     "opening_next_hop_recipients": item.get("opening_next_hop_recipients"),
@@ -2601,14 +2658,14 @@ def build_opened_event(event: dict[str, Any]) -> dict[str, Any]:
     latest = int(event["latest_block"])
     logs = opening_transfer_logs(event, latest)
     event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
-    max_txs = event_int_setting(
+    max_txs = capped_event_int_setting(
         event,
         "opening_max_txs",
         "ALPHA_OPENING_MAX_TXS",
         25,
     )
     rows = [summarize_tx(event, tx_hash) for tx_hash in selected_tx_hashes(logs, max_txs)]
-    trace_buyers = event_int_setting(
+    trace_buyers = capped_event_int_setting(
         event,
         "opening_trace_buyers",
         "ALPHA_OPENING_TRACE_BUYERS",

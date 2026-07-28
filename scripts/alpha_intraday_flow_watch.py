@@ -53,6 +53,7 @@ TELEGRAM_LIMIT = 3200
 BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
 BLOCK_TIME_CACHE: dict[tuple[str, int, str], str | None] = {}
 WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
+RECEIPT_UNSET = object()
 
 
 def now_utc() -> datetime:
@@ -1491,13 +1492,15 @@ def summarize_flow_tx(
     event: dict[str, Any],
     tx_hash: str,
     runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
+    receipt: Any = RECEIPT_UNSET,
 ) -> dict[str, Any] | None:
-    receipt = opening.quick_rpc_call(
-        event["chain"],
-        "eth_getTransactionReceipt",
-        [tx_hash],
-        int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")),
-    )
+    if receipt is RECEIPT_UNSET:
+        receipt = opening.quick_rpc_call(
+            event["chain"],
+            "eth_getTransactionReceipt",
+            [tx_hash],
+            int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")),
+        )
     if not receipt:
         return None
     if opening.hex_to_int(receipt.get("status")) != 1:
@@ -2871,16 +2874,43 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         transfer_coverage,
     )
     rows: list[dict[str, Any]] = []
-    scan_limited = False
+    receipt_attempt_count = 0
+    receipt_success_count = 0
+    receipt_error_count = 0
+    deadline_reached = False
     timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "20"))
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     for tx_hash in tx_hashes:
         if deadline is not None and time.monotonic() >= deadline:
-            scan_limited = True
+            deadline_reached = True
             break
+        receipt_attempt_count += 1
         try:
-            row = summarize_flow_tx(event, tx_hash, runtime_candidates)
+            receipt = opening.quick_rpc_call(
+                event["chain"],
+                "eth_getTransactionReceipt",
+                [tx_hash],
+                int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")),
+            )
+            if not isinstance(receipt, dict):
+                receipt_error_count += 1
+                continue
+            receipt_status = opening.hex_to_int(receipt.get("status"))
+            if receipt_status not in {0, 1}:
+                receipt_error_count += 1
+                continue
+            if receipt_status == 0:
+                receipt_success_count += 1
+                continue
+            row = summarize_flow_tx(
+                event,
+                tx_hash,
+                runtime_candidates,
+                receipt=receipt,
+            )
+            receipt_success_count += 1
         except Exception:
+            receipt_error_count += 1
             continue
         if row:
             rows.append(row)
@@ -2894,10 +2924,86 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         rows,
         runtime_candidates,
     )
-    analysis = analyze_rows(event, rows + runtime_candidate_rows + configured_cex_inflow_rows, from_block, to_block, logs, txs)
+    receipt_coverage_reasons: list[str] = []
+    if len(tx_hashes) < txs:
+        receipt_coverage_reasons.append("candidate_selection_limit")
+    if deadline_reached or receipt_attempt_count < len(tx_hashes):
+        receipt_coverage_reasons.append("scan_deadline_reached")
+    if receipt_error_count:
+        receipt_coverage_reasons.append("receipt_error")
+    counters_valid = (
+        0
+        <= receipt_success_count
+        <= receipt_attempt_count
+        <= len(tx_hashes)
+        <= txs
+        and receipt_success_count + receipt_error_count == receipt_attempt_count
+    )
+    if not counters_valid:
+        receipt_coverage_reasons.append("counter_invariant_failed")
+    receipt_coverage = {
+        "state": (
+            "selected_receipts_complete"
+            if not receipt_coverage_reasons
+            else "partial_receipt_coverage"
+        ),
+        "complete": not receipt_coverage_reasons,
+        "reasons": receipt_coverage_reasons,
+        "candidate_tx_count": txs,
+        "selected_tx_count": len(tx_hashes),
+        "attempted_receipt_count": receipt_attempt_count,
+        "successful_receipt_count": receipt_success_count,
+        "receipt_error_count": receipt_error_count,
+        "signal_row_count": len(rows),
+        "deadline_reached": deadline_reached,
+    }
+    scan_limited = not receipt_coverage["complete"]
+    transfer_complete = (
+        transfer_coverage.get("state") == "requested_window_complete"
+        and transfer_coverage.get("complete") is True
+    )
+    if scan_limited and transfer_complete:
+        configured_cex_inflow_rows = configured_cex_inflow_aggregate_rows(
+            event,
+            transfer_rows,
+            from_block,
+            to_block,
+            transfer_coverage,
+            [],
+            runtime_candidates,
+        )
+    action_rows = rows + runtime_candidate_rows + configured_cex_inflow_rows
+    if scan_limited:
+        action_rows = runtime_candidate_rows + configured_cex_inflow_rows
+    if not transfer_complete:
+        action_rows = []
+    analysis = analyze_rows(event, action_rows, from_block, to_block, logs, txs)
     analysis["cex_withdrawal_cluster"] = withdrawal_cluster
     analysis["scan_limited"] = scan_limited
-    analysis["sampled_receipts"] = len(rows)
+    analysis["selected_receipts"] = len(tx_hashes)
+    analysis["receipt_attempts"] = receipt_attempt_count
+    analysis["sampled_receipts"] = receipt_success_count
+    analysis["receipt_errors"] = receipt_error_count
+    analysis["signal_receipt_rows"] = len(rows)
+    analysis["receipt_coverage"] = receipt_coverage
+    if not transfer_complete:
+        analysis["alert_policy"] = "report_only_incomplete_transfer_coverage"
+    elif scan_limited:
+        analysis["alert_policy"] = "complete_transfer_evidence_only"
+    else:
+        analysis["alert_policy"] = "normal"
+    if scan_limited and all(
+        decimal_from(analysis.get(key)) == 0
+        for key in (
+            "verified_controller_sell_quote",
+            "candidate_related_sell_quote",
+            "functional_sell_quote",
+            "unattributed_sell_quote",
+        )
+    ):
+        analysis["operator_behavior"] = (
+            "已成功处理的收据样本中未观察到可归属的已实现卖出证据。"
+        )
     return {
         **event,
         "status": "scanned",
@@ -2944,9 +3050,18 @@ def build_snapshot(forward_scans: list[dict[str, Any]] | None = None) -> dict[st
 
 def event_alert_keys(event: dict[str, Any]) -> list[str]:
     analysis = event.get("analysis", {})
+    transfer_coverage = event.get("transfer_coverage")
+    if isinstance(transfer_coverage, dict) and (
+        transfer_coverage.get("state") != "requested_window_complete"
+        or transfer_coverage.get("complete") is not True
+    ):
+        return []
     keys = []
     buy = decimal_from(analysis.get("net_buy_quote"))
     sell = decimal_from(analysis.get("net_sell_quote"))
+    if analysis.get("scan_limited"):
+        buy = Decimal(0)
+        sell = Decimal(0)
     buy_threshold = Decimal(os.environ.get("ALPHA_INTRADAY_BUY_ALERT_QUOTE", "20000"))
     sell_threshold = Decimal(os.environ.get("ALPHA_INTRADAY_SELL_ALERT_QUOTE", "20000"))
     cex_quote = decimal_from(analysis.get("cex_quote_estimate"))
