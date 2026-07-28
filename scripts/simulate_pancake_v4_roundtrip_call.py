@@ -344,14 +344,16 @@ def sellability_gate(status: str, eth_call: dict[str, Any], debug_trace: dict[st
         return {
             "status": "recovery_rate_verified" if passed else "blocked_low_recovery",
             "gate": "infinity_recovery_rate_verified" if passed else "blocked_infinity_low_recovery",
-            "can_follow": passed,
+            "can_follow": False,
             "can_sell_proven": passed,
             "quote_recovered_raw": eth_call.get("quote_recovered_raw"),
             "recovery_rate": str(recovery_rate),
             "minimum_recovery_rate": str(minimum_recovery_rate),
             "reason": (
                 "Universal Router buy->sell eth_call succeeded and quote recovery was estimated through "
-                "TAKE_ALL amountMinimum binary search."
+                "TAKE_ALL amountMinimum binary search. This standalone sellability component never "
+                "authorizes follow; the production gate also requires transfer safety, DEX quote, "
+                "opening, cohort, distribution, and venue checks."
             ),
         }
     if status == "roundtrip_eth_call_success_no_recovery_rate":

@@ -537,7 +537,11 @@ class PancakeV4RoundtripSyntheticBoundaryTests(unittest.TestCase):
 
         self.assertEqual(within_limit["quote_recovered_raw"], str(recoverable_quote))
         self.assertEqual(within_limit["recovery_rate"], "0.9")
-        self.assertIs(self.gate_for(within_limit)["can_follow"], True)
+        within_gate = self.gate_for(within_limit)
+        self.assertEqual(within_gate["gate"], "infinity_recovery_rate_verified")
+        self.assertIs(within_gate["can_follow"], False)
+        self.assertIs(within_gate["can_sell_proven"], True)
+        self.assertIn("never authorizes follow", within_gate["reason"])
         self.assertEqual(oversized["quote_recovered_raw"], "0")
         self.assertEqual(oversized["recovery_rate"], "0")
         self.assertIn("synthetic max-tx", str(oversized["last_failure"]))

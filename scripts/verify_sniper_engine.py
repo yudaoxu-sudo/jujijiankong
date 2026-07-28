@@ -1859,8 +1859,9 @@ verified_gate = sellability_gate(
     {'status': 'skipped'},
 )
 assert verified_gate['gate'] == 'infinity_recovery_rate_verified', verified_gate
-assert verified_gate['can_follow'] is True, verified_gate
+assert verified_gate['can_follow'] is False, verified_gate
 assert verified_gate['can_sell_proven'] is True, verified_gate
+assert 'never authorizes follow' in verified_gate['reason'], verified_gate
 
 low_gate = sellability_gate(
     'roundtrip_eth_call_success_with_recovery_rate',
