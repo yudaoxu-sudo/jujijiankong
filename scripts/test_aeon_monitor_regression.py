@@ -4,6 +4,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -17,6 +19,76 @@ sys.path.insert(0, str(ROOT))
 
 
 class AeonSignalParsingRegressionTests(unittest.TestCase):
+    def test_opening_sprint_inner_timeout_is_bounded_and_remapped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            timeout_stub = bin_dir / "timeout"
+            timeout_stub.write_text("#!/bin/sh\nexit 124\n", encoding="utf-8")
+            timeout_stub.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "SNIPER_PROJECT_DIR": str(root),
+                    "ALPHA_OPENING_SPRINT_TOTAL_SECONDS": "60",
+                    "ALPHA_OPENING_SPRINT_TRACE_DEADLINE_SECONDS": "1",
+                    "ALPHA_OPENING_SPRINT_POST_SECONDS": "1",
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "alpha_opening_sprint.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 75)
+        self.assertIn("inner hard timeout after 2s", result.stderr)
+
+    def test_trace_deadline_is_not_downgraded_by_optional_rpc_helpers(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        address = "0x" + "1" * 40
+        opening.CODE_CACHE.pop(("bsc", address), None)
+        deadline = opening.OpeningTraceDeadlineExceeded("deadline")
+        callbacks = [
+            lambda: opening.token_meta("bsc", address, "AEON"),
+            lambda: opening.has_contract_code("bsc", address),
+            lambda: opening.contract_code("bsc", address),
+            lambda: opening.optional_eth_call("bsc", address, "0x12345678"),
+            lambda: opening.read_uint_with_override(
+                "bsc",
+                address,
+                "0x12345678",
+                {},
+                5,
+            ),
+            lambda: opening.execute_infinity_roundtrip_call(
+                {"chain": "bsc"},
+                address,
+                {},
+                {"calldata": "0x"},
+                5,
+            ),
+        ]
+
+        with mock.patch.object(
+            opening,
+            "quick_rpc_call",
+            side_effect=deadline,
+        ):
+            for callback in callbacks:
+                with self.subTest(callback=callback):
+                    with self.assertRaises(
+                        opening.OpeningTraceDeadlineExceeded
+                    ):
+                        callback()
+
     def test_canonical_opening_fixture_preserves_unknown_exit_boundary(self) -> None:
         fixture = json.loads(
             (
@@ -1056,11 +1128,57 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(result["confirmed_sell_count"], 0)
         self.assertEqual(get_logs.call_args.args[3], 1200)
 
+    def test_next_hop_span_truncation_is_partial_coverage(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_NEXT_HOP_MAX_BLOCKS": "50000",
+                    "ALPHA_OPENING_NEXT_HOP_FULL_MAX_BLOCKS": "250000",
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                return_value=[],
+            ) as get_logs,
+        ):
+            result = opening.trace_next_hop_from_recipient(
+                event,
+                "0x" + "3" * 40,
+                "0x" + "4" * 40,
+                100,
+                300000,
+            )
+
+        self.assertEqual(
+            int(get_logs.call_args.args[1]["fromBlock"], 16),
+            50000,
+        )
+        self.assertFalse(result["coverage_complete"])
+
     def test_next_hop_classification_caps_are_partial_coverage(self) -> None:
         import scripts.alpha_opening_block_watch as opening
 
         event = {
             "chain": "bsc",
+            "opening_next_hop_classify_txs": 6,
+            "opening_next_hop_recipients": 8,
             "token": {
                 "address": "0x" + "1" * 40,
                 "symbol": "AEON",
@@ -1171,6 +1289,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             {
                 "ALPHA_OPENING_MAX_TXS": "8",
                 "ALPHA_OPENING_TRACE_BUYERS": "4",
+                "ALPHA_OPENING_CLASSIFY_OUT_TXS": "2",
+                "ALPHA_OPENING_NEXT_HOP_RECIPIENTS": "1",
+                "ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS": "2",
             },
         ):
             self.assertEqual(
@@ -1191,6 +1312,33 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 ),
                 4,
             )
+            self.assertEqual(
+                capped_event_int_setting(
+                    {"opening_classify_out_txs": 8},
+                    "opening_classify_out_txs",
+                    "ALPHA_OPENING_CLASSIFY_OUT_TXS",
+                    3,
+                ),
+                2,
+            )
+            self.assertEqual(
+                capped_event_int_setting(
+                    {"opening_next_hop_recipients": 8},
+                    "opening_next_hop_recipients",
+                    "ALPHA_OPENING_NEXT_HOP_RECIPIENTS",
+                    2,
+                ),
+                1,
+            )
+            self.assertEqual(
+                capped_event_int_setting(
+                    {"opening_next_hop_classify_txs": 6},
+                    "opening_next_hop_classify_txs",
+                    "ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS",
+                    2,
+                ),
+                2,
+            )
 
         logs = []
         for index in range(30):
@@ -1207,6 +1355,1381 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         selected = selected_tx_hashes(logs, 8)
         self.assertIn("0x" + f"{15:064x}", selected)
         self.assertEqual(len(selected), 8)
+
+    def test_fast_cycle_incrementally_refreshes_dynamic_buyer_trace(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        contract = "0x" + "1" * 40
+        row = {
+            "tx": "0x" + "2" * 64,
+            "buyer": "0x" + "3" * 40,
+            "block": 100,
+            "token_bought": "7177604.7",
+            "spent_quote": "600000",
+            "buyer_trace": {
+                "status": "mostly_exited_or_transferred",
+                "coverage_complete": True,
+                "as_of_block": "120",
+                "confirmed_sell_quote_received": "37331.42",
+            },
+        }
+        event = {
+            "chain": "bsc",
+            "token": {"address": contract, "symbol": "AEON", "decimals": 8},
+            "quote": {
+                "address": "0x" + "4" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "opening_block": 100,
+            "latest_block": 140,
+        }
+        previous = {
+            "status": "opened",
+            "scan_to_block": 130,
+            "transfer_logs": 3907,
+            "relevant_tx_count": 8,
+            "rows": [row],
+            "liquidity_flow": {"summary": "cached", "risk": "none", "rows": 0},
+        }
+
+        refreshed_trace = {
+            **row["buyer_trace"],
+            "as_of_block": "140",
+            "confirmed_sell_quote_received": "38000",
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={"summary": "fresh", "risk": "none", "rows": 0},
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                return_value=refreshed_trace,
+            ) as trace_buyer,
+            mock.patch.object(
+                opening,
+                "analyze_opened",
+                return_value={"buyer_trace_summary": "incremental"},
+            ),
+        ):
+            refreshed = opening.incremental_opened_event(
+                event,
+                previous,
+                "2026-07-28T11:25:44+00:00",
+            )
+
+        self.assertEqual(refreshed["refresh_status"], "incremental_refresh")
+        self.assertEqual(refreshed["deep_trace_as_of_block"], "140")
+        self.assertEqual(
+            refreshed["rows"][0]["buyer_trace"]["confirmed_sell_quote_received"],
+            "38000",
+        )
+        self.assertEqual(previous["rows"][0]["buyer_trace"]["as_of_block"], "120")
+        self.assertEqual(
+            trace_buyer.call_args.args[-1]["confirmed_sell_quote_received"],
+            "37331.42",
+        )
+
+    def test_build_snapshot_fast_cycle_uses_incremental_refresh(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        contract = "0x" + "1" * 40
+        quote = "0x" + "4" * 40
+        current = {
+            "symbol": "AEON",
+            "chain": "bsc",
+            "token": {"address": contract},
+            "quote": {"address": quote},
+            "opening_block": 100,
+            "latest_block": 140,
+            "start_time_utc": "2026-07-27T10:00:00+00:00",
+            "pool_id": "0x" + "5" * 64,
+        }
+        previous_event = {
+            **current,
+            "latest_block": 120,
+            "status": "opened",
+            "rows": [
+                {
+                    "tx": "0x" + "2" * 64,
+                    "buyer_trace": {
+                        "status": "mostly_exited_or_transferred",
+                        "coverage_complete": True,
+                        "as_of_block": "120",
+                    },
+                }
+            ],
+        }
+        previous_snapshot = {
+            "generated_at": "2026-07-28T11:25:44+00:00",
+            "events": [previous_event],
+        }
+
+        def fake_read_json(path, default):
+            if path == opening.LATEST_PATH:
+                return previous_snapshot
+            return default
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_REUSE_OPENED_CACHE": "1"},
+            ),
+            mock.patch.object(opening, "read_json", side_effect=fake_read_json),
+            mock.patch.object(opening, "build_events", return_value=[current]),
+            mock.patch.object(
+                opening,
+                "previous_opened_event_needs_full_retry",
+                return_value=False,
+            ),
+            mock.patch.object(
+                opening,
+                "incremental_opened_event",
+                return_value={
+                    "status": "opened",
+                    "refresh_status": "incremental_refresh",
+                    "rows": [],
+                    "analysis": {},
+                },
+            ) as incremental_event,
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                side_effect=AssertionError("deep refresh must be skipped"),
+            ),
+            mock.patch.object(opening, "event_alert_keys", return_value=[]),
+        ):
+            snapshot = opening.build_snapshot()
+
+        self.assertEqual(snapshot["event_count"], 1)
+        self.assertEqual(
+            snapshot["events"][0]["refresh_status"],
+            "incremental_refresh",
+        )
+        incremental_event.assert_called_once()
+
+    def test_partial_opening_trace_is_a_health_warning(self) -> None:
+        from scripts.runtime_health_watch import output_row_coverage_warning
+
+        self.assertEqual(
+            output_row_coverage_warning(
+                "opening",
+                {
+                    "status": "opened",
+                    "refresh_status": "partial_trace_deadline",
+                    "rows": [
+                        {
+                            "buyer_trace": {
+                                "status": "unknown_incomplete_coverage",
+                                "coverage_complete": False,
+                            }
+                        }
+                    ],
+                },
+            ),
+            "opening buyer trace coverage incomplete",
+        )
+
+    def test_trace_deadline_preserves_confirmed_sell_lower_bound(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        partial = opening.deadline_partial_trace(
+            {
+                "status": "mostly_exited_or_transferred",
+                "coverage_complete": True,
+                "current_balance": "0",
+                "confirmed_sell_quote_received": "37331.42",
+                "confirmed_sell_count": "16",
+                "as_of_block": "120",
+            }
+        )
+
+        self.assertEqual(partial["status"], "confirmed_sell_partial_coverage")
+        self.assertFalse(partial["coverage_complete"])
+        self.assertEqual(partial["coverage_status"], "partial")
+        self.assertEqual(
+            partial["confirmed_sell_quote_received"],
+            "37331.42",
+        )
+        self.assertEqual(partial["current_balance"], "")
+        self.assertTrue(partial["trace_deadline_exceeded"])
+
+    def test_deadline_snapshot_fallback_does_not_issue_more_rpc(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        previous = {
+            "generated_at": "2026-07-28T11:00:00+00:00",
+            "events": [
+                {
+                    "status": "opened",
+                    "symbol": "AEON",
+                    "opening_block": 100,
+                    "quote": {
+                        "address": "0x" + "2" * 40,
+                        "symbol": "USDT",
+                        "decimals": 18,
+                    },
+                    "token": {
+                        "address": "0x" + "1" * 40,
+                        "symbol": "AEON",
+                        "decimals": 8,
+                    },
+                    "rows": [
+                        {
+                            "tx": "0x" + "6" * 64,
+                            "buyer": "0x" + "3" * 40,
+                            "block": 100,
+                            "token_bought": "1000",
+                            "spent_quote": "20000",
+                            "buyer_trace": {
+                                "status": (
+                                    "confirmed_sell_partial_coverage"
+                                ),
+                                "coverage_complete": False,
+                                "confirmed_sell_quote_received": (
+                                    "37331.42"
+                                ),
+                                "confirmed_sell_count": "16",
+                                "out_after_buy": "1000",
+                                "as_of_block": "120",
+                            },
+                        }
+                    ],
+                    "analysis": {},
+                }
+            ],
+        }
+        opening.CONTRACT_SAFETY_CACHE.clear()
+        with (
+            mock.patch.object(
+                opening,
+                "TRACE_DEADLINE_AT",
+                time.monotonic() - 1,
+            ),
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                side_effect=AssertionError("unexpected rpc"),
+            ) as quick_rpc,
+            mock.patch.object(opening, "read_json", return_value=[]),
+        ):
+            snapshot = opening.deadline_snapshot_from_previous(previous)
+
+        quick_rpc.assert_not_called()
+        event = snapshot["events"][0]
+        self.assertEqual(event["refresh_status"], "partial_trace_deadline")
+        self.assertEqual(
+            event["rows"][0]["buyer_trace"][
+                "confirmed_sell_quote_received"
+            ],
+            "37331.42",
+        )
+        self.assertEqual(
+            event["analysis"]["cohort_confirmed_sell_quote"],
+            "37331.42",
+        )
+
+    def test_outgoing_tx_cap_marks_buyer_trace_partial(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "opening_classify_out_txs": 8,
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        raw_logs = [
+            {"transactionHash": "0x" + f"{index:064x}"}
+            for index in range(3)
+        ]
+
+        def parse_log(row, decimals):
+            return {
+                "tx": row["transactionHash"],
+                "block": 110,
+                "log_index": 0,
+                "to": "0x" + "4" * 40,
+                "amount": opening.Decimal("1"),
+            }
+
+        classified = {
+            "classes": {"eoa_or_unlabeled"},
+            "quote_received": opening.Decimal(0),
+            "direct_quote_received": opening.Decimal(0),
+            "next_hop_quote_received": opening.Decimal(0),
+            "confirmed_sell_count": 0,
+            "next_hop_count": 0,
+            "next_hop_coverage_complete": True,
+            "classification_coverage_complete": True,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_CLASSIFY_OUT_TXS": "2"},
+            ),
+            mock.patch.object(opening, "token_balance", return_value=opening.Decimal("1")),
+            mock.patch.object(opening, "get_logs_quick", return_value=raw_logs),
+            mock.patch.object(opening, "transfer_log", side_effect=parse_log),
+            mock.patch.object(
+                opening,
+                "classify_outgoing_tx",
+                return_value=classified,
+            ) as classify_outgoing,
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            trace = opening.trace_buyer(
+                event,
+                "0x" + "3" * 40,
+                100,
+                120,
+                opening.Decimal("10"),
+            )
+
+        self.assertFalse(trace["coverage_complete"])
+        self.assertEqual(trace["status"], "unknown_incomplete_coverage")
+        self.assertEqual(classify_outgoing.call_count, 2)
+
+    def test_incremental_trace_adds_only_new_block_evidence(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        previous = {
+            "status": "mostly_exited_or_transferred",
+            "position_status": "mostly_exited_or_transferred",
+            "coverage_complete": True,
+            "covered_block_ranges": [{"from": 100, "to": 120}],
+            "uncovered_block_ranges": [],
+            "current_balance": "0",
+            "out_after_buy": "10",
+            "out_transfer_count": "1",
+            "out_destination_classes": "dex_sell_to_quote",
+            "confirmed_sell_quote_received": "37331.42",
+            "direct_sell_quote_received": "932.41",
+            "next_hop_sell_quote_received": "36399.01",
+            "confirmed_sell_count": "16",
+            "next_hop_count": "1",
+            "next_hop_coverage_complete": True,
+            "same_receipt_confirmed_sell": True,
+            "as_of_block": "120",
+        }
+        raw_log = {"transactionHash": "0x" + "6" * 64}
+
+        def parse_log(row, decimals):
+            return {
+                "tx": row["transactionHash"],
+                "block": 122,
+                "log_index": 0,
+                "to": "0x" + "4" * 40,
+                "amount": opening.Decimal("2"),
+            }
+
+        classified = {
+            "classes": {"dex_sell_to_quote"},
+            "quote_received": opening.Decimal("1000"),
+            "direct_quote_received": opening.Decimal("1000"),
+            "next_hop_quote_received": opening.Decimal(0),
+            "confirmed_sell_count": 1,
+            "confirmed_sell_evidence": [
+                {
+                    "id": f"{raw_log['transactionHash']}:7",
+                    "tx": raw_log["transactionHash"],
+                    "log_index": 7,
+                    "quote_received": "1000",
+                    "route": "direct",
+                    "recipient": "0x" + "3" * 40,
+                }
+            ],
+            "next_hop_count": 0,
+            "next_hop_coverage_complete": True,
+            "classification_coverage_complete": True,
+        }
+        with (
+            mock.patch.object(opening, "token_balance", return_value=opening.Decimal("0")),
+            mock.patch.object(opening, "get_logs_quick", return_value=[raw_log]) as get_logs,
+            mock.patch.object(opening, "transfer_log", side_effect=parse_log),
+            mock.patch.object(opening, "classify_outgoing_tx", return_value=classified),
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            trace = opening.trace_buyer(
+                event,
+                "0x" + "3" * 40,
+                100,
+                123,
+                opening.Decimal("10"),
+                previous,
+            )
+
+        self.assertEqual(int(get_logs.call_args.args[1]["fromBlock"], 16), 121)
+        self.assertEqual(trace["as_of_block"], "123")
+        self.assertTrue(trace["coverage_complete"])
+        self.assertEqual(
+            trace["confirmed_sell_quote_received"],
+            "38331.42",
+        )
+        self.assertEqual(trace["confirmed_sell_count"], "17")
+
+    def test_incremental_next_hop_sell_is_caught_once_across_overlap(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        buyer = "0x" + "3" * 40
+        recipient = "0x" + "4" * 40
+        sell_tx = "0x" + "7" * 64
+        evidence = {
+            "id": f"{sell_tx}:9",
+            "tx": sell_tx,
+            "log_index": 9,
+            "quote_received": "500",
+            "route": "next_hop",
+            "recipient": recipient,
+        }
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        previous = {
+            "status": "partially_moved",
+            "position_status": "partially_moved",
+            "coverage_complete": True,
+            "covered_block_ranges": [{"from": 100, "to": 120}],
+            "uncovered_block_ranges": [],
+            "current_balance": "5",
+            "out_after_buy": "5",
+            "out_transfer_count": "1",
+            "out_destination_classes": "eoa_or_unlabeled",
+            "confirmed_sell_quote_received": "0",
+            "direct_sell_quote_received": "0",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "0",
+            "next_hop_count": "1",
+            "next_hop_coverage_complete": True,
+            "next_hop_watch_recipients": [
+                {"address": recipient, "as_of_block": 120}
+            ],
+            "as_of_block": "120",
+        }
+        raw_log = {"transactionHash": "0x" + "6" * 64}
+
+        def parse_log(row, decimals):
+            return {
+                "tx": row["transactionHash"],
+                "block": 122,
+                "log_index": 0,
+                "to": recipient,
+                "amount": opening.Decimal("1"),
+            }
+
+        next_hop = {
+            "classes": {"next_hop_dex_sell_to_quote"},
+            "quote_received": opening.Decimal("500"),
+            "confirmed_sell_count": 1,
+            "confirmed_sell_evidence": [evidence],
+            "recipient_count": 1,
+            "coverage_complete": True,
+        }
+        classified = {
+            "classes": {
+                "eoa_or_unlabeled",
+                "next_hop_dex_sell_to_quote",
+            },
+            "quote_received": opening.Decimal("500"),
+            "direct_quote_received": opening.Decimal(0),
+            "next_hop_quote_received": opening.Decimal("500"),
+            "confirmed_sell_count": 1,
+            "confirmed_sell_evidence": [evidence],
+            "next_hop_count": 1,
+            "next_hop_coverage_complete": True,
+            "classification_coverage_complete": True,
+            "next_hop_watch_recipients": [
+                {"address": recipient, "as_of_block": 123}
+            ],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "token_balance",
+                return_value=opening.Decimal("4"),
+            ),
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                return_value=[raw_log],
+            ),
+            mock.patch.object(
+                opening,
+                "transfer_log",
+                side_effect=parse_log,
+            ),
+            mock.patch.object(
+                opening,
+                "trace_next_hop_from_recipient",
+                return_value=next_hop,
+            ) as trace_next_hop,
+            mock.patch.object(
+                opening,
+                "classify_outgoing_tx",
+                return_value=classified,
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            trace = opening.trace_buyer(
+                event,
+                buyer,
+                100,
+                123,
+                opening.Decimal("10"),
+                previous,
+            )
+
+        self.assertEqual(trace_next_hop.call_args.args[3:5], (121, 123))
+        self.assertEqual(trace["confirmed_sell_quote_received"], "500")
+        self.assertEqual(trace["next_hop_sell_quote_received"], "500")
+        self.assertEqual(trace["confirmed_sell_count"], "1")
+        self.assertEqual(len(trace["confirmed_sell_evidence"]), 1)
+        self.assertEqual(
+            trace["next_hop_watch_recipients"][0]["as_of_block"],
+            123,
+        )
+
+    def test_sell_evidence_uses_receipt_log_identity(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        recipient = "0x" + "4" * 40
+        tx_hash = "0x" + "7" * 64
+        event = {
+            "quote": {
+                "address": "0x" + "2" * 40,
+            },
+        }
+        transfers = [
+            {
+                "tx": tx_hash,
+                "log_index": 8,
+                "token": event["quote"]["address"],
+                "to": recipient,
+                "amount": opening.Decimal("300"),
+            },
+            {
+                "tx": tx_hash,
+                "log_index": 9,
+                "token": event["quote"]["address"],
+                "to": recipient,
+                "amount": opening.Decimal("200"),
+            },
+        ]
+
+        evidence = opening.receipt_confirmed_sell_evidence(
+            transfers,
+            event,
+            recipient,
+            tx_hash,
+            "next_hop",
+        )
+        merged = opening.merge_confirmed_sell_evidence(
+            evidence,
+            [dict(evidence[0])],
+        )
+        summary = opening.confirmed_sell_evidence_summary(merged)
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(summary["quote_received"], opening.Decimal("500"))
+        self.assertEqual(summary["confirmed_sell_count"], 1)
+
+    def test_route_legacy_ambiguity_keeps_full_retry_partial(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        tx_hash = "0x" + "7" * 64
+        previous = {
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "100",
+            "direct_sell_quote_received": "100",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [],
+            "next_hop_watch_recipients": [],
+        }
+        refreshed = {
+            "status": "mostly_exited_or_transferred",
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "100",
+            "direct_sell_quote_received": "0",
+            "next_hop_sell_quote_received": "100",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [
+                {
+                    "id": f"{tx_hash}:9",
+                    "tx": tx_hash,
+                    "log_index": 9,
+                    "quote_received": "100",
+                    "route": "next_hop",
+                    "recipient": "0x" + "4" * 40,
+                }
+            ],
+            "next_hop_watch_recipients": [],
+        }
+
+        merged = opening.trace_sell_lower_bound(previous, refreshed)
+
+        self.assertEqual(merged["confirmed_sell_quote_received"], "100")
+        self.assertEqual(merged["legacy_confirmed_sell_quote_received"], "0")
+        self.assertEqual(merged["legacy_direct_sell_quote_received"], "100")
+        self.assertFalse(merged["coverage_complete"])
+        self.assertEqual(
+            merged["status"],
+            "confirmed_sell_partial_coverage",
+        )
+
+    def test_count_legacy_ambiguity_keeps_full_retry_partial(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        tx_hash = "0x" + "7" * 64
+        evidence = {
+            "id": f"{tx_hash}:9",
+            "tx": tx_hash,
+            "log_index": 9,
+            "quote_received": "100",
+            "route": "direct",
+            "recipient": "0x" + "3" * 40,
+        }
+        previous = {
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "100",
+            "direct_sell_quote_received": "100",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "2",
+            "confirmed_sell_evidence": [],
+            "next_hop_watch_recipients": [],
+        }
+        refreshed = {
+            "status": "mostly_exited_or_transferred",
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "100",
+            "direct_sell_quote_received": "100",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [evidence],
+            "next_hop_watch_recipients": [],
+        }
+
+        merged = opening.trace_sell_lower_bound(previous, refreshed)
+
+        self.assertEqual(merged["legacy_confirmed_sell_count"], "1")
+        self.assertFalse(merged["coverage_complete"])
+
+    def test_trace_alert_bucket_upgrade_is_not_suppressed(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        legacy = "trace|AEON|buyer|partially_moved|dex_router"
+        old_bucket = f"{legacy}|30000"
+        new_bucket = f"{legacy}|630000"
+        zero_bucket = f"{legacy}|0"
+
+        self.assertTrue(opening.alert_key_seen(zero_bucket, {legacy}))
+        self.assertFalse(opening.alert_key_seen(new_bucket, {legacy}))
+        self.assertFalse(opening.alert_key_seen(new_bucket, {old_bucket}))
+
+    def test_malformed_receipt_transfer_is_incomplete_coverage(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        buyer = "0x" + "3" * 40
+        recipient = "0x" + "4" * 40
+        tx_hash = "0x" + "7" * 64
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        base_log = {
+            "address": event["quote"]["address"],
+            "topics": [
+                opening.TRANSFER_TOPIC,
+                opening.address_topic("0x" + "5" * 40),
+                opening.address_topic(recipient),
+            ],
+            "data": "0x1",
+            "transactionHash": tx_hash,
+        }
+        malformed_receipts = [
+            {"status": "0x1", "logs": [{**base_log}]},
+            {
+                "status": "0x1",
+                "logs": [
+                    {
+                        **base_log,
+                        "logIndex": "0x1",
+                        "data": "not-hex",
+                    }
+                ],
+            },
+            {
+                "status": "0x1",
+                "logs": [
+                    {
+                        **base_log,
+                        "topics": [opening.TRANSFER_TOPIC],
+                        "logIndex": "0x1",
+                    }
+                ],
+            },
+        ]
+
+        for receipt in malformed_receipts:
+            with (
+                self.subTest(receipt=receipt),
+                mock.patch.object(
+                    opening,
+                    "quick_rpc_call",
+                    return_value=receipt,
+                ),
+            ):
+                next_hop = opening.classify_recipient_next_hop_tx(
+                    event,
+                    recipient,
+                    tx_hash,
+                    [],
+                )
+                direct = opening.classify_outgoing_tx(
+                    event,
+                    buyer,
+                    tx_hash,
+                    [],
+                    123,
+                )
+            self.assertFalse(next_hop["receipt_coverage_complete"])
+            self.assertFalse(direct["receipt_coverage_complete"])
+            self.assertFalse(direct["classification_coverage_complete"])
+
+    def test_failed_next_hop_receipt_keeps_watch_cursor_for_retry(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        buyer = "0x" + "3" * 40
+        recipient = "0x" + "4" * 40
+        sell_tx = "0x" + "7" * 64
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        raw_log = {"transactionHash": sell_tx}
+
+        def parse_log(row, decimals):
+            return {
+                "tx": row["transactionHash"],
+                "block": 122,
+                "log_index": 0,
+                "to": "0x" + "5" * 40,
+                "amount": opening.Decimal("1"),
+            }
+
+        with (
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                return_value=[raw_log],
+            ),
+            mock.patch.object(
+                opening,
+                "transfer_log",
+                side_effect=parse_log,
+            ),
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                return_value=None,
+            ),
+        ):
+            failed_slice = opening.trace_next_hop_from_recipient(
+                event,
+                buyer,
+                recipient,
+                121,
+                123,
+            )
+        self.assertFalse(failed_slice["coverage_complete"])
+
+        previous = {
+            "status": "partially_moved",
+            "position_status": "partially_moved",
+            "coverage_complete": True,
+            "covered_block_ranges": [{"from": 100, "to": 120}],
+            "uncovered_block_ranges": [],
+            "current_balance": "5",
+            "out_after_buy": "5",
+            "out_transfer_count": "1",
+            "out_destination_classes": "eoa_or_unlabeled",
+            "confirmed_sell_quote_received": "0",
+            "direct_sell_quote_received": "0",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "0",
+            "next_hop_count": "1",
+            "next_hop_coverage_complete": True,
+            "next_hop_watch_recipients": [
+                {"address": recipient, "as_of_block": 120}
+            ],
+            "as_of_block": "120",
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "token_balance",
+                return_value=opening.Decimal("4"),
+            ),
+            mock.patch.object(opening, "get_logs_quick", return_value=[]),
+            mock.patch.object(
+                opening,
+                "trace_next_hop_from_recipient",
+                return_value=failed_slice,
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            failed_trace = opening.trace_buyer(
+                event,
+                buyer,
+                100,
+                123,
+                opening.Decimal("10"),
+                previous,
+            )
+        self.assertFalse(failed_trace["coverage_complete"])
+        self.assertEqual(
+            failed_trace["next_hop_watch_recipients"][0]["as_of_block"],
+            120,
+        )
+
+        evidence = {
+            "id": f"{sell_tx}:9",
+            "tx": sell_tx,
+            "log_index": 9,
+            "quote_received": "500",
+            "route": "next_hop",
+            "recipient": recipient,
+        }
+        successful_slice = {
+            **failed_slice,
+            "quote_received": opening.Decimal("500"),
+            "confirmed_sell_count": 1,
+            "confirmed_sell_evidence": [evidence],
+            "coverage_complete": True,
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "token_balance",
+                return_value=opening.Decimal("4"),
+            ),
+            mock.patch.object(opening, "get_logs_quick", return_value=[]),
+            mock.patch.object(
+                opening,
+                "trace_next_hop_from_recipient",
+                return_value=successful_slice,
+            ) as retry_slice,
+            mock.patch.object(
+                opening,
+                "simulate_transfer_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_dex_quote_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "simulate_router_sell_safety",
+                return_value={"status": "unverified", "detail": ""},
+            ),
+        ):
+            successful_trace = opening.trace_buyer(
+                event,
+                buyer,
+                100,
+                123,
+                opening.Decimal("10"),
+                failed_trace,
+            )
+        self.assertEqual(retry_slice.call_args.args[3:5], (121, 123))
+        self.assertEqual(
+            successful_trace["confirmed_sell_quote_received"],
+            "500",
+        )
+        self.assertEqual(
+            successful_trace["next_hop_watch_recipients"][0][
+                "as_of_block"
+            ],
+            123,
+        )
+
+    def test_incremental_trace_error_preserves_confirmed_lower_bound(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        tx_hash = "0x" + "6" * 64
+        recipient = "0x" + "4" * 40
+        evidence = {
+            "id": f"{tx_hash}:9",
+            "tx": tx_hash,
+            "log_index": 9,
+            "quote_received": "500",
+            "route": "next_hop",
+            "recipient": recipient,
+        }
+        previous_trace = {
+            "status": "confirmed_sell_partial_coverage",
+            "coverage_complete": False,
+            "confirmed_sell_quote_received": "37331.42",
+            "legacy_confirmed_sell_quote_received": "36831.42",
+            "confirmed_sell_count": "16",
+            "confirmed_sell_evidence": [evidence],
+            "next_hop_watch_recipients": [
+                {"address": recipient, "as_of_block": 120}
+            ],
+            "as_of_block": "120",
+        }
+        previous = {
+            "last_full_trace_attempt_at": "2026-07-28T11:00:00+00:00",
+            "rows": [
+                {
+                    "tx": tx_hash,
+                    "buyer": "0x" + "3" * 40,
+                    "block": 100,
+                    "token_bought": "1000",
+                    "spent_quote": "20000",
+                    "buyer_trace": previous_trace,
+                }
+            ],
+        }
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 123,
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                side_effect=RuntimeError("temporary"),
+            ),
+            mock.patch.object(opening, "analyze_opened", return_value={}),
+        ):
+            refreshed = opening.incremental_opened_event(
+                event,
+                previous,
+                "2026-07-28T11:05:00+00:00",
+            )
+
+        trace = refreshed["rows"][0]["buyer_trace"]
+        self.assertEqual(refreshed["refresh_status"], "partial_trace_error")
+        self.assertEqual(
+            trace["confirmed_sell_quote_received"],
+            "37331.42",
+        )
+        self.assertEqual(trace["confirmed_sell_evidence"], [evidence])
+        self.assertEqual(
+            trace["next_hop_watch_recipients"][0]["as_of_block"],
+            120,
+        )
+        self.assertFalse(trace["coverage_complete"])
+
+    def test_full_retry_reuses_rows_and_preserves_sell_lower_bound(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        tx_hash = "0x" + "6" * 64
+        previous = {
+            "status": "opened",
+            "scan_to_block": 340,
+            "transfer_logs": 3907,
+            "relevant_tx_count": 8,
+            "immutable_opening_generated_at": (
+                "2026-07-27T10:00:00+00:00"
+            ),
+            "rows": [
+                {
+                    "tx": tx_hash,
+                    "buyer": "0x" + "3" * 40,
+                    "block": 100,
+                    "token_bought": "1000",
+                    "spent_quote": "20000",
+                    "buyer_trace": {
+                        "status": "confirmed_sell_partial_coverage",
+                        "coverage_complete": False,
+                        "confirmed_sell_quote_received": "37331.42",
+                        "confirmed_sell_count": "16",
+                        "as_of_block": "120",
+                    },
+                }
+            ],
+        }
+        fresh_evidence = {
+            "id": f"{tx_hash}:9",
+            "tx": tx_hash,
+            "log_index": 9,
+            "quote_received": "100",
+            "route": "direct",
+            "recipient": "0x" + "3" * 40,
+        }
+        fresh_trace = {
+            "status": "mostly_exited_or_transferred",
+            "position_status": "mostly_exited_or_transferred",
+            "coverage_complete": True,
+            "coverage_status": "complete",
+            "confirmed_sell_quote_received": "100",
+            "direct_sell_quote_received": "100",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [fresh_evidence],
+            "next_hop_watch_recipients": [],
+            "out_after_buy": "1000",
+            "out_transfer_count": "1",
+            "out_destination_classes": "dex_sell_to_quote",
+            "next_hop_count": "0",
+            "as_of_block": "123",
+        }
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 123,
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "opening_transfer_logs",
+            ) as opening_logs,
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                return_value=fresh_trace,
+            ),
+            mock.patch.object(opening, "analyze_opened", return_value={}),
+        ):
+            refreshed = opening.build_opened_event(event, previous)
+
+        opening_logs.assert_not_called()
+        self.assertEqual(refreshed["rows"][0]["tx"], tx_hash)
+        self.assertEqual(refreshed["transfer_logs"], 3907)
+        self.assertEqual(
+            refreshed["rows"][0]["buyer_trace"][
+                "confirmed_sell_quote_received"
+            ],
+            "37331.42",
+        )
+        self.assertEqual(
+            refreshed["rows"][0]["buyer_trace"][
+                "legacy_confirmed_sell_quote_received"
+            ],
+            "37231.42",
+        )
+        self.assertFalse(
+            refreshed["rows"][0]["buyer_trace"]["coverage_complete"]
+        )
+
+    def test_partial_trace_retry_is_bounded_and_not_permanent(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        previous = {
+            "deep_trace_generated_at": "2026-07-28T11:00:00+00:00",
+            "last_full_trace_attempt_at": "2026-07-28T11:00:00+00:00",
+            "rows": [
+                {
+                    "tx": "0x" + "6" * 64,
+                    "buyer": "0x" + "3" * 40,
+                    "block": 100,
+                    "token_bought": "1",
+                    "buyer_trace": {
+                        "status": "unknown_incomplete_coverage",
+                        "coverage_complete": False,
+                    }
+                }
+            ],
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_PARTIAL_RETRY_SECONDS": "900"},
+            ),
+            mock.patch.object(
+                opening,
+                "now_utc",
+                return_value=datetime(2026, 7, 28, 11, 10, tzinfo=timezone.utc),
+            ),
+        ):
+            self.assertFalse(
+                opening.previous_opened_event_needs_full_retry(
+                    previous,
+                    "2026-07-28T11:00:00+00:00",
+                )
+            )
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 120,
+        }
+        partial_trace = {
+            "status": "unknown_incomplete_coverage",
+            "coverage_complete": False,
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                return_value=partial_trace,
+            ),
+            mock.patch.object(opening, "analyze_opened", return_value={}),
+            mock.patch.object(
+                opening,
+                "now_iso",
+                return_value="2026-07-28T11:05:00+00:00",
+            ),
+        ):
+            first_incremental = opening.incremental_opened_event(
+                event,
+                previous,
+                "2026-07-28T11:00:00+00:00",
+            )
+        event["latest_block"] = 121
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                return_value=partial_trace,
+            ),
+            mock.patch.object(opening, "analyze_opened", return_value={}),
+            mock.patch.object(
+                opening,
+                "now_iso",
+                return_value="2026-07-28T11:10:00+00:00",
+            ),
+        ):
+            second_incremental = opening.incremental_opened_event(
+                event,
+                first_incremental,
+                "2026-07-28T11:05:00+00:00",
+            )
+        self.assertEqual(
+            first_incremental["last_full_trace_attempt_at"],
+            "2026-07-28T11:00:00+00:00",
+        )
+        self.assertEqual(
+            second_incremental["last_full_trace_attempt_at"],
+            "2026-07-28T11:00:00+00:00",
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_PARTIAL_RETRY_SECONDS": "900"},
+            ),
+            mock.patch.object(
+                opening,
+                "now_utc",
+                return_value=datetime(
+                    2026,
+                    7,
+                    28,
+                    11,
+                    16,
+                    tzinfo=timezone.utc,
+                ),
+            ),
+        ):
+            self.assertTrue(
+                opening.previous_opened_event_needs_full_retry(
+                    second_incremental,
+                    "2026-07-28T11:10:00+00:00",
+                )
+            )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_PARTIAL_RETRY_SECONDS": "900"},
+            ),
+            mock.patch.object(
+                opening,
+                "now_utc",
+                return_value=datetime(2026, 7, 28, 11, 16, tzinfo=timezone.utc),
+            ),
+        ):
+            self.assertTrue(
+                opening.previous_opened_event_needs_full_retry(
+                    previous,
+                    "2026-07-28T11:00:00+00:00",
+                )
+            )
+
+    def test_opening_cache_identity_separates_quote_and_pool(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        base = {
+            "chain": "bsc",
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+            "opening_block": 100,
+            "start_time_utc": "2026-07-27T10:00:00+00:00",
+            "pool_id": "0x" + "3" * 64,
+        }
+        different_quote = {
+            **base,
+            "quote": {"address": "0x" + "4" * 40},
+        }
+        different_pool = {
+            **base,
+            "pool_id": "0x" + "5" * 64,
+        }
+
+        self.assertNotEqual(
+            opening.opening_event_identity(base),
+            opening.opening_event_identity(different_quote),
+        )
+        self.assertNotEqual(
+            opening.opening_event_identity(base),
+            opening.opening_event_identity(different_pool),
+        )
+
+    def test_rpc_deadline_stops_multi_endpoint_retry(self) -> None:
+        from sniper_engine import rpc
+
+        deadline = time.monotonic() + 0.03
+
+        def slow_failure(url, method, params, timeout):
+            time.sleep(timeout)
+            raise RuntimeError("rpc transport error")
+
+        started = time.monotonic()
+        with (
+            mock.patch.object(rpc, "rpc_urls", return_value=["first", "second"]),
+            mock.patch.object(rpc, "rpc_call_url", side_effect=slow_failure),
+            self.assertRaises(rpc.RpcDeadlineExceeded),
+        ):
+            rpc.rpc_call(
+                "bsc",
+                "eth_blockNumber",
+                [],
+                timeout=1,
+                deadline=deadline,
+            )
+
+        self.assertLess(time.monotonic() - started, 0.2)
 
     def test_opening_log_coverage_fails_closed(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -1248,7 +2771,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         calls: list[tuple[int, int, int]] = []
 
-        def fetch(chain, query, chunk_blocks, max_logs):
+        def fetch(chain, query, chunk_blocks, max_logs, timeout, enforce_deadline):
             calls.append(
                 (
                     int(query["fromBlock"], 16),
@@ -1273,7 +2796,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "ALPHA_OPENING_MAX_LOGS": "1000",
                 },
             ),
-            mock.patch.object(opening, "get_logs", side_effect=fetch),
+            mock.patch.object(opening, "get_logs_quick", side_effect=fetch),
         ):
             rows = opening.opening_transfer_logs(event, 1000)
 
@@ -1285,7 +2808,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         calls: list[tuple[int, int, int]] = []
 
-        def fetch(chain, query, chunk_blocks, max_logs):
+        def fetch(chain, query, chunk_blocks, max_logs, timeout, enforce_deadline):
             start = int(query["fromBlock"], 16)
             end = int(query["toBlock"], 16)
             calls.append((start, end, max_logs))
@@ -1312,7 +2835,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "ALPHA_OPENING_MAX_LOGS": "3",
                 },
             ),
-            mock.patch.object(opening, "get_logs", side_effect=fetch),
+            mock.patch.object(opening, "get_logs_quick", side_effect=fetch),
         ):
             with self.assertRaisesRegex(RuntimeError, "coverage truncated"):
                 opening.opening_transfer_logs(event, 200)

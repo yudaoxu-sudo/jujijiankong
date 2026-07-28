@@ -264,6 +264,8 @@ def output_row_coverage_issue(
             return "project operator attribution contract error"
     elif output_name == "opening":
         if row.get("status") == "opened":
+            if row.get("refresh_status") == "partial_opening_deadline":
+                return "opening evidence deadline exceeded before a usable snapshot"
             traces = [
                 item.get("buyer_trace") or {}
                 for item in row.get("rows", [])
@@ -316,6 +318,8 @@ def output_row_coverage_warning(
             for trace in traces
         ):
             return "opening buyer trace coverage incomplete"
+        if row.get("refresh_status") == "partial_trace_deadline":
+            return "opening buyer trace deadline reached"
         return ""
     if output_name != "project":
         return ""

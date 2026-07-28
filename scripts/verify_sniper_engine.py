@@ -2025,6 +2025,51 @@ assert readback_gate['can_follow'] is False, readback_gate
         server_run_msg = str(exc)
     checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
 
+    opening_sprint_ok = False
+    opening_sprint_msg = ""
+    try:
+        opening_sprint_text = (
+            ROOT / "scripts" / "alpha_opening_sprint.sh"
+        ).read_text(encoding="utf-8")
+        opening_watch_text = (
+            ROOT / "scripts" / "alpha_opening_block_watch.py"
+        ).read_text(encoding="utf-8")
+        opening_sprint_ok = all(
+            marker in opening_sprint_text
+            for marker in (
+                "ALPHA_OPENING_SPRINT_CLASSIFY_OUT_TXS",
+                "ALPHA_OPENING_SPRINT_NEXT_HOP_RECIPIENTS",
+                "ALPHA_OPENING_SPRINT_NEXT_HOP_CLASSIFY_TXS",
+                "ALPHA_OPENING_SPRINT_TRACE_DEADLINE_SECONDS",
+                "ALPHA_OPENING_SPRINT_REUSE_OPENED_CACHE",
+                "ALPHA_OPENING_SPRINT_TOTAL_SECONDS",
+                "ALPHA_OPENING_SPRINT_POST_SECONDS",
+                'timeout "${hard_timeout}s"',
+                "return 75",
+            )
+        ) and all(
+            marker in opening_watch_text
+            for marker in (
+                "next_hop_watch_recipients",
+                "confirmed_sell_evidence",
+                "last_full_trace_attempt_at",
+            )
+        )
+        opening_sprint_msg = (
+            "deep fan-out caps, RPC deadline, total sprint budget, incremental recipient cursors, sell evidence identity, and bounded full retry present"
+            if opening_sprint_ok
+            else "missing bounded opening sprint guard"
+        )
+    except Exception as exc:
+        opening_sprint_msg = str(exc)
+    checks.append(
+        (
+            "opening sprint has bounded deep trace",
+            opening_sprint_ok,
+            opening_sprint_msg,
+        )
+    )
+
     cron_watchdog_ok = False
     cron_watchdog_msg = ""
     try:
@@ -6971,7 +7016,10 @@ assert contract_blocked['gate'] == 'blocked_static_contract_risk', contract_bloc
 assert module.alert_amount_bucket(module.Decimal('19999.99'), module.Decimal('10000')) == '10000'
 new_trace_key = 'trace|TEST|0x' + ('1' * 40) + '|partially_moved|eoa_or_unlabeled|10000'
 old_trace_key = 'trace|TEST|0x' + ('1' * 40) + '|partially_moved|eoa_or_unlabeled|0'
-assert module.alert_key_seen(new_trace_key, {old_trace_key}), new_trace_key
+legacy_trace_key = 'trace|TEST|0x' + ('1' * 40) + '|partially_moved|eoa_or_unlabeled'
+assert module.alert_key_seen(old_trace_key, {legacy_trace_key}), old_trace_key
+assert not module.alert_key_seen(new_trace_key, {legacy_trace_key}), new_trace_key
+assert not module.alert_key_seen(new_trace_key, {old_trace_key}), new_trace_key
 
 def slot(value):
     return hex(int(value) % (2 ** 256))[2:].rjust(64, '0')

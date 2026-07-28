@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, getcontext
@@ -17,7 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label, global_address_labels
-from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call, rpc_urls
+from sniper_engine.rpc import (
+    RpcDeadlineExceeded,
+    get_transaction_receipt,
+    hex_to_int,
+    rpc_call,
+    rpc_urls,
+)
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 from scripts.build_pancake_v4_roundtrip_fixture import build_fixture
 
@@ -74,6 +82,7 @@ CONTRACT_SAFETY_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 BALANCE_SLOT_CACHE: dict[tuple[str, str], int | None] = {}
 ALLOWANCE_SLOT_CACHE: dict[tuple[str, str, str], int | None] = {}
 INFINITY_ROUNDTRIP_CACHE: dict[tuple[str, str, str, int, int], dict[str, str]] = {}
+TRACE_DEADLINE_AT: float | None = None
 POOL_FLOW_ROLES = {"pool", "pool_manager", "v4_pool_manager", "pool_hook", "hook_operator", "market_maker", "mm", "liquidity"}
 PROTOCOL_COUNTERPARTY_CLASSES = {
     "dex_router",
@@ -100,12 +109,46 @@ BOOL_RISK_SELECTORS = {
 }
 
 
+class OpeningTraceDeadlineExceeded(RuntimeError):
+    pass
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def now_iso() -> str:
     return now_utc().isoformat()
+
+
+def configure_trace_deadline() -> None:
+    global TRACE_DEADLINE_AT
+    raw = os.environ.get("ALPHA_OPENING_TRACE_DEADLINE_SECONDS", "").strip()
+    try:
+        seconds = int(raw) if raw else 0
+    except ValueError:
+        seconds = 0
+    TRACE_DEADLINE_AT = time.monotonic() + seconds if seconds > 0 else None
+
+
+def trace_seconds_remaining() -> float | None:
+    if TRACE_DEADLINE_AT is None:
+        return None
+    return TRACE_DEADLINE_AT - time.monotonic()
+
+
+def ensure_trace_deadline() -> None:
+    remaining = trace_seconds_remaining()
+    if remaining is not None and remaining <= 0:
+        raise OpeningTraceDeadlineExceeded("opening buyer trace deadline exceeded")
+
+
+def bounded_trace_timeout(timeout: int) -> int:
+    ensure_trace_deadline()
+    remaining = trace_seconds_remaining()
+    if remaining is None:
+        return timeout
+    return max(1, min(timeout, int(remaining) + 1))
 
 
 def event_int_setting(
@@ -205,8 +248,23 @@ def decimal_from(value: Any, default: Decimal = Decimal(0)) -> Decimal:
         return default
 
 
+def int_from(value: Any, default: int = 0) -> int:
+    if value in ("", None):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def token_call(chain: str, address: str, selector: str) -> str:
-    return rpc_call(chain, "eth_call", [{"to": address, "data": selector}, "latest"]) or "0x"
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    return quick_rpc_call(
+        chain,
+        "eth_call",
+        [{"to": address, "data": selector}, "latest"],
+        timeout,
+    ) or "0x"
 
 
 def decode_abi_string(data: str) -> str:
@@ -228,10 +286,14 @@ def token_meta(chain: str, address: str, fallback_symbol: str = "") -> dict[str,
     decimals = 18
     try:
         symbol = decode_abi_string(token_call(chain, address, "0x95d89b41")) or symbol
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         pass
     try:
         name = decode_abi_string(token_call(chain, address, "0x06fdde03"))
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         pass
     try:
@@ -239,17 +301,26 @@ def token_meta(chain: str, address: str, fallback_symbol: str = "") -> dict[str,
         parsed = int(raw or "0x0", 16)
         if 0 <= parsed <= 36:
             decimals = parsed
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         pass
     return {"address": norm(address), "symbol": symbol.upper(), "name": name, "decimals": decimals}
 
 
 def latest_block_number(chain: str) -> int:
-    return int(rpc_call(chain, "eth_blockNumber", []), 16)
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    return int(quick_rpc_call(chain, "eth_blockNumber", [], timeout), 16)
 
 
 def block_timestamp(chain: str, block_number: int) -> int:
-    block = get_block_by_number(chain, block_number, full_transactions=False)
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    block = quick_rpc_call(
+        chain,
+        "eth_getBlockByNumber",
+        [hex(block_number), False],
+        timeout,
+    )
     return int(block.get("timestamp") or "0x0", 16)
 
 
@@ -287,7 +358,14 @@ def get_logs(chain: str, query: dict[str, Any], chunk_blocks: int, max_logs: int
     return rows
 
 
-def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_logs: int, timeout: int) -> list[dict[str, Any]]:
+def get_logs_quick(
+    chain: str,
+    query: dict[str, Any],
+    chunk_blocks: int,
+    max_logs: int,
+    timeout: int,
+    enforce_trace_deadline: bool = False,
+) -> list[dict[str, Any]]:
     from_block = int(query["fromBlock"], 16)
     to_block = int(query["toBlock"], 16)
     rows: list[dict[str, Any]] = []
@@ -297,7 +375,20 @@ def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_log
         chunk_query = dict(query)
         chunk_query["fromBlock"] = hex(start)
         chunk_query["toBlock"] = hex(end)
-        rows.extend(quick_rpc_call(chain, "eth_getLogs", [chunk_query], timeout) or [])
+        request_timeout = (
+            bounded_trace_timeout(timeout)
+            if enforce_trace_deadline
+            else timeout
+        )
+        rows.extend(
+            quick_rpc_call(
+                chain,
+                "eth_getLogs",
+                [chunk_query],
+                request_timeout,
+            )
+            or []
+        )
         start = end + 1
     if len(rows) > max_logs or start <= to_block:
         raise RuntimeError(
@@ -308,7 +399,18 @@ def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_log
 
 
 def quick_rpc_call(chain: str, method: str, params: list[Any], timeout: int) -> Any:
-    return rpc_call(chain, method, params, timeout=timeout)
+    try:
+        return rpc_call(
+            chain,
+            method,
+            params,
+            timeout=bounded_trace_timeout(timeout),
+            deadline=TRACE_DEADLINE_AT,
+        )
+    except RpcDeadlineExceeded:
+        raise OpeningTraceDeadlineExceeded(
+            "opening trace RPC deadline exceeded"
+        ) from None
 
 
 def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
@@ -643,6 +745,7 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
     rows: list[dict[str, Any]] = []
     seen = set()
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_LOG_CHUNK_BLOCKS", "200"))
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     for range_index, (from_block, to_block) in enumerate(ranges):
         remaining = max_logs - len(rows)
         if remaining <= 0:
@@ -656,7 +759,14 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
             "toBlock": hex(to_block),
             "topics": [TRANSFER_TOPIC],
         }
-        for row in get_logs(event["chain"], query, chunk_blocks, remaining):
+        for row in get_logs_quick(
+            event["chain"],
+            query,
+            chunk_blocks,
+            remaining,
+            timeout,
+            True,
+        ):
             key = (row.get("transactionHash"), row.get("logIndex"))
             if key in seen:
                 continue
@@ -679,12 +789,45 @@ def receipt_transfers_from_receipt(receipt: dict[str, Any], token: dict[str, Any
     watched = {norm(token["address"]): token, norm(quote["address"]): quote}
     rows = []
     for log in receipt.get("logs", []):
+        if not isinstance(log, dict):
+            raise ValueError("malformed receipt log")
         meta = watched.get(norm(log.get("address")))
         topics = log.get("topics", [])
-        if not meta or len(topics) < 3 or norm(topics[0]) != TRANSFER_TOPIC:
+        if not meta:
             continue
+        if not isinstance(topics, list):
+            raise ValueError("malformed receipt topics")
+        if not topics or norm(topics[0]) != TRANSFER_TOPIC:
+            continue
+        if len(topics) < 3:
+            raise ValueError("malformed receipt transfer topics")
+        raw_log_index = log.get("logIndex")
+        if raw_log_index in (None, ""):
+            raise ValueError("receipt transfer missing log index")
+        int(str(raw_log_index), 16)
         rows.append(transfer_log(log, int(meta["decimals"])))
     return rows
+
+
+def receipt_execution_status(
+    receipt: Any,
+) -> tuple[bool, int | None]:
+    if not isinstance(receipt, dict):
+        return False, None
+    raw_status = receipt.get("status")
+    try:
+        status = (
+            raw_status
+            if isinstance(raw_status, int)
+            else hex_to_int(raw_status)
+        )
+    except (TypeError, ValueError):
+        return False, None
+    if status not in {0, 1}:
+        return False, None
+    if status == 1 and not isinstance(receipt.get("logs"), list):
+        return False, None
+    return True, int(status)
 
 
 def has_contract_code(chain: str, address: str) -> bool:
@@ -697,6 +840,8 @@ def has_contract_code(chain: str, address: str) -> bool:
         try:
             code = quick_rpc_call(chain, "eth_getCode", [address, "latest"], timeout) or "0x"
             CODE_CACHE[key] = code not in ("0x", "0x0", "")
+        except OpeningTraceDeadlineExceeded:
+            raise
         except Exception:
             CODE_CACHE[key] = False
     return CODE_CACHE[key]
@@ -709,6 +854,8 @@ def contract_code(chain: str, address: str) -> str:
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     try:
         return quick_rpc_call(chain, "eth_getCode", [address, "latest"], timeout) or "0x"
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return "0x"
 
@@ -723,6 +870,8 @@ def optional_eth_call(chain: str, address: str, selector: str) -> str:
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     try:
         return quick_rpc_call(chain, "eth_call", [{"to": address, "data": selector}, "latest"], timeout) or "0x"
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return "0x"
 
@@ -769,6 +918,8 @@ def find_balance_slot(chain: str, token: dict[str, Any], holder: str) -> int | N
         key = mapping_storage_key(chain, holder, slot)
         try:
             current = int(storage_at(chain, token["address"], key), 16)
+        except OpeningTraceDeadlineExceeded:
+            raise
         except Exception:
             continue
         if current == expected:
@@ -818,6 +969,8 @@ def router_sell_state_override(
 def read_uint_with_override(chain: str, to_address: str, data: str, override: dict[str, Any], timeout: int) -> int | None:
     try:
         raw = quick_rpc_call(chain, "eth_call", [{"to": to_address, "data": data}, "latest", override], timeout)
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return None
     try:
@@ -898,6 +1051,8 @@ def infinity_roundtrip_override_readback_ok(
             ],
             timeout,
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return False, "permit2_allowance_readback_failed"
     allowance = decode_permit2_allowance(raw or "0x")
@@ -938,6 +1093,8 @@ def execute_infinity_roundtrip_call(event: dict[str, Any], holder: str, override
             timeout,
         )
         return True, ""
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception as exc:
         return False, str(exc)[:120]
 
@@ -993,6 +1150,8 @@ def simulate_infinity_router_roundtrip_safety(event: dict[str, Any], amount: Dec
     timeout = int(os.environ.get("ALPHA_OPENING_INFINITY_ROUNDTRIP_TIMEOUT", "12"))
     try:
         buy_output_raw = quote_infinity_buy_output(event, key, buy_amount_raw, timeout)
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception as exc:
         return {"status": "infinity_roundtrip_quote_failed", "detail": str(exc)[:120]}
     if buy_output_raw <= 0:
@@ -1079,6 +1238,8 @@ def simulate_router_sell_safety(event: dict[str, Any], holder: str, amount: Deci
         return {"status": "unverified", "detail": "router_probe_amount_too_small"}
     try:
         balance_slot = find_balance_slot(event["chain"], token, holder)
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception as exc:
         return {"status": "unverified", "detail": f"balance_slot_error:{str(exc)[:80]}"}
     if balance_slot is None:
@@ -1119,6 +1280,8 @@ def simulate_router_sell_safety(event: dict[str, Any], holder: str, amount: Deci
                     [{"from": norm(holder), "to": router, "data": data}, "latest", override],
                     timeout,
                 )
+            except OpeningTraceDeadlineExceeded:
+                raise
             except Exception as exc:
                 if len(errors) < 3:
                     errors.append(f"fee={fee},allow={allowance_slot}:{str(exc)[:70]}")
@@ -1436,29 +1599,324 @@ def prefixed_next_hop_class(class_name: str) -> str:
     return f"next_hop_{class_name}" if class_name else "next_hop_unknown"
 
 
-def classify_recipient_next_hop_tx(event: dict[str, Any], recipient: str, tx_hash: str, outgoing_logs: list[dict[str, Any]]) -> dict[str, Any]:
-    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
-    try:
-        receipt = quick_rpc_call(event["chain"], "eth_getTransactionReceipt", [tx_hash], timeout)
-        transfers = (
-            receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
-            if hex_to_int((receipt or {}).get("status")) == 1
-            else []
+def receipt_confirmed_sell_evidence(
+    transfers: list[dict[str, Any]],
+    event: dict[str, Any],
+    recipient: str,
+    tx_hash: str,
+    route: str,
+) -> list[dict[str, Any]]:
+    quote_address = norm(event["quote"]["address"])
+    recipient = norm(recipient)
+    rows: list[dict[str, Any]] = []
+    for transfer in transfers:
+        amount = decimal_from(transfer.get("amount"))
+        if (
+            norm(transfer.get("token")) != quote_address
+            or norm(transfer.get("to")) != recipient
+            or amount <= 0
+        ):
+            continue
+        canonical_tx = str(transfer.get("tx") or tx_hash or "").lower()
+        log_index = int_from(transfer.get("log_index"))
+        rows.append(
+            {
+                "id": f"{canonical_tx}:{log_index}",
+                "tx": canonical_tx,
+                "log_index": log_index,
+                "quote_received": decimal_str(amount),
+                "route": route,
+                "recipient": recipient,
+            }
         )
-    except Exception:
-        transfers = []
+    return rows
+
+
+def merge_confirmed_sell_evidence(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for raw in group or []:
+            if not isinstance(raw, dict):
+                continue
+            tx_hash = str(raw.get("tx") or "").lower()
+            log_index = int_from(raw.get("log_index"))
+            evidence_id = f"{tx_hash}:{log_index}"
+            amount = decimal_from(raw.get("quote_received"))
+            if not tx_hash or not evidence_id or amount <= 0:
+                continue
+            candidate = {
+                "id": evidence_id,
+                "tx": tx_hash,
+                "log_index": log_index,
+                "quote_received": decimal_str(amount),
+                "route": str(raw.get("route") or ""),
+                "recipient": norm(raw.get("recipient")),
+            }
+            previous = merged.get(evidence_id)
+            if previous is None or amount > decimal_from(
+                previous.get("quote_received")
+            ):
+                merged[evidence_id] = candidate
+    return sorted(
+        merged.values(),
+        key=lambda row: (
+            str(row.get("tx") or ""),
+            int_from(row.get("log_index")),
+            str(row.get("id") or ""),
+        ),
+    )
+
+
+def confirmed_sell_evidence_summary(
+    rows: list[dict[str, Any]],
+) -> dict[str, Decimal | int]:
+    evidence = merge_confirmed_sell_evidence(rows)
     quote_received = sum(
+        (decimal_from(row.get("quote_received")) for row in evidence),
+        Decimal(0),
+    )
+    direct_quote_received = sum(
         (
-            row["amount"]
-            for row in transfers
-            if norm(row.get("token")) == norm(event["quote"]["address"]) and norm(row.get("to")) == norm(recipient)
+            decimal_from(row.get("quote_received"))
+            for row in evidence
+            if row.get("route") == "direct"
         ),
         Decimal(0),
     )
+    next_hop_quote_received = sum(
+        (
+            decimal_from(row.get("quote_received"))
+            for row in evidence
+            if row.get("route") == "next_hop"
+        ),
+        Decimal(0),
+    )
+    confirmed_txs = {
+        str(row.get("tx") or row.get("id") or "")
+        for row in evidence
+    }
+    return {
+        "quote_received": quote_received,
+        "direct_quote_received": direct_quote_received,
+        "next_hop_quote_received": next_hop_quote_received,
+        "confirmed_sell_count": len(confirmed_txs),
+    }
+
+
+def trace_sell_lower_bound(
+    previous: dict[str, Any] | None,
+    refreshed: dict[str, Any],
+) -> dict[str, Any]:
+    if not previous:
+        return refreshed
+    result = copy.deepcopy(refreshed)
+    previous_evidence = merge_confirmed_sell_evidence(
+        previous.get("confirmed_sell_evidence") or []
+    )
+    refreshed_evidence = merge_confirmed_sell_evidence(
+        refreshed.get("confirmed_sell_evidence") or []
+    )
+    merged_evidence = merge_confirmed_sell_evidence(
+        previous_evidence,
+        refreshed_evidence,
+    )
+    merged_summary = confirmed_sell_evidence_summary(merged_evidence)
+
+    def merged_amount(
+        total_key: str,
+        evidence_key: str,
+    ) -> tuple[Decimal, Decimal]:
+        total = max(
+            decimal_from(previous.get(total_key)),
+            decimal_from(refreshed.get(total_key)),
+            decimal_from(merged_summary[evidence_key]),
+        )
+        legacy = max(
+            total - decimal_from(merged_summary[evidence_key]),
+            Decimal(0),
+        )
+        return total, legacy
+
+    confirmed_total, legacy_confirmed = merged_amount(
+        "confirmed_sell_quote_received",
+        "quote_received",
+    )
+    direct_total, legacy_direct = merged_amount(
+        "direct_sell_quote_received",
+        "direct_quote_received",
+    )
+    next_hop_total, legacy_next_hop = merged_amount(
+        "next_hop_sell_quote_received",
+        "next_hop_quote_received",
+    )
+    confirmed_count = max(
+        int_from(previous.get("confirmed_sell_count")),
+        int_from(refreshed.get("confirmed_sell_count")),
+        int(merged_summary["confirmed_sell_count"]),
+    )
+    legacy_count = max(
+        confirmed_count - int(merged_summary["confirmed_sell_count"]),
+        0,
+    )
+    result.update(
+        {
+            "confirmed_sell_evidence": merged_evidence,
+            "confirmed_sell_quote_received": decimal_str(
+                confirmed_total
+            ),
+            "direct_sell_quote_received": decimal_str(direct_total),
+            "next_hop_sell_quote_received": decimal_str(next_hop_total),
+            "confirmed_sell_count": str(confirmed_count),
+            "legacy_confirmed_sell_quote_received": decimal_str(
+                legacy_confirmed
+            ),
+            "legacy_direct_sell_quote_received": decimal_str(
+                legacy_direct
+            ),
+            "legacy_next_hop_sell_quote_received": decimal_str(
+                legacy_next_hop
+            ),
+            "legacy_confirmed_sell_count": str(legacy_count),
+            "same_receipt_confirmed_sell": (
+                previous.get("same_receipt_confirmed_sell") is True
+                or refreshed.get("same_receipt_confirmed_sell") is True
+                or direct_total > 0
+            ),
+            "out_after_buy": decimal_str(
+                max(
+                    decimal_from(previous.get("out_after_buy")),
+                    decimal_from(refreshed.get("out_after_buy")),
+                )
+            ),
+            "out_transfer_count": str(
+                max(
+                    int_from(previous.get("out_transfer_count")),
+                    int_from(refreshed.get("out_transfer_count")),
+                )
+            ),
+            "next_hop_count": str(
+                max(
+                    int_from(previous.get("next_hop_count")),
+                    int_from(refreshed.get("next_hop_count")),
+                )
+            ),
+        }
+    )
+    classes = {
+        value
+        for trace in (previous, refreshed)
+        for value in str(
+            trace.get("out_destination_classes") or ""
+        ).split(",")
+        if value
+    }
+    result["out_destination_classes"] = ",".join(sorted(classes))
+
+    watches: dict[str, dict[str, Any]] = {}
+    refreshed_watch_addresses: set[str] = set()
+    for trace, is_refreshed in (
+        (previous, False),
+        (refreshed, True),
+    ):
+        for raw_watch in trace.get("next_hop_watch_recipients") or []:
+            if not isinstance(raw_watch, dict):
+                continue
+            address = norm(raw_watch.get("address"))
+            if not is_address(address):
+                continue
+            if is_refreshed:
+                refreshed_watch_addresses.add(address)
+            as_of_block = int_from(raw_watch.get("as_of_block"))
+            existing = watches.get(address)
+            if existing is None or as_of_block > int_from(
+                existing.get("as_of_block")
+            ):
+                watches[address] = {
+                    "address": address,
+                    "as_of_block": as_of_block,
+                }
+    result["next_hop_watch_recipients"] = list(watches.values())
+    previous_watch_addresses = {
+        norm(row.get("address"))
+        for row in previous.get("next_hop_watch_recipients") or []
+        if isinstance(row, dict) and is_address(norm(row.get("address")))
+    }
+    coverage_complete = (
+        refreshed.get("coverage_complete") is True
+        and legacy_confirmed == 0
+        and legacy_direct == 0
+        and legacy_next_hop == 0
+        and legacy_count == 0
+        and previous_watch_addresses.issubset(
+            refreshed_watch_addresses
+        )
+    )
+    result["coverage_complete"] = coverage_complete
+    result["coverage_status"] = (
+        "complete" if coverage_complete else "partial"
+    )
+    if not coverage_complete:
+        result["status"] = (
+            "confirmed_sell_partial_coverage"
+            if confirmed_total > 0
+            else "unknown_incomplete_coverage"
+        )
+        result["confirmed_sell_status"] = (
+            "confirmed_partial_coverage"
+            if confirmed_total > 0
+            else "unknown_incomplete_coverage"
+        )
+    return result
+
+
+def classify_recipient_next_hop_tx(event: dict[str, Any], recipient: str, tx_hash: str, outgoing_logs: list[dict[str, Any]]) -> dict[str, Any]:
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    receipt_coverage_complete = False
+    try:
+        receipt = quick_rpc_call(
+            event["chain"],
+            "eth_getTransactionReceipt",
+            [tx_hash],
+            bounded_trace_timeout(timeout),
+        )
+        receipt_coverage_complete, receipt_status = (
+            receipt_execution_status(receipt)
+        )
+        transfers = (
+            receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
+            if receipt_coverage_complete and receipt_status == 1
+            else []
+        )
+    except OpeningTraceDeadlineExceeded:
+        raise
+    except Exception:
+        receipt_coverage_complete = False
+        transfers = []
+    confirmed_sell_evidence = receipt_confirmed_sell_evidence(
+        transfers,
+        event,
+        recipient,
+        tx_hash,
+        "next_hop",
+    )
+    evidence_summary = confirmed_sell_evidence_summary(
+        confirmed_sell_evidence
+    )
+    quote_received = decimal_from(evidence_summary["quote_received"])
     classes = {prefixed_next_hop_class(destination_class(event, row.get("to", ""))) for row in outgoing_logs}
     if quote_received > 0:
         classes.add("next_hop_dex_sell_to_quote")
-    return {"classes": classes, "quote_received": quote_received, "confirmed_sell_count": 1 if quote_received > 0 else 0}
+    return {
+        "classes": classes,
+        "quote_received": quote_received,
+        "confirmed_sell_count": int(
+            evidence_summary["confirmed_sell_count"]
+        ),
+        "confirmed_sell_evidence": confirmed_sell_evidence,
+        "receipt_coverage_complete": receipt_coverage_complete,
+    }
 
 
 def select_transfer_tx_items(
@@ -1504,6 +1962,7 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
             "classes": set(),
             "quote_received": Decimal(0),
             "confirmed_sell_count": 0,
+            "confirmed_sell_evidence": [],
             "recipient_count": 0,
             "coverage_complete": True,
         }
@@ -1526,12 +1985,16 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
                 int(os.environ.get("ALPHA_OPENING_NEXT_HOP_MAX_LOGS", "1200")),
             ),
             int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
+            True,
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return {
             "classes": set(),
             "quote_received": Decimal(0),
             "confirmed_sell_count": 0,
+            "confirmed_sell_evidence": [],
             "recipient_count": 0,
             "coverage_complete": False,
         }
@@ -1540,25 +2003,40 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
     for row in parsed_logs:
         by_tx.setdefault(row["tx"], []).append(row)
     classes: set[str] = set()
-    quote_received = Decimal(0)
-    confirmed_sell_count = 0
-    max_txs = event_int_setting(
+    confirmed_sell_evidence: list[dict[str, Any]] = []
+    max_txs = capped_event_int_setting(
         event,
         "opening_next_hop_classify_txs",
         "ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS",
         2,
     )
     selected_txs = select_transfer_tx_items(by_tx, max_txs)
-    coverage_complete = len(selected_txs) == len(by_tx)
+    coverage_complete = (
+        trace_from <= max(0, int(from_block or 0))
+        and len(selected_txs) == len(by_tx)
+    )
     for tx_hash, tx_logs in selected_txs:
+        ensure_trace_deadline()
         classified = classify_recipient_next_hop_tx(event, recipient, tx_hash, tx_logs)
         classes.update(classified["classes"])
-        quote_received += classified["quote_received"]
-        confirmed_sell_count += int(classified["confirmed_sell_count"])
+        coverage_complete = (
+            coverage_complete
+            and classified.get("receipt_coverage_complete") is True
+        )
+        confirmed_sell_evidence = merge_confirmed_sell_evidence(
+            confirmed_sell_evidence,
+            classified.get("confirmed_sell_evidence") or [],
+        )
+    evidence_summary = confirmed_sell_evidence_summary(
+        confirmed_sell_evidence
+    )
     return {
         "classes": classes,
-        "quote_received": quote_received,
-        "confirmed_sell_count": confirmed_sell_count,
+        "quote_received": decimal_from(evidence_summary["quote_received"]),
+        "confirmed_sell_count": int(
+            evidence_summary["confirmed_sell_count"]
+        ),
+        "confirmed_sell_evidence": confirmed_sell_evidence,
         "recipient_count": 1 if parsed_logs else 0,
         "coverage_complete": coverage_complete,
     }
@@ -1566,23 +2044,36 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
 
 def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoing_logs: list[dict[str, Any]], latest: int) -> dict[str, Any]:
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    receipt_coverage_complete = False
     try:
-        receipt = quick_rpc_call(event["chain"], "eth_getTransactionReceipt", [tx_hash], timeout)
+        receipt = quick_rpc_call(
+            event["chain"],
+            "eth_getTransactionReceipt",
+            [tx_hash],
+            bounded_trace_timeout(timeout),
+        )
+        receipt_coverage_complete, receipt_status = (
+            receipt_execution_status(receipt)
+        )
         transfers = (
-            receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
-            if hex_to_int((receipt or {}).get("status")) == 1
+            receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
+            if receipt_coverage_complete and receipt_status == 1
             else []
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
+        receipt_coverage_complete = False
         transfers = []
-    quote_received = sum(
-        (
-            row["amount"]
-            for row in transfers
-            if norm(row.get("token")) == norm(event["quote"]["address"]) and norm(row.get("to")) == norm(buyer)
-        ),
-        Decimal(0),
+    direct_sell_evidence = receipt_confirmed_sell_evidence(
+        transfers,
+        event,
+        buyer,
+        tx_hash,
+        "direct",
     )
+    direct_summary = confirmed_sell_evidence_summary(direct_sell_evidence)
+    quote_received = decimal_from(direct_summary["quote_received"])
     classes = set()
     eoa_recipients: list[tuple[str, int]] = []
     for row in outgoing_logs:
@@ -1593,9 +2084,9 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
             eoa_recipients.append((to_addr, int(row.get("block") or 0)))
     if quote_received > 0:
         classes.add("dex_sell_to_quote")
-    next_hop_quote_received = Decimal(0)
-    next_hop_confirmed_sell_count = 0
+    next_hop_sell_evidence: list[dict[str, Any]] = []
     next_hop_recipient_count = 0
+    next_hop_watch_recipients: list[dict[str, Any]] = []
     seen_recipients = set()
     unique_recipients: list[tuple[str, int]] = []
     for recipient, block in eoa_recipients:
@@ -1603,7 +2094,7 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
             continue
         seen_recipients.add(recipient)
         unique_recipients.append((recipient, block))
-    max_recipients = event_int_setting(
+    max_recipients = capped_event_int_setting(
         event,
         "opening_next_hop_recipients",
         "ALPHA_OPENING_NEXT_HOP_RECIPIENTS",
@@ -1615,6 +2106,7 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     )
     for recipient, block in selected_recipients:
         try:
+            ensure_trace_deadline()
             next_hop = trace_next_hop_from_recipient(
                 event,
                 buyer,
@@ -1622,30 +2114,64 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
                 block,
                 latest,
             )
+        except OpeningTraceDeadlineExceeded:
+            raise
         except Exception:
             next_hop = {
                 "classes": set(),
                 "quote_received": Decimal(0),
                 "confirmed_sell_count": 0,
+                "confirmed_sell_evidence": [],
                 "recipient_count": 0,
                 "coverage_complete": False,
             }
         classes.update(next_hop["classes"])
-        next_hop_quote_received += next_hop["quote_received"]
-        next_hop_confirmed_sell_count += int(next_hop["confirmed_sell_count"])
+        next_hop_sell_evidence = merge_confirmed_sell_evidence(
+            next_hop_sell_evidence,
+            next_hop.get("confirmed_sell_evidence") or [],
+        )
         next_hop_recipient_count += int(next_hop["recipient_count"])
         next_hop_coverage_complete = (
             next_hop_coverage_complete
             and next_hop.get("coverage_complete") is True
         )
+        next_hop_watch_recipients.append(
+            {
+                "address": recipient,
+                "as_of_block": (
+                    latest
+                    if next_hop.get("coverage_complete") is True
+                    else max(0, block - 1)
+                ),
+            }
+        )
+    confirmed_sell_evidence = merge_confirmed_sell_evidence(
+        direct_sell_evidence,
+        next_hop_sell_evidence,
+    )
+    evidence_summary = confirmed_sell_evidence_summary(
+        confirmed_sell_evidence
+    )
     return {
         "classes": classes,
-        "quote_received": quote_received + next_hop_quote_received,
-        "direct_quote_received": quote_received,
-        "next_hop_quote_received": next_hop_quote_received,
-        "confirmed_sell_count": (1 if quote_received > 0 else 0) + next_hop_confirmed_sell_count,
+        "quote_received": decimal_from(evidence_summary["quote_received"]),
+        "direct_quote_received": decimal_from(
+            evidence_summary["direct_quote_received"]
+        ),
+        "next_hop_quote_received": decimal_from(
+            evidence_summary["next_hop_quote_received"]
+        ),
+        "confirmed_sell_count": int(
+            evidence_summary["confirmed_sell_count"]
+        ),
+        "confirmed_sell_evidence": confirmed_sell_evidence,
         "next_hop_count": next_hop_recipient_count,
         "next_hop_coverage_complete": next_hop_coverage_complete,
+        "receipt_coverage_complete": receipt_coverage_complete,
+        "classification_coverage_complete": (
+            receipt_coverage_complete and next_hop_coverage_complete
+        ),
+        "next_hop_watch_recipients": next_hop_watch_recipients,
     }
 
 
@@ -1662,6 +2188,28 @@ def trace_start_block(from_block: int, latest: int, recent_span: int, full_span:
     if force_full and full_span:
         return max(from_block, latest - full_span)
     return max(from_block, latest - recent_span)
+
+
+def merge_block_ranges(rows: list[dict[str, Any]]) -> list[dict[str, int]]:
+    normalized = sorted(
+        (
+            {
+                "from": int_from(row.get("from")),
+                "to": int_from(row.get("to")),
+            }
+            for row in rows
+            if isinstance(row, dict)
+            and int_from(row.get("to")) >= int_from(row.get("from"))
+        ),
+        key=lambda row: (row["from"], row["to"]),
+    )
+    merged: list[dict[str, int]] = []
+    for row in normalized:
+        if not merged or row["from"] > merged[-1]["to"] + 1:
+            merged.append(dict(row))
+            continue
+        merged[-1]["to"] = max(merged[-1]["to"], row["to"])
+    return merged
 
 
 def net_by_address(transfers: list[dict[str, Any]], token_addr: str, quote_addr: str) -> dict[str, dict[str, Decimal]]:
@@ -1742,11 +2290,14 @@ def internal_transfers(chain: str, tx_hash: str) -> list[dict[str, Any]]:
     if chain != "bsc" or not os.environ.get("NODEREAL_API_KEY"):
         return []
     try:
-        result = rpc_call(
+        result = quick_rpc_call(
             chain,
             "nr_getAssetTransfers",
             [{"category": ["internal"], "transactionHash": tx_hash, "order": "asc", "maxCount": "0x64"}],
+            int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception:
         return []
     return result.get("transfers", []) if isinstance(result, dict) and isinstance(result.get("transfers"), list) else []
@@ -1938,7 +2489,12 @@ def raw_token_amount(amount: Decimal, decimals: int) -> int:
 
 
 def token_balance(chain: str, token: dict[str, Any], address: str) -> Decimal:
-    raw = rpc_call(chain, "eth_call", [{"to": token["address"], "data": encode_balance_of(address)}, "latest"])
+    raw = quick_rpc_call(
+        chain,
+        "eth_call",
+        [{"to": token["address"], "data": encode_balance_of(address)}, "latest"],
+        int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
+    )
     return decimal_amount(int(raw or "0x0", 16), int(token["decimals"]))
 
 
@@ -1981,6 +2537,8 @@ def simulate_transfer_safety(event: dict[str, Any], holder: str, current: Decima
             [{"from": norm(holder), "to": token["address"], "data": encode_transfer(recipient, raw_amount)}, "latest"],
             timeout,
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception as exc:
         return {"status": "blocked", "detail": str(exc)[:180]}
     if parse_bool_return(result or "0x"):
@@ -2014,6 +2572,8 @@ def simulate_dex_quote_safety(event: dict[str, Any], amount: Decimal) -> dict[st
                 [{"to": PANCAKE_V3_QUOTER_V2, "data": data}, "latest"],
                 timeout,
             )
+        except OpeningTraceDeadlineExceeded:
+            raise
         except Exception as exc:
             errors.append(f"fee={fee}:{str(exc)[:60]}")
             continue
@@ -2053,6 +2613,8 @@ def simulate_infinity_cl_quote_safety(event: dict[str, Any], amount: Decimal) ->
             [{"to": PANCAKE_INFINITY_CL_QUOTER, "data": data}, "latest"],
             timeout,
         )
+    except OpeningTraceDeadlineExceeded:
+        raise
     except Exception as exc:
         return {"status": "infinity_cl_quote_failed", "detail": str(exc)[:120]}
     raw_out = decode_first_uint(result or "0x")
@@ -2068,77 +2630,244 @@ def simulate_infinity_cl_quote_safety(event: dict[str, Any], amount: Decimal) ->
     }
 
 
-def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int, bought: Decimal) -> dict[str, Any]:
+def trace_buyer(
+    event: dict[str, Any],
+    buyer: str,
+    from_block: int,
+    latest: int,
+    bought: Decimal,
+    previous_trace: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not buyer or bought <= 0:
         return {"status": "unknown"}
+    ensure_trace_deadline()
     current = token_balance(event["chain"], event["token"], buyer)
+    prior = copy.deepcopy(previous_trace or {})
+    try:
+        prior_as_of = int(prior.get("as_of_block") or 0)
+    except (TypeError, ValueError):
+        prior_as_of = 0
+    incremental = from_block <= prior_as_of <= latest
     trace_span = int(os.environ.get("ALPHA_OPENING_TRACE_MAX_BLOCKS", os.environ.get("ALPHA_OPENING_TRACE_RECENT_BLOCKS", "50000")))
     full_span = int(os.environ.get("ALPHA_OPENING_TRACE_FULL_EXITED_MAX_BLOCKS", "250000"))
     force_full = (
         os.environ.get("ALPHA_OPENING_TRACE_FULL_EXITED_BUYERS", "1") == "1"
         and current <= bought * Decimal("0.05")
     )
-    trace_from = trace_start_block(from_block, latest, trace_span, full_span, force_full)
-    coverage_complete = trace_from <= from_block
-    covered_block_ranges = (
-        [{"from": trace_from, "to": latest}]
-        if trace_from <= latest
-        else []
-    )
-    uncovered_block_ranges = (
-        [{"from": from_block, "to": trace_from - 1}]
-        if not coverage_complete and from_block < trace_from
-        else []
-    )
-    query = {
-        "address": event["token"]["address"],
-        "fromBlock": hex(trace_from),
-        "toBlock": hex(latest),
-        "topics": [TRANSFER_TOPIC, address_topic(buyer), None],
-    }
-    logs = get_logs_quick(
-        event["chain"],
-        query,
-        int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000")),
-        max(1200, int(os.environ.get("ALPHA_OPENING_TRACE_MAX_LOGS", "1200"))),
-        int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
-    )
+    if incremental:
+        trace_from = prior_as_of + 1
+        coverage_complete = prior.get("coverage_complete") is True
+        covered_block_ranges = copy.deepcopy(prior.get("covered_block_ranges") or [])
+        uncovered_block_ranges = copy.deepcopy(prior.get("uncovered_block_ranges") or [])
+    else:
+        trace_from = trace_start_block(
+            from_block,
+            latest,
+            trace_span,
+            full_span,
+            force_full,
+        )
+        coverage_complete = trace_from <= from_block
+        covered_block_ranges = []
+        uncovered_block_ranges = (
+            [{"from": from_block, "to": trace_from - 1}]
+            if not coverage_complete and from_block < trace_from
+            else []
+        )
+        prior = {}
+    if trace_from <= latest:
+        query = {
+            "address": event["token"]["address"],
+            "fromBlock": hex(trace_from),
+            "toBlock": hex(latest),
+            "topics": [TRANSFER_TOPIC, address_topic(buyer), None],
+        }
+        logs = get_logs_quick(
+            event["chain"],
+            query,
+            int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000")),
+            max(1200, int(os.environ.get("ALPHA_OPENING_TRACE_MAX_LOGS", "1200"))),
+            int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
+            True,
+        )
+        covered_block_ranges.append({"from": trace_from, "to": latest})
+    else:
+        logs = []
     parsed_logs = [transfer_log(row, int(event["token"]["decimals"])) for row in logs]
-    outgoing = sum((row["amount"] for row in parsed_logs), Decimal(0))
+    new_outgoing = sum((row["amount"] for row in parsed_logs), Decimal(0))
+    outgoing = decimal_from(prior.get("out_after_buy")) + new_outgoing
     by_tx: dict[str, list[dict[str, Any]]] = {}
     for row in parsed_logs:
         by_tx.setdefault(row["tx"], []).append(row)
-    classes: set[str] = set()
-    quote_received = Decimal(0)
-    confirmed_sell_count = 0
-    direct_quote_received = Decimal(0)
-    direct_confirmed_sell_count = 0
-    next_hop_quote_received = Decimal(0)
-    next_hop_count = 0
-    next_hop_coverage_complete = True
-    max_classify = event_int_setting(
+    classes: set[str] = {
+        value
+        for value in str(prior.get("out_destination_classes") or "").split(",")
+        if value
+    }
+    confirmed_sell_evidence = merge_confirmed_sell_evidence(
+        prior.get("confirmed_sell_evidence") or []
+    )
+    prior_evidence_summary = confirmed_sell_evidence_summary(
+        confirmed_sell_evidence
+    )
+    legacy_quote_received = (
+        decimal_from(prior.get("legacy_confirmed_sell_quote_received"))
+        if "legacy_confirmed_sell_quote_received" in prior
+        else max(
+            decimal_from(prior.get("confirmed_sell_quote_received"))
+            - decimal_from(prior_evidence_summary["quote_received"]),
+            Decimal(0),
+        )
+    )
+    legacy_direct_quote_received = (
+        decimal_from(prior.get("legacy_direct_sell_quote_received"))
+        if "legacy_direct_sell_quote_received" in prior
+        else max(
+            decimal_from(prior.get("direct_sell_quote_received"))
+            - decimal_from(prior_evidence_summary["direct_quote_received"]),
+            Decimal(0),
+        )
+    )
+    legacy_next_hop_quote_received = (
+        decimal_from(prior.get("legacy_next_hop_sell_quote_received"))
+        if "legacy_next_hop_sell_quote_received" in prior
+        else max(
+            decimal_from(prior.get("next_hop_sell_quote_received"))
+            - decimal_from(
+                prior_evidence_summary["next_hop_quote_received"]
+            ),
+            Decimal(0),
+        )
+    )
+    legacy_confirmed_sell_count = (
+        int_from(prior.get("legacy_confirmed_sell_count"))
+        if "legacy_confirmed_sell_count" in prior
+        else max(
+            int_from(prior.get("confirmed_sell_count"))
+            - int(prior_evidence_summary["confirmed_sell_count"]),
+            0,
+        )
+    )
+    next_hop_count = int_from(prior.get("next_hop_count"))
+    next_hop_coverage_complete = (
+        prior.get("next_hop_coverage_complete") is True
+        if incremental
+        else True
+    )
+    next_hop_watch_recipients: list[dict[str, Any]] = []
+    seen_watch_recipients: set[str] = set()
+    for raw_watch in prior.get("next_hop_watch_recipients") or []:
+        if not isinstance(raw_watch, dict):
+            continue
+        address = norm(raw_watch.get("address"))
+        if not is_address(address) or address in seen_watch_recipients:
+            continue
+        seen_watch_recipients.add(address)
+        next_hop_watch_recipients.append(
+            {
+                "address": address,
+                "as_of_block": int_from(raw_watch.get("as_of_block")),
+            }
+        )
+    max_watches = max(
+        1,
+        int_from(
+            os.environ.get("ALPHA_OPENING_NEXT_HOP_WATCH_RECIPIENTS"),
+            16,
+        ),
+    )
+    selected_watches = next_hop_watch_recipients[:max_watches]
+    next_hop_coverage_complete = (
+        next_hop_coverage_complete
+        and len(selected_watches) == len(next_hop_watch_recipients)
+    )
+    for watch in selected_watches:
+        watch_as_of = max(from_block, int_from(watch.get("as_of_block")))
+        if not incremental or watch_as_of >= latest:
+            watch["as_of_block"] = max(watch_as_of, latest)
+            continue
+        ensure_trace_deadline()
+        next_hop = trace_next_hop_from_recipient(
+            event,
+            buyer,
+            str(watch.get("address") or ""),
+            watch_as_of + 1,
+            latest,
+        )
+        classes.update(next_hop["classes"])
+        confirmed_sell_evidence = merge_confirmed_sell_evidence(
+            confirmed_sell_evidence,
+            next_hop.get("confirmed_sell_evidence") or [],
+        )
+        next_hop_count += int(next_hop["recipient_count"])
+        watch_coverage_complete = (
+            next_hop.get("coverage_complete") is True
+        )
+        next_hop_coverage_complete = (
+            next_hop_coverage_complete
+            and watch_coverage_complete
+        )
+        if watch_coverage_complete:
+            watch["as_of_block"] = latest
+    max_classify = capped_event_int_setting(
         event,
         "opening_classify_out_txs",
         "ALPHA_OPENING_CLASSIFY_OUT_TXS",
         3,
     )
     selected_txs = select_transfer_tx_items(by_tx, max_classify)
+    outgoing_tx_coverage_complete = len(selected_txs) == len(by_tx)
     for tx_hash, tx_logs in reversed(selected_txs):
+        ensure_trace_deadline()
         classified = classify_outgoing_tx(event, buyer, tx_hash, tx_logs, latest)
         classes.update(classified["classes"])
-        quote_received += classified["quote_received"]
-        direct_quote_received += classified["direct_quote_received"]
-        direct_confirmed_sell_count += (
-            1 if classified["direct_quote_received"] > 0 else 0
+        outgoing_tx_coverage_complete = (
+            outgoing_tx_coverage_complete
+            and classified.get("classification_coverage_complete") is True
         )
-        next_hop_quote_received += classified["next_hop_quote_received"]
-        confirmed_sell_count += int(classified["confirmed_sell_count"])
+        confirmed_sell_evidence = merge_confirmed_sell_evidence(
+            confirmed_sell_evidence,
+            classified.get("confirmed_sell_evidence") or [],
+        )
         next_hop_count += int(classified["next_hop_count"])
         next_hop_coverage_complete = (
             next_hop_coverage_complete
             and classified.get("next_hop_coverage_complete") is True
         )
-    coverage_complete = coverage_complete and next_hop_coverage_complete
+        for watch in classified.get("next_hop_watch_recipients") or []:
+            address = norm(watch.get("address"))
+            if not is_address(address) or address in seen_watch_recipients:
+                continue
+            seen_watch_recipients.add(address)
+            next_hop_watch_recipients.append(
+                {
+                    "address": address,
+                    "as_of_block": int_from(watch.get("as_of_block"), latest),
+                }
+            )
+    evidence_summary = confirmed_sell_evidence_summary(
+        confirmed_sell_evidence
+    )
+    quote_received = legacy_quote_received + decimal_from(
+        evidence_summary["quote_received"]
+    )
+    direct_quote_received = (
+        legacy_direct_quote_received
+        + decimal_from(evidence_summary["direct_quote_received"])
+    )
+    next_hop_quote_received = (
+        legacy_next_hop_quote_received
+        + decimal_from(evidence_summary["next_hop_quote_received"])
+    )
+    confirmed_sell_count = (
+        legacy_confirmed_sell_count
+        + int(evidence_summary["confirmed_sell_count"])
+    )
+    coverage_complete = (
+        coverage_complete
+        and outgoing_tx_coverage_complete
+        and next_hop_coverage_complete
+    )
     if current <= bought * Decimal("0.05"):
         status = "mostly_exited_or_transferred" if outgoing > 0 else "mostly_exited_untraced"
     elif outgoing > 0:
@@ -2146,33 +2875,39 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
     else:
         status = "held_or_accumulated"
     position_status = status
-    same_receipt_confirmed_sell = direct_quote_received > 0
+    same_receipt_confirmed_sell = (
+        prior.get("same_receipt_confirmed_sell") is True
+        or direct_quote_received > 0
+    )
     if not coverage_complete:
-        if same_receipt_confirmed_sell:
+        if quote_received > 0:
             status = "confirmed_sell_partial_coverage"
         else:
             status = "unknown_incomplete_coverage"
-        quote_received = direct_quote_received
-        confirmed_sell_count = direct_confirmed_sell_count
+    ensure_trace_deadline()
     transfer_safety = simulate_transfer_safety(event, buyer, current)
+    ensure_trace_deadline()
     quote_probe_amount = min(current if current > 0 else bought, bought)
     dex_quote_safety = simulate_dex_quote_safety(event, quote_probe_amount)
+    ensure_trace_deadline()
     if likely_infinity_event(event) and dex_quote_safety.get("status") != "dex_quote_verified":
         infinity_quote = simulate_infinity_cl_quote_safety(event, quote_probe_amount)
+        ensure_trace_deadline()
         if infinity_quote.get("status") in {"infinity_cl_quote_verified", "infinity_cl_quote_failed"}:
             dex_quote_safety = infinity_quote
     router_sell_safety = simulate_router_sell_safety(event, buyer, quote_probe_amount)
+    ensure_trace_deadline()
     return {
         "status": status,
         "position_status": position_status,
         "coverage_complete": coverage_complete,
         "coverage_status": "complete" if coverage_complete else "partial",
-        "covered_block_ranges": covered_block_ranges,
-        "uncovered_block_ranges": uncovered_block_ranges,
+        "covered_block_ranges": merge_block_ranges(covered_block_ranges),
+        "uncovered_block_ranges": merge_block_ranges(uncovered_block_ranges),
         "same_receipt_confirmed_sell": same_receipt_confirmed_sell,
         "confirmed_sell_status": (
             "confirmed_partial_coverage"
-            if same_receipt_confirmed_sell and not coverage_complete
+            if quote_received > 0 and not coverage_complete
             else "confirmed"
             if quote_received > 0
             else "unknown_incomplete_coverage"
@@ -2181,14 +2916,30 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         ),
         "current_balance": decimal_str(current),
         "out_after_buy": decimal_str(outgoing),
-        "out_transfer_count": str(len(logs)),
+        "out_transfer_count": str(
+            int_from(prior.get("out_transfer_count")) + len(logs)
+        ),
         "out_destination_classes": ",".join(sorted(classes)),
         "confirmed_sell_quote_received": decimal_str(quote_received),
         "direct_sell_quote_received": decimal_str(direct_quote_received),
         "next_hop_sell_quote_received": decimal_str(next_hop_quote_received),
         "confirmed_sell_count": str(confirmed_sell_count),
+        "legacy_confirmed_sell_quote_received": decimal_str(
+            legacy_quote_received
+        ),
+        "legacy_direct_sell_quote_received": decimal_str(
+            legacy_direct_quote_received
+        ),
+        "legacy_next_hop_sell_quote_received": decimal_str(
+            legacy_next_hop_quote_received
+        ),
+        "legacy_confirmed_sell_count": str(
+            legacy_confirmed_sell_count
+        ),
+        "confirmed_sell_evidence": confirmed_sell_evidence,
         "next_hop_count": str(next_hop_count),
         "next_hop_coverage_complete": next_hop_coverage_complete,
+        "next_hop_watch_recipients": next_hop_watch_recipients,
         "transfer_safety_status": transfer_safety.get("status", "unverified"),
         "transfer_safety_detail": transfer_safety.get("detail", ""),
         "dex_quote_status": dex_quote_safety.get("status", "unverified"),
@@ -2196,15 +2947,32 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         "router_sell_status": router_sell_safety.get("status", "unverified"),
         "router_sell_detail": router_sell_safety.get("detail", ""),
         "out_scan_from_block": str(trace_from),
+        "incremental_from_block": str(trace_from) if incremental else "",
+        "incremental_log_count": str(len(logs)),
         "as_of_block": str(latest),
         "as_of_time": now_iso(),
     }
 
 
 def summarize_tx(event: dict[str, Any], tx_hash: str) -> dict[str, Any]:
-    tx = rpc_call(event["chain"], "eth_getTransactionByHash", [tx_hash]) or {}
-    receipt = get_transaction_receipt(event["chain"], tx_hash)
-    transfers = receipt_token_transfers(event["chain"], tx_hash, event["token"], event["quote"])
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    tx = quick_rpc_call(
+        event["chain"],
+        "eth_getTransactionByHash",
+        [tx_hash],
+        timeout,
+    ) or {}
+    receipt = quick_rpc_call(
+        event["chain"],
+        "eth_getTransactionReceipt",
+        [tx_hash],
+        timeout,
+    ) or {}
+    transfers = receipt_transfers_from_receipt(
+        receipt,
+        event["token"],
+        event["quote"],
+    )
     nets = net_by_address(transfers, event["token"]["address"], event["quote"]["address"])
     buyer, token_bought, spent_quote = best_buyer(event, nets)
     price_source = "transfer"
@@ -2317,6 +3085,7 @@ def cohort_position_summary(rows: list[dict[str, Any]]) -> dict[str, Decimal | i
     current_quote_est = Decimal(0)
     out_token = Decimal(0)
     confirmed_sell_quote = Decimal(0)
+    confirmed_sell_evidence: list[dict[str, Any]] = []
     traced = 0
     current_known = 0
     exited = 0
@@ -2349,7 +3118,27 @@ def cohort_position_summary(rows: list[dict[str, Any]]) -> dict[str, Decimal | i
             out_token += min(max(outgoing, inferred_out), bought)
         else:
             out_token += min(outgoing, bought)
-        confirmed_sell_quote += decimal_from(trace.get("confirmed_sell_quote_received"))
+        trace_evidence = merge_confirmed_sell_evidence(
+            trace.get("confirmed_sell_evidence") or []
+        )
+        trace_evidence_summary = confirmed_sell_evidence_summary(
+            trace_evidence
+        )
+        confirmed_sell_quote += (
+            decimal_from(trace.get("legacy_confirmed_sell_quote_received"))
+            if "legacy_confirmed_sell_quote_received" in trace
+            else max(
+                decimal_from(trace.get("confirmed_sell_quote_received"))
+                - decimal_from(
+                    trace_evidence_summary["quote_received"]
+                ),
+                Decimal(0),
+            )
+        )
+        confirmed_sell_evidence = merge_confirmed_sell_evidence(
+            confirmed_sell_evidence,
+            trace_evidence,
+        )
         if current_value is not None:
             if current_value == 0 and outgoing == 0 and status == "held_or_accumulated":
                 continue
@@ -2362,6 +3151,11 @@ def cohort_position_summary(rows: list[dict[str, Any]]) -> dict[str, Decimal | i
                 current_quote_est += retained * avg
     net_out_pct = out_token / total_token * Decimal(100) if total_token else Decimal(0)
     current_pct = current_token / total_token * Decimal(100) if total_token else Decimal(0)
+    confirmed_sell_quote += decimal_from(
+        confirmed_sell_evidence_summary(
+            confirmed_sell_evidence
+        )["quote_received"]
+    )
     return {
         "historical_token": total_token,
         "historical_spent": total_spent,
@@ -2687,13 +3481,399 @@ def build_events() -> list[dict[str, Any]]:
     return events
 
 
+def opening_event_identity(
+    event: dict[str, Any],
+) -> tuple[str, str, str, int, str, str]:
+    return (
+        str(event.get("chain") or "").lower(),
+        norm((event.get("token") or {}).get("address")),
+        norm((event.get("quote") or {}).get("address")),
+        int(event.get("opening_block") or 0),
+        str(event.get("start_time_utc") or ""),
+        norm(event.get("pool_id")),
+    )
+
+
+def previous_opened_events(
+    snapshot: dict[str, Any],
+) -> dict[tuple[str, str, str, int, str, str], dict[str, Any]]:
+    return {
+        opening_event_identity(event): event
+        for event in snapshot.get("events", [])
+        if isinstance(event, dict)
+        and event.get("status") == "opened"
+        and opening_event_identity(event)[1]
+    }
+
+
+def opened_event_traces_incomplete(
+    rows: list[dict[str, Any]],
+) -> bool:
+    traces = [
+        row.get("buyer_trace") or {}
+        for row in rows
+        if isinstance(row, dict) and row.get("buyer_trace")
+    ]
+    return any(
+        trace.get("status") == "trace_failed"
+        or trace.get("coverage_complete") is not True
+        or decimal_from(
+            trace.get("legacy_confirmed_sell_quote_received")
+        )
+        > 0
+        or (
+            decimal_from(trace.get("confirmed_sell_quote_received")) > 0
+            and not trace.get("confirmed_sell_evidence")
+        )
+        or (
+            not trace.get("next_hop_watch_recipients")
+            and (
+                int_from(trace.get("next_hop_count")) > 0
+                or "eoa_or_unlabeled"
+                in str(trace.get("out_destination_classes") or "").split(",")
+            )
+        )
+        for trace in traces
+    )
+
+
+def previous_opened_event_needs_full_retry(
+    previous: dict[str, Any],
+    previous_generated_at: str,
+) -> bool:
+    if not opened_event_traces_incomplete(previous.get("rows", [])):
+        return False
+    last_full_attempt_at = str(
+        previous.get("last_full_trace_attempt_at")
+        or previous.get("deep_trace_generated_at")
+        or previous_generated_at
+        or ""
+    )
+    parsed = parse_utc8(last_full_attempt_at)
+    if parsed is None:
+        return True
+    retry_seconds = int(
+        os.environ.get("ALPHA_OPENING_PARTIAL_RETRY_SECONDS", "900")
+    )
+    return (now_utc() - parsed).total_seconds() >= retry_seconds
+
+
+def incremental_opened_event(
+    event: dict[str, Any],
+    previous: dict[str, Any],
+    previous_generated_at: str,
+) -> dict[str, Any]:
+    rows = copy.deepcopy(previous.get("rows", []))
+    latest = int(event.get("latest_block") or 0)
+    deadline_exceeded = False
+    trace_error = False
+    try:
+        event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
+    except OpeningTraceDeadlineExceeded:
+        deadline_exceeded = True
+        event["liquidity_flow"] = copy.deepcopy(
+            previous.get(
+                "liquidity_flow",
+                {
+                    "summary": "开盘流动性增量刷新超出预算",
+                    "risk": "none",
+                    "rows": 0,
+                },
+            )
+        )
+    trace_buyers = capped_event_int_setting(
+        event,
+        "opening_trace_buyers",
+        "ALPHA_OPENING_TRACE_BUYERS",
+        4,
+    )
+    selected_rows = selected_buyer_trace_rows(rows, trace_buyers)
+    selected_txs = {norm(row.get("tx")) for row in selected_rows}
+    for row in selected_rows:
+        previous_trace = row.get("buyer_trace") or {}
+        try:
+            row["buyer_trace"] = trace_buyer(
+                event,
+                row.get("buyer", ""),
+                int(row.get("block") or event["opening_block"]),
+                latest,
+                Decimal(str(row.get("token_bought") or "0")),
+                previous_trace,
+            )
+        except OpeningTraceDeadlineExceeded:
+            deadline_exceeded = True
+            row["buyer_trace"] = deadline_partial_trace(previous_trace)
+        except Exception as exc:
+            trace_error = True
+            row["buyer_trace"] = failed_partial_trace(
+                previous_trace,
+                exc,
+            )
+    for row in rows:
+        if (
+            row.get("buyer_trace")
+            and norm(row.get("tx")) not in selected_txs
+        ):
+            row["buyer_trace"] = deadline_partial_trace(
+                row.get("buyer_trace") or {}
+            )
+            row["buyer_trace"]["trace_deadline_exceeded"] = False
+            row["buyer_trace"]["incremental_refresh_skipped"] = True
+    try:
+        analysis = analyze_opened(
+            event,
+            rows,
+            allow_rpc=not deadline_exceeded,
+        )
+    except OpeningTraceDeadlineExceeded:
+        deadline_exceeded = True
+        analysis = analyze_opened(event, rows, allow_rpc=False)
+    as_of_block = trace_as_of_block(rows)
+    refresh_at = now_iso()
+    incomplete = opened_event_traces_incomplete(rows)
+    last_full_trace_attempt_at = str(
+        previous.get("last_full_trace_attempt_at")
+        or previous.get("deep_trace_generated_at")
+        or previous_generated_at
+        or ""
+    )
+    partial_since = str(previous.get("partial_since") or "")
+    if incomplete and not partial_since:
+        partial_since = last_full_trace_attempt_at or refresh_at
+    elif not incomplete:
+        partial_since = ""
+    refresh_status = (
+        "partial_trace_deadline"
+        if deadline_exceeded
+        else "partial_trace_error"
+        if trace_error
+        else "incremental_refresh"
+    )
+    return {
+        "status": "opened",
+        "refresh_status": refresh_status,
+        "immutable_opening_generated_at": str(
+            previous.get("immutable_opening_generated_at")
+            or previous_generated_at
+            or ""
+        ),
+        "deep_trace_generated_at": refresh_at,
+        "deep_trace_as_of_block": as_of_block,
+        "last_full_trace_attempt_at": last_full_trace_attempt_at,
+        "last_full_trace_success_at": str(
+            previous.get("last_full_trace_success_at") or ""
+        ),
+        "partial_since": partial_since,
+        "scan_to_block": previous.get("scan_to_block"),
+        "transfer_logs": int_from(previous.get("transfer_logs")),
+        "relevant_tx_count": int_from(previous.get("relevant_tx_count")),
+        "rows": rows,
+        "analysis": analysis,
+    }
+
+
+def deadline_partial_trace(
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    trace = copy.deepcopy(previous or {})
+    confirmed_quote = decimal_from(trace.get("confirmed_sell_quote_received"))
+    trace.update(
+        {
+            "status": (
+                "confirmed_sell_partial_coverage"
+                if confirmed_quote > 0
+                else "unknown_incomplete_coverage"
+            ),
+            "coverage_complete": False,
+            "coverage_status": "partial",
+            "confirmed_sell_status": (
+                "confirmed_partial_coverage"
+                if confirmed_quote > 0
+                else "unknown_incomplete_coverage"
+            ),
+            "current_balance": "",
+            "trace_deadline_exceeded": True,
+            "refresh_attempted_at": now_iso(),
+        }
+    )
+    for key in (
+        "out_after_buy",
+        "out_transfer_count",
+        "out_destination_classes",
+        "confirmed_sell_quote_received",
+        "direct_sell_quote_received",
+        "next_hop_sell_quote_received",
+        "confirmed_sell_count",
+        "next_hop_count",
+        "as_of_block",
+        "as_of_time",
+    ):
+        trace.setdefault(key, "" if key not in {"confirmed_sell_count", "next_hop_count", "out_transfer_count"} else "0")
+    return trace
+
+
+def failed_partial_trace(
+    previous: dict[str, Any] | None,
+    error: Exception,
+) -> dict[str, Any]:
+    trace = deadline_partial_trace(previous)
+    confirmed_quote = decimal_from(
+        trace.get("confirmed_sell_quote_received")
+    )
+    trace.update(
+        {
+            "status": (
+                "confirmed_sell_partial_coverage"
+                if confirmed_quote > 0
+                else "trace_failed"
+            ),
+            "confirmed_sell_status": (
+                "confirmed_partial_coverage"
+                if confirmed_quote > 0
+                else "unknown_incomplete_coverage"
+            ),
+            "trace_deadline_exceeded": False,
+            "trace_error": type(error).__name__,
+        }
+    )
+    return trace
+
+
+def deadline_snapshot_from_previous(
+    previous_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    events = copy.deepcopy(previous_snapshot.get("events", []))
+    for event in events:
+        if not isinstance(event, dict) or event.get("status") != "opened":
+            continue
+        for row in event.get("rows", []):
+            if isinstance(row, dict) and row.get("buyer_trace"):
+                row["buyer_trace"] = deadline_partial_trace(
+                    row.get("buyer_trace") or {}
+                )
+        event["refresh_status"] = "partial_trace_deadline"
+        event["refresh_error"] = "deadline_before_event_refresh"
+        event["analysis"] = analyze_opened(
+            event,
+            [
+                row
+                for row in event.get("rows", [])
+                if isinstance(row, dict)
+            ],
+            allow_rpc=False,
+        )
+    alerts = [
+        key
+        for event in events
+        if isinstance(event, dict)
+        for key in event_alert_keys(event)
+    ]
+    seen = set(read_json(SEEN_PATH, []))
+    return {
+        "generated_at": now_iso(),
+        "refresh_status": "partial_trace_deadline",
+        "event_count": len(events),
+        "alert_count": len(alerts),
+        "new_alert_count": sum(
+            1 for key in alerts if not alert_key_seen(key, seen)
+        ),
+        "events": events,
+    }
+
+
 def build_snapshot() -> dict[str, Any]:
+    previous_snapshot = read_json(LATEST_PATH, {})
+    previous_by_identity = previous_opened_events(previous_snapshot)
+    reuse_cache = os.environ.get("ALPHA_OPENING_REUSE_OPENED_CACHE", "0") == "1"
+    configure_trace_deadline()
+    try:
+        current_events = build_events()
+    except OpeningTraceDeadlineExceeded:
+        return deadline_snapshot_from_previous(previous_snapshot)
     events = []
-    for event in build_events():
+    for event in current_events:
         if event.get("opening_block") is None:
             event.update({"status": "waiting", "rows": [], "analysis": analyze_waiting(event)})
         else:
-            event.update(build_opened_event(event))
+            previous = previous_by_identity.get(opening_event_identity(event))
+            previous_generated_at = str(
+                previous_snapshot.get("generated_at") or ""
+            )
+            if (
+                reuse_cache
+                and previous
+                and previous.get("rows")
+                and not previous_opened_event_needs_full_retry(
+                    previous,
+                    previous_generated_at,
+                )
+            ):
+                event.update(
+                    incremental_opened_event(
+                        event,
+                        previous,
+                        previous_generated_at,
+                    )
+                )
+            else:
+                try:
+                    event.update(build_opened_event(event, previous))
+                except OpeningTraceDeadlineExceeded:
+                    full_attempt_at = now_iso()
+                    fallback_snapshot = {
+                        "generated_at": previous_generated_at,
+                        "events": [previous] if previous else [],
+                    }
+                    fallback_events = deadline_snapshot_from_previous(
+                        fallback_snapshot
+                    ).get("events", [])
+                    if fallback_events:
+                        event.update(
+                            {
+                                key: value
+                                for key, value in fallback_events[0].items()
+                                if key
+                                in {
+                                    "status",
+                                    "refresh_status",
+                                    "refresh_error",
+                                    "liquidity_flow",
+                                    "scan_to_block",
+                                    "transfer_logs",
+                                    "relevant_tx_count",
+                                    "rows",
+                                    "analysis",
+                                    "immutable_opening_generated_at",
+                                    "deep_trace_generated_at",
+                                    "deep_trace_as_of_block",
+                                    "last_full_trace_attempt_at",
+                                    "last_full_trace_success_at",
+                                    "partial_since",
+                                }
+                            }
+                        )
+                        event["last_full_trace_attempt_at"] = full_attempt_at
+                        event["partial_since"] = str(
+                            event.get("partial_since")
+                            or full_attempt_at
+                        )
+                    else:
+                        event.update(
+                            {
+                                "status": "opened",
+                                "refresh_status": "partial_opening_deadline",
+                                "refresh_error": "deadline_before_opening_evidence",
+                                "last_full_trace_attempt_at": full_attempt_at,
+                                "last_full_trace_success_at": "",
+                                "partial_since": full_attempt_at,
+                                "rows": [],
+                                "analysis": analyze_opened(
+                                    event,
+                                    [],
+                                    allow_rpc=False,
+                                ),
+                            }
+                        )
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))
@@ -2707,36 +3887,128 @@ def build_snapshot() -> dict[str, Any]:
     }
 
 
-def build_opened_event(event: dict[str, Any]) -> dict[str, Any]:
+def build_opened_event(
+    event: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     latest = int(event["latest_block"])
-    logs = opening_transfer_logs(event, latest)
     event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
-    max_txs = capped_event_int_setting(
-        event,
-        "opening_max_txs",
-        "ALPHA_OPENING_MAX_TXS",
-        25,
-    )
-    rows = [summarize_tx(event, tx_hash) for tx_hash in selected_tx_hashes(logs, max_txs)]
+    previous_rows = [
+        row
+        for row in (previous or {}).get("rows", [])
+        if isinstance(row, dict)
+    ]
+    if previous_rows:
+        rows = copy.deepcopy(previous_rows)
+        transfer_logs = int_from((previous or {}).get("transfer_logs"))
+        relevant_tx_count = int_from(
+            (previous or {}).get("relevant_tx_count"),
+            len(rows),
+        )
+    else:
+        logs = opening_transfer_logs(event, latest)
+        max_txs = capped_event_int_setting(
+            event,
+            "opening_max_txs",
+            "ALPHA_OPENING_MAX_TXS",
+            25,
+        )
+        rows = [
+            summarize_tx(event, tx_hash)
+            for tx_hash in selected_tx_hashes(logs, max_txs)
+        ]
+        transfer_logs = len(logs)
+        relevant_tx_count = len(rows)
     trace_buyers = capped_event_int_setting(
         event,
         "opening_trace_buyers",
         "ALPHA_OPENING_TRACE_BUYERS",
         4,
     )
+    previous_traces = {
+        norm(item.get("tx")): item.get("buyer_trace")
+        for item in (previous or {}).get("rows", [])
+        if isinstance(item, dict) and item.get("buyer_trace")
+    }
+    deadline_exceeded = False
+    trace_error = False
     for row in selected_buyer_trace_rows(rows, trace_buyers):
+        previous_trace = previous_traces.get(norm(row.get("tx")))
         try:
-            row["buyer_trace"] = trace_buyer(event, row["buyer"], int(row["block"] or event["opening_block"]), latest, Decimal(row["token_bought"]))
+            refreshed_trace = trace_buyer(
+                event,
+                row["buyer"],
+                int(row["block"] or event["opening_block"]),
+                latest,
+                Decimal(row["token_bought"]),
+            )
+            row["buyer_trace"] = trace_sell_lower_bound(
+                previous_trace,
+                refreshed_trace,
+            )
+        except OpeningTraceDeadlineExceeded:
+            deadline_exceeded = True
+            row["buyer_trace"] = deadline_partial_trace(
+                previous_trace
+            )
         except Exception as exc:
-            row["buyer_trace"] = {"status": "trace_failed", "error": str(exc)}
-    scan_to_block = min(latest, int(event["opening_block"]) + int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240")))
+            trace_error = True
+            row["buyer_trace"] = failed_partial_trace(
+                previous_trace,
+                exc,
+            )
+    try:
+        analysis = analyze_opened(
+            event,
+            rows,
+            allow_rpc=not deadline_exceeded,
+        )
+    except OpeningTraceDeadlineExceeded:
+        deadline_exceeded = True
+        analysis = analyze_opened(event, rows, allow_rpc=False)
+    scan_to_block = (
+        int_from((previous or {}).get("scan_to_block"))
+        if previous_rows
+        else min(
+            latest,
+            int(event["opening_block"])
+            + int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240")),
+        )
+    )
+    refresh_at = now_iso()
+    incomplete = opened_event_traces_incomplete(rows)
+    partial_since = (
+        str((previous or {}).get("partial_since") or refresh_at)
+        if incomplete
+        else ""
+    )
     return {
         "status": "opened",
         "scan_to_block": scan_to_block,
-        "transfer_logs": len(logs),
-        "relevant_tx_count": len(rows),
+        "transfer_logs": transfer_logs,
+        "relevant_tx_count": relevant_tx_count,
+        "refresh_status": (
+            "partial_trace_deadline"
+            if deadline_exceeded
+            else "partial_trace_error"
+            if trace_error
+            else "full_refresh"
+        ),
+        "immutable_opening_generated_at": str(
+            (previous or {}).get("immutable_opening_generated_at")
+            or refresh_at
+        ),
+        "deep_trace_generated_at": refresh_at,
+        "deep_trace_as_of_block": trace_as_of_block(rows),
+        "last_full_trace_attempt_at": refresh_at,
+        "last_full_trace_success_at": (
+            str((previous or {}).get("last_full_trace_success_at") or "")
+            if incomplete
+            else refresh_at
+        ),
+        "partial_since": partial_since,
         "rows": rows,
-        "analysis": analyze_opened(event, rows),
+        "analysis": analysis,
     }
 
 
@@ -2873,7 +4145,11 @@ def buyer_caution_reason(event: dict[str, Any], rows: list[dict[str, Any]]) -> s
     return "；".join(dict.fromkeys(reasons))
 
 
-def analyze_opened(event: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, str]:
+def analyze_opened(
+    event: dict[str, Any],
+    rows: list[dict[str, Any]],
+    allow_rpc: bool = True,
+) -> dict[str, str]:
     buys = meaningful_buy_rows(rows)
     total_token = sum((decimal_from(row.get("token_bought")) for row in buys), Decimal(0))
     actual_spent = sum((decimal_from(row.get("spent_quote")) for row in buys), Decimal(0))
@@ -2884,9 +4160,29 @@ def analyze_opened(event: dict[str, Any], rows: list[dict[str, Any]]) -> dict[st
     max_bribe = max(bribes, default=Decimal(0))
     cohort = cohort_position_summary(buys)
     cohort_status = cohort_position_text(cohort, event["quote"]["symbol"])
-    safety = merge_contract_safety(sell_safety_summary(buys), inspect_token_contract_safety(event))
+    safety = (
+        merge_contract_safety(
+            sell_safety_summary(buys),
+            inspect_token_contract_safety(event),
+        )
+        if allow_rpc
+        else {
+            "status": "深度刷新截止；可售性未重新验证",
+            "gate": "blocked_trace_deadline",
+            "detail": "",
+        }
+    )
     trace = buyer_trace_summary(buys)
-    caution_reason = buyer_caution_reason(event, buys)
+    caution_reason = (
+        buyer_caution_reason(event, buys)
+        if allow_rpc
+        else str(
+            (event.get("analysis") or {}).get(
+                "buyer_caution_reason"
+            )
+            or "深度刷新截止，买家归因未重验"
+        )
+    )
     netflow_reliable = onchain_netflow_reliable_for_opening(event)
     held = [row for row in buys if row.get("buyer_trace", {}).get("status") == "held_or_accumulated"]
     moved = [row for row in buys if row.get("buyer_trace", {}).get("status") in {"partially_moved", "mostly_exited_or_transferred"}]
@@ -3184,6 +4480,11 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                 keys.append("|".join(["buy", event["symbol"], row.get("tx", ""), row.get("buyer", ""), alert_amount_bucket(spent, Decimal("50000"))]))
             trace = row.get("buyer_trace") or {}
             if trace:
+                alert_status = str(
+                    trace.get("position_status")
+                    or trace.get("status")
+                    or ""
+                )
                 sell_bucket = alert_amount_bucket(
                     decimal_from(trace.get("confirmed_sell_quote_received")),
                     Decimal(os.environ.get("ALPHA_OPENING_ALERT_QUOTE_BUCKET", "10000")),
@@ -3194,7 +4495,7 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                             "trace",
                             event["symbol"],
                             row.get("buyer", ""),
-                            trace.get("status", ""),
+                            alert_status,
                             trace.get("out_destination_classes", ""),
                             sell_bucket,
                         ]
@@ -3220,8 +4521,13 @@ def alert_key_seen(key: str, seen: set[str]) -> bool:
         legacy_prefix = "|".join([parts[0], parts[1], parts[3]]) + "|"
         return any(old.startswith(legacy_prefix) for old in seen)
     if len(parts) >= 5 and parts[0] == "trace":
+        if len(parts) >= 6 and parts[5] != "0":
+            return False
         legacy_key = "|".join(parts[:5])
-        return any(old == legacy_key or old.startswith(legacy_key + "|") for old in seen)
+        return any(
+            old == legacy_key and len(old.split("|")) == 5
+            for old in seen
+        )
     return False
 
 
@@ -3379,6 +4685,10 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- opening_block: `{event.get('opening_block')}`",
                 f"- latest_block: `{event.get('latest_block')}`",
                 f"- scan_to_block: `{event.get('scan_to_block', '')}`",
+                f"- refresh_status: `{event.get('refresh_status', '')}`",
+                f"- immutable_opening_generated_at: `{event.get('immutable_opening_generated_at', '')}`",
+                f"- deep_trace_generated_at: `{event.get('deep_trace_generated_at', '')}`",
+                f"- deep_trace_as_of_block: `{event.get('deep_trace_as_of_block', '')}`",
                 f"- conclusion: {analysis.get('conclusion', '')}",
                 f"- direction: {analysis.get('direction', '')}",
                 f"- trade_signal: {analysis.get('trade_signal', '')}",

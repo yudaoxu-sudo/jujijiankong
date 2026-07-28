@@ -47,6 +47,19 @@ class LogCoverageError(RuntimeError):
         super().__init__(f"eth_getLogs coverage failed for {start}-{end}")
 
 
+class RpcDeadlineExceeded(TimeoutError):
+    pass
+
+
+def deadline_timeout(timeout: int | float, deadline: float | None) -> float:
+    if deadline is None:
+        return float(timeout)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RpcDeadlineExceeded("rpc deadline exceeded")
+    return max(0.1, min(float(timeout), remaining))
+
+
 def rpc_url(chain: str) -> str:
     global DISABLED_NODE_REAL
     env_name = f"{chain.upper()}_RPC_URL"
@@ -99,6 +112,7 @@ def adaptive_get_logs(
     max_attempts: int = 256,
     max_split_depth: int = 4,
     max_transport_split_depth: int = 3,
+    before_attempt: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     from_value = query.get("fromBlock")
     to_value = query.get("toBlock")
@@ -120,6 +134,8 @@ def adaptive_get_logs(
     seen: dict[tuple[str, int], dict[str, Any]] = {}
     attempts = 0
     while pending:
+        if before_attempt is not None:
+            before_attempt()
         start, end, split_depth, transport_split_depth = pending.pop()
         if attempts >= max_attempts:
             raise LogCoverageError(start, end) from None
@@ -131,6 +147,8 @@ def adaptive_get_logs(
             result = fetch(chunk_query)
             if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
                 raise RuntimeError("invalid log response")
+        except RpcDeadlineExceeded:
+            raise
         except Exception as exc:
             status = (
                 exc.code
@@ -182,7 +200,13 @@ def adaptive_get_logs(
     return rows
 
 
-def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> Any:
+def rpc_call(
+    chain: str,
+    method: str,
+    params: list[Any],
+    timeout: int = 30,
+    deadline: float | None = None,
+) -> Any:
     global DISABLED_NODE_REAL
     errors: list[str] = []
     nodereal_key = os.environ.get("NODEREAL_API_KEY")
@@ -199,6 +223,7 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
             raise RuntimeError("eth_getLogs coverage query invalid")
         last_coverage_error: LogCoverageError | None = None
         for index, url in enumerate(urls):
+            deadline_timeout(timeout, deadline)
             try:
                 return adaptive_get_logs(
                     params[0],
@@ -206,9 +231,12 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
                         endpoint,
                         method,
                         [query],
-                        timeout=timeout,
+                        timeout=deadline_timeout(timeout, deadline),
                     ),
+                    before_attempt=lambda: deadline_timeout(timeout, deadline),
                 )
+            except RpcDeadlineExceeded:
+                raise
             except LogCoverageError as exc:
                 last_coverage_error = exc
                 errors.append(f"{chain} rpc[{index + 1}] log_coverage_error")
@@ -217,7 +245,15 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
                 if exc.status == 429:
                     DISABLED_RPC_URLS.add(url)
                     if index + 1 < len(urls):
-                        time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
+                        backoff = float(
+                            os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")
+                        )
+                        time.sleep(
+                            min(
+                                backoff,
+                                deadline_timeout(backoff, deadline),
+                            )
+                        )
                 continue
         if last_coverage_error is not None:
             raise LogCoverageError(
@@ -228,8 +264,14 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
         raise RuntimeError("; ".join(errors) or f"no rpc url for {chain}") from None
 
     for index, url in enumerate(urls):
+        request_timeout = deadline_timeout(timeout, deadline)
         try:
-            return rpc_call_url(url, method, params, timeout=timeout)
+            return rpc_call_url(
+                url,
+                method,
+                params,
+                timeout=request_timeout,
+            )
         except (HTTPError, RpcHTTPError) as exc:
             status = exc.code if isinstance(exc, HTTPError) else exc.status
             errors.append(f"{chain} rpc[{index + 1}] http {status}")
@@ -239,7 +281,15 @@ def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> A
                 DISABLED_RPC_URLS.add(url)
             if status in {401, 403, 429, 500, 502, 503, 504} and index + 1 < len(urls):
                 if status == 429:
-                    time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
+                    backoff = float(
+                        os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")
+                    )
+                    time.sleep(
+                        min(
+                            backoff,
+                            deadline_timeout(backoff, deadline),
+                        )
+                    )
                 continue
             raise RuntimeError("; ".join(errors)) from None
         except RuntimeError:

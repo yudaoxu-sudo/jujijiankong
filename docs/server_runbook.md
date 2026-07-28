@@ -212,6 +212,8 @@ Telegram 当前有两层控制：
 
 `review_opening_cohort_funders.py` 在 `alpha_opening_sprint.sh` 之后运行，用于从开盘首批买家里回查最近原生 BNB funding source，并把同源 funding cluster 写到 `output/opening_cohort_funders/latest.*`。默认 `OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS=120`，同时受 `OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS=25` 和 `OPENING_COHORT_FUNDER_TIMEOUT_SECONDS=90` 限制；CEX、router、bridge、quote token 等不安全父节点仍由 clustering guard 排除。
 
+`alpha_opening_sprint.sh` 的主周期路径会复用已确认的不可变开盘交易行，并从每个 buyer trace 的 `as_of_block + 1` 增量刷新余额、外转和同收据卖出；已接收筹码的 next-hop 地址另存独立位点并持续增量扫描。已确认卖出证据按 `tx_hash + receipt log_index` 持久化去重，事件汇总也使用同一身份去重。历史覆盖不完整、旧快照缺少规范卖出证据或 trace 失败时，默认按独立的完整刷新尝试时间每 900 秒重试一次，期间增量结果继续保持 partial。新开盘及完整重试受 180 秒 RPC 总截止时间、三层 fan-out 上限和 660 秒 sprint 总墙钟预算约束；每次 Python 刷新另有“RPC 预算 + 30 秒落盘/发送余量”的进程级硬截止，内部超时状态不会冒充服务器外层 720 秒超时。预算耗尽时落盘 partial 证据并保留既有已确认卖出下限，不生成“未卖出”结论。完整历史重算可直接运行 `alpha_opening_block_watch.py`，不启用 sprint 的增量复用变量。
+
 `alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；默认分页回看最多 3000 根 1m K 线，峰值回撤达到默认 25% 时独立触发风险告警，15m 极端跌幅达到默认 12% 时不依赖 20 万 USDT 成交额门槛。两类风险在 Telegram 中按最高风险排序，并显示峰值、现价、回撤率或 15m 跌幅。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
 
 项目/卖出归因按 `control_scope`、`identity_status`、`realization` 三个维度输出。成功 receipt 内卖家 token 净流出并收到报价资产才记为已实现卖出；verified token controller、candidate 关联地址、池侧功能地址和未归属地址分别报告。余额归零只记离开原地址，CEX 流入只记待售风险。共享 PoolManager 的 LP 事件必须匹配目标 PoolId；缺少 PoolId 时不把共享 manager 的事件归入本项目。
