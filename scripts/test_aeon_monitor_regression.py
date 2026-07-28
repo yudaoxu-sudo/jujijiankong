@@ -568,8 +568,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
 
         self.assertIn('ALPHA_INTRADAY_WINDOW_BLOCKS", "360"', text)
-        self.assertIn('ALPHA_INTRADAY_MAX_RECEIPTS", "180"', text)
-        self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "60"', text)
+        self.assertIn('ALPHA_INTRADAY_MAX_RECEIPTS", "300"', text)
+        self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"', text)
 
     def test_pre_watch_signal_reply_omits_stale_runtime_context(self) -> None:
         import scripts.telegram_signal_collector as collector

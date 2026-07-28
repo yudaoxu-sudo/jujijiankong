@@ -796,7 +796,7 @@ def aggregate_candidate_txs(event: dict[str, Any], from_block: int, to_block: in
         row["sum"] += amount
         row["max"] = max(row["max"], amount)
     ordered = sorted(aggregate.values(), key=lambda row: (row["block"], row["idx"]))
-    max_candidates = int(os.environ.get("ALPHA_INTRADAY_MAX_RECEIPTS", "180"))
+    max_candidates = int(os.environ.get("ALPHA_INTRADAY_MAX_RECEIPTS", "300"))
     top_max = sorted(aggregate.values(), key=lambda row: row["max"], reverse=True)[: max_candidates]
     top_sum = sorted(aggregate.values(), key=lambda row: row["sum"], reverse=True)[: max(20, max_candidates // 2)]
     tail = ordered[-max(20, max_candidates // 3) :]
@@ -2878,7 +2878,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
     receipt_success_count = 0
     receipt_error_count = 0
     deadline_reached = False
-    timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "60"))
+    timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"))
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     for tx_hash in tx_hashes:
         if deadline is not None and time.monotonic() >= deadline:
