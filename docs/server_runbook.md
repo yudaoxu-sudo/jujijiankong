@@ -108,16 +108,16 @@ scripts/binance_alpha_catalog_watch.py
 scripts/sniper_monitor.py
 scripts/alpha_project_watch.py
 scripts/alpha_prelaunch_watch.py
-scripts/alpha_opening_sprint.sh
-scripts/review_opening_cohort_funders.py
 scripts/alpha_intraday_flow_watch.py
 scripts/perp_oi_funding_watch.py
 scripts/alpha_price_momentum_watch.py
+scripts/telegram_signal_collector.py --flush-pending
+scripts/alpha_opening_sprint.sh
+scripts/review_opening_cohort_funders.py
 scripts/alpha_holder_concentration_watch.py
 scripts/surf_aux_market_watch.py
 scripts/arx_opening_sprint.sh 条件执行
 scripts/arx_launch_watch.py 条件执行
-scripts/telegram_signal_collector.py --flush-pending
 scripts/prediction_market_watch.py
 scripts/external_aux_source_readiness.py
 scripts/external_aux_live_probe.py 条件执行
@@ -139,10 +139,10 @@ last-known-good 运行时清单，缺失或过期时回退 `config/current_alpha
 `BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS` 可调整该时限，显式设置的
 `ALPHA_WATCHLIST_PATH` 始终优先。
 
-Telegram bot 采集器先以 `--defer-analysis` 拉取并合并线索，Alpha watcher 完成本轮扫描后再用
-`--flush-pending` 发送富化结果，避免新线索回复引用上一轮快照。同 ticker 项目按合约身份匹配
-上下文。Telegram user source 继续以 `SIGNAL_RUNTIME_CONTEXT=0` 运行，并保持 social/context_only
-隔离。
+Telegram bot 采集器先以 `--defer-analysis` 拉取并合并线索。项目、预发布、盘中、合约和价格
+快路径完成后立即用 `--flush-pending` 发送富化结果，重型开盘买家追踪继续在后续步骤运行并独立
+产生告警。同 ticker 项目按合约身份匹配上下文。Telegram user source 继续以
+`SIGNAL_RUNTIME_CONTEXT=0` 运行，并保持 social/context_only 隔离。
 
 服务器 cron 通过幂等安装脚本维护：
 
@@ -180,13 +180,16 @@ Telegram 推送默认关闭。设置 `SNIPER_MONITOR_TELEGRAM=1` 后，脚本会
 export MONITOR_LOOKBACK_BLOCKS=5000
 export MONITOR_FINALITY_BLOCKS=20
 export TELEGRAM_MIN_INTERVAL_SECONDS=900
-export ALPHA_INTRADAY_WINDOW_BLOCKS=1800
+export ALPHA_INTRADAY_WINDOW_BLOCKS=360
+export ALPHA_INTRADAY_MAX_RECEIPTS=300
+export ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS=90
 export ALPHA_INTRADAY_BUY_ALERT_QUOTE=20000
 export ALPHA_INTRADAY_SELL_ALERT_QUOTE=20000
 export ALPHA_INTRADAY_REPEAT_SUPPRESS_MINUTES=30
 export ALPHA_PRICE_15M_SPIKE_PCT=15
 export ALPHA_PRICE_15M_CLOSE_PCT=8
 export ALPHA_PRICE_QUOTE_ALERT=200000
+export ALPHA_PRICE_KLINE_LIMIT=3000
 export ALPHA_PRICE_REPEAT_SUPPRESS_MINUTES=30
 export ALPHA_OPENING_INFINITY_ROUTER_SELL_PROBE=1
 export ALPHA_OPENING_INFINITY_RECOVERY_ESTIMATE=1
@@ -209,7 +212,7 @@ Telegram 当前有两层控制：
 
 `review_opening_cohort_funders.py` 在 `alpha_opening_sprint.sh` 之后运行，用于从开盘首批买家里回查最近原生 BNB funding source，并把同源 funding cluster 写到 `output/opening_cohort_funders/latest.*`。默认 `OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS=120`，同时受 `OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS=25` 和 `OPENING_COHORT_FUNDER_TIMEOUT_SECONDS=90` 限制；CEX、router、bridge、quote token 等不安全父节点仍由 clustering guard 排除。
 
-`alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；还会回看最多 1000 根 1m K 线，峰值回撤达到默认 25% 时独立触发风险告警，15m 极端跌幅达到默认 12% 时不依赖 20 万 USDT 成交额门槛。两类风险在 Telegram 中按最高风险排序，并显示峰值、现价、回撤率或 15m 跌幅。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
+`alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；默认分页回看最多 3000 根 1m K 线，峰值回撤达到默认 25% 时独立触发风险告警，15m 极端跌幅达到默认 12% 时不依赖 20 万 USDT 成交额门槛。两类风险在 Telegram 中按最高风险排序，并显示峰值、现价、回撤率或 15m 跌幅。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
 
 项目/卖出归因按 `control_scope`、`identity_status`、`realization` 三个维度输出。成功 receipt 内卖家 token 净流出并收到报价资产才记为已实现卖出；verified token controller、candidate 关联地址、池侧功能地址和未归属地址分别报告。余额归零只记离开原地址，CEX 流入只记待售风险。共享 PoolManager 的 LP 事件必须匹配目标 PoolId；缺少 PoolId 时不把共享 manager 的事件归入本项目。
 
@@ -255,6 +258,10 @@ python3 scripts/simulate_pancake_v4_roundtrip_call.py \
 开盘监控里对应 `ALPHA_OPENING_INFINITY_*` 参数。回收率通过只代表 v4 可售性 gate 过了，不会覆盖开盘块顺序、首批钱包去向、Alpha/CEX 盘口和活动分发规则。
 
 `alpha_intraday_flow_watch.py` 用于开盘后链上盘中大额流监控。它不推送长地址和 tx，Telegram 只给方向、买卖信号、现货动作、合约动作、净买/净卖；完整地址和 tx 保存在 `output/alpha_intraday_flow_watch/latest.json` 和 `latest.md`。它按地址净额聚合，避免同一地址来回交易被误读为单边买入或单边卖出。
+
+盘中快路径默认扫描最近 360 个 BSC 区块，最多审查 300 个候选 receipt，receipt 阶段最多
+使用 90 秒。该步骤位于重型开盘追踪之前；只有 Transfer 窗口和所选 receipt 都完整时才允许
+产生买卖告警，容量截断、deadline 或 RPC 错误继续按 fail-closed 写为部分覆盖。
 
 CEX 路径按经济角色拆分：外部地址进入 CEX deposit/hot 或 runtime sweep 候选为 `external_to_cex_inflow`，继续进入既有 CEX 风险门槛；deposit/sweep/hot 之间的后续搬运为 `cex_internal_aggregation`；涉及 Alpha Router/Custody/Rebalance 的路径为 `alpha_custody_movement_unresolved`。后两类固定 `direction=unknown`、`runtime_effect=none`、`alert_policy=report_only`，只写入盘中 JSON、Markdown 和日报，不进入 Telegram。`alpha_custody_movement_unresolved` 也覆盖外部地址进入 Alpha 托管入口，名称不推断内部调仓。`external -> runtime sweep -> hot` 只把按有序 FIFO 归因到后续 CEX 转出的外部入账计入一次，后续内部搬运不重复进入风险金额。`cex_internal_aggregation_token` 和对应 quote estimate 表示内部 Transfer 毛额，多跳时可重复出现同一批代币，仅用于路径审计。
 
