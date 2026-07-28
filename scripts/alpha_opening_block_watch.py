@@ -1731,8 +1731,6 @@ def best_buyer(event: dict[str, Any], nets: dict[str, dict[str, Decimal]]) -> tu
 def pool_side_quote_in(event: dict[str, Any], nets: dict[str, dict[str, Decimal]]) -> Decimal:
     quote_in = Decimal(0)
     for address, amounts in nets.items():
-        if address in excluded_addresses(event):
-            continue
         token_net = amounts.get("token", Decimal(0))
         quote_net = amounts.get("quote", Decimal(0))
         if token_net < 0 and quote_net > quote_in:

@@ -898,6 +898,53 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
         )
 
+    def test_opening_quote_includes_infrastructure_counterparty(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        payer = "0x" + "3" * 40
+        relay = "0x" + "4" * 40
+        pool = "0x" + "5" * 40
+        receiver = "0x" + "6" * 40
+        event = {
+            "chain": "bsc",
+            "token": {"address": token},
+            "quote": {"address": quote},
+            "known_contracts": [{"address": pool, "class": "pool_manager"}],
+        }
+        transfers = [
+            {
+                "token": quote,
+                "from": payer,
+                "to": relay,
+                "amount": opening.Decimal("600000"),
+            },
+            {
+                "token": quote,
+                "from": relay,
+                "to": pool,
+                "amount": opening.Decimal("600000"),
+            },
+            {
+                "token": token,
+                "from": pool,
+                "to": receiver,
+                "amount": opening.Decimal("7177604.70848690"),
+            },
+        ]
+
+        nets = opening.net_by_address(transfers, token, quote)
+        buyer, token_bought, spent_quote = opening.best_buyer(event, nets)
+
+        self.assertEqual(buyer, receiver)
+        self.assertEqual(token_bought, opening.Decimal("7177604.70848690"))
+        self.assertEqual(spent_quote, opening.Decimal(0))
+        self.assertEqual(
+            opening.pool_side_quote_in(event, nets),
+            opening.Decimal("600000"),
+        )
+
     def test_opening_trace_keeps_a_coverage_safe_log_floor(self) -> None:
         import scripts.alpha_opening_block_watch as opening
 
