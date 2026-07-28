@@ -126,12 +126,46 @@ def watchlist_events(token_by_contract: dict[str, dict[str, Any]]) -> list[dict[
 
 
 def fetch_klines(alpha_symbol: str, interval: str, limit: int) -> list[list[Any]]:
-    data = http_json(
-        f"{TRADE_BASE}/klines",
-        {"symbol": alpha_symbol, "interval": interval, "limit": limit},
-        timeout=int(os.environ.get("ALPHA_PRICE_HTTP_TIMEOUT", "20")),
-    )
-    return data.get("data") or []
+    if limit <= 0:
+        return []
+    timeout = int(os.environ.get("ALPHA_PRICE_HTTP_TIMEOUT", "20"))
+    rows_by_open_time: dict[int, list[Any]] = {}
+    end_time: int | None = None
+    while len(rows_by_open_time) < limit:
+        page_limit = min(1000, limit - len(rows_by_open_time))
+        params: dict[str, Any] = {
+            "symbol": alpha_symbol,
+            "interval": interval,
+            "limit": page_limit,
+        }
+        if end_time is not None:
+            params["endTime"] = end_time
+        data = http_json(
+            f"{TRADE_BASE}/klines",
+            params,
+            timeout=timeout,
+        )
+        page = data.get("data") or []
+        if not page:
+            break
+        page_open_times: list[int] = []
+        for row in page:
+            if not isinstance(row, list) or len(row) < 9:
+                raise ValueError("invalid Binance Alpha kline row")
+            open_time = int(row[0])
+            rows_by_open_time[open_time] = row
+            page_open_times.append(open_time)
+        oldest = min(page_open_times)
+        next_end_time = oldest - 1
+        if end_time is not None and next_end_time >= end_time:
+            raise ValueError("Binance Alpha kline cursor did not advance")
+        end_time = next_end_time
+        if len(page) < page_limit:
+            break
+    return [
+        rows_by_open_time[open_time]
+        for open_time in sorted(rows_by_open_time)[-limit:]
+    ]
 
 
 def fetch_ticker(alpha_symbol: str) -> dict[str, Any]:
@@ -464,7 +498,7 @@ def perp_action_summary(perp: dict[str, Any]) -> str:
 
 
 def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
-    rows_1m = fetch_klines(event["alpha_symbol"], "1m", int(os.environ.get("ALPHA_PRICE_KLINE_LIMIT", "1000")))
+    rows_1m = fetch_klines(event["alpha_symbol"], "1m", int(os.environ.get("ALPHA_PRICE_KLINE_LIMIT", "3000")))
     ticker = fetch_ticker(event["alpha_symbol"])
     last_price = decimal_from(ticker.get("lastPrice") or event["alpha"].get("price"))
     depth = depth_stats(fetch_depth(event["alpha_symbol"]), last_price)
@@ -569,6 +603,7 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
         "window_15m": w15,
         "window_60m": w60,
         "window_backfill": wbackfill,
+        "backfill_bar_count": len(rows_1m),
         "depth": depth,
         "onchain_flow": onchain_flow,
         "perp_context": perp_context,

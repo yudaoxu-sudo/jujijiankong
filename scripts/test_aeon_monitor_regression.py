@@ -2057,6 +2057,56 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("receipt coverage remains report only", text)
         self.assertNotIn("均恢复正常", text)
 
+    def test_price_kline_backfill_paginates_past_one_thousand_minutes(self) -> None:
+        import scripts.alpha_price_momentum_watch as price
+
+        calls: list[dict[str, object]] = []
+
+        def fake_http_json(
+            _url: str,
+            params: dict[str, object],
+            timeout: int,
+        ) -> dict[str, object]:
+            self.assertGreater(timeout, 0)
+            calls.append(dict(params))
+            page_limit = int(params["limit"])
+            end_minute = (
+                int(params["endTime"]) // 60000
+                if "endTime" in params
+                else 2499
+            )
+            start_minute = max(0, end_minute - page_limit + 1)
+            rows = [
+                [
+                    str(minute * 60000),
+                    "1",
+                    "1",
+                    "1",
+                    "1",
+                    "0",
+                    str((minute + 1) * 60000 - 1),
+                    "1",
+                    "1",
+                ]
+                for minute in range(start_minute, end_minute + 1)
+            ]
+            return {"data": rows}
+
+        with mock.patch.object(price, "http_json", side_effect=fake_http_json):
+            rows = price.fetch_klines("ALPHA_1053USDT", "1m", 2500)
+
+        self.assertEqual(len(rows), 2500)
+        self.assertEqual(int(rows[0][0]), 0)
+        self.assertEqual(int(rows[-1][0]), 2499 * 60000)
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn("endTime", calls[0])
+        self.assertEqual(calls[1]["endTime"], 1500 * 60000 - 1)
+        self.assertEqual(calls[2]["endTime"], 500 * 60000 - 1)
+        source = (ROOT / "scripts" / "alpha_price_momentum_watch.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('ALPHA_PRICE_KLINE_LIMIT", "3000"', source)
+
     def test_low_volume_peak_drawdown_still_alerts(self) -> None:
         import scripts.alpha_price_momentum_watch as price
 
