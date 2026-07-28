@@ -542,6 +542,15 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertLess(text.index(source), text.index(restore))
         self.assertLess(text.index(restore), text.index(guard))
 
+    def test_server_cycle_intraday_budget_covers_dynamic_watchlist(self) -> None:
+        text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" '
+            "python3 scripts/alpha_intraday_flow_watch.py",
+            text,
+        )
+
     def test_pre_watch_signal_reply_omits_stale_runtime_context(self) -> None:
         import scripts.telegram_signal_collector as collector
 
