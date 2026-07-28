@@ -941,6 +941,45 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(get_logs.call_args.args[3], 1200)
 
+    def test_next_hop_log_limit_becomes_partial_coverage(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_NEXT_HOP_MAX_LOGS": "80"},
+            ),
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                side_effect=RuntimeError("coverage truncated"),
+            ) as get_logs,
+        ):
+            result = opening.trace_next_hop_from_recipient(
+                event,
+                "0x" + "3" * 40,
+                "0x" + "4" * 40,
+                100,
+                200,
+            )
+
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["confirmed_sell_count"], 0)
+        self.assertEqual(get_logs.call_args.args[3], 1200)
+
     def test_opening_selection_keeps_large_middle_transfer(self) -> None:
         from scripts.alpha_opening_block_watch import (
             capped_event_int_setting,

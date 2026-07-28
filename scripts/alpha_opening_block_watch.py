@@ -1500,7 +1500,13 @@ def select_transfer_tx_items(
 def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: str, from_block: int, latest: int) -> dict[str, Any]:
     recipient = norm(recipient)
     if not is_address(recipient) or recipient == norm(buyer):
-        return {"classes": set(), "quote_received": Decimal(0), "confirmed_sell_count": 0, "recipient_count": 0}
+        return {
+            "classes": set(),
+            "quote_received": Decimal(0),
+            "confirmed_sell_count": 0,
+            "recipient_count": 0,
+            "coverage_complete": True,
+        }
     max_span = int(os.environ.get("ALPHA_OPENING_NEXT_HOP_MAX_BLOCKS", "50000"))
     full_span = int(os.environ.get("ALPHA_OPENING_NEXT_HOP_FULL_MAX_BLOCKS", "250000"))
     trace_from = trace_start_block(from_block, latest, max_span, full_span, True)
@@ -1510,13 +1516,25 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
         "toBlock": hex(latest),
         "topics": [TRANSFER_TOPIC, address_topic(recipient), None],
     }
-    logs = get_logs_quick(
-        event["chain"],
-        query,
-        int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000")),
-        int(os.environ.get("ALPHA_OPENING_NEXT_HOP_MAX_LOGS", "80")),
-        int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
-    )
+    try:
+        logs = get_logs_quick(
+            event["chain"],
+            query,
+            int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000")),
+            max(
+                1200,
+                int(os.environ.get("ALPHA_OPENING_NEXT_HOP_MAX_LOGS", "1200")),
+            ),
+            int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5")),
+        )
+    except Exception:
+        return {
+            "classes": set(),
+            "quote_received": Decimal(0),
+            "confirmed_sell_count": 0,
+            "recipient_count": 0,
+            "coverage_complete": False,
+        }
     parsed_logs = [transfer_log(row, int(event["token"]["decimals"])) for row in logs]
     by_tx: dict[str, list[dict[str, Any]]] = {}
     for row in parsed_logs:
@@ -1540,6 +1558,7 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
         "quote_received": quote_received,
         "confirmed_sell_count": confirmed_sell_count,
         "recipient_count": 1 if parsed_logs else 0,
+        "coverage_complete": True,
     }
 
 
@@ -1575,6 +1594,7 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     next_hop_quote_received = Decimal(0)
     next_hop_confirmed_sell_count = 0
     next_hop_recipient_count = 0
+    next_hop_coverage_complete = True
     seen_recipients = set()
     max_recipients = event_int_setting(
         event,
@@ -1586,11 +1606,30 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
         if recipient in seen_recipients:
             continue
         seen_recipients.add(recipient)
-        next_hop = trace_next_hop_from_recipient(event, buyer, recipient, block, latest)
+        try:
+            next_hop = trace_next_hop_from_recipient(
+                event,
+                buyer,
+                recipient,
+                block,
+                latest,
+            )
+        except Exception:
+            next_hop = {
+                "classes": set(),
+                "quote_received": Decimal(0),
+                "confirmed_sell_count": 0,
+                "recipient_count": 0,
+                "coverage_complete": False,
+            }
         classes.update(next_hop["classes"])
         next_hop_quote_received += next_hop["quote_received"]
         next_hop_confirmed_sell_count += int(next_hop["confirmed_sell_count"])
         next_hop_recipient_count += int(next_hop["recipient_count"])
+        next_hop_coverage_complete = (
+            next_hop_coverage_complete
+            and next_hop.get("coverage_complete") is True
+        )
     return {
         "classes": classes,
         "quote_received": quote_received + next_hop_quote_received,
@@ -1598,6 +1637,7 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
         "next_hop_quote_received": next_hop_quote_received,
         "confirmed_sell_count": (1 if quote_received > 0 else 0) + next_hop_confirmed_sell_count,
         "next_hop_count": next_hop_recipient_count,
+        "next_hop_coverage_complete": next_hop_coverage_complete,
     }
 
 
@@ -2069,6 +2109,7 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
     direct_confirmed_sell_count = 0
     next_hop_quote_received = Decimal(0)
     next_hop_count = 0
+    next_hop_coverage_complete = True
     max_classify = event_int_setting(
         event,
         "opening_classify_out_txs",
@@ -2087,6 +2128,11 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         next_hop_quote_received += classified["next_hop_quote_received"]
         confirmed_sell_count += int(classified["confirmed_sell_count"])
         next_hop_count += int(classified["next_hop_count"])
+        next_hop_coverage_complete = (
+            next_hop_coverage_complete
+            and classified.get("next_hop_coverage_complete") is True
+        )
+    coverage_complete = coverage_complete and next_hop_coverage_complete
     if current <= bought * Decimal("0.05"):
         status = "mostly_exited_or_transferred" if outgoing > 0 else "mostly_exited_untraced"
     elif outgoing > 0:
@@ -2136,6 +2182,7 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         "next_hop_sell_quote_received": decimal_str(next_hop_quote_received),
         "confirmed_sell_count": str(confirmed_sell_count),
         "next_hop_count": str(next_hop_count),
+        "next_hop_coverage_complete": next_hop_coverage_complete,
         "transfer_safety_status": transfer_safety.get("status", "unverified"),
         "transfer_safety_detail": transfer_safety.get("detail", ""),
         "dex_quote_status": dex_quote_safety.get("status", "unverified"),
