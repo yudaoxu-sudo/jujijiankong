@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 
 CRITICAL_OUTPUTS = (
+    ("binance_alpha_catalog", "output/binance_alpha_catalog_watch/latest.json"),
     ("wallet_monitor", "output/monitoring/latest_snapshot.json"),
     ("alpha_project", "output/alpha_project_watch/latest.json"),
     ("alpha_prelaunch", "output/alpha_prelaunch_watch/latest.json"),
@@ -169,6 +170,393 @@ def verification_issues(root: Path) -> list[dict[str, str]]:
     ]
 
 
+def snapshot_rows(path: Path) -> list[dict[str, Any]]:
+    payload = read_json(path, {})
+    rows = payload.get("projects")
+    if not isinstance(rows, list):
+        rows = payload.get("events")
+    if not isinstance(rows, list):
+        rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def snapshot_symbols(path: Path) -> set[str]:
+    return {
+        str(row.get("symbol") or "").upper()
+        for row in snapshot_rows(path)
+        if row.get("symbol")
+    }
+
+
+def snapshot_symbol_rows(path: Path, symbol: str) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in snapshot_rows(path)
+        if str(row.get("symbol") or "").upper() == symbol.upper()
+    ]
+
+
+def row_contract_identities(
+    row: dict[str, Any],
+    output_name: str,
+) -> set[tuple[str, str]]:
+    if output_name == "project":
+        return {
+            (
+                str(contract.get("chain") or row.get("chain") or "").lower(),
+                str(contract.get("address")).lower(),
+            )
+            for contract in row.get("contracts") or []
+            if isinstance(contract, dict) and contract.get("address")
+        }
+    if output_name in {"opening", "intraday"}:
+        address = str((row.get("token") or {}).get("address") or "").lower()
+        chain = str(row.get("chain") or "bsc").lower()
+        return {(chain, address)} if address else set()
+    if output_name in {"prelaunch", "price"}:
+        address = str(row.get("contract") or "").lower()
+        chain = str(row.get("chain") or "bsc").lower()
+        return {(chain, address)} if address else set()
+    if output_name == "holder":
+        address = str(row.get("address") or "").lower()
+        chain = str(row.get("chain") or "").lower()
+        return {(chain, address)} if address else set()
+    return set()
+
+
+def row_contract_addresses(row: dict[str, Any], output_name: str) -> set[str]:
+    return {
+        address
+        for _, address in row_contract_identities(row, output_name)
+        if address
+    }
+
+
+def output_row_coverage_issue(
+    output_name: str,
+    row: dict[str, Any],
+    target_contract: str = "",
+) -> str:
+    if row.get("error"):
+        return f"{output_name} scan has errors"
+    if output_name == "project":
+        contracts = [item for item in row.get("contracts", []) if isinstance(item, dict)]
+        if target_contract:
+            contracts = [
+                item
+                for item in contracts
+                if str(item.get("address") or "").lower() == target_contract.lower()
+            ]
+        if not contracts:
+            return "project contract missing"
+        if any(
+            item.get("error") or int(item.get("log_error_count") or 0)
+            for item in contracts
+        ):
+            return "project contract scan has errors"
+        states = {
+            str(item.get("operator_attribution_state") or "")
+            for item in contracts
+        }
+        if "contract_error" in states:
+            return "project operator attribution contract error"
+        unresolved = states & {
+            "owner_unresolved",
+            "conflicting_owner_selectors",
+            "unresolved",
+        }
+        if unresolved:
+            return "project operator attribution unresolved=" + ",".join(
+                sorted(unresolved)
+            )
+    elif output_name == "opening":
+        if row.get("status") == "opened":
+            traces = [
+                item.get("buyer_trace") or {}
+                for item in row.get("rows", [])
+                if isinstance(item, dict)
+            ]
+            if any(trace.get("status") == "trace_failed" for trace in traces):
+                return "opening buyer trace failed"
+            partial_statuses = {
+                "unknown_incomplete_coverage",
+                "confirmed_sell_partial_coverage",
+            }
+            if any(
+                trace.get("coverage_complete") is False
+                or trace.get("coverage_status") == "partial"
+                or trace.get("status") in partial_statuses
+                for trace in traces
+            ):
+                return "opening buyer trace coverage incomplete"
+        elif row.get("status") not in {"waiting", "opened"}:
+            return f"opening status={row.get('status', 'missing')}"
+    elif output_name == "intraday":
+        if row.get("status") != "scanned":
+            return f"intraday status={row.get('status', 'missing')}"
+        analysis = row.get("analysis") or {}
+        if analysis.get("scan_limited"):
+            return "intraday receipt scan limited"
+        coverage = row.get("transfer_coverage") or {}
+        if coverage.get("state") != "requested_window_complete" or coverage.get("complete") is not True:
+            return f"intraday transfer coverage={coverage.get('state', 'missing')}"
+    elif output_name == "price":
+        analysis = row.get("analysis") or {}
+        if analysis.get("direction") == "数据缺口":
+            return "price layer data gap"
+    elif output_name == "holder":
+        if int(row.get("log_error_count") or 0) or row.get("truncated"):
+            return "holder scan incomplete"
+    return ""
+
+
+def output_row_coverage_warning(
+    output_name: str,
+    row: dict[str, Any],
+    target_contract: str = "",
+) -> str:
+    if output_name == "opening" and row.get("status") == "opened":
+        traces = [
+            item.get("buyer_trace") or {}
+            for item in row.get("rows", [])
+            if isinstance(item, dict)
+        ]
+        partial_statuses = {
+            "unknown_incomplete_coverage",
+            "confirmed_sell_partial_coverage",
+        }
+        if any(
+            trace.get("coverage_complete") is False
+            or trace.get("coverage_status") == "partial"
+            or trace.get("status") in partial_statuses
+            for trace in traces
+        ):
+            return "opening buyer trace coverage incomplete"
+        return ""
+    if output_name != "project":
+        return ""
+    contracts = [item for item in row.get("contracts", []) if isinstance(item, dict)]
+    if target_contract:
+        contracts = [
+            item
+            for item in contracts
+            if str(item.get("address") or "").lower() == target_contract.lower()
+        ]
+    states = {
+        str(item.get("operator_attribution_state") or "")
+        for item in contracts
+    }
+    unresolved = states & {
+        "owner_unresolved",
+        "conflicting_owner_selectors",
+        "unresolved",
+    }
+    if unresolved:
+        return "project operator attribution warning=" + ",".join(sorted(unresolved))
+    return ""
+
+
+def runtime_watchlist_contracts(path: Path) -> set[tuple[str, str]]:
+    payload = read_json(path, {})
+    rows: set[tuple[str, str]] = set()
+    for item in payload.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("active_monitoring") is False:
+            continue
+        for contract in item.get("contracts", []):
+            if not isinstance(contract, dict):
+                continue
+            chain = str(contract.get("chain") or item.get("chain") or "").lower()
+            address = str(contract.get("address") or "").lower()
+            if chain and address:
+                rows.add((chain, address))
+    return rows
+
+
+def effective_runtime_watchlist_path(root: Path) -> Path:
+    configured = os.environ.get("ALPHA_WATCHLIST_PATH", "").strip()
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else root / path
+    generated = (
+        root
+        / "output"
+        / "binance_alpha_catalog_watch"
+        / "current_watchlist.json"
+    )
+    return generated
+
+
+def alpha_coverage_evaluation(
+    root: Path,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    attempt = read_json(
+        root / "output" / "binance_alpha_catalog_watch" / "status.json",
+        {},
+    )
+    if attempt and attempt.get("status") != "pass":
+        return (
+            [
+                issue(
+                    "alpha_catalog_failed",
+                    "binance_alpha_catalog",
+                    f"official Alpha catalog status={attempt.get('status', 'missing')}: "
+                    f"{str(attempt.get('reason') or '')[:240]}",
+                )
+            ],
+            [],
+        )
+    catalog = read_json(
+        root / "output" / "binance_alpha_catalog_watch" / "latest.json",
+        {},
+    )
+    if not catalog:
+        return [], []
+    if catalog.get("status") != "pass":
+        return (
+            [
+                issue(
+                    "alpha_catalog_failed",
+                    "binance_alpha_catalog",
+                    f"official Alpha catalog status={catalog.get('status', 'missing')}",
+                )
+            ],
+            [],
+        )
+    issues: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    dropped_count = int(catalog.get("dropped_count") or 0)
+    if dropped_count:
+        dropped_rows = [
+            row for row in catalog.get("dropped", []) if isinstance(row, dict)
+        ]
+        dropped_symbols = ",".join(
+            str(row.get("symbol") or "")
+            for row in dropped_rows[:8]
+        )
+        suffix = f": {dropped_symbols}" if dropped_symbols else ""
+        dropped_identities = "\n".join(
+            sorted(
+                f"{str(row.get('chain') or '').lower()}:{str(row.get('contract') or '').lower()}"
+                for row in dropped_rows
+            )
+        )
+        dropped_signature = hashlib.sha256(
+            dropped_identities.encode("utf-8")
+        ).hexdigest()[:16]
+        issues.append(
+            issue(
+                "alpha_catalog_budget_exceeded",
+                "binance_alpha_catalog",
+                f"{dropped_count} eligible Alpha catalog item(s) exceeded the runtime budget{suffix}",
+                f"alpha_catalog_budget_exceeded:{dropped_count}:{dropped_signature}",
+            )
+        )
+    selected = [
+        row
+        for row in catalog.get("selected", [])
+        if isinstance(row, dict) and row.get("symbol")
+    ]
+    if not selected:
+        return issues, warnings
+    runtime_contracts = runtime_watchlist_contracts(
+        effective_runtime_watchlist_path(root)
+    )
+    current = parse_time(catalog.get("generated_at")) or datetime.now(timezone.utc)
+    output_paths = {
+        "project": root / "output" / "alpha_project_watch" / "latest.json",
+        "prelaunch": root / "output" / "alpha_prelaunch_watch" / "latest.json",
+        "opening": root / "output" / "alpha_opening_block_watch" / "latest.json",
+        "intraday": root / "output" / "alpha_intraday_flow_watch" / "latest.json",
+        "price": root / "output" / "alpha_price_momentum_watch" / "latest.json",
+        "holder": root / "output" / "alpha_holder_concentration_watch" / "latest.json",
+    }
+    for row in selected:
+        symbol = str(row.get("symbol") or "").upper()
+        chain = str(row.get("chain") or "").lower()
+        contract = str(row.get("contract") or "").lower()
+        identity = (chain, contract)
+        identity_label = f"{chain}:{contract}"
+        if identity not in runtime_contracts:
+            issues.append(
+                issue(
+                    "alpha_coverage_gap",
+                    symbol,
+                    f"{symbol} is in the official recent Alpha catalog but missing from the runtime watchlist",
+                    f"alpha_coverage_gap:{identity_label}:runtime_watchlist",
+                )
+            )
+            continue
+        required_outputs = ["project", "price", "holder"]
+        listing = parse_time(row.get("listing_time_utc"))
+        if chain == "bsc":
+            required_outputs.append("opening")
+            if listing is not None and listing > current:
+                required_outputs.append("prelaunch")
+            else:
+                required_outputs.append("intraday")
+        for output_name in required_outputs:
+            candidates = snapshot_rows(output_paths[output_name])
+            matching = [
+                candidate
+                for candidate in candidates
+                if identity in row_contract_identities(candidate, output_name)
+            ]
+            if not matching:
+                issues.append(
+                    issue(
+                        "alpha_coverage_gap",
+                        symbol,
+                        f"{symbol} {output_name} output does not match official contract",
+                        f"alpha_coverage_gap:{identity_label}:{output_name}:contract_mismatch",
+                    )
+                )
+                continue
+            detail = output_row_coverage_issue(
+                output_name,
+                matching[0],
+                target_contract=contract,
+            )
+            if detail:
+                issues.append(
+                    issue(
+                        "alpha_coverage_gap",
+                        symbol,
+                        f"{symbol} {output_name}: {detail}",
+                        f"alpha_coverage_gap:{identity_label}:{output_name}:{detail}",
+                    )
+                )
+                continue
+            warning_detail = output_row_coverage_warning(
+                output_name,
+                matching[0],
+                target_contract=contract,
+            )
+            if warning_detail:
+                warnings.append(
+                    issue(
+                        "alpha_coverage_warning",
+                        symbol,
+                        f"{symbol} {output_name}: {warning_detail}",
+                        f"alpha_coverage_warning:{identity_label}:{output_name}:{warning_detail}",
+                    )
+                )
+    return issues, warnings
+
+
+def alpha_coverage_issues(root: Path) -> list[dict[str, str]]:
+    issues, _ = alpha_coverage_evaluation(root)
+    return issues
+
+
+def alpha_coverage_warnings(root: Path) -> list[dict[str, str]]:
+    _, warnings = alpha_coverage_evaluation(root)
+    return warnings
+
+
 def signature_for(issues: list[dict[str, str]]) -> str:
     if not issues:
         return "healthy"
@@ -190,6 +578,8 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
     freshness, freshness_issues = output_freshness(root, args.max_output_age_seconds)
     issues.extend(freshness_issues)
     issues.extend(verification_issues(root))
+    coverage_issues, warnings = alpha_coverage_evaluation(root)
+    issues.extend(coverage_issues)
     return {
         "schema": "runtime_health.v1",
         "generated_at": now_iso(),
@@ -199,6 +589,8 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
         "signature": signature_for(issues),
         "issue_count": len(issues),
         "issues": issues,
+        "warning_count": len(warnings),
+        "warnings": warnings,
         "failed_steps": failed_steps,
         "freshness": freshness,
     }
@@ -208,6 +600,7 @@ def build_watchdog_snapshot(args: argparse.Namespace, out_dir: Path) -> dict[str
     last_cycle_path = out_dir / "last_cycle.json"
     last_cycle = read_json(last_cycle_path, {})
     issues: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
     age_seconds: int | None = None
     if not last_cycle_path.exists() or not last_cycle:
         issues.append(issue("missing_heartbeat", "last_cycle", "no completed runtime cycle heartbeat exists"))
@@ -223,6 +616,7 @@ def build_watchdog_snapshot(args: argparse.Namespace, out_dir: Path) -> dict[str
             )
         elif last_cycle.get("status") == "unhealthy":
             issues.extend(last_cycle.get("issues", []))
+        warnings.extend(last_cycle.get("warnings", []))
     return {
         "schema": "runtime_health.v1",
         "generated_at": now_iso(),
@@ -231,6 +625,8 @@ def build_watchdog_snapshot(args: argparse.Namespace, out_dir: Path) -> dict[str
         "signature": signature_for(issues),
         "issue_count": len(issues),
         "issues": issues,
+        "warning_count": len(warnings),
+        "warnings": warnings,
         "last_cycle_generated_at": last_cycle.get("generated_at", ""),
         "last_cycle_age_seconds": age_seconds,
     }
@@ -381,6 +777,7 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- mode: `{snapshot['mode']}`",
         f"- status: `{snapshot['status']}`",
         f"- issue_count: `{snapshot['issue_count']}`",
+        f"- warning_count: `{snapshot.get('warning_count', 0)}`",
         f"- notification: `{(snapshot.get('notification') or {}).get('status', '')}`",
         "",
     ]
@@ -390,6 +787,10 @@ def render(snapshot: dict[str, Any]) -> str:
             lines.append(f"- `{row.get('kind')}` {row.get('detail')}")
     else:
         lines.append("- No runtime health issue detected.")
+    if snapshot.get("warnings"):
+        lines.extend(["", "## Warnings", ""])
+        for row in snapshot["warnings"]:
+            lines.append(f"- `{row.get('kind')}` {row.get('detail')}")
     lines.append("")
     return "\n".join(lines)
 

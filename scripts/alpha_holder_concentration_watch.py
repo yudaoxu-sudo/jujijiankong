@@ -22,7 +22,9 @@ from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, reco
 
 getcontext().prec = 80
 
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_holder_concentration_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -669,8 +671,9 @@ def holder_decision_context(project: dict[str, Any], market_context: dict[str, d
 
 def contract_items(config: dict[str, Any]) -> list[dict[str, str]]:
     priorities = tuple(part.strip() for part in os.environ.get("ALPHA_HOLDER_PRIORITIES", "P0,P1").split(",") if part.strip())
-    max_projects = int(os.environ.get("ALPHA_HOLDER_MAX_PROJECTS", "8"))
-    rows: list[dict[str, str]] = []
+    max_projects = max(1, int(os.environ.get("ALPHA_HOLDER_MAX_PROJECTS", "8")))
+    catalog_rows: list[dict[str, str]] = []
+    configured_rows: list[dict[str, str]] = []
     for item in config.get("items", []):
         if item.get("active_monitoring") is False:
             continue
@@ -684,11 +687,18 @@ def contract_items(config: dict[str, Any]) -> list[dict[str, str]]:
             chain = str(contract.get("chain", "")).lower()
             address = norm(contract.get("address"))
             if chain in SUPPORTED_CHAINS and is_address(address):
-                rows.append({"symbol": symbol, "name": str(item.get("name") or ""), "priority": priority, "chain": chain, "address": address})
+                row = {
+                    "symbol": symbol,
+                    "name": str(item.get("name") or ""),
+                    "priority": priority,
+                    "chain": chain,
+                    "address": address,
+                }
+                facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+                target = catalog_rows if facts.get("alpha_id") else configured_rows
+                target.append(row)
                 break
-        if len(rows) >= max_projects:
-            break
-    return rows
+    return (catalog_rows + configured_rows)[:max_projects]
 
 
 def full_holder_source_status(chain: str, token: str) -> dict[str, Any]:

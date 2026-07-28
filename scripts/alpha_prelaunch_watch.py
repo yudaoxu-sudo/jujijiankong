@@ -10,7 +10,9 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_prelaunch_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"

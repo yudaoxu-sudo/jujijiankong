@@ -7,6 +7,7 @@ import argparse
 import http.client
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -24,6 +25,7 @@ from sniper_engine.token_aliases import apply_token_aliases, display_alias
 
 
 STATE_PATH = ROOT / "output" / "telegram_signals" / "state.json"
+PENDING_PATH = ROOT / "output" / "telegram_signals" / "pending_analysis.json"
 OUT_DIR = ROOT / "output" / "telegram_signals"
 SIGNAL_DIR = ROOT / "input" / "signals" / "telegram"
 QUOTE_SYMBOLS = {"USDT", "USDC", "BUSD", "FDUSD", "BNB", "WBNB", "ETH", "WETH", "BTCB"}
@@ -33,6 +35,12 @@ GET_UPDATES_ATTEMPTS = 2
 GET_UPDATES_TIMEOUT_SECONDS = 15
 GET_UPDATES_MAX_RETRY_DELAY_SECONDS = 5
 GET_UPDATES_TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+GENERIC_RUNTIME_PATHS = {
+    "project": ROOT / "output" / "alpha_project_watch" / "latest.json",
+    "opening": ROOT / "output" / "alpha_opening_block_watch" / "latest.json",
+    "intraday": ROOT / "output" / "alpha_intraday_flow_watch" / "latest.json",
+    "price": ROOT / "output" / "alpha_price_momentum_watch" / "latest.json",
+}
 
 
 def now_iso() -> str:
@@ -421,8 +429,158 @@ def display_symbol(parsed: dict[str, Any]) -> str:
     return str(registry.get("symbol") or "UNKNOWN")
 
 
+def normalized_contract(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not re.fullmatch(r"0x[a-f0-9]{40}", text):
+        return ""
+    return text
+
+
+def parsed_contracts(parsed: dict[str, Any]) -> set[str]:
+    rows = list(parsed.get("addresses") or [])
+    proposal = parsed.get("watchlist_proposal") or {}
+    rows.extend(
+        contract.get("address")
+        for contract in proposal.get("contracts", [])
+        if isinstance(contract, dict)
+    )
+    return {
+        address
+        for value in rows
+        for address in [normalized_contract(value)]
+        if address
+    }
+
+
+def runtime_row_contracts(row: dict[str, Any]) -> set[str]:
+    values: list[Any] = [
+        row.get("contract"),
+        row.get("address"),
+        (row.get("token") or {}).get("address"),
+    ]
+    values.extend(
+        contract.get("address")
+        for contract in row.get("contracts", [])
+        if isinstance(contract, dict)
+    )
+    return {
+        address
+        for value in values
+        for address in [normalized_contract(value)]
+        if address
+    }
+
+
+def snapshot_analysis(
+    snapshot: dict[str, Any],
+    symbol: str,
+    contracts: set[str] | None = None,
+) -> dict[str, Any]:
+    rows = snapshot.get("projects")
+    if not isinstance(rows, list):
+        rows = snapshot.get("events")
+    if not isinstance(rows, list):
+        rows = snapshot.get("rows")
+    if not isinstance(rows, list):
+        return {}
+    symbol_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(row.get("symbol") or "").upper() == symbol.upper()
+    ]
+    if contracts:
+        symbol_rows = [
+            row
+            for row in symbol_rows
+            if contracts & runtime_row_contracts(row)
+        ]
+    for row in symbol_rows:
+        analysis = row.get("analysis")
+        if isinstance(analysis, dict):
+            return analysis
+    return {}
+
+
+def first_runtime_value(
+    analyses: dict[str, dict[str, Any]],
+    sources: tuple[str, ...],
+    fields: tuple[str, ...],
+) -> str:
+    for source in sources:
+        analysis = analyses.get(source, {})
+        for field in fields:
+            value = analysis.get(field)
+            if value not in ("", None):
+                text = str(value).replace("txIndex", "交易序号")
+                return re.sub(r"0x[a-fA-F0-9]{8,}", "链上索引", text)
+    return ""
+
+
+def runtime_context_from_snapshots(
+    symbol: str,
+    snapshots: dict[str, dict[str, Any]],
+    contracts: set[str] | None = None,
+) -> dict[str, str]:
+    analyses = {
+        source: snapshot_analysis(snapshot, symbol, contracts)
+        for source, snapshot in snapshots.items()
+        if isinstance(snapshot, dict)
+    }
+    if not any(analyses.values()):
+        return {}
+    generated_values = sorted(
+        str(snapshots[source].get("generated_at") or "")
+        for source, analysis in analyses.items()
+        if analysis and snapshots[source].get("generated_at")
+    )
+    return {
+        "generated_at": generated_values[-1] if generated_values else "",
+        "conclusion": first_runtime_value(
+            analyses,
+            ("opening", "intraday", "project", "price"),
+            ("conclusion", "direction", "reason"),
+        ),
+        "spot_action": first_runtime_value(
+            analyses,
+            ("price", "intraday", "opening", "project"),
+            ("spot_action", "trade_signal"),
+        ),
+        "perp_action": first_runtime_value(
+            analyses,
+            ("price", "intraday", "opening", "project"),
+            ("perp_action",),
+        ),
+        "attention": first_runtime_value(
+            analyses,
+            ("intraday", "opening", "project", "price"),
+            ("attention", "reason"),
+        ),
+        "operator_behavior": first_runtime_value(
+            analyses,
+            ("intraday", "opening", "project"),
+            ("operator_behavior",),
+        ),
+        "sniper_behavior": first_runtime_value(
+            analyses,
+            ("intraday", "opening", "project"),
+            ("sniper_behavior",),
+        ),
+    }
+
+
 def project_runtime_context(parsed: dict[str, Any]) -> dict[str, str]:
-    if display_symbol(parsed).upper() != "ARX":
+    if os.environ.get("SIGNAL_RUNTIME_CONTEXT", "1") == "0":
+        return {}
+    symbol = display_symbol(parsed).upper()
+    snapshots = {
+        source: read_json(path, {})
+        for source, path in GENERIC_RUNTIME_PATHS.items()
+    }
+    generic = runtime_context_from_snapshots(symbol, snapshots, parsed_contracts(parsed))
+    if generic:
+        return generic
+    if symbol != "ARX":
         return {}
     path = ROOT / "output" / "arx_opening_block_watch" / "latest.json"
     if not path.exists():
@@ -504,7 +662,7 @@ def signal_operator_behavior(parsed: dict[str, Any]) -> str:
 
 def signal_sniper_behavior(parsed: dict[str, Any]) -> str:
     if parsed.get("txs") and parsed.get("pool_ids"):
-        return "已能定位池子 tx，下一步看同区块前后买入、gas、bribe 和 txIndex"
+        return "已能定位池子交易，下一步看同区块前后买入、gas、bribe 和交易序号"
     if parsed.get("txs"):
         return "有 tx，可查块内顺序和是否存在前排买入"
     return "暂未看到狙击手买入证据，需要等开盘块或交易 tx"
@@ -524,7 +682,12 @@ def infer_judgment(parsed: dict[str, Any]) -> str:
     return "证据不足，暂存待证；需要官方链接、合约、池子 tx 或预测市场链接。"
 
 
-def process_update(token: str, update: dict[str, Any]) -> dict[str, Any]:
+def process_update(
+    token: str,
+    update: dict[str, Any],
+    *,
+    defer_analysis: bool = False,
+) -> dict[str, Any]:
     message = update_payload(update)
     if not message:
         return {"status": "skipped", "reason": "unsupported update"}
@@ -564,15 +727,107 @@ def process_update(token: str, update: dict[str, Any]) -> dict[str, Any]:
 
     target_chat = os.environ.get("SIGNAL_ANALYSIS_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID", "")
     pushed = False
-    if target_chat and should_push(parsed, is_private_chat(message)):
+    push_eligible = bool(target_chat and should_push(parsed, is_private_chat(message)))
+    if push_eligible and not defer_analysis:
         result = send_message(token, target_chat, analysis_message(parsed, applied))
         pushed = bool(result.get("ok") and not result.get("disabled"))
-    return {"status": "processed", "signal_path": str(signal_path), "applied": applied, "pushed": pushed, "symbol": parsed.get("symbol"), "priority": parsed.get("priority"), "registry_status": parsed.get("project_registry", {}).get("status")}
+    return {
+        "status": "processed",
+        "signal_path": str(signal_path),
+        "analysis_artifact": f"{stem}.json",
+        "applied": applied,
+        "pushed": pushed,
+        "analysis_deferred": bool(push_eligible and defer_analysis),
+        "symbol": parsed.get("symbol"),
+        "priority": parsed.get("priority"),
+        "registry_status": parsed.get("project_registry", {}).get("status"),
+    }
+
+
+def append_pending_analysis(rows: list[dict[str, Any]]) -> None:
+    payload = read_json(PENDING_PATH, {"items": []})
+    existing = [
+        row
+        for row in payload.get("items", [])
+        if isinstance(row, dict) and row.get("analysis_artifact")
+    ]
+    by_update = {
+        str(row.get("update_id")): row
+        for row in existing
+        if row.get("update_id") not in ("", None)
+    }
+    for row in rows:
+        by_update[str(row["update_id"])] = {
+            "update_id": row["update_id"],
+            "analysis_artifact": row["analysis_artifact"],
+            "applied": bool(row.get("applied")),
+            "queued_at": now_iso(),
+        }
+    write_json(
+        PENDING_PATH,
+        {
+            "updated_at": now_iso(),
+            "items": list(by_update.values())[-200:],
+        },
+    )
+
+
+def flush_pending_analysis(token: str) -> int:
+    payload = read_json(PENDING_PATH, {"items": []})
+    pending = [
+        row
+        for row in payload.get("items", [])
+        if isinstance(row, dict) and row.get("analysis_artifact")
+    ]
+    target_chat = os.environ.get("SIGNAL_ANALYSIS_CHAT_ID") or os.environ.get(
+        "TELEGRAM_CHAT_ID",
+        "",
+    )
+    if not pending or not target_chat:
+        print(json.dumps({"status": "pass", "pending": len(pending), "sent": 0}, ensure_ascii=False))
+        return 0
+    remaining = list(pending)
+    sent = 0
+    for row in pending:
+        artifact_name = Path(str(row["analysis_artifact"])).name
+        parsed_path = OUT_DIR / artifact_name
+        parsed = read_json(parsed_path, {})
+        if not parsed:
+            raise RuntimeError(f"pending analysis artifact missing: {artifact_name}")
+        result = send_message(
+            token,
+            target_chat,
+            analysis_message(parsed, bool(row.get("applied"))),
+        )
+        if not result.get("ok") or result.get("disabled"):
+            raise RuntimeError(f"pending analysis send failed: {artifact_name}")
+        sent += 1
+        remaining = [
+            item
+            for item in remaining
+            if item.get("update_id") != row.get("update_id")
+        ]
+        write_json(
+            PENDING_PATH,
+            {"updated_at": now_iso(), "items": remaining},
+        )
+    print(json.dumps({"status": "pass", "pending": len(pending), "sent": sent}, ensure_ascii=False))
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect signal-like Telegram bot updates and send parsed analysis.")
     parser.add_argument("--bootstrap", action="store_true", help="Set offset to the latest pending update without processing old updates.")
+    parser.add_argument(
+        "--defer-analysis",
+        action="store_true",
+        help="Collect/apply updates now and send their enriched analysis after watchers finish.",
+    )
+    parser.add_argument(
+        "--flush-pending",
+        action="store_true",
+        help="Send queued analyses using the latest watcher snapshots.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -581,6 +836,8 @@ def main() -> int:
             print(json.dumps({"status": "skipped", "reason": "missing TELEGRAM_BOT_TOKEN and DISABLE_TELEGRAM=1"}, ensure_ascii=False))
             return 0
         raise SystemExit("missing TELEGRAM_BOT_TOKEN")
+    if args.flush_pending:
+        return flush_pending_analysis(token)
     state = read_json(STATE_PATH, {"offset": None, "processed": []})
     updates = get_updates(token, state.get("offset"))
     if args.bootstrap:
@@ -600,7 +857,7 @@ def main() -> int:
     max_update_id = state.get("offset", 0) - 1 if state.get("offset") else None
     for update in updates:
         update_id = int(update.get("update_id", 0))
-        result = process_update(token, update)
+        result = process_update(token, update, defer_analysis=args.defer_analysis)
         processed.append({"update_id": update_id, **result})
         max_update_id = update_id if max_update_id is None else max(max_update_id, update_id)
 
@@ -610,6 +867,14 @@ def main() -> int:
         "processed": processed[-200:],
     }
     write_json(STATE_PATH, new_state)
+    if args.defer_analysis:
+        append_pending_analysis(
+            [
+                row
+                for row in processed
+                if row.get("analysis_deferred") and row.get("analysis_artifact")
+            ]
+        )
     print(STATE_PATH)
     print(json.dumps({"updates": len(updates), "processed": processed}, ensure_ascii=False))
     return 0

@@ -102,6 +102,9 @@ bash scripts/server_run_once.sh
 这个脚本会依次执行：
 
 ```text
+scripts/telegram_signal_collector.py --defer-analysis
+scripts/telegram_user_signal_collector.py（context_only）
+scripts/binance_alpha_catalog_watch.py
 scripts/sniper_monitor.py
 scripts/alpha_project_watch.py
 scripts/alpha_prelaunch_watch.py
@@ -114,8 +117,7 @@ scripts/alpha_holder_concentration_watch.py
 scripts/surf_aux_market_watch.py
 scripts/arx_opening_sprint.sh 条件执行
 scripts/arx_launch_watch.py 条件执行
-scripts/telegram_signal_collector.py
-scripts/telegram_user_signal_collector.py
+scripts/telegram_signal_collector.py --flush-pending
 scripts/prediction_market_watch.py
 scripts/external_aux_source_readiness.py
 scripts/external_aux_live_probe.py 条件执行
@@ -125,6 +127,22 @@ scripts/build_alpha_daily_report.py
 scripts/verify_sniper_engine.py
 scripts/runtime_health_watch.py
 ```
+
+`binance_alpha_catalog_watch.py` 从 Binance Alpha 公开目录生成
+`output/binance_alpha_catalog_watch/current_watchlist.json`，并将其作为本轮 Alpha watcher
+的运行时清单。采集器先执行，catalog 随后合并 curated 配置与公开目录，因此新线索和官方新币
+能在同一轮进入监控。当前自动发现范围明确限制为 BSC；目录失败时保留旧运行时清单，并把本轮
+步骤与运行健康记为失败。自动发现的 cohort 默认保留 30 天；目录会按 chain+contract 与
+alpha_id 去重，并显式输出 eligible、selected、retained、expired 和 dropped。容量超限、
+支持链 schema 解析数量骤降或目录参数无效都会 fail-closed。主循环采用 6 小时内生成的
+last-known-good 运行时清单，缺失或过期时回退 `config/current_alpha_watchlist.json`；
+`BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS` 可调整该时限，显式设置的
+`ALPHA_WATCHLIST_PATH` 始终优先。
+
+Telegram bot 采集器先以 `--defer-analysis` 拉取并合并线索，Alpha watcher 完成本轮扫描后再用
+`--flush-pending` 发送富化结果，避免新线索回复引用上一轮快照。同 ticker 项目按合约身份匹配
+上下文。Telegram user source 继续以 `SIGNAL_RUNTIME_CONTEXT=0` 运行，并保持 social/context_only
+隔离。
 
 服务器 cron 通过幂等安装脚本维护：
 
@@ -191,7 +209,11 @@ Telegram 当前有两层控制：
 
 `review_opening_cohort_funders.py` 在 `alpha_opening_sprint.sh` 之后运行，用于从开盘首批买家里回查最近原生 BNB funding source，并把同源 funding cluster 写到 `output/opening_cohort_funders/latest.*`。默认 `OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS=120`，同时受 `OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS=25` 和 `OPENING_COHORT_FUNDER_TIMEOUT_SECONDS=90` 限制；CEX、router、bridge、quote token 等不安全父节点仍由 clustering guard 排除。
 
-`alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；放量收跌默认触发 `卖出/减仓观察`，空仓动作是等待止跌承接。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
+`alpha_price_momentum_watch.py` 用于 Binance Alpha 官方行情层监控，读取公开 token list、K 线、ticker 和当前盘口深度。它补足链上监控看不到的 Alpha 撮合/限价单价格异动，输出在 `output/alpha_price_momentum_watch/`。价格层会同时监控放量上冲、冲高回落和放量下跌；还会回看最多 1000 根 1m K 线，峰值回撤达到默认 25% 时独立触发风险告警，15m 极端跌幅达到默认 12% 时不依赖 20 万 USDT 成交额门槛。两类风险在 Telegram 中按最高风险排序，并显示峰值、现价、回撤率或 15m 跌幅。盘口层会额外识别重复数量梯队、top N 可见买卖盘金额比、少数档位集中度和价差；这些字段只用于判断显示盘口质量，不能单独生成买入信号。若 fullDepth 返回交叉盘口或疑似过期快照，脚本会标记 `crossed_or_stale`，盘口结构不参与方向判断。
+
+项目/卖出归因按 `control_scope`、`identity_status`、`realization` 三个维度输出。成功 receipt 内卖家 token 净流出并收到报价资产才记为已实现卖出；verified token controller、candidate 关联地址、池侧功能地址和未归属地址分别报告。余额归零只记离开原地址，CEX 流入只记待售风险。共享 PoolManager 的 LP 事件必须匹配目标 PoolId；缺少 PoolId 时不把共享 manager 的事件归入本项目。
+
+`runtime_health_watch.py` 以 `chain + contract` 为身份主键核对官方 cohort 是否进入 project/opening/intraday/price/holder 输出，ticker 仅用于展示。目录容量丢弃、项目扫描错误、RPC/日志错误、opening trace 失败或覆盖不完整、owner 接口缺失或冲突、intraday transfer coverage/扫描预算、价格数据缺口和 holder 错误都会使本轮 `unhealthy`。相关输出保持“身份未知”或“覆盖不完整”，不能生成“未卖出”结论。脚本退出码正常不能替代这些状态。
 
 `surf_aux_market_watch.py` 用于外部市场辅助层，读取 watchlist 后通过 Surf 查询 CEX 现货/合约市场、CEX K 线、DEX 价格和上市事件。它补足 CAP 这类“链上 Pancake 净流不强，但 Alpha/CEX 可见价格已经拉动”的盲区，输出在 `output/surf_aux_market_watch/`。这个层的 `authority` 固定为 `auxiliary_context_only`，只能进入日报和背景判断，不能单独触发买入、卖出或开空建议。
 

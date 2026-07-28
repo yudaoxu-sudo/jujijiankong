@@ -18,7 +18,9 @@ sys.path.insert(0, str(ROOT))
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 
 
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_price_momentum_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -175,12 +177,18 @@ def window_stats(rows: list[list[Any]], minutes: int) -> dict[str, Any]:
     low_pct = Decimal(0)
     close_pct = Decimal(0)
     retrace_pct = Decimal(0)
+    peak_drawdown_pct = Decimal(0)
     if open_price > 0:
         high_pct = (high_price / open_price - Decimal(1)) * Decimal(100)
         low_pct = (low_price / open_price - Decimal(1)) * Decimal(100)
         close_pct = (close_price / open_price - Decimal(1)) * Decimal(100)
     if high_price > open_price:
         retrace_pct = max(Decimal(0), (high_price - close_price) / (high_price - open_price) * Decimal(100))
+    if high_price > 0:
+        peak_drawdown_pct = max(
+            Decimal(0),
+            (high_price - close_price) / high_price * Decimal(100),
+        )
     return {
         "from_utc8": ms_to_utc8(selected[0][0]),
         "to_utc8": ms_to_utc8(selected[-1][0]),
@@ -192,6 +200,7 @@ def window_stats(rows: list[list[Any]], minutes: int) -> dict[str, Any]:
         "low_pct": str(low_pct),
         "close_pct": str(close_pct),
         "retrace_pct": str(retrace_pct),
+        "peak_drawdown_pct": str(peak_drawdown_pct),
         "quote_volume": str(quote),
         "trades": trades,
     }
@@ -455,12 +464,13 @@ def perp_action_summary(perp: dict[str, Any]) -> str:
 
 
 def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
-    rows_1m = fetch_klines(event["alpha_symbol"], "1m", int(os.environ.get("ALPHA_PRICE_KLINE_LIMIT", "180")))
+    rows_1m = fetch_klines(event["alpha_symbol"], "1m", int(os.environ.get("ALPHA_PRICE_KLINE_LIMIT", "1000")))
     ticker = fetch_ticker(event["alpha_symbol"])
     last_price = decimal_from(ticker.get("lastPrice") or event["alpha"].get("price"))
     depth = depth_stats(fetch_depth(event["alpha_symbol"]), last_price)
     w15 = window_stats(rows_1m, 15)
     w60 = window_stats(rows_1m, 60)
+    wbackfill = window_stats(rows_1m, len(rows_1m))
     onchain_flow = latest_onchain_flow(event["symbol"])
     venue = venue_classification(decimal_from(w60.get("quote_volume")), onchain_flow)
     perp_context = latest_perp_context(event["symbol"])
@@ -471,6 +481,12 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
     drawdown_threshold = Decimal(os.environ.get("ALPHA_PRICE_15M_DRAWDOWN_PCT", "15"))
     volume_threshold = Decimal(os.environ.get("ALPHA_PRICE_QUOTE_ALERT", "200000"))
     shallow_threshold = Decimal(os.environ.get("ALPHA_PRICE_SHALLOW_ASK_USDT", "50000"))
+    peak_drawdown_threshold = Decimal(
+        os.environ.get("ALPHA_PRICE_BACKFILL_PEAK_DRAWDOWN_PCT", "25")
+    )
+    extreme_drop_threshold = Decimal(
+        os.environ.get("ALPHA_PRICE_EXTREME_15M_DROP_PCT", "12")
+    )
 
     high_pct = decimal_from(w15.get("high_pct"))
     low_pct = decimal_from(w15.get("low_pct"))
@@ -478,13 +494,30 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
     quote = decimal_from(w15.get("quote_volume"))
     retrace = decimal_from(w15.get("retrace_pct"))
     ask_5 = decimal_from(depth.get("ask_5pct_usdt"))
+    peak_drawdown = decimal_from(wbackfill.get("peak_drawdown_pct"))
 
     direction = "观察"
     trade_signal = "无价格异动"
     spot_action = "观察"
     reason = "未触发价格/成交额阈值"
     alpha_dominant = venue.get("venue_class") == "ALPHA_DOMINANT"
-    if quote >= volume_threshold and close_pct <= -drop_threshold:
+    if peak_drawdown >= peak_drawdown_threshold:
+        direction = "高位大幅回撤"
+        trade_signal = "Alpha 从监控窗口峰值大幅回撤；持仓降低风险"
+        spot_action = "持仓降低风险；空仓等待企稳和真实承接"
+        reason = (
+            f"监控窗口峰值 {fmt(wbackfill.get('high'))} 回撤 "
+            f"{fmt(peak_drawdown)}% 至 {fmt(wbackfill.get('close'))}"
+        )
+    elif close_pct <= -extreme_drop_threshold or low_pct <= -extreme_drop_threshold:
+        direction = "快速下跌"
+        trade_signal = "Alpha 短时极端下跌；持仓降低风险"
+        spot_action = "持仓降低风险；空仓不接下落过程"
+        reason = (
+            f"15m close {fmt(close_pct)}%，低点 {fmt(low_pct)}%，"
+            f"成交额≈{fmt(quote)} USDT"
+        )
+    elif quote >= volume_threshold and close_pct <= -drop_threshold:
         direction = "放量走弱"
         trade_signal = "Alpha 放量收跌；卖出/减仓观察"
         spot_action = "持仓减风险；空仓不接，等止跌承接"
@@ -535,6 +568,7 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
         "ticker": ticker,
         "window_15m": w15,
         "window_60m": w60,
+        "window_backfill": wbackfill,
         "depth": depth,
         "onchain_flow": onchain_flow,
         "perp_context": perp_context,
@@ -587,12 +621,57 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
     low_pct = decimal_from(w15.get("low_pct"))
     close_pct = decimal_from(w15.get("close_pct"))
     quote = decimal_from(w15.get("quote_volume"))
+    wbackfill = analysis.get("window_backfill", {})
+    peak_drawdown = decimal_from(wbackfill.get("peak_drawdown_pct"))
     time_bucket = alert_time_bucket(
         str(w15.get("to_utc8") or ""),
         int(os.environ.get("ALPHA_PRICE_ALERT_TIME_BUCKET_MINUTES", "60")),
     )
     pairs: list[tuple[str, list[str]]] = []
-    if quote < Decimal(os.environ.get("ALPHA_PRICE_QUOTE_ALERT", "200000")):
+    peak_drawdown_threshold = Decimal(
+        os.environ.get("ALPHA_PRICE_BACKFILL_PEAK_DRAWDOWN_PCT", "25")
+    )
+    extreme_drop_threshold = Decimal(
+        os.environ.get("ALPHA_PRICE_EXTREME_15M_DROP_PCT", "12")
+    )
+    price_alert = False
+    if peak_drawdown >= peak_drawdown_threshold:
+        peak_time_bucket = alert_time_bucket(
+            str(wbackfill.get("to_utc8") or ""),
+            int(
+                os.environ.get(
+                    "ALPHA_PRICE_BACKFILL_ALERT_TIME_BUCKET_MINUTES",
+                    "1440",
+                )
+            ),
+        )
+        base_parts = [
+            "alpha_peak_drawdown",
+            event["symbol"],
+            bucket(peak_drawdown, Decimal("5")),
+            bucket(decimal_from(wbackfill.get("high")), Decimal("0.01")),
+            peak_time_bucket,
+        ]
+        pairs.append(
+            (
+                "|".join(base_parts),
+                [],
+            )
+        )
+    volume_threshold = Decimal(os.environ.get("ALPHA_PRICE_QUOTE_ALERT", "200000"))
+    if (
+        quote < volume_threshold
+        and (close_pct <= -extreme_drop_threshold or low_pct <= -extreme_drop_threshold)
+    ):
+        base_parts = [
+            "alpha_extreme_drop",
+            event["symbol"],
+            bucket(abs(low_pct), Decimal("5")),
+            bucket(abs(close_pct), Decimal("5")),
+            time_bucket,
+        ]
+        pairs.append(("|".join(base_parts), []))
+    if quote < volume_threshold:
         price_alert = False
     else:
         price_alert = (
@@ -720,7 +799,12 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
         a = event.get("analysis", {})
         venue = a.get("venue", {})
         direction = str(a.get("direction") or "观察")
-        marker = "🚨" if direction in {"放量走弱", "放量下插", "冲高回落"} else "❗"
+        marker = (
+            "🚨"
+            if direction
+            in {"高位大幅回撤", "快速下跌", "放量走弱", "放量下插", "冲高回落"}
+            else "❗"
+        )
         if index:
             lines.append("")
         lines.extend(
@@ -739,6 +823,8 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
 def price_telegram_risk_key(event: dict[str, Any]) -> tuple[int, Decimal, Decimal, str]:
     analysis = event.get("analysis", {})
     direction_rank = {
+        "高位大幅回撤": 6,
+        "快速下跌": 6,
         "放量走弱": 5,
         "放量下插": 5,
         "冲高回落": 4,
@@ -749,6 +835,7 @@ def price_telegram_risk_key(event: dict[str, Any]) -> tuple[int, Decimal, Decima
     trend_rank = {"空头增量": 4, "降杠杆": 3, "多头增量": 2}
     perp = analysis.get("perp_context", {})
     w15 = analysis.get("window_15m", {})
+    wbackfill = analysis.get("window_backfill", {})
     severity = max(
         direction_rank.get(str(analysis.get("direction") or ""), 0),
         trend_rank.get(str(perp.get("trend_hint") or ""), 0),
@@ -757,6 +844,7 @@ def price_telegram_risk_key(event: dict[str, Any]) -> tuple[int, Decimal, Decima
         abs(decimal_from(w15.get("high_pct"))),
         abs(decimal_from(w15.get("low_pct"))),
         abs(decimal_from(w15.get("close_pct"))),
+        abs(decimal_from(wbackfill.get("peak_drawdown_pct"))),
         abs(decimal_from(perp.get("oi_usd_delta_pct"))),
     )
     return (-severity, -magnitude, -decimal_from(w15.get("quote_volume")), str(event.get("symbol") or ""))
@@ -784,7 +872,10 @@ def compact_signed_pct(value: Any) -> str:
 def price_telegram_action(event: dict[str, Any]) -> str:
     analysis = event.get("analysis", {})
     keys = event_alert_keys(event)
-    has_price = any(key.startswith("alpha_price|") for key in keys)
+    has_price = any(
+        key.startswith(("alpha_price|", "alpha_peak_drawdown|", "alpha_extreme_drop|"))
+        for key in keys
+    )
     has_perp = any(key.startswith("perp_trend|") for key in keys)
     perp = analysis.get("perp_context", {})
     perp_action = str(perp.get("trend_action") or analysis.get("perp_action") or "观察")
@@ -799,6 +890,20 @@ def price_telegram_trigger_line(event: dict[str, Any]) -> str:
     analysis = event.get("analysis", {})
     keys = event_alert_keys(event)
     parts: list[str] = []
+    if any(key.startswith("alpha_peak_drawdown|") for key in keys):
+        backfill = analysis.get("window_backfill", {})
+        parts.append(
+            f"峰值回撤｜峰值 {fmt(backfill.get('high'), 8)} → "
+            f"现价 {fmt(backfill.get('close'), 8)}｜"
+            f"回撤{fmt(backfill.get('peak_drawdown_pct'))}%"
+        )
+    if any(key.startswith("alpha_extreme_drop|") for key in keys):
+        w15 = analysis.get("window_15m", {})
+        parts.append(
+            f"15m 极跌｜低{compact_signed_pct(w15.get('low_pct'))}/"
+            f"收{compact_signed_pct(w15.get('close_pct'))}｜"
+            f"量{compact_amount(w15.get('quote_volume'))} USDT"
+        )
     if any(key.startswith("alpha_price|") for key in keys):
         w15 = analysis.get("window_15m", {})
         price_part = (
@@ -829,7 +934,11 @@ def price_telegram_trigger_line(event: dict[str, Any]) -> str:
 
 
 def push_signature(snapshot: dict[str, Any]) -> str:
-    keys = [key for event in snapshot.get("events", [])[:4] for key in event_alert_keys(event)]
+    keys = [
+        key
+        for event in snapshot.get("events", [])
+        for key in event_alert_keys(event)
+    ]
     return "\n".join(sorted(keys))
 
 

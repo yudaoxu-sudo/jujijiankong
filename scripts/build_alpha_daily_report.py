@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT / "reports"
+WATCHLIST_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 TZ_CN = timezone(timedelta(hours=8))
 CELUE_STRATEGY_FIELDS = [
     (
@@ -241,7 +245,7 @@ def celue_strategy_checklist() -> list[str]:
 
 def build_report() -> str:
     today = datetime.now(TZ_CN).date().isoformat()
-    watchlist = read_json(ROOT / "config" / "current_alpha_watchlist.json", {"items": []})
+    watchlist = read_json(WATCHLIST_PATH, {"items": []})
     active_items = [item for item in watchlist.get("items", []) if item.get("active_monitoring") is not False]
     archived_items = [item for item in watchlist.get("items", []) if item.get("active_monitoring") is False]
     mint = read_json(ROOT / "output" / "o1_pancake_v3_decode" / "decoded_mint.json", {})

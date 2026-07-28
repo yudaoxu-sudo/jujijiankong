@@ -20,7 +20,9 @@ from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, reco
 
 getcontext().prec = 80
 
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_project_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -28,6 +30,8 @@ SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+ZERO = "0x0000000000000000000000000000000000000000"
+OWNER_SELECTORS = ("0x8da5cb5b", "0x893d20e8")
 QUOTE_TOKENS = {
     "0x55d398326f99059ff775485246999027b3197955": "USDT",
     "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": "WBNB",
@@ -95,6 +99,74 @@ def encode_balance_of(address: str) -> str:
 def call_uint(chain: str, contract: str, data: str) -> int:
     raw = rpc_call(chain, "eth_call", [{"to": contract, "data": data}, "latest"])
     return int(raw or "0x0", 16)
+
+
+def decode_address_return(value: Any) -> str:
+    state, address = decode_address_return_state(value)
+    return address if state == "address" else ""
+
+
+def decode_address_return_state(value: Any) -> tuple[str, str]:
+    text = norm(str(value or ""))
+    raw = text[2:] if text.startswith("0x") else text
+    if len(raw) < 64:
+        return "invalid", ""
+    candidate = "0x" + raw[-40:]
+    if not is_address(candidate):
+        return "invalid", ""
+    if candidate == ZERO:
+        return "zero", ""
+    return "address", candidate
+
+
+def token_controller(chain: str, contract: str) -> dict[str, str]:
+    owners: set[str] = set()
+    successful_selectors = 0
+    zero_selectors = 0
+    for selector in OWNER_SELECTORS:
+        try:
+            raw = rpc_call(
+                chain,
+                "eth_call",
+                [{"to": contract, "data": selector}, "latest"],
+            )
+        except Exception:
+            continue
+        state, owner = decode_address_return_state(raw)
+        if state == "address":
+            successful_selectors += 1
+            owners.add(owner)
+        elif state == "zero":
+            successful_selectors += 1
+            zero_selectors += 1
+    if len(owners) > 1 or (owners and zero_selectors):
+        return {
+            "state": "conflicting_owner_selectors",
+            "identity_status": "unattributed",
+        }
+    if len(owners) == 1:
+        return {
+            "state": "verified_token_controller",
+            "address": next(iter(owners)),
+            "label": "token owner() controller",
+            "role": "token_controller",
+            "control_scope": "token",
+            "identity_status": "verified",
+            "attribution": "canonical_owner_call",
+            "selector_count": str(successful_selectors),
+        }
+    if zero_selectors:
+        return {
+            "state": "owner_renounced",
+            "control_scope": "token",
+            "identity_status": "verified_no_controller",
+            "attribution": "canonical_owner_call",
+            "selector_count": str(successful_selectors),
+        }
+    return {
+        "state": "owner_unresolved",
+        "identity_status": "unattributed",
+    }
 
 
 def token_decimals(chain: str, contract: str) -> int:
@@ -235,6 +307,19 @@ def extract_contracts(item: dict[str, Any]) -> list[dict[str, str]]:
     return contracts
 
 
+def configured_control_scope(role: str) -> str:
+    normalized = role.strip().lower()
+    if normalized in {"pool", "pool_manager", "v4_pool_manager", "lp_position_manager"}:
+        return "pool"
+    if normalized.startswith("pool_"):
+        return "pool"
+    if normalized in {"event_distribution", "airdrop_distribution", "distribution"}:
+        return "distribution"
+    if normalized == "token_controller":
+        return "token"
+    return "unknown"
+
+
 def extract_watch_addresses(item: dict[str, Any], chain: str) -> list[dict[str, Any]]:
     rows = []
     for row in item.get("watch_addresses", []):
@@ -242,18 +327,71 @@ def extract_watch_addresses(item: dict[str, Any], chain: str) -> list[dict[str, 
         address = norm(row.get("address"))
         if row_chain != chain or not is_address(address):
             continue
+        role = str(row.get("role", ""))
+        control_scope = str(row.get("control_scope") or configured_control_scope(role))
+        identity_status = str(row.get("identity_status") or "")
+        if not identity_status:
+            identity_status = (
+                "functional_only"
+                if control_scope in {"pool", "distribution"}
+                else "candidate"
+            )
         rows.append(
             {
                 "chain": row_chain,
                 "address": address,
                 "label": row.get("label") or short_addr(address),
-                "role": row.get("role", ""),
+                "role": role,
                 "level": row.get("level", "HIGH"),
                 "watch_quote": bool(row.get("watch_quote", False)),
                 "watch_quote_tokens": row.get("watch_quote_tokens", []),
+                "control_scope": control_scope,
+                "identity_status": identity_status,
+                "attribution": row.get("attribution", "configured_watch_address"),
             }
         )
     return rows
+
+
+def effective_watch_addresses(
+    item: dict[str, Any],
+    chain: str,
+    token: str,
+) -> tuple[list[dict[str, Any]], str]:
+    rows = extract_watch_addresses(item, chain)
+    state = "configured" if rows else "unresolved"
+    if str(item.get("project_operator_probe") or "").lower() != "owner":
+        return rows, state
+    controller = token_controller(chain, token)
+    address = norm(controller.get("address"))
+    if address:
+        matching = next(
+            (row for row in rows if norm(row.get("address")) == address),
+            None,
+        )
+        if matching is None:
+            rows.append(
+                {
+                    "chain": chain,
+                    "address": address,
+                    "label": controller.get("label", "token controller"),
+                    "role": controller.get("role", "token_controller"),
+                    "level": "HIGH",
+                    "watch_quote": True,
+                    "watch_quote_tokens": ["USDT"],
+                    "control_scope": controller.get("control_scope", "token"),
+                    "identity_status": controller.get("identity_status", "verified"),
+                    "attribution": controller.get("attribution", "canonical_owner_call"),
+                }
+            )
+        else:
+            matching["control_scope"] = controller.get("control_scope", "token")
+            matching["identity_status"] = controller.get("identity_status", "verified")
+            matching["attribution"] = controller.get("attribution", "canonical_owner_call")
+        state = str(controller.get("state") or "verified_token_controller")
+    else:
+        state = str(controller.get("state") or "owner_unresolved")
+    return rows, state
 
 
 def parse_utc8(value: str) -> datetime | None:
@@ -379,6 +517,29 @@ def build_project(
         contracts.append(contract_payload)
         alerts.extend(contract_payload.get("alerts", []))
 
+    attribution_gap_states = sorted(
+        {
+            str(contract.get("operator_attribution_state") or "")
+            for contract in contracts
+        }
+        & {"owner_unresolved", "conflicting_owner_selectors", "unresolved"}
+    )
+    facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+    if facts.get("alpha_id") and attribution_gap_states:
+        alerts.append(
+            {
+                "type": "ATTRIBUTION_GAP",
+                "symbol": symbol,
+                "level": "COVERAGE",
+                "states": attribution_gap_states,
+                "contracts": [
+                    contract.get("address", "")
+                    for contract in contracts
+                    if contract.get("address")
+                ],
+            }
+        )
+
     start_hours = int(os.environ.get("ALPHA_PROJECT_START_ALERT_HOURS", "36"))
     for event in launches:
         hours = float(event.get("hours_until_start", 9999))
@@ -422,16 +583,31 @@ def build_contract(
     address = norm(contract["address"])
     raw_tip = latest_block(chain)
     tip = max(0, raw_tip - finality)
-    from_block = max(0, tip - lookback)
+    effective_lookback = max(1, int(item.get("project_lookback_blocks") or lookback))
     previous_tip = previous_tips.get((symbol, chain, address), 0)
+    from_block = max(0, tip - effective_lookback)
+    if previous_tip:
+        from_block = max(from_block, previous_tip + 1)
     decimals = token_decimals(chain, address)
     total_supply = token_total_supply(chain, address, decimals)
-    watch_addresses = extract_watch_addresses(item, chain)
+    watch_addresses, operator_attribution_state = effective_watch_addresses(
+        item,
+        chain,
+        address,
+    )
     watch_addr_values = [row["address"] for row in watch_addresses]
     logs, log_errors = get_transfer_logs(chain, address, watch_addr_values, from_block, tip)
     transfers = [transfer_row(row, decimals) for row in logs[-40:]]
     balances = build_balances(symbol, chain, address, decimals, watch_addresses, previous_balance_map)
-    alerts = build_contract_alerts(symbol, chain, address, previous_tip, transfers, balances)
+    alerts = build_contract_alerts(
+        symbol,
+        chain,
+        address,
+        previous_tip,
+        transfers,
+        balances,
+        watch_addresses,
+    )
     return {
         "chain": chain,
         "address": address,
@@ -441,10 +617,12 @@ def build_contract(
         "previous_latest_block": previous_tip,
         "from_block": from_block,
         "finality_blocks": finality,
-        "lookback_blocks": lookback,
+        "lookback_blocks": effective_lookback,
         "decimals": decimals,
         "total_supply": total_supply,
         "watch_address_count": len(watch_addresses),
+        "operator_attribution_state": operator_attribution_state,
+        "watch_addresses": watch_addresses,
         "log_error_count": len(log_errors),
         "log_errors": log_errors[:3],
         "balances": balances,
@@ -467,6 +645,8 @@ def build_contract_error(contract: dict[str, str], exc: Exception) -> dict[str, 
         "decimals": 18,
         "total_supply": "",
         "watch_address_count": 0,
+        "operator_attribution_state": "contract_error",
+        "watch_addresses": [],
         "log_error_count": 1,
         "log_errors": [str(exc)],
         "balances": [],
@@ -542,8 +722,16 @@ def build_contract_alerts(
     previous_tip: int,
     transfers: list[dict[str, Any]],
     balances: list[dict[str, Any]],
+    watch_addresses: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    if previous_tip <= 0:
+        return []
     alerts = []
+    watch_by_address = {
+        norm(row.get("address")): row
+        for row in watch_addresses
+        if is_address(row.get("address"))
+    }
     min_transfer = env_decimal("ALPHA_PROJECT_MIN_TRANSFER_ALERT", "100000")
     min_balance_delta = env_decimal("ALPHA_PROJECT_MIN_BALANCE_DELTA_ALERT", "100000")
     min_quote_delta = env_decimal("ALPHA_PROJECT_MIN_QUOTE_BALANCE_DELTA_ALERT", "10000")
@@ -553,6 +741,9 @@ def build_contract_alerts(
         amount = Decimal(str(row.get("amount", "0")))
         if amount < min_transfer:
             continue
+        watched_from = watch_by_address.get(norm(row.get("from")), {})
+        watched_to = watch_by_address.get(norm(row.get("to")), {})
+        watched = watched_from or watched_to
         alerts.append(
             {
                 "type": "TOKEN_TRANSFER",
@@ -565,6 +756,11 @@ def build_contract_alerts(
                 "from": row.get("from"),
                 "to": row.get("to"),
                 "amount": str(amount),
+                "watched_direction": "out" if watched_from else "in",
+                "role": watched.get("role", ""),
+                "control_scope": watched.get("control_scope", "unknown"),
+                "identity_status": watched.get("identity_status", "unattributed"),
+                "attribution": watched.get("attribution", ""),
             }
         )
     for row in balances:
@@ -589,10 +785,42 @@ def build_contract_alerts(
                 "address": row.get("address"),
                 "label": row.get("label", ""),
                 "role": row.get("role", ""),
+                "control_scope": row.get("control_scope", "unknown"),
+                "identity_status": row.get("identity_status", "unattributed"),
+                "attribution": row.get("attribution", ""),
                 "delta": str(delta),
             }
         )
     return alerts
+
+
+def controller_risk_movement(row: dict[str, Any]) -> bool:
+    if row.get("identity_status") != "verified" or row.get("control_scope") != "token":
+        return False
+    if row.get("type") == "TOKEN_TRANSFER":
+        return row.get("watched_direction") == "out"
+    if row.get("type") != "BALANCE_CHANGE":
+        return False
+    try:
+        delta = Decimal(str(row.get("delta") or "0"))
+    except InvalidOperation:
+        return False
+    return (bool(row.get("is_quote_balance")) and delta > 0) or (
+        not row.get("is_quote_balance") and delta < 0
+    )
+
+
+def controller_inbound_movement(row: dict[str, Any]) -> bool:
+    if row.get("identity_status") != "verified" or row.get("control_scope") != "token":
+        return False
+    if row.get("type") == "TOKEN_TRANSFER":
+        return row.get("watched_direction") == "in"
+    if row.get("type") != "BALANCE_CHANGE" or row.get("is_quote_balance"):
+        return False
+    try:
+        return Decimal(str(row.get("delta") or "0")) > 0
+    except InvalidOperation:
+        return False
 
 
 def analyze_project(
@@ -609,6 +837,20 @@ def analyze_project(
     balance_alerts = [row for row in alerts if row.get("type") == "BALANCE_CHANGE"]
     launch_alerts = [row for row in alerts if row.get("type") == "LAUNCH_WINDOW"]
     watched = sum(int(contract.get("watch_address_count") or 0) for contract in contracts)
+    controller_alerts = [row for row in movement_alerts if controller_risk_movement(row)]
+    controller_inbound_alerts = [
+        row for row in movement_alerts if controller_inbound_movement(row)
+    ]
+    candidate_alerts = [
+        row
+        for row in movement_alerts
+        if row.get("identity_status") in {"candidate", "functional_only", "unattributed", ""}
+        and row.get("control_scope") not in {"pool", "distribution"}
+    ]
+    attribution_states = {
+        str(contract.get("operator_attribution_state") or "")
+        for contract in contracts
+    }
     pool_token_out = sum_balance_delta(
         balance_alerts,
         token=symbol,
@@ -626,19 +868,33 @@ def analyze_project(
     quote_out = sum_balance_delta(balance_alerts, quote=True, sign="out")
     pool_structure = pool_structure_summary(item)
 
-    if pool_token_out:
+    if controller_alerts:
+        conclusion = f"{symbol} 合约控制地址出现新资金动作，卖出状态需要同一成功收据中的 token 流出与报价资产流入共同确认。"
+        spot_action = "持仓降低风险；空仓等待卖出收据或后续承接"
+        perp_action = "记录偏空条件；等待真实可交易深度与价格走弱"
+        attention = "核对控制地址动作的成功收据、对手方与报价资产净流"
+        operator = "已确认链上 token controller 身份；当前动作仍按资金移动记录。"
+        sniper = "首批狙击去向继续由 opening cohort 独立追踪。"
+    elif candidate_alerts:
+        conclusion = f"{symbol} 关键地址或功能地址出现新动作，来源归属仍待验证。"
+        spot_action = "持仓降低风险；空仓等待身份与成交收据补齐"
+        perp_action = "仅记录风险条件；不把候选身份当项目方事实"
+        attention = "补齐 control_scope、identity_status 与同收据成交证据"
+        operator = "当前只确认地址动作；项目方或做市身份尚未成立。"
+        sniper = "狙击地址与项目控制地址保持独立归因。"
+    elif pool_token_out:
         conclusion = f"{symbol} 池子卖出区正在被买盘吃掉，PoolManager {symbol} 减少约 {format_amount(pool_token_out)}。"
         spot_action = "空仓不追；持仓按冲高降风险，等回踩承接和项目侧资金去向"
         perp_action = "偏空预案；等交易所流入、价格转弱和可交易合约深度"
-        attention = "卖出区消耗后继续看项目/做市地址是否回收 USDT、是否跨链或进交易所"
-        operator = "项目方预设卖出区被买盘接走，下一步确认报价资产是否离开池子路径。"
+        attention = "卖出区消耗后继续看报价资产是否离开池子路径、是否跨链或进交易所"
+        operator = "已确认池侧 token 流出；操作者身份仍需单独归因。"
         sniper = "狙击买盘和跟风买盘正在承接卖出区，若买盘衰竭容易出现冲高回落。"
     elif quote_in:
         conclusion = f"{symbol} 关键地址收到报价资产约 {format_amount(quote_in)}，需要确认来源是否来自池子卖出区或做市回收。"
         spot_action = "空仓不追；已有仓位降低风险，等报价资产来源确认"
         perp_action = "偏空条件；若同步出现价格走弱和交易所流入，再执行"
         attention = "打开最新 tx，看对手方是池子、聚合器、CEX 还是内部钱包"
-        operator = "项目/做市相关地址正在接收报价资产，可能是回收流动性或卖出区收益归集。"
+        operator = "关键地址正在接收报价资产；是否属于项目或做市回收仍需身份与收据证据。"
         sniper = "狙击手信号降权，当前主线切到项目侧资金回收。"
     elif activity_out:
         conclusion = f"{symbol} 活动分发地址释放约 {format_amount(activity_out)} {symbol}，属于后续抛压线索。"
@@ -652,28 +908,35 @@ def analyze_project(
         spot_action = "观察；先看新增区间价格和深度"
         perp_action = "不开仓；补池子方向确认后再判断"
         attention = "确认是加池、改区间、迁移池子还是普通转入"
-        operator = "项目方可能在调整流动性结构，先还原价格区间。"
+        operator = "已确认池侧流动性变化，操作者身份待归因。"
         sniper = "狙击判断要等新区间和真实买入出现。"
     elif quote_out:
         conclusion = f"{symbol} 关键地址转出报价资产约 {format_amount(quote_out)}，需要追踪下一跳。"
         spot_action = "观察偏谨慎；持仓先降风险"
         perp_action = "偏空条件；等去向进交易所或价格走弱"
         attention = "确认报价资产是做市调仓、跨链、归集，还是进入交易所"
-        operator = "项目/做市地址出现报价资产转移，资金路径需要继续追。"
+        operator = "关键地址出现报价资产转移，身份与资金路径需要继续追。"
         sniper = "狙击手行为不是当前主信号，优先看项目侧资金路径。"
+    elif controller_inbound_alerts:
+        conclusion = f"{symbol} 合约控制地址收到 token，本轮只记录入账。"
+        spot_action = "观察；等待后续成功收据和资金去向"
+        perp_action = "不开仓；单纯入账不构成偏空证据"
+        attention = "继续看该地址是否转出 token、收到报价资产或进入交易所路径"
+        operator = "已确认 token controller 入账，尚未出现卖出或出金组合证据。"
+        sniper = "首批狙击去向继续由 opening cohort 独立追踪。"
     elif critical or transfer_alerts or balance_alerts:
         conclusion = f"{symbol} 关键地址出现新动作，进入深度验证。"
         spot_action = "观察；先打开最新 tx，确认流向交易所、池子、桥或新中转钱包"
         perp_action = "合约未确认；只记录偏空条件，等交易所充值、大户外流或首波冲高回落证据"
         attention = "重点看 txIndex、counterparty、bribe、池子深度和后续余额变化"
-        operator = "项目相关筹码或关键地址正在移动，当前优先判断筹码管理节奏。"
+        operator = "关键地址正在移动筹码，归属与控制关系需要继续验证。"
         sniper = "狙击判断点在开盘块前后买入排序、gas/bribe 和买入后是否快速转出。"
     elif launch_alerts:
         conclusion = f"{symbol} 已进入上线窗口，开始开盘块预案。"
         spot_action = launch_spot_plan(item)
         perp_action = launch_perp_plan(item)
         attention = launch_attention(item)
-        operator = "项目方已释放上线或池子信号，下一步看是否补池子和控筹。"
+        operator = "官方上线时间已进入监控窗口，下一步看池侧流动性与控制地址动作。"
         sniper = "狙击手通常会在池子可交易后的首块竞争，重点看同块排序和贿赂。"
     elif contracts and watched == 0:
         conclusion = f"{symbol} 已有合约线索，缺少关键地址监控。"
@@ -682,6 +945,16 @@ def analyze_project(
         attention = "把团队、部署、加池、分发、桥和 CEX 充值地址补进 watch_addresses"
         operator = "当前只能确认合约线索，项目方实时行为证据不足。"
         sniper = "当前无法判断外部狙击和项目方自买，需要开盘块与关键地址。"
+    elif contracts and attribution_states <= {
+        "verified_token_controller",
+        "configured",
+    }:
+        conclusion = f"{symbol} 控制/候选地址处于监控中，本轮无新增资金动作。"
+        spot_action = "观察；等待成功收据与报价资产净流"
+        perp_action = "不开仓；当前没有新增出货证据"
+        attention = "持续区分 token controller、池侧功能地址与未归属卖家"
+        operator = "控制关系按现有链上或配置证据记录，本轮没有确认卖出。"
+        sniper = "首批狙击 cohort 仍按独立链路追踪。"
     elif contracts:
         conclusion = f"{symbol} 暂无新增关键告警。"
         spot_action = "观察；等待池子、上线时间或关键地址变化"
@@ -804,6 +1077,17 @@ def alert_keys(alerts: list[dict[str, Any]]) -> list[str]:
             )
         elif kind == "LAUNCH_WINDOW":
             keys.append("|".join(["launch", alert.get("symbol", ""), alert.get("stage", ""), alert.get("pool_id", ""), alert.get("start_time_utc8", "")]))
+        elif kind == "ATTRIBUTION_GAP":
+            keys.append(
+                "|".join(
+                    [
+                        "attribution_gap",
+                        str(alert.get("symbol", "")),
+                        ",".join(sorted(str(value) for value in alert.get("states", []))),
+                        ",".join(sorted(norm(value) for value in alert.get("contracts", []))),
+                    ]
+                )
+            )
     return sorted(set(keys))
 
 
@@ -964,6 +1248,8 @@ def telegram_alert_summary(alert: dict[str, Any]) -> str:
         return f"{level} {token}{direction}{telegram_compact_amount(abs(delta))}"
     if kind == "LAUNCH_WINDOW":
         return f"{level} {alert.get('stage', '')}上线窗口"
+    if kind == "ATTRIBUTION_GAP":
+        return f"{level} 项目/做市身份覆盖待补"
     return level
 
 
@@ -1067,6 +1353,11 @@ def format_alert(alert: dict[str, Any]) -> str:
         return f"{alert.get('level')} {alert.get('symbol')} {alert.get('label') or short_addr(alert.get('address',''))} {alert.get('token', '')} delta {format_amount(alert.get('delta'))}"
     if kind == "LAUNCH_WINDOW":
         return f"{alert.get('level')} {alert.get('symbol')} launch {alert.get('start_time_utc8')} UTC+8, {alert.get('stage')} stage"
+    if kind == "ATTRIBUTION_GAP":
+        return (
+            f"{alert.get('level')} {alert.get('symbol')} operator attribution "
+            f"{','.join(alert.get('states', []))}"
+        )
     return json.dumps(alert, ensure_ascii=False)
 
 

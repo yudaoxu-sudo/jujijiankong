@@ -30,11 +30,33 @@ SYMBOL_FIELD_RE = re.compile(r"(?:symbol|代币符号)\s*[:：]\s*([A-Za-z0-9]{1
 PAIR_RE = re.compile(r"\b([A-Z0-9]{1,16})\s*/\s*(USDT|USDC|BNB|ETH)\b")
 BLOCK_RE = re.compile(r"(?:区块|block)\s*[:： ]\s*(\d{5,})", re.I)
 POOL_ID_RE = re.compile(r"(?:PoolId|Pool ID|pool id|池子)\s*[:： ]\s*([0-9A-Za-zx_.-]{4,})", re.I)
-TIME_RE = re.compile(r"(\d{4}[./-]\d{1,2}[./-]\d{1,2}\s+\d{1,2}[:：]\d{2}|(?<!\d)(?:[01]?\d|2[0-3])[:：]\d{2}(?!\d))")
+CHINESE_DATETIME_RE = re.compile(
+    r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(\d{1,2})[:：](\d{2})"
+)
+STANDARD_DATETIME_RE = re.compile(
+    r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})\s+(\d{1,2})[:：](\d{2})"
+)
+CLOCK_TIME_RE = re.compile(r"(?<!\d)((?:[01]?\d|2[0-3])[:：]\d{2})(?!\d)")
 TOTAL_SUPPLY_RE = re.compile(r"(?:总量|total\s*supply)\D{0,12}([0-9]+(?:\.[0-9]+)?\s*[万亿bmMkK]?)", re.I)
 INITIAL_FLOAT_RE = re.compile(r"(?:初始流通|流通量|initial\s*(?:float|circulation|circulating))\D{0,16}([0-9]+(?:\.[0-9]+)?\s*%?|[0-9]+(?:\.[0-9]+)?\s*[万亿bmMkK]?)", re.I)
 FINANCING_RE = re.compile(r"(?:融资|funding|raised)\D{0,18}([0-9]+(?:\.[0-9]+)?\s*(?:万|亿|m|M|k|K|美元|usd|USDT)?)", re.I)
 ALLOCATION_LINE_RE = re.compile(r"(团队|社区|生态|机构|投资者|投资|金库|流动性|空投|顾问|public|team|community|ecosystem|investor|treasury|liquidity|airdrop|advisor)[^\n]{0,40}?([0-9]+(?:\.[0-9]+)?%)", re.I)
+SNIPER_AMOUNT_RE = re.compile(
+    r"(?:狙击金额|snipe\s*amount|sniper\s*amount)\D{0,12}([0-9][0-9,]*(?:\.[0-9]+)?)",
+    re.I,
+)
+BRIBE_AMOUNT_RE = re.compile(
+    r"(?:贿赂金额|bribe(?:\s*amount)?)\D{0,12}([0-9][0-9,]*(?:\.[0-9]+)?)",
+    re.I,
+)
+TOKEN_AMOUNT_RE = re.compile(
+    r"(?:代币数量|token\s*(?:amount|quantity))\D{0,12}([0-9][0-9,]*(?:\.[0-9]+)?)",
+    re.I,
+)
+HOLDING_COST_RE = re.compile(
+    r"(?:持仓成本|holding\s*cost|cost\s*basis)\D{0,12}([0-9]+(?:\.[0-9]+)?)",
+    re.I,
+)
 
 PRICE_PATTERNS = {
     "pool_price": re.compile(r"(?:池子价|池子价格|初始价格)\D{0,12}([0-9]+(?:\.[0-9]+)?)", re.I),
@@ -108,10 +130,19 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
     links_by_type = classify_links(urls)
     blocks = [int(value) for value in unique(BLOCK_RE.findall(text))]
     pool_links = extract_pool_links(urls)
-    times = unique(TIME_RE.findall(text))
+    times = extract_times(text)
     primary_symbol = symbols[0] if symbols else ""
     title = guess_title(text, primary_symbol)
-    priority = score_priority(addresses, txs, pool_ids, prediction_urls, prices)
+    priority = score_priority(
+        addresses,
+        txs,
+        pool_ids,
+        prediction_urls,
+        prices,
+        facts=facts,
+        times=times,
+        links_by_type=links_by_type,
+    )
 
     parsed = {
         "generated_at": now_iso(),
@@ -131,7 +162,18 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
         "times": times,
         "prices": prices,
         "facts": facts,
-        "watchlist_proposal": build_watchlist_proposal(primary_symbol, title, addresses, txs, blocks, times, links_by_type, priority),
+        "watchlist_proposal": build_watchlist_proposal(
+            primary_symbol,
+            title,
+            addresses,
+            txs,
+            blocks,
+            times,
+            pool_ids,
+            pool_links,
+            links_by_type,
+            priority,
+        ),
         "prediction_proposals": build_prediction_proposals(primary_symbol, title, prediction_urls),
         "next_checks": next_checks(addresses, txs, pool_ids, prediction_urls, prices),
     }
@@ -267,6 +309,15 @@ def extract_facts(text: str) -> dict[str, Any]:
         allocations.append({"label": label.strip(), "percent": percent.strip()})
     if allocations:
         facts["allocations"] = unique_dicts(allocations)
+    for key, pattern in (
+        ("sniper_amount_quote", SNIPER_AMOUNT_RE),
+        ("bribe_amount_quote", BRIBE_AMOUNT_RE),
+        ("token_amount", TOKEN_AMOUNT_RE),
+        ("holding_cost", HOLDING_COST_RE),
+    ):
+        match = pattern.search(text)
+        if match:
+            facts[key] = match.group(1).replace(",", "")
     if "币安Alpha" in text or "Binance Alpha" in text or "binance alpha" in text.lower():
         facts.setdefault("venues", []).append("Binance Alpha")
     for venue in ["Gate", "MEXC", "KuCoin", "HTX", "OKX", "Bitget"]:
@@ -275,6 +326,19 @@ def extract_facts(text: str) -> dict[str, Any]:
     if facts.get("venues"):
         facts["venues"] = unique(facts["venues"])
     return facts
+
+
+def extract_times(text: str) -> list[str]:
+    full: list[str] = []
+    for pattern in (CHINESE_DATETIME_RE, STANDARD_DATETIME_RE):
+        for year, month, day, hour, minute in pattern.findall(text):
+            full.append(
+                f"{int(year):04d}-{int(month):02d}-{int(day):02d} "
+                f"{int(hour):02d}:{int(minute):02d}"
+            )
+    if full:
+        return unique(full)
+    return unique(value.replace("：", ":") for value in CLOCK_TIME_RE.findall(text))
 
 
 def classify_links(urls: list[str]) -> dict[str, list[str]]:
@@ -368,6 +432,8 @@ def build_watchlist_proposal(
     txs: list[str],
     blocks: list[int],
     times: list[str],
+    pool_ids: list[str],
+    pool_links: list[dict[str, str]],
     links_by_type: dict[str, list[str]],
     priority: str,
 ) -> dict[str, Any]:
@@ -380,6 +446,7 @@ def build_watchlist_proposal(
         for row in addresses
         if row.get("label_hint") == "token_contract"
     ]
+    pool_candidates = build_pool_candidates(pool_ids, pool_links, times, best_chain(addresses))
     return {
         "symbol": symbol or "UNKNOWN",
         "name": title or symbol or "unknown",
@@ -390,8 +457,43 @@ def build_watchlist_proposal(
         "known_blocks": [{"chain": best_chain(addresses), "block": block, "reason": "signal_ingest"} for block in blocks],
         "known_times": [{"time": value, "reason": "signal_ingest"} for value in times],
         "known_txs": [{"chain": best_chain(addresses), "tx": tx, "reason": "signal_ingest"} for tx in txs],
-        "required_checks": next_checks(addresses, txs, [], [], {}),
+        "pool_ids": pool_candidates,
+        "required_checks": next_checks(addresses, txs, pool_candidates, [], {}),
     }
+
+
+def build_pool_candidates(
+    pool_ids: list[str],
+    pool_links: list[dict[str, str]],
+    times: list[str],
+    fallback_chain: str,
+) -> list[dict[str, str]]:
+    links_by_id = {
+        str(row.get("pool_id") or "").lower(): row
+        for row in pool_links
+        if isinstance(row, dict) and row.get("pool_id")
+    }
+    identifiers = list(pool_ids)
+    if not identifiers and times:
+        identifiers = [""] if len(times) == 1 else []
+    map_times = len(times) == len(identifiers) or (
+        len(times) == 1 and len(identifiers) == 1
+    )
+    candidates: list[dict[str, str]] = []
+    for index, pool_id in enumerate(identifiers):
+        link = links_by_id.get(str(pool_id).lower(), {})
+        chain = str(link.get("chain") or fallback_chain or "unknown").lower()
+        row = {
+            "chain": chain,
+            "pool_id": pool_id,
+            "source": "signal_ingest",
+        }
+        if map_times:
+            row["start_time_utc8"] = times[index]
+        if chain == "bsc":
+            row["quote_address"] = "0x55d398326f99059ff775485246999027b3197955"
+        candidates.append(row)
+    return unique_dicts(candidates)
 
 
 def build_prediction_proposals(symbol: str, title: str, urls: list[str]) -> list[dict[str, Any]]:
@@ -421,6 +523,10 @@ def score_priority(
     pool_ids: list[str],
     prediction_urls: list[str],
     prices: dict[str, str],
+    *,
+    facts: dict[str, Any] | None = None,
+    times: list[str] | None = None,
+    links_by_type: dict[str, list[str]] | None = None,
 ) -> str:
     score = 0
     score += 3 if addresses else 0
@@ -428,6 +534,13 @@ def score_priority(
     score += 3 if pool_ids else 0
     score += 2 if prediction_urls else 0
     score += 2 if prices else 0
+    facts = facts or {}
+    score += 3 if numeric_fact(facts.get("sniper_amount_quote")) >= 50000 else 0
+    score += 3 if numeric_fact(facts.get("bribe_amount_quote")) >= 10000 else 0
+    score += 1 if facts.get("token_amount") else 0
+    score += 1 if facts.get("holding_cost") else 0
+    score += 2 if times and "Binance Alpha" in facts.get("venues", []) else 0
+    score += 1 if (links_by_type or {}).get("x") else 0
     if score >= 8:
         return "P0_DEEP_REVIEW"
     if score >= 5:
@@ -435,6 +548,13 @@ def score_priority(
     if score >= 2:
         return "P2_PAPER_TRADE"
     return "P3_BACKLOG"
+
+
+def numeric_fact(value: Any) -> float:
+    try:
+        return float(str(value or "0").replace(",", ""))
+    except ValueError:
+        return 0.0
 
 
 def next_checks(
@@ -554,7 +674,16 @@ def merge_by_symbol(items: list[dict[str, Any]], proposal: dict[str, Any]) -> li
     for idx, item in enumerate(items):
         if str(item.get("symbol", "")).upper() == symbol:
             merged = dict(item)
-            for key in ["aliases", "contracts", "catalysts", "known_blocks", "known_times", "known_txs", "required_checks"]:
+            for key in [
+                "aliases",
+                "contracts",
+                "catalysts",
+                "known_blocks",
+                "known_times",
+                "known_txs",
+                "pool_ids",
+                "required_checks",
+            ]:
                 merged[key] = merge_list(merged.get(key, []), proposal.get(key, []))
             if proposal.get("facts"):
                 merged["facts"] = {**merged.get("facts", {}), **proposal.get("facts", {})}

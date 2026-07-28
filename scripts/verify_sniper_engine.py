@@ -470,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "alpha_opening_block_watch.py",
         ROOT / "scripts" / "alpha_price_momentum_watch.py",
         ROOT / "scripts" / "alpha_intraday_flow_watch.py",
+        ROOT / "scripts" / "binance_alpha_catalog_watch.py",
         ROOT / "scripts" / "verify_alpha_aggregator_trace.py",
         ROOT / "scripts" / "collect_alpha_trace_bundle.py",
         ROOT / "scripts" / "review_alpha_swap_samples.py",
@@ -488,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "project_continuity_acceptance.py",
         ROOT / "scripts" / "test_project_continuity_acceptance.py",
         ROOT / "scripts" / "test_sniper_engine_units.py",
+        ROOT / "scripts" / "test_aeon_monitor_regression.py",
         ROOT / "scripts" / "test_micro_gas_boundaries.py",
         ROOT / "scripts" / "test_micro_gas_identity_gate.py",
         ROOT / "scripts" / "test_wash_volume_fixtures.py",
@@ -554,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "input" / "ake_gate_cex_wallet_aggregation_batch_2026-07-23.json",
         ROOT / "cases" / "2026-07-17_binance_alpha_cex_wallet_aggregation.md",
         ROOT / "input" / "cex_micro_gas_calibration_corpus_2026-07-24.json",
+        ROOT / "input" / "aeon_opening_forensic_2026-07-27.json",
         ROOT / "cases" / "2026-07-24_CEX_micro_gas_calibration_corpus.md",
         ROOT / "cases" / "2026-07-15_bsc_native_history_source_review.md",
         ROOT / "input" / "signals" / "README.md",
@@ -1323,6 +1326,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     fixture_test_scripts = (
+        ("AEON official-discovery and monitor-coverage regression tests", "test_aeon_monitor_regression.py"),
         ("CEX micro-gas synthetic boundary regression tests", "test_micro_gas_boundaries.py"),
         ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
         ("wash-volume deferred synthetic fixture tests", "test_wash_volume_fixtures.py"),
@@ -2310,6 +2314,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "alpha_opening_block_watch.py"),
         str(ROOT / "scripts" / "alpha_price_momentum_watch.py"),
         str(ROOT / "scripts" / "alpha_intraday_flow_watch.py"),
+        str(ROOT / "scripts" / "binance_alpha_catalog_watch.py"),
         str(ROOT / "scripts" / "verify_alpha_aggregator_trace.py"),
         str(ROOT / "scripts" / "collect_alpha_trace_bundle.py"),
         str(ROOT / "scripts" / "review_alpha_swap_samples.py"),
@@ -2320,9 +2325,11 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "external_aux_source_readiness.py"),
         str(ROOT / "scripts" / "external_aux_live_probe.py"),
         str(ROOT / "scripts" / "position_cost_watch.py"),
+        str(ROOT / "scripts" / "runtime_health_watch.py"),
         str(ROOT / "scripts" / "project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_sniper_engine_units.py"),
+        str(ROOT / "scripts" / "test_aeon_monitor_regression.py"),
         str(ROOT / "scripts" / "test_micro_gas_boundaries.py"),
         str(ROOT / "scripts" / "test_micro_gas_identity_gate.py"),
         str(ROOT / "scripts" / "test_wash_volume_fixtures.py"),
@@ -3566,7 +3573,7 @@ real_internal_quick_rpc = module.opening.quick_rpc_call
 real_internal_receipt_transfers = module.opening.receipt_transfers_from_receipt
 real_internal_gas_priming = module.cex_gas_priming_transfers
 gas_target_calls = []
-module.opening.quick_rpc_call = lambda chain, method, params, timeout: {'blockNumber': '0x64', 'transactionIndex': '0x1'}
+module.opening.quick_rpc_call = lambda chain, method, params, timeout: {'blockNumber': '0x64', 'transactionIndex': '0x1', 'status': '0x1'}
 module.cex_gas_priming_transfers = lambda event, targets, block: gas_target_calls.append(set(targets)) or []
 module.opening.receipt_transfers_from_receipt = lambda receipt, token, quote: [
     {'token': event['token']['address'], 'from': deposit, 'to': hot, 'amount': module.Decimal('300000')}
@@ -6928,7 +6935,7 @@ module.has_contract_code = old_has_contract_code
 assert module.trace_start_block(100, 105, 50, 0, False) == 100
 assert module.trace_start_block(100, 1000, 50, 0, False) == 950
 assert module.trace_start_block(100, 1000, 50, 1200, True) == 100
-assert module.trace_start_block(100, 2000, 50, 1200, True) == 1950
+assert module.trace_start_block(100, 2000, 50, 1200, True) == 800
 module.CONTRACT_SAFETY_CACHE.clear()
 module.contract_code = lambda chain, address: '0x' + module.OWNER_SELECTORS['owner'][2:] + module.BOOL_RISK_SELECTORS['paused'][2:]
 
@@ -6991,8 +6998,8 @@ module.get_logs_quick = lambda *args, **kwargs: [make_log(classified_event['toke
 def fake_quick_rpc_call(chain, method, params, timeout):
     tx_hash = params[0]
     if tx_hash == '0xnext':
-        return {'logs': [make_log(classified_event['quote']['address'], router, recipient, '500', tx='0xnext', block=12, idx=2)]}
-    return {'logs': []}
+        return {'status': '0x1', 'logs': [make_log(classified_event['quote']['address'], router, recipient, '500', tx='0xnext', block=12, idx=2)]}
+    return {'status': '0x1', 'logs': []}
 
 module.quick_rpc_call = fake_quick_rpc_call
 classified = module.classify_outgoing_tx(

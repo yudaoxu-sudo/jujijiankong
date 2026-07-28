@@ -50,6 +50,23 @@ run_step() {
   fi
 }
 
+run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_signal_collector.py --defer-analysis
+run_step "${TELEGRAM_USER_COLLECTOR_TIMEOUT_SECONDS:-120}" env SIGNAL_RUNTIME_CONTEXT=0 python3 scripts/telegram_user_signal_collector.py
+run_step "${BINANCE_ALPHA_CATALOG_TIMEOUT_SECONDS:-45}" python3 scripts/binance_alpha_catalog_watch.py
+if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
+  runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
+  runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
+  runtime_age="$(
+    python3 -c 'import os, sys, time; print(max(0, int(time.time() - os.path.getmtime(sys.argv[1]))))' \
+      "$runtime_watchlist" 2>/dev/null || echo "$((runtime_ttl + 1))"
+  )"
+  if [[ -s "$runtime_watchlist" ]] && (( runtime_age <= runtime_ttl )); then
+    export ALPHA_WATCHLIST_PATH="$runtime_watchlist"
+  else
+    export ALPHA_WATCHLIST_PATH="config/current_alpha_watchlist.json"
+    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) catalog runtime watchlist unavailable or stale; using curated config"
+  fi
+fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
 run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
 run_step "${ALPHA_PRELAUNCH_TIMEOUT_SECONDS:-60}" python3 scripts/alpha_prelaunch_watch.py
@@ -70,8 +87,7 @@ if [[ "${RUN_ARX_LAUNCH_WATCH:-0}" == "1" ]]; then
 else
   echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) skipped ARX launch watch; RUN_ARX_LAUNCH_WATCH=1 to enable"
 fi
-run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_signal_collector.py
-run_step "${TELEGRAM_USER_COLLECTOR_TIMEOUT_SECONDS:-120}" python3 scripts/telegram_user_signal_collector.py
+run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_signal_collector.py --flush-pending
 run_step "${PREDICTION_MARKET_TIMEOUT_SECONDS:-90}" python3 scripts/prediction_market_watch.py
 run_step "${EXTERNAL_AUX_SOURCE_TIMEOUT_SECONDS:-45}" python3 scripts/external_aux_source_readiness.py
 if [[ "${RUN_EXTERNAL_AUX_LIVE_PROBE:-0}" == "1" ]]; then

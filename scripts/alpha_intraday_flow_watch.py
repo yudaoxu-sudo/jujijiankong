@@ -24,7 +24,9 @@ from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, reco
 
 
 CHAIN = "bsc"
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_intraday_flow_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -694,7 +696,12 @@ def build_events() -> list[dict[str, Any]]:
         if not contracts:
             continue
         token_address = norm(contracts[0]["address"])
-        for pool in item.get("pool_ids", []):
+        watch_addresses = opening.enriched_watch_addresses(
+            item,
+            CHAIN,
+            token_address,
+        )
+        for pool in opening.opening_pool_rows(item):
             if str(pool.get("chain", CHAIN)).lower() != CHAIN:
                 continue
             start = parse_utc8(str(pool.get("start_time_utc8") or ""))
@@ -703,7 +710,11 @@ def build_events() -> list[dict[str, Any]]:
             seconds_since = int((now_utc() - start).total_seconds())
             if seconds_since < 0:
                 continue
-            max_age = int(os.environ.get("ALPHA_INTRADAY_MAX_AGE_HOURS", "72")) * 3600
+            max_age = int(
+                item.get("intraday_max_age_hours")
+                or item.get("opening_max_age_hours")
+                or os.environ.get("ALPHA_INTRADAY_MAX_AGE_HOURS", "72")
+            ) * 3600
             if seconds_since > max_age and not review_symbol:
                 continue
             latest = latest_cache.setdefault(CHAIN, opening.latest_block_number(CHAIN))
@@ -722,15 +733,25 @@ def build_events() -> list[dict[str, Any]]:
                     "token": opening.token_meta(CHAIN, token_address, symbol),
                     "quote": opening.token_meta(CHAIN, quote_address, opening.QUOTE_TOKENS.get(quote_address, "QUOTE")),
                     "market_context": item.get("market_context", {}),
-                    "watch_addresses": item.get("watch_addresses", []),
+                    "watch_addresses": watch_addresses,
                     "known_contracts": item.get("known_contracts", []),
                     "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
                     "cex_addresses": item.get("cex_addresses", []),
+                    "cex_hot_wallet_addresses": item.get("cex_hot_wallet_addresses", []),
+                    "exchange_addresses": item.get("exchange_addresses", []),
+                    "known_cex_addresses": item.get("known_cex_addresses", []),
                     "exchange_aggregator_addresses": item.get("exchange_aggregator_addresses", []),
                     "exchange_aggregator_suspect_addresses": item.get("exchange_aggregator_suspect_addresses", []),
                     "exchange_rebalance_addresses": item.get("exchange_rebalance_addresses", []),
+                    "mm_or_project_suspect_addresses": item.get("mm_or_project_suspect_addresses", []),
+                    "project_rebalance_addresses": item.get("project_rebalance_addresses", []),
+                    "project_treasury_addresses": item.get("project_treasury_addresses", []),
+                    "bridge_addresses": item.get("bridge_addresses", []),
+                    "bridge_contracts": item.get("bridge_contracts", []),
+                    "known_bridge_addresses": item.get("known_bridge_addresses", []),
                     "neutral_contracts": item.get("neutral_contracts", []),
                     "lp_locker_addresses": item.get("lp_locker_addresses", []),
+                    "locker_addresses": item.get("locker_addresses", []),
                     "staking_addresses": item.get("staking_addresses", []),
                     "hook": pool.get("hook", ""),
                     "operator": pool.get("operator", ""),
@@ -1479,6 +1500,8 @@ def summarize_flow_tx(
     )
     if not receipt:
         return None
+    if opening.hex_to_int(receipt.get("status")) != 1:
+        return None
     transfers = opening.receipt_transfers_from_receipt(receipt, event["token"], event["quote"])
     nets = opening.net_by_address(transfers, event["token"]["address"], event["quote"]["address"])
     buyer, token_bought, spent = opening.best_buyer(event, nets)
@@ -1494,6 +1517,7 @@ def summarize_flow_tx(
         if token_net < 0 and quote_net > 0:
             sellers.append((address, -token_net, quote_net))
     seller, sold_token, got_quote = max(sellers, key=lambda row: row[2], default=("", Decimal(0), Decimal(0)))
+    seller_attribution = opening.address_attribution(event, seller)
     min_quote = Decimal(os.environ.get("ALPHA_INTRADAY_MIN_QUOTE", "2000"))
     cex_path_rows = classify_cex_transfer_paths(event, transfers, runtime_cex_candidates)
     cex_rows = [row for row in cex_path_rows if row["runtime_effect"] == "cex_inflow_risk"]
@@ -1535,6 +1559,10 @@ def summarize_flow_tx(
         "spent_quote": opening.decimal_str(spent),
         "buy_avg": opening.decimal_str(spent / token_bought if spent and token_bought else None),
         "seller": seller,
+        "seller_control_scope": seller_attribution.get("control_scope", "unknown"),
+        "seller_identity_status": seller_attribution.get("identity_status", "unattributed"),
+        "seller_role": seller_attribution.get("role", ""),
+        "sell_realization": "same_receipt_dex_sale" if seller and got_quote > 0 else "",
         "sell_token": opening.decimal_str(sold_token),
         "got_quote": opening.decimal_str(got_quote),
         "sell_avg": opening.decimal_str(got_quote / sold_token if got_quote and sold_token else None),
@@ -2653,6 +2681,10 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
     cex_internal_path_roles: set[str] = set()
     cex_gas_priming_bnb = Decimal(0)
     cex_gas_priming_count = 0
+    verified_controller_sell = Decimal(0)
+    candidate_related_sell = Decimal(0)
+    functional_sell = Decimal(0)
+    unattributed_sell = Decimal(0)
     for row in rows:
         buyer = norm(row.get("buyer"))
         seller = norm(row.get("seller"))
@@ -2664,6 +2696,16 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         if seller and got > 0:
             address_net[seller] = address_net.get(seller, Decimal(0)) - got
             address_sell[seller] = address_sell.get(seller, Decimal(0)) + got
+            identity_status = str(row.get("seller_identity_status") or "unattributed")
+            control_scope = str(row.get("seller_control_scope") or "unknown")
+            if identity_status == "verified" and control_scope == "token":
+                verified_controller_sell += got
+            elif identity_status == "candidate":
+                candidate_related_sell += got
+            elif identity_status == "functional_only":
+                functional_sell += got
+            else:
+                unattributed_sell += got
         cex_token_deposit += decimal_from(row.get("cex_token_deposit"))
         cex_quote_estimate += decimal_from(row.get("cex_quote_estimate"))
         cex_deposit_count += int(row.get("cex_deposit_count") or 0)
@@ -2703,11 +2745,11 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         spot_action = "持仓冲高降风险；空仓等派发结束"
     elif cex_alert and cex_gas_priming_count:
         direction = "偏空"
-        trade_signal = f"卖出/减仓；CEX打gas后代币进入{cex_path_label}"
+        trade_signal = f"降低风险；CEX打gas后代币进入{cex_path_label}，属于待售风险"
         spot_action = "持仓降风险；空仓不追"
     elif cex_alert:
         direction = "偏空"
-        trade_signal = f"卖出/减仓；代币进入{cex_path_label}"
+        trade_signal = f"降低风险；代币进入{cex_path_label}，属于待售风险"
         spot_action = "持仓降风险；空仓不追"
     elif net_buy >= buy_threshold and net_buy >= net_sell * Decimal("1.5"):
         direction = "观察偏多"
@@ -2723,6 +2765,28 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         spot_action = "观察"
     top_net_buyers = sorted(((a, v) for a, v in address_net.items() if v > 0), key=lambda row: row[1], reverse=True)[:5]
     top_net_sellers = sorted(((a, -v) for a, v in address_net.items() if v < 0), key=lambda row: row[1], reverse=True)[:5]
+    if verified_controller_sell > 0:
+        operator_behavior = (
+            "合约控制地址已在成功收据内确认 token 净流出并收到报价资产，"
+            f"累计约 {opening.format_amount(verified_controller_sell)} {event['quote']['symbol']}。"
+        )
+    elif candidate_related_sell > 0:
+        operator_behavior = (
+            "疑似关联地址已有同收据卖出，身份待确认；"
+            f"累计约 {opening.format_amount(candidate_related_sell)} {event['quote']['symbol']}。"
+        )
+    elif functional_sell > 0:
+        operator_behavior = (
+            "池侧或功能地址已有同收据卖出，项目控制关系未建立；"
+            f"累计约 {opening.format_amount(functional_sell)} {event['quote']['symbol']}。"
+        )
+    elif unattributed_sell > 0:
+        operator_behavior = (
+            "检测到大额卖出，来源待归属；"
+            f"累计约 {opening.format_amount(unattributed_sell)} {event['quote']['symbol']}。"
+        )
+    else:
+        operator_behavior = "本窗口没有可归属的已实现卖出证据。"
     return {
         "direction": direction,
         "trade_signal": trade_signal,
@@ -2736,6 +2800,11 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         "total_sell_quote": opening.decimal_str(total_sell),
         "net_buy_quote": opening.decimal_str(net_buy),
         "net_sell_quote": opening.decimal_str(net_sell),
+        "verified_controller_sell_quote": opening.decimal_str(verified_controller_sell),
+        "candidate_related_sell_quote": opening.decimal_str(candidate_related_sell),
+        "functional_sell_quote": opening.decimal_str(functional_sell),
+        "unattributed_sell_quote": opening.decimal_str(unattributed_sell),
+        "operator_behavior": operator_behavior,
         "cex_token_deposit": opening.decimal_str(cex_token_deposit),
         "cex_quote_estimate": opening.decimal_str(cex_quote_estimate),
         "cex_deposit_count": cex_deposit_count,
@@ -2838,6 +2907,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         "report_only_cex_micro_gas_samples": report_only_cex_micro_gas_samples,
         "runtime_cex_candidate_aggregate_rows": runtime_candidate_rows[:20],
         "configured_cex_inflow_aggregate_rows": configured_cex_inflow_rows[:20],
+        "transfer_coverage": transfer_coverage,
         "rows": rows,
         "analysis": analysis,
         "_withdrawal_forward_scan": {
@@ -2885,6 +2955,15 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
     cex_gas_count = int(analysis.get("cex_gas_priming_count") or 0)
     cex_threshold = Decimal(os.environ.get("ALPHA_INTRADAY_CEX_DEPOSIT_ALERT_QUOTE", "10000"))
     cex_token_threshold = Decimal(os.environ.get("ALPHA_INTRADAY_CEX_DEPOSIT_ALERT_TOKEN", "100000"))
+    sell_attribution = "none"
+    if decimal_from(analysis.get("verified_controller_sell_quote")) > 0:
+        sell_attribution = "verified_token_controller"
+    elif decimal_from(analysis.get("candidate_related_sell_quote")) > 0:
+        sell_attribution = "candidate"
+    elif decimal_from(analysis.get("functional_sell_quote")) > 0:
+        sell_attribution = "functional_only"
+    elif decimal_from(analysis.get("unattributed_sell_quote")) > 0:
+        sell_attribution = "unattributed"
     if buy >= buy_threshold or sell >= sell_threshold or (cex_count and (cex_quote >= cex_threshold or cex_token >= cex_token_threshold)):
         keys.append(
             "|".join(
@@ -2897,6 +2976,7 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                     amount_bucket(cex_quote, Decimal("10000")),
                     amount_bucket(cex_token, Decimal(os.environ.get("ALPHA_INTRADAY_CEX_DEPOSIT_TOKEN_BUCKET", "100000"))),
                     str(min(cex_gas_count, 9)),
+                    sell_attribution,
                     alert_time_bucket(),
                 ]
             )
@@ -2978,6 +3058,18 @@ def telegram_event_metrics(event: dict[str, Any]) -> str:
         metrics.append(f"净买≈{telegram_amount(net_buy)} {quote_symbol}")
     if net_sell > 0:
         metrics.append(f"净卖≈{telegram_amount(net_sell)} {quote_symbol}")
+    verified_sell = decimal_from(analysis.get("verified_controller_sell_quote"))
+    candidate_sell = decimal_from(analysis.get("candidate_related_sell_quote"))
+    functional_sell = decimal_from(analysis.get("functional_sell_quote"))
+    unattributed_sell = decimal_from(analysis.get("unattributed_sell_quote"))
+    if verified_sell > 0:
+        metrics.append(f"合约控制地址确认卖出≈{telegram_amount(verified_sell)} {quote_symbol}")
+    if candidate_sell > 0:
+        metrics.append(f"疑似关联地址卖出≈{telegram_amount(candidate_sell)} {quote_symbol} / 身份待确认")
+    if functional_sell > 0:
+        metrics.append(f"池侧/功能地址卖出≈{telegram_amount(functional_sell)} {quote_symbol}")
+    if unattributed_sell > 0:
+        metrics.append(f"大额卖出来源待归属≈{telegram_amount(unattributed_sell)} {quote_symbol}")
 
     cex_quote = decimal_from(analysis.get("cex_quote_estimate"))
     cex_token = decimal_from(analysis.get("cex_token_deposit"))
@@ -3073,6 +3165,7 @@ def push_signature(snapshot: dict[str, Any]) -> str:
                     amount_bucket(decimal_from(analysis.get("net_sell_quote")), Decimal("10000")),
                     amount_bucket(decimal_from(analysis.get("cex_quote_estimate")), Decimal("10000")),
                     str(min(int(analysis.get("cex_gas_priming_count") or 0), 9)),
+                    str(analysis.get("operator_behavior") or ""),
                 ]
             )
         )

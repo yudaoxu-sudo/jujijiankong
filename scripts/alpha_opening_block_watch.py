@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,9 @@ from scripts.build_pancake_v4_roundtrip_fixture import build_fixture
 getcontext().prec = 80
 
 CHAIN = "bsc"
-CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+CONFIG_PATH = Path(
+    os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
+)
 OUT_DIR = ROOT / "output" / "alpha_opening_block_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -103,6 +106,21 @@ def now_utc() -> datetime:
 
 def now_iso() -> str:
     return now_utc().isoformat()
+
+
+def event_int_setting(
+    event: dict[str, Any],
+    item_key: str,
+    env_name: str,
+    default: int,
+) -> int:
+    raw = event.get(item_key)
+    if raw in ("", None):
+        raw = os.environ.get(env_name, str(default))
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return default
 
 
 def norm(value: str | None) -> str:
@@ -245,7 +263,12 @@ def get_logs(chain: str, query: dict[str, Any], chunk_blocks: int, max_logs: int
         chunk_query["toBlock"] = hex(end)
         rows.extend(rpc_call(chain, "eth_getLogs", [chunk_query]) or [])
         start = end + 1
-    return rows[:max_logs]
+    if len(rows) > max_logs or start <= to_block:
+        raise RuntimeError(
+            f"eth_getLogs coverage truncated at {max_logs} rows for "
+            f"{from_block}-{to_block}"
+        )
+    return rows
 
 
 def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_logs: int, timeout: int) -> list[dict[str, Any]]:
@@ -260,10 +283,17 @@ def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_log
         chunk_query["toBlock"] = hex(end)
         try:
             rows.extend(quick_rpc_call(chain, "eth_getLogs", [chunk_query], timeout) or [])
-        except Exception:
-            break
+        except Exception as exc:
+            raise RuntimeError(
+                f"eth_getLogs coverage failed for {start}-{end}: {exc}"
+            ) from exc
         start = end + 1
-    return rows[:max_logs]
+    if len(rows) > max_logs or start <= to_block:
+        raise RuntimeError(
+            f"eth_getLogs coverage truncated at {max_logs} rows for "
+            f"{from_block}-{to_block}"
+        )
+    return rows
 
 
 def quick_rpc_call(chain: str, method: str, params: list[Any], timeout: int) -> Any:
@@ -325,7 +355,12 @@ def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]
 
 
 def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, Any]:
-    max_age_seconds = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_MAX_AGE_SECONDS", "10800"))
+    max_age_seconds = event_int_setting(
+        event,
+        "opening_liquidity_max_age_seconds",
+        "ALPHA_OPENING_LIQUIDITY_MAX_AGE_SECONDS",
+        10800,
+    )
     if (
         os.environ.get("ALPHA_OPENING_FORCE_LIQUIDITY_FLOW", "0") != "1"
         and int(event.get("seconds_until_start") or 0) < -max_age_seconds
@@ -482,6 +517,39 @@ def liquidity_event_row(log: dict[str, Any], meta: dict[str, str]) -> dict[str, 
     return row
 
 
+def liquidity_event_matches(
+    event: dict[str, Any],
+    log: dict[str, Any],
+    meta: dict[str, str],
+) -> bool:
+    role = str(meta.get("role") or "").lower()
+    if role == "pool":
+        return True
+    topics = {norm(topic) for topic in log.get("topics", [])[1:]}
+    pool_id = norm(event.get("pool_id"))
+    if role in {"pool_manager", "v4_pool_manager"}:
+        return bool(
+            re.fullmatch(r"0x[a-f0-9]{64}", pool_id)
+            and pool_id in topics
+        )
+    if role == "lp_position_manager":
+        position_ids = {
+            hex(int(value))
+            for value in event.get("lp_position_ids", [])
+            if str(value).isdigit()
+        }
+        topic_values: set[str] = set()
+        for topic in topics:
+            if not topic.startswith("0x"):
+                continue
+            try:
+                topic_values.add(hex(int(topic, 16)))
+            except ValueError:
+                continue
+        return bool(position_ids & topic_values)
+    return False
+
+
 def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, watch: dict[str, dict[str, str]]) -> dict[str, Any]:
     addresses = {
         address: meta
@@ -502,6 +570,8 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
             "topics": [sorted(LIQUIDITY_EVENT_TOPICS)],
         }
         for log in get_logs_quick(event["chain"], query, chunk_blocks, max_logs, timeout):
+            if not liquidity_event_matches(event, log, meta):
+                continue
             rows.append(liquidity_event_row(log, meta))
             if len(rows) >= max_logs:
                 break
@@ -1029,11 +1099,111 @@ def simulate_router_sell_safety(event: dict[str, Any], holder: str, amount: Deci
 
 
 def decode_address_return(data: str) -> str:
-    raw = strip0x(data or "0x")
+    state, address = decode_address_return_state(data)
+    return address if state == "address" else ""
+
+
+def decode_address_return_state(data: Any) -> tuple[str, str]:
+    raw = strip0x(str(data or "0x"))
     if len(raw) < 64:
-        return ""
+        return "invalid", ""
     candidate = "0x" + raw[-40:].lower()
-    return candidate if is_address(candidate) and candidate != ZERO else ""
+    if not is_address(candidate):
+        return "invalid", ""
+    if candidate == ZERO:
+        return "zero", ""
+    return "address", candidate
+
+
+def token_controller(chain: str, token_address: str) -> dict[str, str]:
+    owners: set[str] = set()
+    successful_selectors = 0
+    zero_selectors = 0
+    for selector in OWNER_SELECTORS.values():
+        state, owner = decode_address_return_state(
+            optional_eth_call(chain, token_address, selector)
+        )
+        if state == "address":
+            successful_selectors += 1
+            owners.add(owner)
+        elif state == "zero":
+            successful_selectors += 1
+            zero_selectors += 1
+    if len(owners) > 1 or (owners and zero_selectors):
+        return {
+            "state": "conflicting_owner_selectors",
+            "identity_status": "unattributed",
+        }
+    if len(owners) == 1:
+        return {
+            "state": "verified_token_controller",
+            "address": next(iter(owners)),
+            "label": "token owner() controller",
+            "role": "token_controller",
+            "control_scope": "token",
+            "identity_status": "verified",
+            "attribution": "canonical_owner_call",
+            "selector_count": str(successful_selectors),
+        }
+    if zero_selectors:
+        return {
+            "state": "owner_renounced",
+            "control_scope": "token",
+            "identity_status": "verified_no_controller",
+            "attribution": "canonical_owner_call",
+            "selector_count": str(successful_selectors),
+        }
+    return {
+        "state": "owner_unresolved",
+        "identity_status": "unattributed",
+    }
+
+
+def enriched_watch_addresses(
+    item: dict[str, Any],
+    chain: str,
+    token_address: str,
+) -> list[dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in item.get("watch_addresses", [])
+        if isinstance(row, dict)
+    ]
+    if str(item.get("project_operator_probe") or "").lower() != "owner":
+        return rows
+    controller = token_controller(chain, token_address)
+    owner = norm(controller.get("address"))
+    if not owner:
+        return rows
+    matching = next(
+        (row for row in rows if norm(row.get("address")) == owner),
+        None,
+    )
+    if matching is not None:
+        matching["control_scope"] = controller.get("control_scope", "token")
+        matching["identity_status"] = controller.get("identity_status", "verified")
+        matching["attribution"] = controller.get(
+            "attribution",
+            "canonical_owner_call",
+        )
+        return rows
+    rows.append(
+        {
+            "chain": chain,
+            "address": owner,
+            "label": controller.get("label", "token owner() controller"),
+            "role": controller.get("role", "token_controller"),
+            "control_scope": controller.get("control_scope", "token"),
+            "identity_status": controller.get("identity_status", "verified"),
+            "attribution": controller.get(
+                "attribution",
+                "canonical_owner_call",
+            ),
+            "watch_quote": True,
+            "watch_quote_tokens": ["USDT"],
+        }
+    )
+    return rows
 
 
 def inspect_token_contract_safety(event: dict[str, Any]) -> dict[str, str]:
@@ -1095,19 +1265,55 @@ def inspect_token_contract_safety(event: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def configured_address_class(event: dict[str, Any], address: str) -> str:
+def address_attribution(event: dict[str, Any], address: str) -> dict[str, str]:
     address = norm(address)
     if not address:
-        return ""
+        return {
+            "control_scope": "unknown",
+            "identity_status": "unattributed",
+            "role": "",
+        }
+    for source in (event, event.get("market_context", {})):
+        for row in source.get("watch_addresses", []) or []:
+            if not isinstance(row, dict) or norm(row.get("address")) != address:
+                continue
+            role = str(row.get("role") or "").strip()
+            control_scope = str(row.get("control_scope") or "").strip()
+            if not control_scope:
+                if role in {"pool", "pool_manager", "v4_pool_manager", "pool_hook", "hook_operator"}:
+                    control_scope = "pool"
+                elif role == "event_distribution":
+                    control_scope = "distribution"
+                elif role in {"token_controller", "contract_owner", "project_treasury", "deployer"}:
+                    control_scope = "token"
+                else:
+                    control_scope = "unknown"
+            identity_status = str(row.get("identity_status") or "").strip()
+            if not identity_status:
+                identity_status = "functional_only" if control_scope in {"pool", "distribution"} else "candidate"
+            return {
+                "control_scope": control_scope,
+                "identity_status": identity_status,
+                "role": role,
+            }
     global_label = global_address_label(event["chain"], address)
     if global_label:
         label_class = str(global_label.get("class") or "").strip()
         if label_class:
-            return label_class
+            scope = "pool" if label_class in {"lp_position_manager", "pool_manager"} else "unknown"
+            return {
+                "control_scope": scope,
+                "identity_status": "functional_only" if scope == "pool" else "candidate",
+                "role": label_class,
+            }
     for source in (event, event.get("market_context", {})):
         for row in source.get("known_contracts", []) or []:
             if isinstance(row, dict) and norm(row.get("address")) == address:
-                return str(row.get("class") or row.get("destination_class") or "").strip()
+                return {
+                    "control_scope": str(row.get("control_scope") or "unknown"),
+                    "identity_status": str(row.get("identity_status") or "candidate"),
+                    "role": str(row.get("class") or row.get("destination_class") or "").strip(),
+                }
         for key, class_name in (
             ("cex_deposit_addresses", "cex_deposit"),
             ("cex_addresses", "cex_deposit"),
@@ -1130,8 +1336,22 @@ def configured_address_class(event: dict[str, Any], address: str) -> str:
         ):
             values = source.get(key, []) or []
             if any(norm(item.get("address") if isinstance(item, dict) else item) == address for item in values):
-                return class_name
-    return ""
+                scope = "pool" if class_name in {"lp_locker_or_staking"} else "unknown"
+                status = "candidate" if "suspect" in class_name else "functional_only"
+                return {
+                    "control_scope": scope,
+                    "identity_status": status,
+                    "role": class_name,
+                }
+    return {
+        "control_scope": "unknown",
+        "identity_status": "unattributed",
+        "role": "",
+    }
+
+
+def configured_address_class(event: dict[str, Any], address: str) -> str:
+    return address_attribution(event, address).get("role", "")
 
 
 def destination_class(event: dict[str, Any], address: str) -> str:
@@ -1150,7 +1370,7 @@ def destination_class(event: dict[str, Any], address: str) -> str:
             return "lp_locker_or_staking"
         return configured
     if address in {norm(event.get("hook")), norm(event.get("operator"))}:
-        return "project_or_pool_contract"
+        return "pool_operator_or_hook"
     if has_contract_code(event["chain"], address):
         return "unknown_contract_pending_bearish"
     return "eoa_or_unlabeled"
@@ -1178,7 +1398,11 @@ def classify_recipient_next_hop_tx(event: dict[str, Any], recipient: str, tx_has
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     try:
         receipt = quick_rpc_call(event["chain"], "eth_getTransactionReceipt", [tx_hash], timeout)
-        transfers = receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
+        transfers = (
+            receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
+            if hex_to_int((receipt or {}).get("status")) == 1
+            else []
+        )
     except Exception:
         transfers = []
     quote_received = sum(
@@ -1193,6 +1417,42 @@ def classify_recipient_next_hop_tx(event: dict[str, Any], recipient: str, tx_has
     if quote_received > 0:
         classes.add("next_hop_dex_sell_to_quote")
     return {"classes": classes, "quote_received": quote_received, "confirmed_sell_count": 1 if quote_received > 0 else 0}
+
+
+def select_transfer_tx_items(
+    by_tx: dict[str, list[dict[str, Any]]],
+    max_txs: int,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    ordered = sorted(
+        by_tx.items(),
+        key=lambda item: max(
+            (row.get("block", 0), row.get("log_index", 0))
+            for row in item[1]
+        ),
+    )
+    if len(ordered) <= max_txs:
+        return ordered
+    head_count = max_txs // 3
+    tail_count = max_txs // 3
+    selected_hashes = {
+        tx_hash
+        for tx_hash, _rows in (
+            ordered[:head_count]
+            + (ordered[-tail_count:] if tail_count else [])
+        )
+    }
+    for tx_hash, tx_rows in sorted(
+        ordered,
+        key=lambda item: sum(
+            (decimal_from(row.get("amount")) for row in item[1]),
+            Decimal(0),
+        ),
+        reverse=True,
+    ):
+        selected_hashes.add(tx_hash)
+        if len(selected_hashes) >= max_txs:
+            break
+    return [item for item in ordered if item[0] in selected_hashes][:max_txs]
 
 
 def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: str, from_block: int, latest: int) -> dict[str, Any]:
@@ -1222,12 +1482,13 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
     classes: set[str] = set()
     quote_received = Decimal(0)
     confirmed_sell_count = 0
-    max_txs = int(os.environ.get("ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS", "2"))
-    ordered_txs = sorted(
-        by_tx.items(),
-        key=lambda item: max((row.get("block", 0), row.get("log_index", 0)) for row in item[1]),
+    max_txs = event_int_setting(
+        event,
+        "opening_next_hop_classify_txs",
+        "ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS",
+        2,
     )
-    for tx_hash, tx_logs in ordered_txs[:max_txs]:
+    for tx_hash, tx_logs in select_transfer_tx_items(by_tx, max_txs):
         classified = classify_recipient_next_hop_tx(event, recipient, tx_hash, tx_logs)
         classes.update(classified["classes"])
         quote_received += classified["quote_received"]
@@ -1244,7 +1505,11 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     try:
         receipt = quick_rpc_call(event["chain"], "eth_getTransactionReceipt", [tx_hash], timeout)
-        transfers = receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
+        transfers = (
+            receipt_transfers_from_receipt(receipt or {}, event["token"], event["quote"])
+            if hex_to_int((receipt or {}).get("status")) == 1
+            else []
+        )
     except Exception:
         transfers = []
     quote_received = sum(
@@ -1269,7 +1534,13 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     next_hop_confirmed_sell_count = 0
     next_hop_recipient_count = 0
     seen_recipients = set()
-    for recipient, block in eoa_recipients[: int(os.environ.get("ALPHA_OPENING_NEXT_HOP_RECIPIENTS", "2"))]:
+    max_recipients = event_int_setting(
+        event,
+        "opening_next_hop_recipients",
+        "ALPHA_OPENING_NEXT_HOP_RECIPIENTS",
+        2,
+    )
+    for recipient, block in eoa_recipients[:max_recipients]:
         if recipient in seen_recipients:
             continue
         seen_recipients.add(recipient)
@@ -1298,8 +1569,8 @@ def trace_start_block(from_block: int, latest: int, recent_span: int, full_span:
     age = latest - from_block
     if age <= recent_span:
         return from_block
-    if force_full and full_span and age <= full_span:
-        return from_block
+    if force_full and full_span:
+        return max(from_block, latest - full_span)
     return max(from_block, latest - recent_span)
 
 
@@ -1709,7 +1980,7 @@ def simulate_infinity_cl_quote_safety(event: dict[str, Any], amount: Decimal) ->
     }
 
 
-def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int, bought: Decimal) -> dict[str, str]:
+def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int, bought: Decimal) -> dict[str, Any]:
     if not buyer or bought <= 0:
         return {"status": "unknown"}
     current = token_balance(event["chain"], event["token"], buyer)
@@ -1720,6 +1991,17 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         and current <= bought * Decimal("0.05")
     )
     trace_from = trace_start_block(from_block, latest, trace_span, full_span, force_full)
+    coverage_complete = trace_from <= from_block
+    covered_block_ranges = (
+        [{"from": trace_from, "to": latest}]
+        if trace_from <= latest
+        else []
+    )
+    uncovered_block_ranges = (
+        [{"from": from_block, "to": trace_from - 1}]
+        if not coverage_complete and from_block < trace_from
+        else []
+    )
     query = {
         "address": event["token"]["address"],
         "fromBlock": hex(trace_from),
@@ -1742,19 +2024,24 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
     quote_received = Decimal(0)
     confirmed_sell_count = 0
     direct_quote_received = Decimal(0)
+    direct_confirmed_sell_count = 0
     next_hop_quote_received = Decimal(0)
     next_hop_count = 0
-    max_classify = int(os.environ.get("ALPHA_OPENING_CLASSIFY_OUT_TXS", "3"))
-    ordered_txs = sorted(
-        by_tx.items(),
-        key=lambda item: max((row.get("block", 0), row.get("log_index", 0)) for row in item[1]),
-        reverse=True,
+    max_classify = event_int_setting(
+        event,
+        "opening_classify_out_txs",
+        "ALPHA_OPENING_CLASSIFY_OUT_TXS",
+        3,
     )
-    for tx_hash, tx_logs in ordered_txs[:max_classify]:
+    selected_txs = select_transfer_tx_items(by_tx, max_classify)
+    for tx_hash, tx_logs in reversed(selected_txs):
         classified = classify_outgoing_tx(event, buyer, tx_hash, tx_logs, latest)
         classes.update(classified["classes"])
         quote_received += classified["quote_received"]
         direct_quote_received += classified["direct_quote_received"]
+        direct_confirmed_sell_count += (
+            1 if classified["direct_quote_received"] > 0 else 0
+        )
         next_hop_quote_received += classified["next_hop_quote_received"]
         confirmed_sell_count += int(classified["confirmed_sell_count"])
         next_hop_count += int(classified["next_hop_count"])
@@ -1764,6 +2051,15 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
         status = "partially_moved"
     else:
         status = "held_or_accumulated"
+    position_status = status
+    same_receipt_confirmed_sell = direct_quote_received > 0
+    if not coverage_complete:
+        if same_receipt_confirmed_sell:
+            status = "confirmed_sell_partial_coverage"
+        else:
+            status = "unknown_incomplete_coverage"
+        quote_received = direct_quote_received
+        confirmed_sell_count = direct_confirmed_sell_count
     transfer_safety = simulate_transfer_safety(event, buyer, current)
     quote_probe_amount = min(current if current > 0 else bought, bought)
     dex_quote_safety = simulate_dex_quote_safety(event, quote_probe_amount)
@@ -1774,6 +2070,21 @@ def trace_buyer(event: dict[str, Any], buyer: str, from_block: int, latest: int,
     router_sell_safety = simulate_router_sell_safety(event, buyer, quote_probe_amount)
     return {
         "status": status,
+        "position_status": position_status,
+        "coverage_complete": coverage_complete,
+        "coverage_status": "complete" if coverage_complete else "partial",
+        "covered_block_ranges": covered_block_ranges,
+        "uncovered_block_ranges": uncovered_block_ranges,
+        "same_receipt_confirmed_sell": same_receipt_confirmed_sell,
+        "confirmed_sell_status": (
+            "confirmed_partial_coverage"
+            if same_receipt_confirmed_sell and not coverage_complete
+            else "confirmed"
+            if quote_received > 0
+            else "unknown_incomplete_coverage"
+            if not coverage_complete
+            else "not_observed"
+        ),
         "current_balance": decimal_str(current),
         "out_after_buy": decimal_str(outgoing),
         "out_transfer_count": str(len(logs)),
@@ -1852,6 +2163,36 @@ def meaningful_buy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if token_amount >= min_token and (spent >= min_spent or bribe >= min_bribe):
             out.append(row)
     return out
+
+
+def selected_buyer_trace_rows(
+    rows: list[dict[str, Any]],
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    buys = meaningful_buy_rows(rows)
+    if len(buys) <= max_rows:
+        return buys
+    earliest_count = max(1, max_rows // 2)
+    selected_txs = {
+        str(row.get("tx") or "")
+        for row in buys[:earliest_count]
+    }
+    for row in sorted(
+        buys,
+        key=lambda value: (
+            effective_spent_quote(value),
+            decimal_from(value.get("token_bought")),
+        ),
+        reverse=True,
+    ):
+        selected_txs.add(str(row.get("tx") or ""))
+        if len(selected_txs) >= max_rows:
+            break
+    return [
+        row
+        for row in buys
+        if str(row.get("tx") or "") in selected_txs
+    ][:max_rows]
 
 
 def effective_spent_quote(row: dict[str, Any]) -> Decimal:
@@ -2120,6 +2461,38 @@ def first_value_by_prefix(payload: dict[str, Any], prefix: str) -> str:
     return ""
 
 
+def opening_pool_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
+    opening_times: list[str] = []
+    for value in item.get("known_times", []):
+        if not isinstance(value, dict):
+            continue
+        reason = str(value.get("reason") or "").lower()
+        if not any(marker in reason for marker in ("listing", "opening", "launch", "上线", "开盘")):
+            continue
+        text = str(
+            value.get("time") or value.get("startedTime") or value.get("start_time") or ""
+        ).strip()
+        if text and text not in opening_times:
+            opening_times.append(text)
+
+    rows: list[dict[str, Any]] = []
+    missing_time_rows: list[dict[str, Any]] = []
+    for value in item.get("pool_ids", []):
+        if not isinstance(value, dict):
+            continue
+        row = dict(value)
+        start_time = str(row.get("start_time_utc8") or "").strip()
+        if start_time:
+            rows.append(row)
+        else:
+            missing_time_rows.append(row)
+    if len(missing_time_rows) == 1 and len(opening_times) == 1:
+        row = missing_time_rows[0]
+        row["start_time_utc8"] = opening_times[0]
+        rows.append(row)
+    return rows
+
+
 def build_events() -> list[dict[str, Any]]:
     config = read_json(CONFIG_PATH, {"items": []})
     latest_cache: dict[str, int] = {}
@@ -2138,7 +2511,8 @@ def build_events() -> list[dict[str, Any]]:
         if not contracts:
             continue
         token_address = norm(contracts[0]["address"])
-        for pool in item.get("pool_ids", []):
+        watch_addresses = enriched_watch_addresses(item, CHAIN, token_address)
+        for pool in opening_pool_rows(item):
             if str(pool.get("chain", CHAIN)).lower() != CHAIN:
                 continue
             start = parse_utc8(pool.get("start_time_utc8", ""))
@@ -2146,7 +2520,10 @@ def build_events() -> list[dict[str, Any]]:
                 continue
             latest = latest_cache.setdefault(CHAIN, latest_block_number(CHAIN))
             seconds_until = int((start - now_utc()).total_seconds())
-            max_age = int(os.environ.get("ALPHA_OPENING_MAX_AGE_HOURS", "12")) * 3600
+            max_age = int(
+                item.get("opening_max_age_hours")
+                or os.environ.get("ALPHA_OPENING_MAX_AGE_HOURS", "12")
+            ) * 3600
             lookahead = int(os.environ.get("ALPHA_OPENING_LOOKAHEAD_HOURS", "48")) * 3600
             if seconds_until > lookahead or seconds_until < -max_age:
                 continue
@@ -2163,6 +2540,10 @@ def build_events() -> list[dict[str, Any]]:
                     "token": token,
                     "quote": quote,
                     "pool_id": pool.get("pool_id", ""),
+                    "opening_anchor_status": pool.get(
+                        "opening_anchor_status",
+                        item.get("facts", {}).get("opening_anchor_status", ""),
+                    ),
                     "start_time_utc8": pool.get("start_time_utc8", ""),
                     "start_time_utc": start.isoformat(),
                     "seconds_until_start": seconds_until,
@@ -2178,16 +2559,33 @@ def build_events() -> list[dict[str, Any]]:
                     "known_contracts": item.get("known_contracts", []),
                     "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
                     "cex_addresses": item.get("cex_addresses", []),
+                    "cex_hot_wallet_addresses": item.get("cex_hot_wallet_addresses", []),
+                    "exchange_addresses": item.get("exchange_addresses", []),
+                    "known_cex_addresses": item.get("known_cex_addresses", []),
                     "exchange_aggregator_addresses": item.get("exchange_aggregator_addresses", []),
                     "exchange_aggregator_suspect_addresses": item.get("exchange_aggregator_suspect_addresses", []),
                     "exchange_rebalance_addresses": item.get("exchange_rebalance_addresses", []),
+                    "mm_or_project_suspect_addresses": item.get("mm_or_project_suspect_addresses", []),
+                    "project_rebalance_addresses": item.get("project_rebalance_addresses", []),
+                    "project_treasury_addresses": item.get("project_treasury_addresses", []),
+                    "bridge_addresses": item.get("bridge_addresses", []),
+                    "bridge_contracts": item.get("bridge_contracts", []),
+                    "known_bridge_addresses": item.get("known_bridge_addresses", []),
                     "neutral_contracts": item.get("neutral_contracts", []),
                     "lp_locker_addresses": item.get("lp_locker_addresses", []),
+                    "locker_addresses": item.get("locker_addresses", []),
                     "staking_addresses": item.get("staking_addresses", []),
-                    "watch_addresses": item.get("watch_addresses", []),
+                    "watch_addresses": watch_addresses,
                     "event_distributions": item.get("event_distributions", []),
                     "known_txs": item.get("known_txs", []),
                     "required_checks": item.get("required_checks", []),
+                    "opening_trace_buyers": item.get("opening_trace_buyers"),
+                    "opening_max_txs": item.get("opening_max_txs"),
+                    "opening_liquidity_max_age_seconds": item.get("opening_liquidity_max_age_seconds"),
+                    "opening_classify_out_txs": item.get("opening_classify_out_txs"),
+                    "opening_next_hop_recipients": item.get("opening_next_hop_recipients"),
+                    "opening_next_hop_classify_txs": item.get("opening_next_hop_classify_txs"),
+                    "lp_position_ids": item.get("lp_position_ids", []),
                 }
             )
     return events
@@ -2217,9 +2615,20 @@ def build_opened_event(event: dict[str, Any]) -> dict[str, Any]:
     latest = int(event["latest_block"])
     logs = opening_transfer_logs(event, latest)
     event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
-    max_txs = int(os.environ.get("ALPHA_OPENING_MAX_TXS", "25"))
+    max_txs = event_int_setting(
+        event,
+        "opening_max_txs",
+        "ALPHA_OPENING_MAX_TXS",
+        25,
+    )
     rows = [summarize_tx(event, tx_hash) for tx_hash in selected_tx_hashes(logs, max_txs)]
-    for row in meaningful_buy_rows(rows)[: int(os.environ.get("ALPHA_OPENING_TRACE_BUYERS", "4"))]:
+    trace_buyers = event_int_setting(
+        event,
+        "opening_trace_buyers",
+        "ALPHA_OPENING_TRACE_BUYERS",
+        4,
+    )
+    for row in selected_buyer_trace_rows(rows, trace_buyers):
         try:
             row["buyer_trace"] = trace_buyer(event, row["buyer"], int(row["block"] or event["opening_block"]), latest, Decimal(row["token_bought"]))
         except Exception as exc:
@@ -2238,6 +2647,7 @@ def build_opened_event(event: dict[str, Any]) -> dict[str, Any]:
 def selected_tx_hashes(logs: list[dict[str, Any]], max_txs: int) -> list[str]:
     ordered: list[str] = []
     seen = set()
+    amount_by_tx: dict[str, int] = {}
     sorted_logs = sorted(
         logs,
         key=lambda row: (
@@ -2251,15 +2661,30 @@ def selected_tx_hashes(logs: list[dict[str, Any]], max_txs: int) -> list[str]:
         if tx_hash and tx_hash not in seen:
             seen.add(tx_hash)
             ordered.append(tx_hash)
+        if tx_hash:
+            try:
+                amount_by_tx[tx_hash] = amount_by_tx.get(tx_hash, 0) + int(
+                    log.get("data") or "0x0",
+                    16,
+                )
+            except (TypeError, ValueError):
+                pass
     if len(ordered) <= max_txs:
         return ordered
-    head_count = min(max_txs // 2, int(os.environ.get("ALPHA_OPENING_HEAD_TXS", "12")))
-    tail_count = max_txs - head_count
-    selected = ordered[:head_count]
-    for tx_hash in ordered[-tail_count:]:
-        if tx_hash not in selected:
-            selected.append(tx_hash)
-    return selected[:max_txs]
+    head_count = min(max_txs // 3, int(os.environ.get("ALPHA_OPENING_HEAD_TXS", "12")))
+    tail_count = max_txs // 3
+    magnitude_count = max_txs - head_count - tail_count
+    tail = ordered[-tail_count:] if tail_count else []
+    selected = set(ordered[:head_count] + tail)
+    for tx_hash in sorted(
+        ordered,
+        key=lambda value: amount_by_tx.get(value, 0),
+        reverse=True,
+    ):
+        selected.add(tx_hash)
+        if len(selected) >= head_count + tail_count + magnitude_count:
+            break
+    return [tx_hash for tx_hash in ordered if tx_hash in selected][:max_txs]
 
 
 def analyze_waiting(event: dict[str, Any]) -> dict[str, str]:
@@ -2565,9 +2990,36 @@ def buyer_trace_summary(rows: list[dict[str, Any]]) -> str:
     confirmed_sell_min = Decimal(os.environ.get("ALPHA_OPENING_CONFIRMED_SELL_MIN_QUOTE", "10000"))
     cohort = cohort_position_summary(rows)
     sold_quote = Decimal(str(cohort.get("confirmed_sell_quote") or "0"))
+    partial_sell = [
+        row
+        for row in traced
+        if row.get("buyer_trace", {}).get("status")
+        == "confirmed_sell_partial_coverage"
+    ]
+    unknown_coverage = [
+        row
+        for row in traced
+        if row.get("buyer_trace", {}).get("status")
+        == "unknown_incomplete_coverage"
+    ]
     if sold_quote >= confirmed_sell_min:
+        if partial_sell:
+            return (
+                f"已追踪{len(traced)}个首批买家，同收据确认DEX换出至少"
+                f"{format_amount(sold_quote)}报价资产；扫描覆盖不完整，金额为已证下限{suffix}"
+            )
         return f"已追踪{len(traced)}个首批买家，累计已确认DEX换出约{format_amount(sold_quote)}报价资产{suffix}"
     small_sell_text = f"；小额确认换出约{format_amount(sold_quote)}报价资产，未达卖出阈值" if sold_quote > 0 else "；未确认是否卖到市场"
+    if partial_sell:
+        return (
+            f"已追踪{len(traced)}个首批买家，{len(partial_sell)}个有同收据卖出证据"
+            f"{small_sell_text}；扫描覆盖不完整，金额为已证下限{suffix}"
+        )
+    if unknown_coverage:
+        return (
+            f"已追踪{len(traced)}个首批买家，{len(unknown_coverage)}个扫描覆盖不完整，"
+            f"卖出/转仓状态未知{small_sell_text}{suffix}"
+        )
     exited = [row for row in traced if row.get("buyer_trace", {}).get("status") in {"mostly_exited_or_transferred", "mostly_exited_untraced"}]
     untraced_exited = [row for row in traced if row.get("buyer_trace", {}).get("status") == "mostly_exited_untraced"]
     moved = [row for row in traced if row.get("buyer_trace", {}).get("status") == "partially_moved"]
@@ -2637,8 +3089,7 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
             trace = row.get("buyer_trace") or {}
             if trace:
                 sell_bucket = alert_amount_bucket(
-                    decimal_from(trace.get("confirmed_sell_quote_received"))
-                    + decimal_from(trace.get("next_hop_sell_quote_received")),
+                    decimal_from(trace.get("confirmed_sell_quote_received")),
                     Decimal(os.environ.get("ALPHA_OPENING_ALERT_QUOTE_BUCKET", "10000")),
                 )
                 keys.append(

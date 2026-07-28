@@ -1,0 +1,81 @@
+{
+  "schema": "aeon_opening_forensic.v1",
+  "symbol": "AEON",
+  "chain": "bsc",
+  "contract": "0x277add739c6e0477616948357af9e79fe1ec9b80",
+  "identity_evidence": {
+    "binance_alpha_id": "ALPHA_1053",
+    "binance_alpha_listing_time_utc": "2026-07-27T10:00:00+00:00",
+    "official_contract_sources": [
+      "https://www.okx.com/en-au/help/okx-to-list-aeon-usdt-aeon-for-spot-trading",
+      "https://www.gate.com/zh/announcements/article/100842"
+    ]
+  },
+  "canonical_opening": {
+    "block": 112414374,
+    "block_hash": "0xe386690cb43c6fd7141de1fecb7120e9d7031c982747e12562d6c993e56858de",
+    "block_time_utc": "2026-07-27T10:00:00+00:00",
+    "transaction_index": 1,
+    "transaction_hash": "0x5790be9b25dce02ece6b6d1438d16bd0b300e9c316fef3d783b88fb62da2301c",
+    "receipt_status": 1,
+    "quote_symbol": "USDT",
+    "quote_in": "600000",
+    "token_out": "7177604.70848690",
+    "average_quote_per_token": "0.08359335",
+    "same_receipt_token_reout": "0",
+    "same_receipt_quote_return": "0",
+    "classification": "confirmed_opening_buy"
+  },
+  "social_claims": {
+    "bribe_amount": "635591.99",
+    "holding_cost": "0.1721454427",
+    "canonical_status": "unverified_no_public_trace",
+    "arithmetic_note": "(600000 + 635591.99) / 7177604.70848690 approximately equals 0.1721454427"
+  },
+  "sniper_exit_followup": {
+    "opening_receiver_current_balance": "0",
+    "covered_block_ranges": [
+      {
+        "from": 112414374,
+        "to": 112414423
+      },
+      {
+        "from": 112414474,
+        "to": 112415373
+      }
+    ],
+    "uncovered_block_ranges": [
+      {
+        "from": 112414424,
+        "to": 112414473
+      }
+    ],
+    "largest_covered_outbound_token": "35170.26307158",
+    "confirmed_sell_status": "unknown_incomplete_coverage",
+    "transfer_only_status": "unknown_incomplete_coverage",
+    "balance_zero_interpretation": "sell_or_transfer_or_delegated_route_unknown"
+  },
+  "operator_attribution": {
+    "owner_call": "reverted",
+    "get_owner_call": "reverted",
+    "deployer": "unknown",
+    "project_or_market_maker_sell": "unverified"
+  },
+  "price_backfill_snapshot": {
+    "generated_at": "2026-07-28T02:14:18+00:00",
+    "window_from_utc8": "2026-07-27 18:10",
+    "window_to_utc8": "2026-07-28 10:14",
+    "window_high": "0.21000000",
+    "window_close": "0.08931293",
+    "peak_drawdown_pct": "57.47003333333333333333333333",
+    "alert_direction": "high_peak_drawdown"
+  },
+  "conclusions": {
+    "opening_snipe": "verified",
+    "opening_snipe_sell": "unverified",
+    "opening_snipe_transfer_only": "unverified",
+    "token_price_drawdown": "verified_by_price_backfill",
+    "market_wide_selloff": "unverified_no_market_breadth_evidence",
+    "project_dump_attribution": "unverified"
+  }
+}
