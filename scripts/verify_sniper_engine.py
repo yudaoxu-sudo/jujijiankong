@@ -1949,6 +1949,7 @@ assert readback_gate['can_follow'] is False, readback_gate
         opening_funder_run = "review_opening_cohort_funders.py"
         perp_run = "perp_oi_funding_watch.py"
         price_run = "alpha_price_momentum_watch.py"
+        flush_run = "telegram_signal_collector.py --flush-pending"
         holder_run = "alpha_holder_concentration_watch.py"
         external_live_probe_run = "external_aux_live_probe.py"
         position_cost_run = "position_cost_watch.py"
@@ -1965,7 +1966,14 @@ assert readback_gate['can_follow'] is False, readback_gate
             "alpha_opening_sprint.sh" in server_run_text
             and opening_funder_run in server_run_text
             and intraday_run in server_run_text
-            and server_run_text.index("alpha_opening_sprint.sh") < server_run_text.index(opening_funder_run) < server_run_text.index(intraday_run)
+            and price_run in server_run_text
+            and server_run_text.index(intraday_run) < server_run_text.index(price_run) < server_run_text.index("alpha_opening_sprint.sh") < server_run_text.index(opening_funder_run)
+        )
+        fast_flush_order = (
+            flush_run in server_run_text
+            and price_run in server_run_text
+            and "alpha_opening_sprint.sh" in server_run_text
+            and server_run_text.index(price_run) < server_run_text.index(flush_run) < server_run_text.index("alpha_opening_sprint.sh")
         )
         server_run_ok = (
             "flock -n" in server_run_text
@@ -2009,6 +2017,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             and arx_launch_guard
             and arx_opening_before_launch
             and opening_funder_order
+            and fast_flush_order
             and holder_context_order
         )
         server_run_msg = "lock+timeout+failure capture+health alert+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present; local continuity excluded" if server_run_ok else "missing runtime guard"

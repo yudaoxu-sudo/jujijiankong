@@ -551,6 +551,26 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             text,
         )
 
+    def test_server_cycle_runs_fast_signals_before_opening_trace(self) -> None:
+        text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
+
+        intraday_index = text.index("alpha_intraday_flow_watch.py")
+        price_index = text.index("alpha_price_momentum_watch.py")
+        flush_index = text.index("telegram_signal_collector.py --flush-pending")
+        opening_index = text.index("alpha_opening_sprint.sh")
+        self.assertLess(intraday_index, opening_index)
+        self.assertLess(price_index, opening_index)
+        self.assertLess(flush_index, opening_index)
+
+    def test_intraday_defaults_keep_the_fast_window_coverage_budget(self) -> None:
+        text = (ROOT / "scripts" / "alpha_intraday_flow_watch.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('ALPHA_INTRADAY_WINDOW_BLOCKS", "360"', text)
+        self.assertIn('ALPHA_INTRADAY_MAX_RECEIPTS", "180"', text)
+        self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "60"', text)
+
     def test_pre_watch_signal_reply_omits_stale_runtime_context(self) -> None:
         import scripts.telegram_signal_collector as collector
 
