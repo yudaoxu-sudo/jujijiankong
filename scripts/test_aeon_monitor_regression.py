@@ -980,6 +980,110 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(result["confirmed_sell_count"], 0)
         self.assertEqual(get_logs.call_args.args[3], 1200)
 
+    def test_next_hop_classification_caps_are_partial_coverage(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "AEON",
+                "decimals": 8,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        raw_logs = [
+            {"transactionHash": "0x" + f"{index:064x}"}
+            for index in range(3)
+        ]
+
+        def parse_log(row, decimals):
+            return {
+                "tx": row["transactionHash"],
+                "block": 100,
+                "log_index": 0,
+                "to": "0x" + "5" * 40,
+                "amount": opening.Decimal("1"),
+            }
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS": "2"},
+            ),
+            mock.patch.object(opening, "get_logs_quick", return_value=raw_logs),
+            mock.patch.object(opening, "transfer_log", side_effect=parse_log),
+            mock.patch.object(
+                opening,
+                "classify_recipient_next_hop_tx",
+                return_value={
+                    "classes": set(),
+                    "quote_received": opening.Decimal(0),
+                    "confirmed_sell_count": 0,
+                },
+            ) as classify_tx,
+        ):
+            tx_limited = opening.trace_next_hop_from_recipient(
+                event,
+                "0x" + "3" * 40,
+                "0x" + "4" * 40,
+                100,
+                200,
+            )
+
+        self.assertFalse(tx_limited["coverage_complete"])
+        self.assertEqual(classify_tx.call_count, 2)
+
+        recipients = ["0x" + f"{index + 6:040x}" for index in range(3)]
+        outgoing_logs = [
+            {
+                "to": recipient,
+                "block": 100 + index,
+            }
+            for index, recipient in enumerate(recipients)
+        ]
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_NEXT_HOP_RECIPIENTS": "2"},
+            ),
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                return_value={"status": "0x1", "logs": []},
+            ),
+            mock.patch.object(
+                opening,
+                "destination_class",
+                return_value="eoa_or_unlabeled",
+            ),
+            mock.patch.object(
+                opening,
+                "trace_next_hop_from_recipient",
+                return_value={
+                    "classes": set(),
+                    "quote_received": opening.Decimal(0),
+                    "confirmed_sell_count": 0,
+                    "recipient_count": 0,
+                    "coverage_complete": True,
+                },
+            ) as trace_recipient,
+        ):
+            recipient_limited = opening.classify_outgoing_tx(
+                event,
+                "0x" + "3" * 40,
+                "0x" + "9" * 64,
+                outgoing_logs,
+                200,
+            )
+
+        self.assertFalse(recipient_limited["next_hop_coverage_complete"])
+        self.assertEqual(trace_recipient.call_count, 2)
+
     def test_opening_selection_keeps_large_middle_transfer(self) -> None:
         from scripts.alpha_opening_block_watch import (
             capped_event_int_setting,

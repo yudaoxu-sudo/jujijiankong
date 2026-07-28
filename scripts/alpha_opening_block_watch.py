@@ -1548,7 +1548,9 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
         "ALPHA_OPENING_NEXT_HOP_CLASSIFY_TXS",
         2,
     )
-    for tx_hash, tx_logs in select_transfer_tx_items(by_tx, max_txs):
+    selected_txs = select_transfer_tx_items(by_tx, max_txs)
+    coverage_complete = len(selected_txs) == len(by_tx)
+    for tx_hash, tx_logs in selected_txs:
         classified = classify_recipient_next_hop_tx(event, recipient, tx_hash, tx_logs)
         classes.update(classified["classes"])
         quote_received += classified["quote_received"]
@@ -1558,7 +1560,7 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
         "quote_received": quote_received,
         "confirmed_sell_count": confirmed_sell_count,
         "recipient_count": 1 if parsed_logs else 0,
-        "coverage_complete": True,
+        "coverage_complete": coverage_complete,
     }
 
 
@@ -1594,18 +1596,24 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     next_hop_quote_received = Decimal(0)
     next_hop_confirmed_sell_count = 0
     next_hop_recipient_count = 0
-    next_hop_coverage_complete = True
     seen_recipients = set()
+    unique_recipients: list[tuple[str, int]] = []
+    for recipient, block in eoa_recipients:
+        if recipient in seen_recipients:
+            continue
+        seen_recipients.add(recipient)
+        unique_recipients.append((recipient, block))
     max_recipients = event_int_setting(
         event,
         "opening_next_hop_recipients",
         "ALPHA_OPENING_NEXT_HOP_RECIPIENTS",
         2,
     )
-    for recipient, block in eoa_recipients[:max_recipients]:
-        if recipient in seen_recipients:
-            continue
-        seen_recipients.add(recipient)
+    selected_recipients = unique_recipients[:max_recipients]
+    next_hop_coverage_complete = (
+        len(selected_recipients) == len(unique_recipients)
+    )
+    for recipient, block in selected_recipients:
         try:
             next_hop = trace_next_hop_from_recipient(
                 event,
