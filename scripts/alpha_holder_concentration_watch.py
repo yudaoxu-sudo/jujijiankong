@@ -365,15 +365,17 @@ def transfer_logs(chain: str, token: str, from_block: int, to_block: int) -> tup
             "topics": [TRANSFER_TOPIC],
         }
         try:
-            result = rpc_call(chain, "eth_getLogs", [query]) or []
-        except Exception as exc:
-            errors.append(str(exc))
-            continue
+            result = rpc_call(chain, "eth_getLogs", [query])
+        except Exception:
+            return [], [f"eth_getLogs coverage failed for {start}-{end}"], False
+        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+            return [], [f"eth_getLogs coverage failed for {start}-{end}"], False
         rows.extend(result)
         if len(rows) >= max_logs:
-            rows = rows[:max_logs]
             truncated = True
             break
+    if truncated:
+        return [], [], True
     rows.sort(key=lambda row: (block_number(row), log_index(row)))
     return rows, errors, truncated
 
@@ -748,7 +750,10 @@ def build_token_snapshot(item: dict[str, str], config: dict[str, Any], state: di
     lookback = int(os.environ.get("ALPHA_HOLDER_LOOKBACK_BLOCKS", "50000"))
     raw_tip = latest_block(chain)
     tip = max(0, raw_tip - finality)
-    token_state = state.setdefault("tokens", {}).setdefault(key, {})
+    tokens_state = state.get("tokens")
+    if not isinstance(tokens_state, dict):
+        tokens_state = {}
+    token_state = tokens_state.get(key, {})
     previous_metrics = token_state.get("last_metrics")
     previous_tip = int(token_state.get("latest_block") or 0)
     if previous_tip and previous_tip < tip:
@@ -760,7 +765,9 @@ def build_token_snapshot(item: dict[str, str], config: dict[str, Any], state: di
         balances = {}
         basis_from_block = from_block
     logs, errors, truncated = transfer_logs(chain, token, from_block, tip)
-    balances = apply_transfers(balances, logs)
+    coverage_failed = bool(errors or truncated)
+    if not coverage_failed:
+        balances = apply_transfers(balances, logs)
     decimals = int(token_state.get("decimals") or token_decimals(chain, token))
     supply_raw = token_total_supply_raw(chain, token)
     supply_source = "totalSupply"
@@ -773,27 +780,55 @@ def build_token_snapshot(item: dict[str, str], config: dict[str, Any], state: di
     raw_pct = pct_sum(raw_rows)
     effective_pct = pct_sum(effective_rows)
     infra_pct = raw_top10_infra_pct(raw_rows)
-    metrics: dict[str, Any] = {
-        "raw_top10_pct": str(raw_pct),
-        "effective_top10_pct": str(effective_pct),
-        "raw_top10_infra_pct": str(infra_pct),
-    }
-    if previous_metrics:
-        metrics.update(
-            {
-                "raw_top10_delta_pct": str(raw_pct - decimal_from(previous_metrics.get("raw_top10_pct"))),
-                "effective_top10_delta_pct": str(effective_pct - decimal_from(previous_metrics.get("effective_top10_pct"))),
-                "raw_top10_infra_delta_pct": str(infra_pct - decimal_from(previous_metrics.get("raw_top10_infra_pct"))),
-            }
+    if coverage_failed:
+        metrics = dict(previous_metrics) if isinstance(previous_metrics, dict) else {}
+        failure_reason = (
+            errors[0]
+            if errors
+            else f"eth_getLogs coverage truncated at {int(os.environ.get('ALPHA_HOLDER_MAX_LOGS_PER_TOKEN', '30000'))} rows"
         )
-    signal = classify_signal(metrics, previous_metrics)
+        signal = {
+            "level": "ERROR",
+            "action": "holder扫描失败",
+            "reason": failure_reason,
+        }
+        checkpoint_tip = previous_tip
+    else:
+        metrics = {
+            "raw_top10_pct": str(raw_pct),
+            "effective_top10_pct": str(effective_pct),
+            "raw_top10_infra_pct": str(infra_pct),
+        }
+        if previous_metrics:
+            metrics.update(
+                {
+                    "raw_top10_delta_pct": str(raw_pct - decimal_from(previous_metrics.get("raw_top10_pct"))),
+                    "effective_top10_delta_pct": str(effective_pct - decimal_from(previous_metrics.get("effective_top10_pct"))),
+                    "raw_top10_infra_delta_pct": str(infra_pct - decimal_from(previous_metrics.get("raw_top10_infra_pct"))),
+                }
+            )
+        signal = classify_signal(metrics, previous_metrics)
+        checkpoint_tip = tip
     negative_count = sum(1 for value in balances.values() if value < 0)
     positive_count = sum(1 for value in balances.values() if value > 0)
-    complete = basis_from_block == 0 and not truncated and not errors and negative_count == 0
+    complete = (
+        not coverage_failed
+        and basis_from_block == 0
+        and negative_count == 0
+    )
+    coverage_note = (
+        "log_coverage_failed"
+        if errors
+        else "log_coverage_truncated"
+        if truncated
+        else "complete_from_genesis"
+        if complete
+        else "window_or_incremental_reconstruction"
+    )
     payload = {
         **item,
         "raw_latest_block": raw_tip,
-        "latest_block": tip,
+        "latest_block": checkpoint_tip,
         "previous_latest_block": previous_tip,
         "basis_from_block": basis_from_block,
         "scan_from_block": from_block,
@@ -803,7 +838,7 @@ def build_token_snapshot(item: dict[str, str], config: dict[str, Any], state: di
         "log_errors": errors[:3],
         "truncated": truncated,
         "complete_holder_reconstruction": complete,
-        "coverage_note": "complete_from_genesis" if complete else "window_or_incremental_reconstruction",
+        "coverage_note": coverage_note,
         "decimals": decimals,
         "total_supply_raw": str(supply_raw),
         "total_supply": str(decimal_amount(supply_raw, decimals)) if supply_raw else "0",
@@ -816,18 +851,19 @@ def build_token_snapshot(item: dict[str, str], config: dict[str, Any], state: di
         "top10_effective": effective_rows,
         "full_holder_source": full_holder_source_status(chain, token),
     }
-    token_state.update(
-        {
-            "symbol": symbol,
-            "chain": chain,
-            "address": token,
-            "decimals": decimals,
-            "basis_from_block": basis_from_block,
-            "latest_block": tip,
-            "last_metrics": metrics,
-            "balances_raw": {addr: str(value) for addr, value in balances.items() if value != 0},
-        }
-    )
+    if not coverage_failed:
+        state.setdefault("tokens", {}).setdefault(key, {}).update(
+            {
+                "symbol": symbol,
+                "chain": chain,
+                "address": token,
+                "decimals": decimals,
+                "basis_from_block": basis_from_block,
+                "latest_block": tip,
+                "last_metrics": metrics,
+                "balances_raw": {addr: str(value) for addr, value in balances.items() if value != 0},
+            }
+        )
     return payload
 
 

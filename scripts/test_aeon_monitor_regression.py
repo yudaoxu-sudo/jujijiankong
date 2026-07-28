@@ -530,6 +530,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", text)
         self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', text)
 
+    def test_server_cycle_preserves_external_disable_telegram(self) -> None:
+        text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
+
+        capture = 'REQUESTED_DISABLE_TELEGRAM="${DISABLE_TELEGRAM:-0}"'
+        source = ". ./.env.local"
+        restore = 'export DISABLE_TELEGRAM=1'
+        guard = 'if [[ "${DISABLE_TELEGRAM:-0}" == "1" ]]; then'
+        self.assertLess(text.index(capture), text.index(source))
+        self.assertLess(text.index(source), text.index(restore))
+        self.assertLess(text.index(restore), text.index(guard))
+
     def test_pre_watch_signal_reply_omits_stale_runtime_context(self) -> None:
         import scripts.telegram_signal_collector as collector
 
@@ -832,16 +843,22 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
     def test_opening_log_coverage_fails_closed(self) -> None:
         import scripts.alpha_opening_block_watch as opening
+        from sniper_engine import rpc
 
         query = {
             "fromBlock": "0x1",
             "toBlock": "0x4",
             "topics": [opening.TRANSFER_TOPIC],
         }
-        with mock.patch.object(
-            opening,
-            "quick_rpc_call",
-            side_effect=[[], RuntimeError("rpc unavailable")],
+        def fail_after_first_chunk(url, method, params, timeout):
+            start = int(params[0]["fromBlock"], 16)
+            if start <= 2:
+                return []
+            raise RuntimeError("private-provider-secret")
+
+        with (
+            mock.patch.object(rpc, "rpc_urls", return_value=["fixture://only"]),
+            mock.patch.object(rpc, "rpc_call_url", side_effect=fail_after_first_chunk),
         ):
             with self.assertRaisesRegex(RuntimeError, "coverage failed"):
                 opening.get_logs_quick("bsc", query, 2, 10, 1)
@@ -858,6 +875,79 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "coverage truncated"):
                 opening.get_logs("bsc", capped_query, 1, 2)
+
+    def test_opening_log_coverage_adaptively_splits_failed_ranges(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+        from sniper_engine import rpc
+
+        calls = []
+
+        def fetch(url, method, params, timeout):
+            start = int(params[0]["fromBlock"], 16)
+            end = int(params[0]["toBlock"], 16)
+            calls.append((start, end))
+            if start != end:
+                raise RuntimeError("rpc response error")
+            return [{"blockNumber": hex(start)}]
+
+        query = {
+            "fromBlock": hex(100),
+            "toBlock": hex(103),
+            "topics": [opening.TRANSFER_TOPIC],
+        }
+        with (
+            mock.patch.object(rpc, "rpc_urls", return_value=["fixture://only"]),
+            mock.patch.object(rpc, "rpc_call_url", side_effect=fetch),
+        ):
+            rows = opening.get_logs_quick("bsc", query, 4, 10, 1)
+        self.assertEqual([int(row["blockNumber"], 16) for row in rows], [100, 101, 102, 103])
+        self.assertEqual(len(calls), 7)
+
+    def test_intraday_log_coverage_adaptively_splits_failed_ranges(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+        from sniper_engine import rpc
+
+        token = "0x" + "a" * 40
+        recipient = "0x" + "b" * 40
+
+        def fetch(url, method, params, timeout):
+            start = int(params[0]["fromBlock"], 16)
+            end = int(params[0]["toBlock"], 16)
+            if start != end:
+                raise RuntimeError("rpc response error")
+            return [{
+                "address": token,
+                "blockNumber": hex(start),
+                "blockHash": f"0x{start:064x}",
+                "transactionHash": f"0x{start:064x}",
+                "transactionIndex": "0x0",
+                "logIndex": "0x0",
+                "topics": [
+                    intraday.opening.TRANSFER_TOPIC,
+                    intraday.opening.address_topic("0x" + "c" * 40),
+                    intraday.opening.address_topic(recipient),
+                ],
+                "data": "0x1",
+            }]
+
+        event = {
+            "chain": "bsc",
+            "token": {"address": token, "decimals": 18},
+        }
+        env = {
+            "ALPHA_INTRADAY_LOG_CHUNK_BLOCKS": "4",
+            "ALPHA_INTRADAY_MAX_LOGS": "10",
+            "ALPHA_INTRADAY_RPC_TIMEOUT": "1",
+        }
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(rpc, "rpc_urls", return_value=["fixture://only"]),
+            mock.patch.object(rpc, "rpc_call_url", side_effect=fetch),
+        ):
+            rows, coverage = intraday.token_transfer_logs_with_coverage(event, 100, 103)
+        self.assertEqual([row["block"] for row in rows], [100, 101, 102, 103])
+        self.assertEqual(coverage["state"], "requested_window_complete")
+        self.assertTrue(coverage["complete"])
 
     def test_next_hop_selection_keeps_largest_middle_transfer(self) -> None:
         from scripts.alpha_opening_block_watch import select_transfer_tx_items
@@ -1087,6 +1177,84 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(alerts, [])
 
+    def test_project_log_gap_keeps_previous_checkpoint_and_balances(self) -> None:
+        from decimal import Decimal
+
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        calls: list[tuple[int, int]] = []
+
+        def fetch(chain, method, params):
+            self.assertEqual(method, "eth_getLogs")
+            query = params[0]
+            bounds = (
+                int(query["fromBlock"], 16),
+                int(query["toBlock"], 16),
+            )
+            calls.append(bounds)
+            if bounds == (103, 104):
+                raise RuntimeError("private-provider-secret")
+            return [
+                {
+                    "blockNumber": hex(bounds[0]),
+                    "transactionHash": "0x" + "3" * 64,
+                    "logIndex": "0x0",
+                }
+            ]
+
+        item = {
+            "watch_addresses": [
+                {
+                    "chain": "bsc",
+                    "address": watched,
+                    "role": "token_controller",
+                }
+            ]
+        }
+        previous_balances = {
+            ("AEON", "bsc", token, watched): Decimal("7"),
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_PROJECT_LOG_CHUNK_BLOCKS": "2"},
+            ),
+            mock.patch.object(project, "latest_block", return_value=104),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(project, "rpc_call", side_effect=fetch),
+            mock.patch.object(
+                project,
+                "build_balances",
+                side_effect=AssertionError("current balances must not be queried"),
+            ),
+        ):
+            result = project.build_contract(
+                "AEON",
+                {"chain": "bsc", "address": token, "confidence": "high"},
+                item,
+                {("AEON", "bsc", token): 100},
+                previous_balances,
+                finality=0,
+                lookback=10,
+            )
+
+        self.assertEqual(calls, [(101, 102), (101, 102), (103, 104)])
+        self.assertEqual(result["raw_latest_block"], 104)
+        self.assertEqual(result["latest_block"], 100)
+        self.assertEqual(result["previous_latest_block"], 100)
+        self.assertEqual(result["balances"][0]["balance"], "7")
+        self.assertEqual(result["balances"][0]["delta"], "")
+        self.assertEqual(result["recent_transfers"], [])
+        self.assertEqual(result["alerts"], [])
+        self.assertEqual(result["log_error_count"], 1)
+        self.assertNotIn(
+            "private-provider-secret",
+            " ".join(result["log_errors"]),
+        )
+
     def test_project_attribution_gap_has_a_stable_alert_key(self) -> None:
         import scripts.alpha_project_watch as project
 
@@ -1301,6 +1469,152 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ALPHA_HOLDER_MAX_PROJECTS": "2"}):
             rows = holder.contract_items(config)
         self.assertEqual([row["symbol"] for row in rows], ["RECENT1", "RECENT2"])
+
+    def test_holder_log_gap_keeps_previous_state_checkpoint(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "3" * 40
+        account = "0x" + "4" * 40
+        key = f"bsc:{token}"
+        state = {
+            "tokens": {
+                key: {
+                    "symbol": "AEON",
+                    "chain": "bsc",
+                    "address": token,
+                    "decimals": 18,
+                    "basis_from_block": 1,
+                    "latest_block": 100,
+                    "last_metrics": {
+                        "raw_top10_pct": "10",
+                        "effective_top10_pct": "9",
+                        "raw_top10_infra_pct": "1",
+                    },
+                    "balances_raw": {account: "100"},
+                }
+            }
+        }
+        before = json.loads(json.dumps(state))
+        calls: list[tuple[int, int]] = []
+
+        def fetch(chain, method, params):
+            self.assertEqual(method, "eth_getLogs")
+            query = params[0]
+            bounds = (
+                int(query["fromBlock"], 16),
+                int(query["toBlock"], 16),
+            )
+            calls.append(bounds)
+            if bounds == (103, 104):
+                raise RuntimeError("private-provider-secret")
+            return [{"blockNumber": hex(bounds[0]), "logIndex": "0x0"}]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_HOLDER_FINALITY_BLOCKS": "0",
+                    "ALPHA_HOLDER_LOG_CHUNK_BLOCKS": "2",
+                    "ALPHA_HOLDER_MAX_LOGS_PER_TOKEN": "100",
+                },
+            ),
+            mock.patch.object(holder, "latest_block", return_value=104),
+            mock.patch.object(holder, "rpc_call", side_effect=fetch),
+            mock.patch.object(holder, "token_total_supply_raw", return_value=1000),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={"source": "none", "status": "not_configured"},
+            ),
+        ):
+            result = holder.build_token_snapshot(
+                {
+                    "symbol": "AEON",
+                    "name": "AEON",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": []},
+                state,
+            )
+
+        self.assertEqual(calls, [(101, 102), (103, 104)])
+        self.assertEqual(state, before)
+        self.assertEqual(result["raw_latest_block"], 104)
+        self.assertEqual(result["latest_block"], 100)
+        self.assertEqual(result["previous_latest_block"], 100)
+        self.assertEqual(result["log_count"], 0)
+        self.assertEqual(result["metrics"], before["tokens"][key]["last_metrics"])
+        self.assertEqual(result["coverage_note"], "log_coverage_failed")
+        self.assertEqual(result["signal"]["level"], "ERROR")
+        self.assertNotIn(
+            "private-provider-secret",
+            " ".join(result["log_errors"]),
+        )
+
+    def test_holder_log_truncation_keeps_previous_state_checkpoint(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "5" * 40
+        key = f"bsc:{token}"
+        state = {
+            "tokens": {
+                key: {
+                    "symbol": "AEON",
+                    "chain": "bsc",
+                    "address": token,
+                    "decimals": 18,
+                    "basis_from_block": 1,
+                    "latest_block": 100,
+                    "last_metrics": {"raw_top10_pct": "8"},
+                    "balances_raw": {},
+                }
+            }
+        }
+        before = json.loads(json.dumps(state))
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_HOLDER_FINALITY_BLOCKS": "0",
+                    "ALPHA_HOLDER_LOG_CHUNK_BLOCKS": "2",
+                    "ALPHA_HOLDER_MAX_LOGS_PER_TOKEN": "1",
+                },
+            ),
+            mock.patch.object(holder, "latest_block", return_value=104),
+            mock.patch.object(
+                holder,
+                "rpc_call",
+                return_value=[{"blockNumber": "0x65", "logIndex": "0x0"}],
+            ),
+            mock.patch.object(holder, "token_total_supply_raw", return_value=1000),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={"source": "none", "status": "not_configured"},
+            ),
+        ):
+            result = holder.build_token_snapshot(
+                {
+                    "symbol": "AEON",
+                    "name": "AEON",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": []},
+                state,
+            )
+
+        self.assertEqual(state, before)
+        self.assertEqual(result["latest_block"], 100)
+        self.assertEqual(result["log_count"], 0)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["coverage_note"], "log_coverage_truncated")
+        self.assertEqual(result["metrics"], before["tokens"][key]["last_metrics"])
 
     def test_health_matches_the_target_project_contract_only(self) -> None:
         from scripts.runtime_health_watch import (

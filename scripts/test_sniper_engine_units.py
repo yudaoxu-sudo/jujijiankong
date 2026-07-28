@@ -152,6 +152,48 @@ class RpcFailoverTests(unittest.TestCase):
         self.assertEqual(calls[0], "https://primary.invalid/rpc")
         self.assertEqual(calls[1], "https://fallback.invalid/rpc")
 
+    def test_get_logs_uses_public_fallback_after_configured_providers(self) -> None:
+        os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"
+        os.environ["NODEREAL_API_KEY"] = "regression-test-key"
+        os.environ["BSC_RPC_FALLBACK_URLS"] = "https://fallback.invalid/rpc"
+        public_fallback = rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"][0]
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            if req.full_url == public_fallback:
+                return _FakeResponse({"jsonrpc": "2.0", "id": 1, "result": []})
+            raise HTTPError(req.full_url, 503, "Service Unavailable", hdrs=None, fp=io.BytesIO(b""))
+
+        urllib.request.urlopen = fake_urlopen
+        result = rpc.rpc_call("bsc", "eth_getLogs", [{"fromBlock": "latest", "toBlock": "latest"}])
+        self.assertEqual(result, [])
+        self.assertEqual(
+            calls,
+            [
+                "https://primary.invalid/rpc",
+                "https://bsc-mainnet.nodereal.io/v1/regression-test-key",
+                "https://fallback.invalid/rpc",
+                public_fallback,
+            ],
+        )
+        self.assertNotIn(rpc.DEFAULT_RPCS["bsc"], calls)
+
+    def test_non_log_calls_keep_existing_bsc_default(self) -> None:
+        self.assertEqual(rpc.rpc_urls("bsc", "eth_blockNumber"), [rpc.DEFAULT_RPCS["bsc"]])
+
+    def test_method_defaults_are_deduped_against_configured_fallbacks(self) -> None:
+        public_fallback = rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"][0]
+        os.environ["BSC_RPC_FALLBACK_URLS"] = f"{public_fallback},{public_fallback}"
+        self.assertEqual(
+            rpc.rpc_urls("bsc", "eth_getLogs"),
+            list(rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"]),
+        )
+
+        default_fallback = rpc.DEFAULT_RPCS["bsc"]
+        os.environ["BSC_RPC_FALLBACK_URLS"] = f"{default_fallback},{default_fallback}"
+        self.assertEqual(rpc.rpc_urls("bsc", "eth_blockNumber"), [default_fallback])
+
     def test_null_receipt_result_raises_runtime_error(self) -> None:
         os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"
 
@@ -340,6 +382,317 @@ class RpcFailoverTests(unittest.TestCase):
         self.assertNotIn("primary.invalid", str(raised.exception))
         self.assertNotIn("fallback.invalid", str(raised.exception))
         self.assertIsNone(raised.exception.__cause__)
+
+
+class AdaptiveGetLogsTests(unittest.TestCase):
+    @staticmethod
+    def log(data: str = "0x1") -> dict[str, str]:
+        return {
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "b" * 64,
+            "transactionIndex": "0x0",
+            "logIndex": "0x0",
+            "data": data,
+        }
+
+    def test_failed_ranges_split_until_supported(self) -> None:
+        calls: list[tuple[int, int]] = []
+
+        def fetch(query: dict[str, object]) -> list[dict[str, str]]:
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            calls.append((start, end))
+            if start != end:
+                raise RuntimeError("provider range limit")
+            return [{"blockNumber": hex(start)}]
+
+        rows = rpc.adaptive_get_logs(
+            {"fromBlock": hex(100), "toBlock": hex(103)},
+            fetch,
+            max_attempts=16,
+        )
+        self.assertEqual([int(row["blockNumber"], 16) for row in rows], [100, 101, 102, 103])
+        self.assertEqual(
+            calls,
+            [(100, 103), (100, 101), (100, 100), (101, 101), (102, 103), (102, 102), (103, 103)],
+        )
+
+    def test_single_block_failure_is_sanitized(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "eth_getLogs coverage failed for 100-100") as raised:
+            rpc.adaptive_get_logs(
+                {"fromBlock": hex(100), "toBlock": hex(100)},
+                lambda query: (_ for _ in ()).throw(RuntimeError("private-provider-secret")),
+            )
+        self.assertNotIn("private-provider-secret", str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+
+    def test_attempt_budget_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "eth_getLogs coverage failed") as raised:
+            rpc.adaptive_get_logs(
+                {"fromBlock": hex(100), "toBlock": hex(103)},
+                lambda query: (_ for _ in ()).throw(RuntimeError("private-provider-secret")),
+                max_attempts=2,
+            )
+        self.assertNotIn("private-provider-secret", str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+
+    def test_transport_range_failures_split_with_bounded_depth(self) -> None:
+        calls: list[tuple[int, int]] = []
+
+        def fetch(query: dict[str, object]) -> list[dict[str, str]]:
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            calls.append((start, end))
+            if end - start + 1 > 2:
+                raise RuntimeError("rpc transport error")
+            return [{"blockNumber": hex(block)} for block in range(start, end + 1)]
+
+        rows = rpc.adaptive_get_logs(
+            {"fromBlock": hex(100), "toBlock": hex(107)},
+            fetch,
+        )
+        self.assertEqual([int(row["blockNumber"], 16) for row in rows], list(range(100, 108)))
+        self.assertEqual(len(calls), 7)
+
+    def test_identical_duplicates_dedupe_and_conflicts_fail_closed(self) -> None:
+        def fetch(query: dict[str, object]) -> list[dict[str, str]]:
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            if start != end:
+                raise RuntimeError("provider range limit")
+            return [self.log("0x1" if start == 100 else "0x1")]
+
+        rows = rpc.adaptive_get_logs(
+            {"fromBlock": hex(100), "toBlock": hex(101)},
+            fetch,
+        )
+        self.assertEqual(rows, [self.log()])
+
+        def conflicting_fetch(query: dict[str, object]) -> list[dict[str, str]]:
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            if start != end:
+                raise RuntimeError("provider range limit")
+            return [self.log("0x1" if start == 100 else "0x2")]
+
+        with self.assertRaisesRegex(RuntimeError, "eth_getLogs coverage failed") as raised:
+            rpc.adaptive_get_logs(
+                {"fromBlock": hex(100), "toBlock": hex(101)},
+                conflicting_fetch,
+            )
+        self.assertNotIn("0x2", str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+
+    def test_rpc_call_discards_partial_endpoint_before_failover(self) -> None:
+        calls: list[tuple[str, int, int]] = []
+
+        def fetch(url: str, method: str, params: list[object], timeout: int = 30):
+            query = params[0]
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            calls.append((url, start, end))
+            if url == "fixture://first":
+                if start != end or start == 101:
+                    raise RuntimeError("rpc response error")
+                return [{**self.log(), "blockNumber": hex(start), "data": "0xfirst"}]
+            return [
+                {
+                    **self.log(),
+                    "blockNumber": hex(block),
+                    "blockHash": f"0x{block:064x}",
+                    "transactionHash": f"0x{block:064x}",
+                    "data": "0xsecond",
+                }
+                for block in range(start, end + 1)
+            ]
+
+        with (
+            patch.object(rpc, "rpc_urls", return_value=["fixture://first", "fixture://second"]),
+            patch.object(rpc, "rpc_call_url", side_effect=fetch),
+        ):
+            rows = rpc.rpc_call(
+                "bsc",
+                "eth_getLogs",
+                [{"fromBlock": hex(100), "toBlock": hex(101)}],
+            )
+
+        self.assertEqual([row["data"] for row in rows], ["0xsecond", "0xsecond"])
+        self.assertEqual(
+            calls,
+            [
+                ("fixture://first", 100, 101),
+                ("fixture://first", 100, 100),
+                ("fixture://first", 101, 101),
+                ("fixture://second", 100, 101),
+            ],
+        )
+
+    def test_rate_limit_does_not_split(self) -> None:
+        calls: list[tuple[str, int, int]] = []
+
+        def fetch(url: str, method: str, params: list[object], timeout: int = 30):
+            query = params[0]
+            calls.append((url, int(query["fromBlock"], 16), int(query["toBlock"], 16)))
+            if url == "fixture://first":
+                raise rpc.RpcHTTPError(429)
+            return []
+
+        with (
+            patch.object(rpc, "rpc_urls", return_value=["fixture://first", "fixture://second"]),
+            patch.object(rpc, "rpc_call_url", side_effect=fetch),
+            patch.object(rpc.time, "sleep"),
+        ):
+            self.assertEqual(
+                rpc.rpc_call(
+                    "bsc",
+                    "eth_getLogs",
+                    [{"fromBlock": hex(100), "toBlock": hex(103)}],
+                ),
+                [],
+            )
+        self.assertEqual(
+            calls,
+            [
+                ("fixture://first", 100, 103),
+                ("fixture://second", 100, 103),
+            ],
+        )
+
+    def test_transport_splitting_stops_at_depth_budget(self) -> None:
+        calls: list[tuple[str, int, int]] = []
+
+        def fetch(url: str, method: str, params: list[object], timeout: int = 30):
+            query = params[0]
+            calls.append((url, int(query["fromBlock"], 16), int(query["toBlock"], 16)))
+            if url == "fixture://first":
+                raise RuntimeError("rpc transport error")
+            return []
+
+        with (
+            patch.object(rpc, "rpc_urls", return_value=["fixture://first", "fixture://second"]),
+            patch.object(rpc, "rpc_call_url", side_effect=fetch),
+        ):
+            self.assertEqual(
+                rpc.rpc_call(
+                    "bsc",
+                    "eth_getLogs",
+                    [{"fromBlock": hex(100), "toBlock": hex(115)}],
+                ),
+                [],
+            )
+        self.assertEqual(
+            calls,
+            [
+                ("fixture://first", 100, 115),
+                ("fixture://first", 100, 107),
+                ("fixture://first", 100, 103),
+                ("fixture://first", 100, 101),
+                ("fixture://second", 100, 115),
+            ],
+        )
+
+
+ARX_OPENING_SCRIPT = ROOT / "scripts" / "arx_opening_block_watch.py"
+
+
+def load_arx_opening_module():
+    spec = importlib.util.spec_from_file_location(
+        "arx_opening_block_watch_under_test",
+        ARX_OPENING_SCRIPT,
+    )
+    module = importlib.util.module_from_spec(spec)
+    with patch("sniper_engine.env.load_local_env"):
+        spec.loader.exec_module(module)
+    return module
+
+
+class ArxLogCoverageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = load_arx_opening_module()
+
+    def fetch_logs(self, quick: bool, max_logs: int, to_block: int = 103):
+        args = (
+            self.module.ARX,
+            100,
+            to_block,
+            [self.module.TRANSFER_TOPIC],
+            max_logs,
+        )
+        if quick:
+            return self.module.get_transfer_logs_by_topics_quick(*args, 2, 1)
+        return self.module.get_transfer_logs_by_topics(*args, chunk_blocks=2)
+
+    def test_log_chunk_failures_are_sanitized(self) -> None:
+        for quick in (False, True):
+            def fetch(url: str, method: str, params: list[object], timeout: int = 30):
+                query = params[0]
+                start = int(query["fromBlock"], 16)
+                if start < 102:
+                    return [{"blockNumber": hex(start)}]
+                raise RuntimeError("private-provider-secret")
+
+            with (
+                self.subTest(quick=quick),
+                patch.object(rpc, "rpc_urls", return_value=["fixture://only"]),
+                patch.object(rpc, "rpc_call_url", side_effect=fetch),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "eth_getLogs coverage failed for 102-102",
+                ) as raised:
+                    self.fetch_logs(quick, 10)
+                self.assertNotIn("private-provider-secret", str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+
+    def test_log_ranges_split_until_supported(self) -> None:
+        for quick in (False, True):
+            calls: list[tuple[int, int]] = []
+
+            def fetch(url: str, method: str, params: list[object], timeout: int = 30):
+                query = params[0]
+                start = int(query["fromBlock"], 16)
+                end = int(query["toBlock"], 16)
+                calls.append((start, end))
+                if start != end:
+                    raise RuntimeError("rpc response error")
+                return [{"blockNumber": hex(start)}]
+
+            with (
+                self.subTest(quick=quick),
+                patch.object(rpc, "rpc_urls", return_value=["fixture://only"]),
+                patch.object(rpc, "rpc_call_url", side_effect=fetch),
+            ):
+                rows = self.fetch_logs(quick, 10)
+                self.assertEqual([int(row["blockNumber"], 16) for row in rows], [100, 101, 102, 103])
+                self.assertEqual(len(calls), 6)
+
+    def test_log_limits_fail_closed_before_unscanned_blocks(self) -> None:
+        scenarios = (
+            (103, [{}, {}], "100-103"),
+            (101, [{}, {}, {}], "100-101"),
+        )
+        for quick in (False, True):
+            for to_block, rows, bounds in scenarios:
+                patch_name = "quick_rpc_call" if quick else "rpc_call"
+                with self.subTest(quick=quick, bounds=bounds), patch.object(
+                    self.module,
+                    patch_name,
+                    return_value=rows,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        f"eth_getLogs coverage truncated at 2 rows for {bounds}",
+                    ):
+                        self.fetch_logs(quick, 2, to_block)
+
+    def test_quick_rpc_call_passes_method_to_url_selection(self) -> None:
+        with patch.object(self.module, "rpc_call", return_value=[]) as call:
+            result = self.module.quick_rpc_call("eth_getLogs", [{}], 1)
+
+        self.assertEqual(result, [])
+        call.assert_called_once_with("bsc", "eth_getLogs", [{}], timeout=1)
 
 
 class MergeFactsTests(unittest.TestCase):

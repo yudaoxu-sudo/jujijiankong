@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label
-from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call, rpc_call_url, rpc_urls
+from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call
 
 
 getcontext().prec = 80
@@ -214,10 +214,14 @@ def get_transfer_logs_by_topics(
             "toBlock": hex(end),
             "topics": topics,
         }
-        result = rpc_call(CHAIN, "eth_getLogs", [query]) or []
-        rows.extend(result)
+        rows.extend(rpc_call(CHAIN, "eth_getLogs", [query]) or [])
         start = end + 1
-    return rows[:max_logs]
+    if len(rows) > max_logs or start <= to_block:
+        raise RuntimeError(
+            f"eth_getLogs coverage truncated at {max_logs} rows for "
+            f"{from_block}-{to_block}"
+        )
+    return rows
 
 
 def get_transfer_logs_by_topics_quick(
@@ -239,25 +243,18 @@ def get_transfer_logs_by_topics_quick(
             "toBlock": hex(end),
             "topics": topics,
         }
-        try:
-            rows.extend(quick_rpc_call("eth_getLogs", [query], timeout) or [])
-        except Exception:
-            break
+        rows.extend(quick_rpc_call("eth_getLogs", [query], timeout) or [])
         start = end + 1
-    return rows[:max_logs]
+    if len(rows) > max_logs or start <= to_block:
+        raise RuntimeError(
+            f"eth_getLogs coverage truncated at {max_logs} rows for "
+            f"{from_block}-{to_block}"
+        )
+    return rows
 
 
 def quick_rpc_call(method: str, params: list[Any], timeout: int) -> Any:
-    last_error: Exception | None = None
-    for url in rpc_urls(CHAIN):
-        try:
-            return rpc_call_url(url, method, params, timeout=timeout)
-        except Exception as exc:
-            last_error = exc
-            continue
-    if last_error:
-        raise last_error
-    raise RuntimeError(f"no rpc url for {CHAIN}")
+    return rpc_call(CHAIN, method, params, timeout=timeout)
 
 
 def transfer_amount(log: dict[str, Any], decimals: int = 18) -> Decimal:

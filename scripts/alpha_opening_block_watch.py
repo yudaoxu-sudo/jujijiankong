@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label, global_address_labels
-from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call, rpc_call_url, rpc_urls
+from sniper_engine.rpc import get_block_by_number, get_transaction_receipt, hex_to_int, rpc_call, rpc_urls
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 from scripts.build_pancake_v4_roundtrip_fixture import build_fixture
 
@@ -281,12 +281,7 @@ def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_log
         chunk_query = dict(query)
         chunk_query["fromBlock"] = hex(start)
         chunk_query["toBlock"] = hex(end)
-        try:
-            rows.extend(quick_rpc_call(chain, "eth_getLogs", [chunk_query], timeout) or [])
-        except Exception as exc:
-            raise RuntimeError(
-                f"eth_getLogs coverage failed for {start}-{end}: {exc}"
-            ) from exc
+        rows.extend(quick_rpc_call(chain, "eth_getLogs", [chunk_query], timeout) or [])
         start = end + 1
     if len(rows) > max_logs or start <= to_block:
         raise RuntimeError(
@@ -297,16 +292,7 @@ def get_logs_quick(chain: str, query: dict[str, Any], chunk_blocks: int, max_log
 
 
 def quick_rpc_call(chain: str, method: str, params: list[Any], timeout: int) -> Any:
-    last_error: Exception | None = None
-    for url in rpc_urls(chain):
-        try:
-            return rpc_call_url(url, method, params, timeout=timeout)
-        except Exception as exc:
-            last_error = exc
-            continue
-    if last_error:
-        raise last_error
-    raise RuntimeError(f"no rpc url for {chain}")
+    return rpc_call(chain, method, params, timeout=timeout)
 
 
 def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:

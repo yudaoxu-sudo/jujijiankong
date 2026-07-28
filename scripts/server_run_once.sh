@@ -14,9 +14,15 @@ else
   echo "server_run_once warning: flock unavailable; continuing without overlap lock"
 fi
 
+REQUESTED_DISABLE_TELEGRAM="${DISABLE_TELEGRAM:-0}"
+
 set -a
 . ./.env.local
 set +a
+
+if [[ "$REQUESTED_DISABLE_TELEGRAM" == "1" ]]; then
+  export DISABLE_TELEGRAM=1
+fi
 
 export MONITOR_DISABLED_PROJECTS="${MONITOR_DISABLED_PROJECTS:-O1}"
 RUNTIME_HEALTH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

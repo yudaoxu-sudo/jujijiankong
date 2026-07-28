@@ -6,7 +6,7 @@ import urllib.request
 import time
 from http.client import HTTPException
 from urllib.error import HTTPError
-from typing import Any
+from typing import Any, Callable
 
 from sniper_engine.env import load_local_env
 
@@ -18,13 +18,29 @@ DEFAULT_RPCS = {
     "base": "https://mainnet.base.org",
 }
 
+LOG_CAPABLE_PUBLIC_RPCS = {
+    "bsc": (
+        "https://bsc.rpc.blxrbdn.com",
+        "https://bsc-rpc.publicnode.com",
+    ),
+}
+
 DISABLED_NODE_REAL = False
+LOG_SPLIT_HTTP_STATUSES = {400, 413, 422}
 
 
 class RpcHTTPError(RuntimeError):
     def __init__(self, status: int) -> None:
         self.status = status
         super().__init__(f"rpc http {status}")
+
+
+class LogCoverageError(RuntimeError):
+    def __init__(self, start: int | str, end: int | str, status: int | None = None) -> None:
+        self.start = start
+        self.end = end
+        self.status = status
+        super().__init__(f"eth_getLogs coverage failed for {start}-{end}")
 
 
 def rpc_url(chain: str) -> str:
@@ -37,7 +53,7 @@ def rpc_url(chain: str) -> str:
     return DEFAULT_RPCS[chain]
 
 
-def rpc_urls(chain: str) -> list[str]:
+def rpc_urls(chain: str, method: str | None = None) -> list[str]:
     urls: list[str] = []
     env_name = f"{chain.upper()}_RPC_URL"
     if os.environ.get(env_name):
@@ -46,7 +62,10 @@ def rpc_urls(chain: str) -> list[str]:
         urls.append(f"https://bsc-mainnet.nodereal.io/v1/{os.environ['NODEREAL_API_KEY']}")
     fallback_env = os.environ.get(f"{chain.upper()}_RPC_FALLBACK_URLS", "")
     urls.extend(url.strip() for url in fallback_env.split(",") if url.strip())
-    urls.append(DEFAULT_RPCS[chain])
+    if method == "eth_getLogs" and chain in LOG_CAPABLE_PUBLIC_RPCS:
+        urls.extend(LOG_CAPABLE_PUBLIC_RPCS[chain])
+    else:
+        urls.append(DEFAULT_RPCS[chain])
     deduped: list[str] = []
     for url in urls:
         if url not in deduped:
@@ -54,7 +73,94 @@ def rpc_urls(chain: str) -> list[str]:
     return deduped
 
 
-def rpc_call(chain: str, method: str, params: list[Any]) -> Any:
+def adaptive_get_logs(
+    query: dict[str, Any],
+    fetch: Callable[[dict[str, Any]], Any],
+    max_attempts: int = 256,
+    max_transport_split_depth: int = 3,
+) -> list[dict[str, Any]]:
+    from_value = query.get("fromBlock")
+    to_value = query.get("toBlock")
+    symbolic_latest = from_value == to_value == "latest"
+    if symbolic_latest:
+        from_block: int | str = "latest"
+        to_block: int | str = "latest"
+    else:
+        try:
+            from_block = int(from_value, 16)
+            to_block = int(to_value, 16)
+        except (TypeError, ValueError):
+            raise RuntimeError("eth_getLogs coverage query invalid") from None
+        if from_block > to_block:
+            return []
+
+    pending = [(from_block, to_block, 0)]
+    rows: list[dict[str, Any]] = []
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    attempts = 0
+    while pending:
+        start, end, transport_split_depth = pending.pop()
+        if attempts >= max_attempts:
+            raise LogCoverageError(start, end) from None
+        attempts += 1
+        chunk_query = dict(query)
+        chunk_query["fromBlock"] = hex(start) if isinstance(start, int) else start
+        chunk_query["toBlock"] = hex(end) if isinstance(end, int) else end
+        try:
+            result = fetch(chunk_query)
+            if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+                raise RuntimeError("invalid log response")
+        except Exception as exc:
+            status = (
+                exc.code
+                if isinstance(exc, HTTPError)
+                else exc.status if isinstance(exc, RpcHTTPError) else None
+            )
+            transport_error = isinstance(exc, RuntimeError) and str(exc) == "rpc transport error"
+            splittable = (
+                status in LOG_SPLIT_HTTP_STATUSES
+                if status is not None
+                else isinstance(exc, RuntimeError)
+                and str(exc) not in {
+                    "rpc response shape error",
+                    "rpc null result",
+                }
+            )
+            if transport_error:
+                splittable = transport_split_depth < max_transport_split_depth
+            if start == end or not splittable:
+                raise LogCoverageError(start, end, status) from None
+            if not isinstance(start, int) or not isinstance(end, int):
+                raise LogCoverageError(start, end, status) from None
+            midpoint = (start + end) // 2
+            next_transport_depth = transport_split_depth + 1 if transport_error else transport_split_depth
+            pending.append((midpoint + 1, end, next_transport_depth))
+            pending.append((start, midpoint, next_transport_depth))
+            continue
+        for row in result:
+            tx_hash = row.get("transactionHash")
+            log_index = row.get("logIndex")
+            try:
+                identity = (
+                    (str(tx_hash).lower(), int(str(log_index), 16))
+                    if tx_hash not in (None, "") and log_index not in (None, "")
+                    else None
+                )
+            except (TypeError, ValueError):
+                identity = None
+            if identity is None:
+                rows.append(row)
+                continue
+            previous = seen.get(identity)
+            if previous is None:
+                seen[identity] = row
+                rows.append(row)
+            elif previous != row:
+                raise LogCoverageError(start, end) from None
+    return rows
+
+
+def rpc_call(chain: str, method: str, params: list[Any], timeout: int = 30) -> Any:
     global DISABLED_NODE_REAL
     errors: list[str] = []
     nodereal_key = os.environ.get("NODEREAL_API_KEY")
@@ -65,10 +171,41 @@ def rpc_call(chain: str, method: str, params: list[Any]) -> Any:
     )
     # Snapshot the URL list once: disabling NodeReal mid-call shrinks rpc_urls()
     # and would otherwise cut the failover walk short of the remaining URLs.
-    urls = rpc_urls(chain)
+    urls = rpc_urls(chain, method)
+    if method == "eth_getLogs":
+        if len(params) != 1 or not isinstance(params[0], dict):
+            raise RuntimeError("eth_getLogs coverage query invalid")
+        last_coverage_error: LogCoverageError | None = None
+        for index, url in enumerate(urls):
+            try:
+                return adaptive_get_logs(
+                    params[0],
+                    lambda query, endpoint=url: rpc_call_url(
+                        endpoint,
+                        method,
+                        [query],
+                        timeout=timeout,
+                    ),
+                )
+            except LogCoverageError as exc:
+                last_coverage_error = exc
+                errors.append(f"{chain} rpc[{index + 1}] log_coverage_error")
+                if url == nodereal_url and exc.status in {401, 403}:
+                    DISABLED_NODE_REAL = True
+                if exc.status == 429 and index + 1 < len(urls):
+                    time.sleep(float(os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")))
+                continue
+        if last_coverage_error is not None:
+            raise LogCoverageError(
+                last_coverage_error.start,
+                last_coverage_error.end,
+                last_coverage_error.status,
+            ) from None
+        raise RuntimeError("; ".join(errors) or f"no rpc url for {chain}") from None
+
     for index, url in enumerate(urls):
         try:
-            return rpc_call_url(url, method, params)
+            return rpc_call_url(url, method, params, timeout=timeout)
         except (HTTPError, RpcHTTPError) as exc:
             status = exc.code if isinstance(exc, HTTPError) else exc.status
             errors.append(f"{chain} rpc[{index + 1}] http {status}")

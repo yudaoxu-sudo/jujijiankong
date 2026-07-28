@@ -240,10 +240,13 @@ def get_transfer_logs(
             }
             try:
                 result = rpc_call(chain, "eth_getLogs", [query])
-            except Exception as exc:
-                errors.append(str(exc))
-                continue
-            for row in result or []:
+            except Exception:
+                errors.append(f"eth_getLogs coverage failed for {start}-{end}")
+                return [], errors
+            if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+                errors.append(f"eth_getLogs coverage failed for {start}-{end}")
+                return [], errors
+            for row in result:
                 key = (row.get("transactionHash", ""), row.get("logIndex", ""))
                 rows[key] = row
     ordered = sorted(rows.values(), key=lambda row: (block_number(row), log_index(row)))
@@ -597,23 +600,36 @@ def build_contract(
     )
     watch_addr_values = [row["address"] for row in watch_addresses]
     logs, log_errors = get_transfer_logs(chain, address, watch_addr_values, from_block, tip)
-    transfers = [transfer_row(row, decimals) for row in logs[-40:]]
-    balances = build_balances(symbol, chain, address, decimals, watch_addresses, previous_balance_map)
-    alerts = build_contract_alerts(
-        symbol,
-        chain,
-        address,
-        previous_tip,
-        transfers,
-        balances,
-        watch_addresses,
-    )
+    if log_errors:
+        transfers: list[dict[str, Any]] = []
+        balances = preserved_balance_rows(
+            symbol,
+            chain,
+            address,
+            watch_addresses,
+            previous_balance_map,
+        )
+        alerts: list[dict[str, Any]] = []
+        checkpoint_tip = previous_tip
+    else:
+        transfers = [transfer_row(row, decimals) for row in logs[-40:]]
+        balances = build_balances(symbol, chain, address, decimals, watch_addresses, previous_balance_map)
+        alerts = build_contract_alerts(
+            symbol,
+            chain,
+            address,
+            previous_tip,
+            transfers,
+            balances,
+            watch_addresses,
+        )
+        checkpoint_tip = tip
     return {
         "chain": chain,
         "address": address,
         "confidence": contract.get("confidence", ""),
         "raw_latest_block": raw_tip,
-        "latest_block": tip,
+        "latest_block": checkpoint_tip,
         "previous_latest_block": previous_tip,
         "from_block": from_block,
         "finality_blocks": finality,
@@ -699,6 +715,51 @@ def build_balances(
                     "balance": str(balance),
                     "previous_balance": "" if previous is None else str(previous),
                     "delta": delta,
+                }
+            )
+    return rows
+
+
+def preserved_balance_rows(
+    symbol: str,
+    chain: str,
+    token: str,
+    watch_addresses: list[dict[str, Any]],
+    previous_balance_map: dict[tuple[str, str, str, str], Decimal],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    token = norm(token)
+    for item in watch_addresses:
+        address = norm(item.get("address"))
+        targets = [(token, symbol, False)]
+        if item.get("watch_quote"):
+            requested = {
+                str(row).upper()
+                for row in item.get("watch_quote_tokens") or ["USDT"]
+            }
+            for quote_address, quote_symbol in QUOTE_TOKENS_BY_CHAIN.get(chain, {}).items():
+                if (
+                    requested
+                    and quote_symbol.upper() not in requested
+                    and quote_address.upper() not in requested
+                ):
+                    continue
+                targets.append((quote_address, quote_symbol, True))
+        for balance_token, balance_symbol, is_quote in targets:
+            previous = previous_balance_map.get(
+                (symbol, chain, norm(balance_token), address)
+            )
+            if previous is None:
+                continue
+            rows.append(
+                {
+                    **item,
+                    "balance_token": balance_symbol,
+                    "balance_token_address": norm(balance_token),
+                    "is_quote_balance": is_quote,
+                    "balance": str(previous),
+                    "previous_balance": str(previous),
+                    "delta": "",
                 }
             )
     return rows
