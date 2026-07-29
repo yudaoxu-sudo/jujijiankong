@@ -9,6 +9,7 @@ interpolation.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import hashlib
 import json
 import urllib.parse
@@ -30,6 +31,21 @@ EXCHANGE_INFO_URL = (
 DOCS_URL = "https://developers.binance.com/docs/alpha/market-data/rest-api/klines"
 INTERVAL_MS = 60_000
 HORIZONS = {"24h": 24 * 60, "72h": 72 * 60, "7d": 7 * 24 * 60}
+ARCHIVE_SCHEMA = "binance_alpha_1m_series.v1"
+ARCHIVE_FIELD_ORDER = (
+    "open_time_ms",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time_ms",
+    "quote_volume",
+    "trade_count",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+)
 CASES = (
     {
         "root_signal_id": "ELON-2074859463027408945",
@@ -117,7 +133,7 @@ def fetch_exact_klines(
     *,
     timeout: int,
 ) -> tuple[list[list[Any]], dict[str, Any]]:
-    rows_by_open_time: dict[int, list[Any]] = {}
+    rows: list[list[Any]] = []
     cursor = start_ms
     request_count = 0
     while cursor < end_exclusive_ms:
@@ -144,7 +160,7 @@ def fetch_exact_klines(
                 raise ValueError("invalid Binance Alpha kline row")
             open_time = int(row[0])
             if start_ms <= open_time < end_exclusive_ms:
-                rows_by_open_time[open_time] = row
+                rows.append(row)
             page_open_times.append(open_time)
         newest = max(page_open_times)
         next_cursor = newest + INTERVAL_MS
@@ -153,7 +169,12 @@ def fetch_exact_klines(
         cursor = next_cursor
         if len(page) < page_limit:
             break
-    rows = [rows_by_open_time[key] for key in sorted(rows_by_open_time)]
+    rows.sort(
+        key=lambda row: (
+            int(row[0]),
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+        )
+    )
     return rows, {"request_count": request_count, "last_cursor_ms": cursor}
 
 
@@ -188,8 +209,98 @@ def format_missing_range(start_ms: int, end_exclusive_ms: int) -> dict[str, Any]
 
 
 def canonical_series_sha256(rows: list[list[Any]]) -> str:
-    encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    canonical_rows = sorted(
+        rows,
+        key=lambda row: (
+            int(row[0]),
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+        ),
+    )
+    encoded = json.dumps(
+        canonical_rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def build_series_archive(
+    case: dict[str, str],
+    rows: list[list[Any]],
+    *,
+    fetched_at_utc: str,
+) -> dict[str, Any]:
+    signal_time = parse_utc(case["signal_time_utc"])
+    anchor = first_strict_post_signal_minute(signal_time)
+    start_ms = int(anchor.timestamp() * 1000)
+    end_exclusive_ms = start_ms + HORIZONS["7d"] * INTERVAL_MS
+    canonical_rows = sorted(
+        rows,
+        key=lambda row: (
+            int(row[0]),
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+        ),
+    )
+    return {
+        "schema": ARCHIVE_SCHEMA,
+        "venue": "Binance Alpha",
+        "pair": case["pair"],
+        "interval": "1m",
+        "start_time_ms": start_ms,
+        "end_exclusive_ms": end_exclusive_ms,
+        "fetched_at_utc": fetched_at_utc,
+        "field_order": list(ARCHIVE_FIELD_ORDER),
+        "row_count": len(canonical_rows),
+        "series_sha256": canonical_series_sha256(canonical_rows),
+        "rows": canonical_rows,
+    }
+
+
+def write_series_archive(path: Path, archive: dict[str, Any]) -> None:
+    """Write Git-auditable JSON with one compact kline per line."""
+    rows = archive.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("series archive rows must be a list")
+    header = {key: value for key, value in archive.items() if key != "rows"}
+    lines = ["{"]
+    for key, value in header.items():
+        lines.append(
+            "  "
+            + json.dumps(key, ensure_ascii=False)
+            + ": "
+            + json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            + ","
+        )
+    lines.append('  "rows": [')
+    for index, row in enumerate(rows):
+        suffix = "," if index + 1 < len(rows) else ""
+        lines.append(
+            "    "
+            + json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+            + suffix
+        )
+    lines.extend(["  ]", "}"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_series_archive(path: Path) -> dict[str, Any]:
+    archive = json.loads(path.read_text(encoding="utf-8"))
+    if archive.get("schema") != ARCHIVE_SCHEMA:
+        raise ValueError("unexpected series archive schema")
+    if archive.get("field_order") != list(ARCHIVE_FIELD_ORDER):
+        raise ValueError("unexpected series archive field order")
+    rows = archive.get("rows")
+    if not isinstance(rows, list) or any(
+        not isinstance(row, list) or len(row) != len(ARCHIVE_FIELD_ORDER)
+        for row in rows
+    ):
+        raise ValueError("invalid series archive rows")
+    if archive.get("row_count") != len(rows):
+        raise ValueError("series archive row count mismatch")
+    if archive.get("series_sha256") != canonical_series_sha256(rows):
+        raise ValueError("series archive sha256 mismatch")
+    return archive
 
 
 def pct(value: Decimal, base: Decimal) -> str:
@@ -201,18 +312,27 @@ def replay_horizon(
     rows_by_open_time: dict[int, list[Any]],
     anchor_ms: int,
     minute_count: int,
+    *,
+    duplicate_open_times: set[int] | None = None,
+    conflicting_open_times: set[int] | None = None,
 ) -> dict[str, Any]:
     end_exclusive_ms = anchor_ms + minute_count * INTERVAL_MS
     expected = set(range(anchor_ms, end_exclusive_ms, INTERVAL_MS))
     present = expected & set(rows_by_open_time)
     missing = missing_ranges(present, anchor_ms, end_exclusive_ms)
+    duplicate_open_times = duplicate_open_times or set()
+    conflicting_open_times = conflicting_open_times or set()
+    duplicate_count = len(expected & duplicate_open_times)
+    conflict_count = len(expected & conflicting_open_times)
     coverage = {
         "expected_candle_count": minute_count,
         "observed_candle_count": len(present),
         "missing_candle_count": minute_count - len(present),
+        "duplicate_open_time_count": duplicate_count,
+        "conflicting_open_time_count": conflict_count,
         "missing_ranges": missing,
     }
-    if missing:
+    if missing or duplicate_count or conflict_count:
         return {"status": "blocked_incomplete_series", "coverage": coverage, "metrics": None}
 
     rows = [rows_by_open_time[open_time] for open_time in sorted(expected)]
@@ -261,21 +381,45 @@ def build_case_result(
     anchor_ms = int(anchor.timestamp() * 1000)
     maximum_minutes = max(horizons.values())
     end_exclusive_ms = anchor_ms + maximum_minutes * INTERVAL_MS
-    rows_by_open_time = {
-        int(row[0]): row
-        for row in rows
-        if (
-            anchor_ms <= int(row[0]) < end_exclusive_ms
-            and int(row[6]) == int(row[0]) + INTERVAL_MS - 1
+    in_range_rows = [
+        row for row in rows if anchor_ms <= int(row[0]) < end_exclusive_ms
+    ]
+    grouped_rows: dict[int, list[list[Any]]] = defaultdict(list)
+    for row in in_range_rows:
+        grouped_rows[int(row[0])].append(row)
+    duplicate_open_times = {
+        open_time for open_time, grouped in grouped_rows.items() if len(grouped) > 1
+    }
+    conflicting_open_times = {
+        open_time
+        for open_time, grouped in grouped_rows.items()
+        if len(
+            {
+                json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+                for row in grouped
+            }
         )
+        > 1
+    }
+    rows_by_open_time = {
+        open_time: grouped[0]
+        for open_time, grouped in grouped_rows.items()
+        if len(grouped) == 1
+        and int(grouped[0][6]) == open_time + INTERVAL_MS - 1
     }
     case_horizons = {
-        label: replay_horizon(rows_by_open_time, anchor_ms, minutes)
+        label: replay_horizon(
+            rows_by_open_time,
+            anchor_ms,
+            minutes,
+            duplicate_open_times=duplicate_open_times,
+            conflicting_open_times=conflicting_open_times,
+        )
         for label, minutes in horizons.items()
     }
     present = set(rows_by_open_time)
     missing = missing_ranges(present, anchor_ms, end_exclusive_ms)
-    complete = not missing and all(
+    complete = not missing and not duplicate_open_times and all(
         row["status"] == "complete" for row in case_horizons.values()
     )
     result = {
@@ -308,8 +452,11 @@ def build_case_result(
             "source_row_count": len(rows),
             "observed_candle_count": len(present),
             "missing_candle_count": maximum_minutes - len(present),
+            "duplicate_open_time_count": len(duplicate_open_times),
+            "conflicting_open_time_count": len(conflicting_open_times),
             "invalid_close_time_count": sum(
-                int(row[6]) != int(row[0]) + INTERVAL_MS - 1 for row in rows
+                int(row[6]) != int(row[0]) + INTERVAL_MS - 1
+                for row in in_range_rows
             ),
             "missing_ranges": missing,
         },
@@ -319,7 +466,55 @@ def build_case_result(
     return result
 
 
-def run_live(timeout: int) -> dict[str, Any]:
+def archived_case_matches_summary(
+    summary_case: dict[str, Any],
+    archive: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    rows = archive["rows"]
+    expected_start_ms = summary_case.get("query", {}).get("start_time_ms")
+    expected_end_exclusive_ms = (
+        summary_case.get("query", {}).get("end_time_ms", -1) + 1
+    )
+    if archive.get("pair") != summary_case.get("pair"):
+        raise ValueError("series archive pair mismatch")
+    if archive.get("interval") != summary_case.get("interval"):
+        raise ValueError("series archive interval mismatch")
+    if archive.get("start_time_ms") != expected_start_ms:
+        raise ValueError("series archive start mismatch")
+    if archive.get("end_exclusive_ms") != expected_end_exclusive_ms:
+        raise ValueError("series archive end mismatch")
+    rebuilt = build_case_result(
+        {
+            key: summary_case[key]
+            for key in (
+                "root_signal_id",
+                "symbol",
+                "alpha_id",
+                "pair",
+                "signal_time_utc",
+            )
+        },
+        rows,
+        registry_state=summary_case.get("registry_state", {}),
+        fetch_state=summary_case.get("fetch_state", {}),
+        queried_at_utc=summary_case.get("query", {}).get("queried_at_utc"),
+    )
+    keys = (
+        "anchor_time_utc",
+        "requested_end_exclusive_utc",
+        "status",
+        "coverage",
+        "series_sha256",
+        "horizons",
+    )
+    return all(rebuilt.get(key) == summary_case.get(key) for key in keys), rebuilt
+
+
+def run_live(
+    timeout: int,
+    *,
+    archive_output: Path | None = None,
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for case in CASES:
         signal = parse_utc(case["signal_time_utc"])
@@ -340,18 +535,26 @@ def run_live(timeout: int) -> dict[str, Any]:
         except PublicMarketDataError as exc:
             api_error = exc
             fetch_state = {"request_count": 1, "last_cursor_ms": start_ms}
-        results.append(
-            build_case_result(
+        result = build_case_result(
+            case,
+            rows,
+            registry_state=registry,
+            fetch_state=fetch_state,
+            api_error=api_error,
+            queried_at_utc=iso_utc(
+                datetime.now(timezone.utc).replace(microsecond=0)
+            ),
+        )
+        if archive_output is not None and case["symbol"] == "EVAA" and result["status"] == "complete":
+            fetched_at_utc = result["query"]["queried_at_utc"]
+            archive = build_series_archive(
                 case,
                 rows,
-                registry_state=registry,
-                fetch_state=fetch_state,
-                api_error=api_error,
-                queried_at_utc=iso_utc(
-                    datetime.now(timezone.utc).replace(microsecond=0)
-                ),
+                fetched_at_utc=fetched_at_utc,
             )
-        )
+            write_series_archive(archive_output, archive)
+            result["series_archive_ref"] = str(archive_output)
+        results.append(result)
 
     return {
         "schema": "exact_anchor_market_replay.v1",
@@ -389,9 +592,10 @@ def run_live(timeout: int) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--archive-output", type=Path)
     parser.add_argument("--timeout", type=int, default=20)
     args = parser.parse_args()
-    payload = run_live(args.timeout)
+    payload = run_live(args.timeout, archive_output=args.archive_output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

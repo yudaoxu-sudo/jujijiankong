@@ -194,7 +194,8 @@
         "query_time_utc": "2026-07-29T04:30:36Z",
         "observed_candle_count": 10080,
         "missing_candle_count": 0,
-        "series_sha256": "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab"
+        "series_sha256": "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab",
+        "series_archive_ref": "input/elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json"
       }
     }
   ],

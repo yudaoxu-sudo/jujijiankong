@@ -59,6 +59,8 @@
         "source_row_count": 0,
         "observed_candle_count": 0,
         "missing_candle_count": 10080,
+        "duplicate_open_time_count": 0,
+        "conflicting_open_time_count": 0,
         "invalid_close_time_count": 0,
         "missing_ranges": [
           {
@@ -76,6 +78,8 @@
             "expected_candle_count": 1440,
             "observed_candle_count": 0,
             "missing_candle_count": 1440,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": [
               {
                 "start_utc": "2026-07-08T14:14:00Z",
@@ -92,6 +96,8 @@
             "expected_candle_count": 4320,
             "observed_candle_count": 0,
             "missing_candle_count": 4320,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": [
               {
                 "start_utc": "2026-07-08T14:14:00Z",
@@ -108,6 +114,8 @@
             "expected_candle_count": 10080,
             "observed_candle_count": 0,
             "missing_candle_count": 10080,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": [
               {
                 "start_utc": "2026-07-08T14:14:00Z",
@@ -160,10 +168,13 @@
         "source_row_count": 10080,
         "observed_candle_count": 10080,
         "missing_candle_count": 0,
+        "duplicate_open_time_count": 0,
+        "conflicting_open_time_count": 0,
         "invalid_close_time_count": 0,
         "missing_ranges": []
       },
       "series_sha256": "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab",
+      "series_archive_ref": "input/elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json",
       "horizons": {
         "24h": {
           "status": "complete",
@@ -171,6 +182,8 @@
             "expected_candle_count": 1440,
             "observed_candle_count": 1440,
             "missing_candle_count": 0,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": []
           },
           "metrics": {
@@ -192,6 +205,8 @@
             "expected_candle_count": 4320,
             "observed_candle_count": 4320,
             "missing_candle_count": 0,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": []
           },
           "metrics": {
@@ -213,6 +228,8 @@
             "expected_candle_count": 10080,
             "observed_candle_count": 10080,
             "missing_candle_count": 0,
+            "duplicate_open_time_count": 0,
+            "conflicting_open_time_count": 0,
             "missing_ranges": []
           },
           "metrics": {

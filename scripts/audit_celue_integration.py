@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +69,7 @@ REQUIRED_PROJECT_FILES = [
     "cases/2026-07-13_miles082510_wallet_cluster_review.md",
     "input/elonkely_latest_100_review_2026-07-16.json",
     "input/elonkely_exact_anchor_replay_2026-07-29.json",
+    "input/elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json",
     "cases/2026-07-16_elonkely_latest_100_review.md",
     "input/binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
     "cases/2026-07-17_binance_alpha_cex_wallet_aggregation.md",
@@ -176,6 +178,20 @@ def main() -> int:
     try:
         elonkely_review = json.loads(read_text(elonkely_review_path))
         exact_replay = json.loads(read_text(exact_replay_path))
+        replay_module_path = (
+            ROOT / "scripts" / "backfill_elonkely_exact_anchor_replay.py"
+        )
+        replay_spec = importlib.util.spec_from_file_location(
+            "elonkely_exact_anchor_replay_audit",
+            replay_module_path,
+        )
+        if replay_spec is None or replay_spec.loader is None:
+            raise RuntimeError("cannot load exact-anchor replay module")
+        replay_module = importlib.util.module_from_spec(replay_spec)
+        replay_spec.loader.exec_module(replay_module)
+        evaa_archive = replay_module.load_series_archive(
+            ROOT / "input" / "elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json"
+        )
         ledger = elonkely_review.get("outcome_ledger", [])
         ledger_by_root = {row.get("root_signal_id"): row for row in ledger}
         replay_by_root = {
@@ -183,6 +199,24 @@ def main() -> int:
         }
         parti_replay = replay_by_root.get("ELON-2074859463027408945", {})
         evaa_replay = replay_by_root.get("ELON-2075164060409270485", {})
+        archive_matches, rebuilt_evaa = replay_module.archived_case_matches_summary(
+            evaa_replay,
+            evaa_archive,
+        )
+        evaa_ledger = ledger_by_root.get("ELON-2075164060409270485", {})
+        ledger_metrics_match = all(
+            all(
+                evaa_ledger.get("evaluation_horizons", {})
+                .get(label, {})
+                .get(field)
+                == rebuilt_evaa.get("horizons", {})
+                .get(label, {})
+                .get("metrics", {})
+                .get(field)
+                for field in ("mfe_pct", "mae_pct", "end_return_pct")
+            )
+            for label in ("24h", "72h", "7d")
+        )
         root_ids = [row.get("root_signal_id") for row in ledger]
         decisions = elonkely_review.get("runtime_decisions", {})
         time_cases = elonkely_review.get("source_time_sanity_cases", [])
@@ -223,6 +257,20 @@ def main() -> int:
             evaa_replay.get("status") == "complete"
             and evaa_replay.get("coverage", {}).get("observed_candle_count") == 10080
             and evaa_replay.get("coverage", {}).get("missing_candle_count") == 0
+            and evaa_replay.get("coverage", {}).get("duplicate_open_time_count") == 0
+            and evaa_replay.get("coverage", {}).get("conflicting_open_time_count") == 0
+            and archive_matches
+            and rebuilt_evaa.get("series_sha256")
+            == evaa_archive.get("series_sha256")
+            and ledger_metrics_match
+            and evaa_ledger.get("mfe")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get("mfe_pct")
+            and evaa_ledger.get("mae")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get("mae_pct")
+            and evaa_ledger.get("end_return")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get(
+                "end_return_pct"
+            )
             and evaa_replay.get("series_sha256")
             == "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab"
             and all(
@@ -246,7 +294,13 @@ def main() -> int:
             and ledger_by_root.get("ELON-2075164060409270485", {})
             .get("market_provenance", {})
             .get("series_sha256")
-            == evaa_replay.get("series_sha256"),
+            == evaa_replay.get("series_sha256")
+            and evaa_replay.get("series_archive_ref")
+            == "input/elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json"
+            and ledger_by_root.get("ELON-2075164060409270485", {})
+            .get("market_provenance", {})
+            .get("series_archive_ref")
+            == evaa_replay.get("series_archive_ref"),
             str(evaa_replay.get("series_sha256") or ""),
         )
     except Exception as exc:

@@ -95,6 +95,11 @@ PROTOCOL_COUNTERPARTY_CLASSES = {
     "pool_manager",
     "permit2",
     "quote_token",
+    "pool",
+    "v4_pool_manager",
+    "pool_hook",
+    "hook_operator",
+    "lp_locker_or_staking",
 }
 OWNER_SELECTORS = {
     "owner": "0x8da5cb5b",
@@ -1605,7 +1610,15 @@ def receipt_confirmed_sell_evidence(
     recipient: str,
     tx_hash: str,
     route: str,
+    initiator: str = "",
 ) -> list[dict[str, Any]]:
+    if receipt_confirmed_sell_exclusion_reason(
+        transfers,
+        event,
+        recipient,
+        initiator,
+    ):
+        return []
     quote_address = norm(event["quote"]["address"])
     recipient = norm(recipient)
     rows: list[dict[str, Any]] = []
@@ -1630,6 +1643,45 @@ def receipt_confirmed_sell_evidence(
             }
         )
     return rows
+
+
+def receipt_confirmed_sell_exclusion_reason(
+    transfers: list[dict[str, Any]],
+    event: dict[str, Any],
+    recipient: str,
+    initiator: str = "",
+) -> str:
+    recipient = norm(recipient)
+    token_address = norm((event.get("token") or {}).get("address"))
+    if token_address and recipient in excluded_addresses(event):
+        return "configured_non_cohort_subject"
+    if not token_address:
+        return ""
+    token_out = any(
+        norm(transfer.get("token")) == token_address
+        and norm(transfer.get("from")) == recipient
+        and decimal_from(transfer.get("amount")) > 0
+        for transfer in transfers
+    )
+    if not token_out:
+        return "receipt_direction_missing_token_out"
+    initiator = norm(initiator)
+    if is_address(initiator) and recipient != initiator:
+        nets = net_by_address(
+            transfers,
+            token_address,
+            norm((event.get("quote") or {}).get("address")),
+        )
+        recipient_net = nets.get(recipient) or {}
+        initiator_net = nets.get(initiator) or {}
+        if (
+            recipient_net.get("token", Decimal(0)) < 0
+            and recipient_net.get("quote", Decimal(0)) > 0
+            and initiator_net.get("token", Decimal(0)) > 0
+            and initiator_net.get("quote", Decimal(0)) < 0
+        ):
+            return "receipt_direction_counterparty_to_initiator_buy"
+    return ""
 
 
 def merge_confirmed_sell_evidence(
@@ -1710,6 +1762,8 @@ def trace_sell_lower_bound(
     refreshed: dict[str, Any],
 ) -> dict[str, Any]:
     if not previous:
+        return refreshed
+    if refreshed.get("subject_exclusion_reason"):
         return refreshed
     result = copy.deepcopy(refreshed)
     previous_evidence = merge_confirmed_sell_evidence(
@@ -2045,6 +2099,7 @@ def trace_next_hop_from_recipient(event: dict[str, Any], buyer: str, recipient: 
 def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoing_logs: list[dict[str, Any]], latest: int) -> dict[str, Any]:
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
     receipt_coverage_complete = False
+    receipt: dict[str, Any] = {}
     try:
         receipt = quick_rpc_call(
             event["chain"],
@@ -2065,12 +2120,18 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
     except Exception:
         receipt_coverage_complete = False
         transfers = []
+    confirmed_sell_exclusion_reason = (
+        receipt_confirmed_sell_exclusion_reason(
+            transfers, event, buyer, receipt.get("from", "")
+        )
+    )
     direct_sell_evidence = receipt_confirmed_sell_evidence(
         transfers,
         event,
         buyer,
         tx_hash,
         "direct",
+        receipt.get("from", ""),
     )
     direct_summary = confirmed_sell_evidence_summary(direct_sell_evidence)
     quote_received = decimal_from(direct_summary["quote_received"])
@@ -2165,6 +2226,9 @@ def classify_outgoing_tx(event: dict[str, Any], buyer: str, tx_hash: str, outgoi
             evidence_summary["confirmed_sell_count"]
         ),
         "confirmed_sell_evidence": confirmed_sell_evidence,
+        "confirmed_sell_exclusion_reason": (
+            confirmed_sell_exclusion_reason
+        ),
         "next_hop_count": next_hop_recipient_count,
         "next_hop_coverage_complete": next_hop_coverage_complete,
         "receipt_coverage_complete": receipt_coverage_complete,
@@ -2232,13 +2296,20 @@ def excluded_addresses(event: dict[str, Any]) -> set[str]:
     for address, row in global_address_labels(event["chain"]).items():
         if str(row.get("class") or "") in PROTOCOL_COUNTERPARTY_CLASSES:
             out.add(address)
-    for row in event.get("known_contracts", []) or []:
-        if not isinstance(row, dict):
-            continue
-        address = norm(row.get("address"))
-        if is_address(address) and str(row.get("class") or row.get("destination_class") or "") in PROTOCOL_COUNTERPARTY_CLASSES:
-            out.add(address)
     for source in (event, event.get("market_context", {})):
+        for key in ("watch_addresses", "known_contracts", "neutral_contracts"):
+            for item in source.get(key, []) or []:
+                meta = item if isinstance(item, dict) else {}
+                address = norm(
+                    meta.get("address") if meta else item
+                )
+                role = str(meta.get("role") or meta.get("class") or meta.get("destination_class") or "")
+                if is_address(address) and (
+                    key == "neutral_contracts"
+                    or role in PROTOCOL_COUNTERPARTY_CLASSES
+                    or meta.get("control_scope") == "pool"
+                ):
+                    out.add(address)
         for key, class_name in (
             ("exchange_aggregator_addresses", "exchange_aggregator"),
             ("exchange_aggregator_suspect_addresses", "exchange_aggregator_suspect"),
@@ -2259,11 +2330,119 @@ def excluded_addresses(event: dict[str, Any]) -> set[str]:
     return out
 
 
-def best_buyer(event: dict[str, Any], nets: dict[str, dict[str, Decimal]]) -> tuple[str, Decimal, Decimal]:
+def receipt_direction_buyer_exclusion_reason(
+    nets: dict[str, dict[str, Decimal]],
+    address: str,
+    initiator: str,
+) -> str:
+    address = norm(address)
+    initiator = norm(initiator)
+    if not is_address(initiator) or address == initiator:
+        return ""
+    initiator_net = nets.get(initiator) or {}
+    candidate_net = nets.get(address) or {}
+    if (
+        initiator_net.get("token", Decimal(0)) < 0
+        and initiator_net.get("quote", Decimal(0)) > 0
+        and candidate_net.get("token", Decimal(0)) > 0
+        and candidate_net.get("quote", Decimal(0)) < 0
+    ):
+        return "receipt_direction_counterparty_to_initiator_sell"
+    return ""
+
+
+def opening_buyer_exclusion_reason(
+    event: dict[str, Any],
+    buyer: str,
+    tx_hash: str,
+) -> str:
+    buyer = norm(buyer)
+    if buyer in excluded_addresses(event):
+        return "configured_non_cohort_subject"
+    if not is_address(buyer) or not tx_hash:
+        return ""
+    timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    try:
+        receipt = quick_rpc_call(
+            event["chain"],
+            "eth_getTransactionReceipt",
+            [tx_hash],
+            bounded_trace_timeout(timeout),
+        )
+        coverage_complete, receipt_status = receipt_execution_status(receipt)
+        if not coverage_complete or receipt_status != 1:
+            return ""
+        transfers = receipt_transfers_from_receipt(
+            receipt,
+            event["token"],
+            event["quote"],
+        )
+    except OpeningTraceDeadlineExceeded:
+        raise
+    except Exception:
+        return ""
+    nets = net_by_address(
+        transfers,
+        event["token"]["address"],
+        event["quote"]["address"],
+    )
+    return receipt_direction_buyer_exclusion_reason(
+        nets,
+        buyer,
+        receipt.get("from", ""),
+    )
+
+
+def excluded_buyer_trace(
+    previous_trace: dict[str, Any] | None,
+    exclusion_reason: str,
+    latest: int,
+) -> dict[str, Any]:
+    trace = copy.deepcopy(previous_trace or {})
+    trace.update(
+        {
+            "status": "excluded_non_cohort_subject",
+            "position_status": "excluded_non_cohort_subject",
+            "coverage_complete": True,
+            "coverage_status": "complete",
+            "same_receipt_confirmed_sell": False,
+            "subject_exclusion_reason": exclusion_reason,
+            "confirmed_sell_status": "excluded_non_cohort_subject",
+            "confirmed_sell_quote_received": "0",
+            "direct_sell_quote_received": "0",
+            "next_hop_sell_quote_received": "0",
+            "confirmed_sell_count": "0",
+            "legacy_confirmed_sell_quote_received": "0",
+            "legacy_direct_sell_quote_received": "0",
+            "legacy_next_hop_sell_quote_received": "0",
+            "legacy_confirmed_sell_count": "0",
+            "confirmed_sell_evidence": [],
+            "next_hop_count": "0",
+            "next_hop_watch_recipients": [],
+            "incremental_log_count": "0",
+            "as_of_block": str(latest),
+            "as_of_time": now_iso(),
+        }
+    )
+    return trace
+
+
+def best_buyer(
+    event: dict[str, Any],
+    nets: dict[str, dict[str, Decimal]],
+    initiator: str = "",
+) -> tuple[str, Decimal, Decimal]:
     candidates = []
     excluded = excluded_addresses(event)
     for address, amounts in nets.items():
-        if address in excluded:
+        if (
+            address in excluded
+            or receipt_direction_buyer_exclusion_reason(
+                nets,
+                address,
+                initiator,
+            )
+        ):
             continue
         token_net = amounts.get("token", Decimal(0))
         if token_net <= 0:
@@ -2637,10 +2816,23 @@ def trace_buyer(
     latest: int,
     bought: Decimal,
     previous_trace: dict[str, Any] | None = None,
+    opening_tx_hash: str = "",
 ) -> dict[str, Any]:
     if not buyer or bought <= 0:
         return {"status": "unknown"}
     ensure_trace_deadline()
+    if previous_trace:
+        exclusion_reason = opening_buyer_exclusion_reason(
+            event,
+            buyer,
+            opening_tx_hash,
+        )
+        if exclusion_reason:
+            return excluded_buyer_trace(
+                previous_trace,
+                exclusion_reason,
+                latest,
+            )
     current = token_balance(event["chain"], event["token"], buyer)
     prior = copy.deepcopy(previous_trace or {})
     try:
@@ -2707,6 +2899,7 @@ def trace_buyer(
     confirmed_sell_evidence = merge_confirmed_sell_evidence(
         prior.get("confirmed_sell_evidence") or []
     )
+    subject_exclusion_reason = ""
     prior_evidence_summary = confirmed_sell_evidence_summary(
         confirmed_sell_evidence
     )
@@ -2829,6 +3022,14 @@ def trace_buyer(
             confirmed_sell_evidence,
             classified.get("confirmed_sell_evidence") or [],
         )
+        exclusion_reason = str(
+            classified.get("confirmed_sell_exclusion_reason") or ""
+        )
+        if exclusion_reason in {
+            "configured_non_cohort_subject",
+            "receipt_direction_counterparty_to_initiator_buy",
+        }:
+            subject_exclusion_reason = exclusion_reason
         next_hop_count += int(classified["next_hop_count"])
         next_hop_coverage_complete = (
             next_hop_coverage_complete
@@ -2845,6 +3046,12 @@ def trace_buyer(
                     "as_of_block": int_from(watch.get("as_of_block"), latest),
                 }
             )
+    if subject_exclusion_reason:
+        confirmed_sell_evidence = []
+        legacy_quote_received = Decimal(0)
+        legacy_direct_quote_received = Decimal(0)
+        legacy_next_hop_quote_received = Decimal(0)
+        legacy_confirmed_sell_count = 0
     evidence_summary = confirmed_sell_evidence_summary(
         confirmed_sell_evidence
     )
@@ -2868,7 +3075,9 @@ def trace_buyer(
         and outgoing_tx_coverage_complete
         and next_hop_coverage_complete
     )
-    if current <= bought * Decimal("0.05"):
+    if subject_exclusion_reason:
+        status = "excluded_non_cohort_subject"
+    elif current <= bought * Decimal("0.05"):
         status = "mostly_exited_or_transferred" if outgoing > 0 else "mostly_exited_untraced"
     elif outgoing > 0:
         status = "partially_moved"
@@ -2876,10 +3085,13 @@ def trace_buyer(
         status = "held_or_accumulated"
     position_status = status
     same_receipt_confirmed_sell = (
-        prior.get("same_receipt_confirmed_sell") is True
-        or direct_quote_received > 0
+        not subject_exclusion_reason
+        and (
+            prior.get("same_receipt_confirmed_sell") is True
+            or direct_quote_received > 0
+        )
     )
-    if not coverage_complete:
+    if not coverage_complete and not subject_exclusion_reason:
         if quote_received > 0:
             status = "confirmed_sell_partial_coverage"
         else:
@@ -2905,7 +3117,11 @@ def trace_buyer(
         "covered_block_ranges": merge_block_ranges(covered_block_ranges),
         "uncovered_block_ranges": merge_block_ranges(uncovered_block_ranges),
         "same_receipt_confirmed_sell": same_receipt_confirmed_sell,
+        "subject_exclusion_reason": subject_exclusion_reason,
         "confirmed_sell_status": (
+            "excluded_non_cohort_subject"
+            if subject_exclusion_reason
+            else
             "confirmed_partial_coverage"
             if quote_received > 0 and not coverage_complete
             else "confirmed"
@@ -2974,7 +3190,19 @@ def summarize_tx(event: dict[str, Any], tx_hash: str) -> dict[str, Any]:
         event["quote"],
     )
     nets = net_by_address(transfers, event["token"]["address"], event["quote"]["address"])
-    buyer, token_bought, spent_quote = best_buyer(event, nets)
+    initiator = norm(tx.get("from"))
+    buyer_exclusion_reason = ""
+    for address in nets:
+        buyer_exclusion_reason = receipt_direction_buyer_exclusion_reason(
+            nets, address, initiator
+        )
+        if buyer_exclusion_reason:
+            break
+    buyer, token_bought, spent_quote = best_buyer(
+        event,
+        nets,
+        initiator,
+    )
     price_source = "transfer"
     if token_bought and not spent_quote:
         spent_quote = pool_side_quote_in(event, nets)
@@ -3000,6 +3228,7 @@ def summarize_tx(event: dict[str, Any], tx_hash: str) -> dict[str, Any]:
         "to": norm(tx.get("to")),
         "selector": (tx.get("input") or "0x")[:10],
         "buyer": buyer,
+        "buyer_exclusion_reason": buyer_exclusion_reason,
         "token_bought": decimal_str(token_bought),
         "spent_quote": decimal_str(spent_quote),
         "avg_price": decimal_str(avg),
@@ -3017,6 +3246,12 @@ def meaningful_buy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     min_bribe = Decimal(os.environ.get("ALPHA_OPENING_MIN_BRIBE_NATIVE", "1"))
     out = []
     for row in rows:
+        trace = row.get("buyer_trace") or {}
+        if (
+            row.get("buyer_exclusion_reason")
+            or trace.get("subject_exclusion_reason")
+        ):
+            continue
         try:
             token_amount = Decimal(str(row.get("token_bought", "0") or "0"))
             spent = effective_spent_quote(row)
@@ -3599,6 +3834,7 @@ def incremental_opened_event(
                 latest,
                 Decimal(str(row.get("token_bought") or "0")),
                 previous_trace,
+                opening_tx_hash=str(row.get("tx") or ""),
             )
         except OpeningTraceDeadlineExceeded:
             deadline_exceeded = True
@@ -3941,6 +4177,7 @@ def build_opened_event(
                 int(row["block"] or event["opening_block"]),
                 latest,
                 Decimal(row["token_bought"]),
+                opening_tx_hash=str(row.get("tx") or ""),
             )
             row["buyer_trace"] = trace_sell_lower_bound(
                 previous_trace,

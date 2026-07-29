@@ -111,6 +111,26 @@ class ExactAnchorReplayTest(unittest.TestCase):
         self.assertEqual(result["coverage"]["missing_ranges"][0]["minute_count"], 7)
         self.assertTrue(all(row["metrics"] is None for row in result["horizons"].values()))
 
+    def test_identical_duplicate_open_time_blocks_completion(self) -> None:
+        rows = list(self.fixture["rows"])
+        rows.insert(1, list(rows[0]))
+        result = self.build(rows)
+        self.assertEqual(result["status"], "blocked_incomplete_series")
+        self.assertEqual(result["coverage"]["duplicate_open_time_count"], 1)
+        self.assertEqual(result["coverage"]["conflicting_open_time_count"], 0)
+        self.assertIsNone(result["horizons"]["2m"]["metrics"])
+
+    def test_conflicting_duplicate_open_time_blocks_completion(self) -> None:
+        rows = list(self.fixture["rows"])
+        conflicting = list(rows[0])
+        conflicting[1:5] = ["999", "1000", "998", "999"]
+        rows.insert(1, conflicting)
+        result = self.build(rows)
+        self.assertEqual(result["status"], "blocked_incomplete_series")
+        self.assertEqual(result["coverage"]["duplicate_open_time_count"], 1)
+        self.assertEqual(result["coverage"]["conflicting_open_time_count"], 1)
+        self.assertIsNone(result["horizons"]["2m"]["metrics"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -22,12 +22,61 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
     def test_opening_sprint_inner_timeout_is_bounded_and_remapped(self) -> None:
         if os.environ.get("SNIPER_OFFLINE") == "1":
             source = (ROOT / "scripts" / "alpha_opening_sprint.sh").read_text(encoding="utf-8")
-            self.assertIn("if (( trace_budget > remaining - post_seconds )); then", source)
-            self.assertIn("trace_budget=$((remaining - post_seconds))", source)
-            self.assertIn("hard_timeout=$((trace_budget + post_seconds))", source)
-            self.assertIn('if timeout "${hard_timeout}s" "${command[@]}"; then', source)
-            self.assertIn("if (( status == 124 )); then", source)
-            self.assertIn("return 75", source)
+            lines = source.splitlines()
+            start = lines.index("run_once() {") + 1
+            end = next(
+                index
+                for index in range(start, len(lines))
+                if lines[index] == "}"
+            )
+            body = [
+                line.strip()
+                for line in lines[start:end]
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+            budget_if = body.index(
+                "if (( trace_budget > remaining - post_seconds )); then"
+            )
+            self.assertEqual(
+                body[budget_if : budget_if + 3],
+                [
+                    "if (( trace_budget > remaining - post_seconds )); then",
+                    "trace_budget=$((remaining - post_seconds))",
+                    "fi",
+                ],
+            )
+            hard_timeout = body.index(
+                "hard_timeout=$((trace_budget + post_seconds))",
+                budget_if + 3,
+            )
+            timeout_if = body.index(
+                'if timeout "${hard_timeout}s" "${command[@]}"; then',
+                hard_timeout + 1,
+            )
+            self.assertEqual(
+                body[timeout_if : timeout_if + 5],
+                [
+                    'if timeout "${hard_timeout}s" "${command[@]}"; then',
+                    "return 0",
+                    "else",
+                    "status=$?",
+                    "fi",
+                ],
+            )
+            status_if = body.index(
+                "if (( status == 124 )); then",
+                timeout_if + 5,
+            )
+            self.assertEqual(
+                body[status_if : status_if + 4],
+                [
+                    "if (( status == 124 )); then",
+                    'echo "opening sprint inner hard timeout after ${hard_timeout}s" >&2',
+                    "return 75",
+                    "fi",
+                ],
+            )
+            self.assertEqual(body[status_if + 4], 'return "$status"')
             return
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1045,6 +1094,154 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(
             opening.pool_side_quote_in(event, nets),
             opening.Decimal("600000"),
+        )
+
+    def test_pool_counterparty_is_not_buyer_or_confirmed_seller(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        initiator = "0x" + "3" * 40
+        pool = "0x4f28db6fdc5d85b5936ac202e59b4f8e4a64ad6c"
+        event = {
+            "chain": "bsc",
+            "token": {"address": token, "decimals": 8},
+            "quote": {"address": quote, "decimals": 18},
+        }
+        buy_tx = "0x" + "6" * 64
+        buy_transfers = [
+            {"tx": buy_tx, "log_index": 1, "token": quote, "from": initiator, "to": pool, "amount": opening.Decimal("600")},
+            {"tx": buy_tx, "log_index": 2, "token": token, "from": pool, "to": initiator, "amount": opening.Decimal("1000")},
+        ]
+        sell_tx = "0x" + "7" * 64
+        sell_transfers = [
+            {"tx": sell_tx, "log_index": 1, "token": token, "from": initiator, "to": pool, "amount": opening.Decimal("1000")},
+            {"tx": sell_tx, "log_index": 2, "token": quote, "from": pool, "to": initiator, "amount": opening.Decimal("500")},
+        ]
+        self.assertEqual(
+            opening.best_buyer(
+                event,
+                opening.net_by_address(buy_transfers, token, quote),
+                initiator,
+            ),
+            (initiator, opening.Decimal("1000"), opening.Decimal("600")),
+        )
+        sell_nets = opening.net_by_address(sell_transfers, token, quote)
+        self.assertEqual(
+            opening.best_buyer(event, sell_nets, initiator),
+            ("", opening.Decimal(0), opening.Decimal(0)),
+        )
+        with (
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                side_effect=[
+                    {"from": initiator, "to": pool, "input": "0x12345678"},
+                    {"status": "0x1", "from": initiator, "blockNumber": "0x64", "transactionIndex": "0x1", "logs": []},
+                ],
+            ),
+            mock.patch.object(opening, "receipt_transfers_from_receipt", return_value=sell_transfers),
+            mock.patch.object(opening, "largest_internal_native", return_value={"amount": "0"}),
+        ):
+            opening_row = opening.summarize_tx(event, sell_tx)
+        self.assertEqual(opening_row["buyer"], "")
+        self.assertEqual(
+            opening_row["buyer_exclusion_reason"],
+            "receipt_direction_counterparty_to_initiator_sell",
+        )
+
+        def classify(actor, tx_hash, transfers, tx_initiator=initiator):
+            token_leg = next(row for row in transfers if row["token"] == token)
+            with (
+                mock.patch.object(opening, "quick_rpc_call", return_value={"status": "0x1", "from": tx_initiator, "logs": []}),
+                mock.patch.object(opening, "receipt_transfers_from_receipt", return_value=transfers),
+            ):
+                return opening.classify_outgoing_tx(
+                    event,
+                    actor,
+                    tx_hash,
+                    [{**token_leg, "block": 100}],
+                    100,
+                )
+
+        pool_buy = classify(pool, buy_tx, buy_transfers)
+        self.assertEqual(pool_buy["quote_received"], opening.Decimal(0))
+        self.assertEqual(
+            pool_buy["confirmed_sell_exclusion_reason"],
+            "receipt_direction_counterparty_to_initiator_buy",
+        )
+        eoa_sell = classify(initiator, sell_tx, sell_transfers)
+        self.assertEqual(eoa_sell["quote_received"], opening.Decimal("500"))
+        self.assertEqual(eoa_sell["confirmed_sell_count"], 1)
+
+        contract_seller = "0x" + "4" * 40
+        executor = "0x" + "5" * 40
+        contract_sell_tx = "0x" + "8" * 64
+        contract_sell_transfers = [
+            {"tx": contract_sell_tx, "log_index": 1, "token": token, "from": contract_seller, "to": pool, "amount": opening.Decimal("1000")},
+            {"tx": contract_sell_tx, "log_index": 2, "token": quote, "from": pool, "to": contract_seller, "amount": opening.Decimal("500")},
+        ]
+        with mock.patch.object(opening, "has_contract_code", return_value=True):
+            contract_sell = classify(
+                contract_seller,
+                contract_sell_tx,
+                contract_sell_transfers,
+                executor,
+            )
+        self.assertEqual(contract_sell["quote_received"], opening.Decimal("500"))
+        self.assertEqual(contract_sell["confirmed_sell_count"], 1)
+        self.assertEqual(contract_sell["confirmed_sell_exclusion_reason"], "")
+
+        previous = {
+            "as_of_block": "100",
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "600",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [
+                {"tx": buy_tx, "log_index": 1, "quote_received": "600", "route": "direct", "recipient": pool}
+            ],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                return_value={"status": "0x1", "from": initiator, "logs": []},
+            ),
+            mock.patch.object(
+                opening,
+                "receipt_transfers_from_receipt",
+                return_value=sell_transfers,
+            ),
+            mock.patch.object(opening, "token_balance") as token_balance,
+            mock.patch.object(opening, "get_logs_quick") as get_logs,
+        ):
+            refreshed = opening.trace_buyer(
+                event,
+                pool,
+                100,
+                100,
+                opening.Decimal("1000"),
+                previous,
+                sell_tx,
+            )
+        token_balance.assert_not_called()
+        get_logs.assert_not_called()
+        self.assertEqual(refreshed["status"], "excluded_non_cohort_subject")
+        self.assertEqual(refreshed["confirmed_sell_quote_received"], "0")
+        self.assertEqual(refreshed["confirmed_sell_evidence"], [])
+        self.assertEqual(
+            refreshed["subject_exclusion_reason"],
+            "receipt_direction_counterparty_to_initiator_sell",
+        )
+        self.assertEqual(
+            opening.trace_sell_lower_bound(previous, refreshed),
+            refreshed,
+        )
+        self.assertEqual(
+            opening.meaningful_buy_rows(
+                [{"token_bought": "1000", "spent_quote": "600", "buyer_trace": refreshed}]
+            ),
+            [],
         )
 
     def test_opening_trace_keeps_a_coverage_safe_log_floor(self) -> None:

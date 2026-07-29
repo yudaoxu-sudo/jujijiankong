@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -555,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "cases" / "2026-07-13_miles082510_wallet_cluster_review.md",
         ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json",
         ROOT / "input" / "elonkely_exact_anchor_replay_2026-07-29.json",
+        ROOT / "input" / "elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json",
         ROOT / "cases" / "2026-07-16_elonkely_latest_100_review.md",
         ROOT / "input" / "binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
         ROOT / "input" / "ake_gate_cex_wallet_aggregation_batch_2026-07-23.json",
@@ -1140,6 +1142,21 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8"
             )
         )
+        replay_module_path = (
+            ROOT / "scripts" / "backfill_elonkely_exact_anchor_replay.py"
+        )
+        replay_spec = importlib.util.spec_from_file_location(
+            "elonkely_exact_anchor_replay_verify",
+            replay_module_path,
+        )
+        if replay_spec is None or replay_spec.loader is None:
+            raise RuntimeError("cannot load exact-anchor replay module")
+        replay_module = importlib.util.module_from_spec(replay_spec)
+        replay_spec.loader.exec_module(replay_module)
+        archive_path = (
+            ROOT / "input" / "elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json"
+        )
+        evaa_archive = replay_module.load_series_archive(archive_path)
         root_signals = [row.get("root_signal_id") for row in elonkely_review.get("outcome_ledger", [])]
         ledger_by_root = {
             row.get("root_signal_id"): row for row in elonkely_review.get("outcome_ledger", [])
@@ -1149,6 +1166,24 @@ def main(argv: list[str] | None = None) -> int:
         }
         parti_replay = replay_by_root.get("ELON-2074859463027408945", {})
         evaa_replay = replay_by_root.get("ELON-2075164060409270485", {})
+        archive_matches, rebuilt_evaa = replay_module.archived_case_matches_summary(
+            evaa_replay,
+            evaa_archive,
+        )
+        evaa_ledger = ledger_by_root.get("ELON-2075164060409270485", {})
+        ledger_metrics_match = all(
+            all(
+                evaa_ledger.get("evaluation_horizons", {})
+                .get(label, {})
+                .get(field)
+                == rebuilt_evaa.get("horizons", {})
+                .get(label, {})
+                .get("metrics", {})
+                .get(field)
+                for field in ("mfe_pct", "mae_pct", "end_return_pct")
+            )
+            for label in ("24h", "72h", "7d")
+        )
         runtime_decisions = elonkely_review.get("runtime_decisions", {})
         time_cases = elonkely_review.get("source_time_sanity_cases", [])
         elonkely_review_ok = (
@@ -1178,6 +1213,20 @@ def main(argv: list[str] | None = None) -> int:
             and evaa_replay.get("coverage", {}).get("observed_candle_count") == 10080
             and evaa_replay.get("coverage", {}).get("missing_candle_count") == 0
             and evaa_replay.get("coverage", {}).get("invalid_close_time_count") == 0
+            and evaa_replay.get("coverage", {}).get("duplicate_open_time_count") == 0
+            and evaa_replay.get("coverage", {}).get("conflicting_open_time_count") == 0
+            and archive_matches
+            and rebuilt_evaa.get("series_sha256")
+            == evaa_archive.get("series_sha256")
+            and ledger_metrics_match
+            and evaa_ledger.get("mfe")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get("mfe_pct")
+            and evaa_ledger.get("mae")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get("mae_pct")
+            and evaa_ledger.get("end_return")
+            == rebuilt_evaa.get("horizons", {}).get("7d", {}).get("metrics", {}).get(
+                "end_return_pct"
+            )
             and evaa_replay.get("series_sha256")
             == "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab"
             and all(
@@ -1204,6 +1253,12 @@ def main(argv: list[str] | None = None) -> int:
             .get("market_provenance", {})
             .get("series_sha256")
             == evaa_replay.get("series_sha256")
+            and evaa_replay.get("series_archive_ref")
+            == "input/elonkely_evaa_exact_anchor_1m_2026-07-09_7d.json"
+            and ledger_by_root.get("ELON-2075164060409270485", {})
+            .get("market_provenance", {})
+            .get("series_archive_ref")
+            == evaa_replay.get("series_archive_ref")
         )
         elonkely_review_msg = (
             f"roots={len(root_signals)}, time_cases={len(time_cases)}, "
@@ -1393,6 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
         ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
         ("wash-volume deferred synthetic fixture tests", "test_wash_volume_fixtures.py"),
         ("distribution deferred synthetic fixture tests", "test_distribution_fixtures.py"),
+        ("ElonKely exact-anchor archived replay regression tests", "test_elonkely_exact_anchor_replay.py"),
     )
     for check_name, script_name in fixture_test_scripts:
         result = subprocess.run(
@@ -2450,6 +2506,8 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "test_micro_gas_identity_gate.py"),
         str(ROOT / "scripts" / "test_wash_volume_fixtures.py"),
         str(ROOT / "scripts" / "test_distribution_fixtures.py"),
+        str(ROOT / "scripts" / "backfill_elonkely_exact_anchor_replay.py"),
+        str(ROOT / "scripts" / "test_elonkely_exact_anchor_replay.py"),
         str(ROOT / "scripts" / "decode_pancake_v4_execute.py"),
         str(ROOT / "scripts" / "build_pancake_v4_roundtrip_fixture.py"),
         str(ROOT / "scripts" / "probe_pancake_v4_state_override.py"),
@@ -7117,7 +7175,10 @@ module.get_logs_quick = lambda *args, **kwargs: [make_log(classified_event['toke
 def fake_quick_rpc_call(chain, method, params, timeout):
     tx_hash = params[0]
     if tx_hash == '0xnext':
-        return {'status': '0x1', 'logs': [make_log(classified_event['quote']['address'], router, recipient, '500', tx='0xnext', block=12, idx=2)]}
+        return {'status': '0x1', 'logs': [
+            make_log(classified_event['token']['address'], recipient, router, '1000', tx='0xnext', block=12, idx=1),
+            make_log(classified_event['quote']['address'], router, recipient, '500', tx='0xnext', block=12, idx=2),
+        ]}
     return {'status': '0x1', 'logs': []}
 
 module.quick_rpc_call = fake_quick_rpc_call
