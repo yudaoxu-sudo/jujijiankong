@@ -23,6 +23,7 @@ import scripts.alpha_opening_block_watch as opening
 
 TransferRpc = Callable[[str, dict[str, Any]], Any]
 ReceiptRpc = Callable[[str, str], Any]
+ASSET_TRANSFER_MAX_BLOCK_SPAN = 100_000
 
 
 class IncompleteAcquisitionError(RuntimeError):
@@ -63,90 +64,106 @@ def collect(
     reasons: set[str] = set()
     transactions: list[str] = []
     seen: set[str] = set()
-    seen_page_keys: set[str] = set()
-    page_key = ""
     pages = 0
     if start <= 0 or end < start:
         return transactions, {"invalid_block_range"}, pages
 
-    for page in range(max(1, max_pages)):
-        if deadline_expired(deadline):
-            reasons.add("deadline_exceeded")
-            break
-        query = {
-            "category": ["20"],
-            "fromBlock": hex(start),
-            "toBlock": hex(end),
-            "contractAddresses": [
-                opening.norm(event["token"]["address"])
-            ],
-            "fromAddress": opening.norm(buyer),
-            "order": "asc",
-            "maxCount": "0x3e8",
-        }
-        if page_key:
-            query["pageKey"] = page_key
-        try:
-            result = rpc(event["chain"], query)
-        except opening.RpcDeadlineExceeded:
-            reasons.add("deadline_exceeded")
-            break
-        except Exception:
-            result = None
-        pages += 1
-        if (
-            not isinstance(result, dict)
-            or not isinstance(result.get("transfers"), list)
-        ):
-            reasons.add("asset_transfer_response_invalid")
-            break
-
-        transfers = result["transfers"]
-        for row in transfers:
-            if not isinstance(row, dict):
-                reasons.add("asset_transfer_row_invalid")
-                continue
+    chunk_start = start
+    while chunk_start <= end:
+        chunk_end = min(
+            end,
+            chunk_start + ASSET_TRANSFER_MAX_BLOCK_SPAN - 1,
+        )
+        page_key = ""
+        seen_page_keys: set[str] = set()
+        while True:
+            if pages >= max(1, max_pages):
+                reasons.add("asset_transfer_page_limit")
+                return transactions, reasons, pages
+            if deadline_expired(deadline):
+                reasons.add("deadline_exceeded")
+                return transactions, reasons, pages
+            query = {
+                "category": ["20"],
+                "fromBlock": hex(chunk_start),
+                "toBlock": hex(chunk_end),
+                "contractAddresses": [
+                    opening.norm(event["token"]["address"])
+                ],
+                "fromAddress": opening.norm(buyer),
+                "order": "asc",
+                "maxCount": "0x3e8",
+            }
+            if page_key:
+                query["pageKey"] = page_key
+            try:
+                result = rpc(event["chain"], query)
+            except opening.RpcDeadlineExceeded:
+                reasons.add("deadline_exceeded")
+                return transactions, reasons, pages
+            except Exception:
+                result = None
+            pages += 1
             if (
-                opening.norm(row.get("from")) != opening.norm(buyer)
-                or opening.norm(row.get("contractAddress"))
-                != opening.norm(event["token"]["address"])
+                not isinstance(result, dict)
+                or not isinstance(result.get("transfers"), list)
             ):
-                reasons.add("asset_transfer_row_scope_mismatch")
-                continue
-            tx_hash = opening.norm(
-                row.get("hash") or row.get("transactionHash")
+                reasons.add("asset_transfer_response_invalid")
+                return transactions, reasons, pages
+
+            transfers = result["transfers"]
+            for row in transfers:
+                if not isinstance(row, dict):
+                    reasons.add("asset_transfer_row_invalid")
+                    continue
+                if (
+                    opening.norm(row.get("from"))
+                    != opening.norm(buyer)
+                    or opening.norm(row.get("contractAddress"))
+                    != opening.norm(event["token"]["address"])
+                ):
+                    reasons.add("asset_transfer_row_scope_mismatch")
+                    continue
+                tx_hash = opening.norm(
+                    row.get("hash") or row.get("transactionHash")
+                )
+                if (
+                    len(tx_hash) != 66
+                    or not tx_hash.startswith("0x")
+                ):
+                    reasons.add("asset_transfer_row_invalid")
+                    continue
+                if tx_hash not in seen:
+                    if len(transactions) >= max_transactions:
+                        reasons.add(
+                            "asset_transfer_transaction_limit"
+                        )
+                        return transactions, reasons, pages
+                    seen.add(tx_hash)
+                    transactions.append(tx_hash)
+
+            raw_page_key = (
+                result.get("pageKey")
+                or result.get("PageKey")
+                or ""
             )
-            if (
-                len(tx_hash) != 66
-                or not tx_hash.startswith("0x")
-            ):
-                reasons.add("asset_transfer_row_invalid")
-                continue
-            if tx_hash not in seen:
-                if len(transactions) >= max_transactions:
-                    reasons.add("asset_transfer_transaction_limit")
-                    break
-                seen.add(tx_hash)
-                transactions.append(tx_hash)
-        if "asset_transfer_transaction_limit" in reasons:
-            break
-
-        raw_page_key = result.get("pageKey") or result.get("PageKey") or ""
-        if raw_page_key and not isinstance(raw_page_key, str):
-            reasons.add("asset_transfer_page_key_invalid")
-            break
-        next_page_key = str(raw_page_key)
-        if not next_page_key:
-            if len(transfers) >= 1000:
-                reasons.add("asset_transfer_full_page_without_cursor")
-            break
-        if next_page_key in seen_page_keys:
-            reasons.add("asset_transfer_page_key_repeated")
-            break
-        seen_page_keys.add(next_page_key)
-        page_key = next_page_key
-        if page + 1 == max(1, max_pages):
-            reasons.add("asset_transfer_page_limit")
+            if raw_page_key and not isinstance(raw_page_key, str):
+                reasons.add("asset_transfer_page_key_invalid")
+                return transactions, reasons, pages
+            next_page_key = str(raw_page_key)
+            if not next_page_key:
+                if len(transfers) >= 1000:
+                    reasons.add(
+                        "asset_transfer_full_page_without_cursor"
+                    )
+                    return transactions, reasons, pages
+                break
+            if next_page_key in seen_page_keys:
+                reasons.add("asset_transfer_page_key_repeated")
+                return transactions, reasons, pages
+            seen_page_keys.add(next_page_key)
+            page_key = next_page_key
+        chunk_start = chunk_end + 1
 
     return transactions, reasons, pages
 

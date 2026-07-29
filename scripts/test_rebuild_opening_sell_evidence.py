@@ -398,6 +398,53 @@ class RebuildTests(unittest.TestCase):
         )
         self.assertIn("asset_transfer_page_key_repeated", reasons)
 
+    def test_asset_transfers_are_scanned_in_bounded_block_chunks(self):
+        queries = []
+        hashes = [f"0x{digit * 64}" for digit in "89a"]
+
+        def chunked(_chain, query):
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            self.assertLessEqual(
+                end - start + 1,
+                rebuild.ASSET_TRANSFER_MAX_BLOCK_SPAN,
+            )
+            queries.append((start, end))
+            return {
+                "transfers": [
+                    {
+                        "from": BUYER,
+                        "contractAddress": TOKEN,
+                        "hash": hashes[len(queries) - 1],
+                    }
+                ],
+                "pageKey": "",
+            }
+
+        event = dict(
+            snapshot(latest=200_150)["events"][0],
+            _buy_block=100,
+        )
+        transactions, reasons, page_count = rebuild.collect(
+            event,
+            BUYER,
+            3,
+            10,
+            None,
+            chunked,
+        )
+        self.assertEqual(reasons, set())
+        self.assertEqual(page_count, 3)
+        self.assertEqual(transactions, hashes)
+        self.assertEqual(
+            queries,
+            [
+                (100, 100_099),
+                (100_100, 200_099),
+                (200_100, 200_150),
+            ],
+        )
+
     def test_token_out_without_quote_requires_next_hop_refresh(self):
         updated, summary = rebuild_aeon(
             snapshot(old_quote="0"),
