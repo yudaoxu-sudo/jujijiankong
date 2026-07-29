@@ -57,6 +57,9 @@ REQUIRED_PROJECT_FILES = [
     "docs/project_analysis_template.md",
     "docs/kol_strategy_intake_prompt.md",
     "scripts/build_alpha_daily_report.py",
+    "scripts/backfill_elonkely_exact_anchor_replay.py",
+    "scripts/test_elonkely_exact_anchor_replay.py",
+    "scripts/fixtures/elonkely_exact_anchor_replay_synthetic.json",
     "scripts/verify_sniper_engine.py",
     "scripts/runtime_health_watch.py",
     "output/aliideez_x_research/analysis/method_index.csv",
@@ -64,6 +67,7 @@ REQUIRED_PROJECT_FILES = [
     "input/miles082510_wallet_cluster_review_2026-07-13.json",
     "cases/2026-07-13_miles082510_wallet_cluster_review.md",
     "input/elonkely_latest_100_review_2026-07-16.json",
+    "input/elonkely_exact_anchor_replay_2026-07-29.json",
     "cases/2026-07-16_elonkely_latest_100_review.md",
     "input/binance_alpha_cex_wallet_aggregation_review_2026-07-17.json",
     "cases/2026-07-17_binance_alpha_cex_wallet_aggregation.md",
@@ -168,9 +172,17 @@ def main() -> int:
         add_check(checks, f"daily report exposes celue field: {field}", field in report_builder, field)
 
     elonkely_review_path = ROOT / "input" / "elonkely_latest_100_review_2026-07-16.json"
+    exact_replay_path = ROOT / "input" / "elonkely_exact_anchor_replay_2026-07-29.json"
     try:
         elonkely_review = json.loads(read_text(elonkely_review_path))
+        exact_replay = json.loads(read_text(exact_replay_path))
         ledger = elonkely_review.get("outcome_ledger", [])
+        ledger_by_root = {row.get("root_signal_id"): row for row in ledger}
+        replay_by_root = {
+            row.get("root_signal_id"): row for row in exact_replay.get("cases", [])
+        }
+        parti_replay = replay_by_root.get("ELON-2074859463027408945", {})
+        evaa_replay = replay_by_root.get("ELON-2075164060409270485", {})
         root_ids = [row.get("root_signal_id") for row in ledger]
         decisions = elonkely_review.get("runtime_decisions", {})
         time_cases = elonkely_review.get("source_time_sanity_cases", [])
@@ -181,6 +193,62 @@ def main() -> int:
         add_check(checks, "ElonKely outcome ledger uses valid statuses", bool(ledger) and all(row.get("outcome_status") in {"won", "lost", "mixed", "unresolved"} for row in ledger), "")
         add_check(checks, "ElonKely source-time mismatch is preserved", any(row.get("event_time_sanity") == "mismatch" for row in time_cases), "")
         add_check(checks, "ElonKely review leaves actions unchanged", decisions.get("trade_action_change") is False and decisions.get("telegram_alert_change") is False, "")
+        add_check(
+            checks,
+            "ElonKely exact replay has no runtime effect",
+            exact_replay.get("schema") == "exact_anchor_market_replay.v1"
+            and exact_replay.get("runtime_effect") == "none"
+            and exact_replay.get("alert_effect") == "none"
+            and exact_replay.get("trade_action_effect") == "none"
+            and exact_replay.get("methodology", {}).get("interpolation") == "forbidden",
+            "",
+        )
+        add_check(
+            checks,
+            "ElonKely PARTI exact replay preserves blocked boundary",
+            parti_replay.get("status") == "blocked_incomplete_series"
+            and parti_replay.get("api_result", {}).get("code") == "-1121"
+            and parti_replay.get("registry_state", {}).get("token_list_present") is True
+            and parti_replay.get("registry_state", {}).get("exchange_info_present") is False
+            and parti_replay.get("coverage", {}).get("observed_candle_count") == 0
+            and parti_replay.get("coverage", {}).get("missing_candle_count") == 10080
+            and parti_replay.get("series_sha256") is None
+            and ledger_by_root.get("ELON-2074859463027408945", {}).get("outcome_status")
+            == "unresolved",
+            str(parti_replay.get("api_result", {})),
+        )
+        add_check(
+            checks,
+            "ElonKely EVAA exact replay covers every fixed horizon",
+            evaa_replay.get("status") == "complete"
+            and evaa_replay.get("coverage", {}).get("observed_candle_count") == 10080
+            and evaa_replay.get("coverage", {}).get("missing_candle_count") == 0
+            and evaa_replay.get("series_sha256")
+            == "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab"
+            and all(
+                evaa_replay.get("horizons", {}).get(label, {}).get("status") == "complete"
+                for label in ("24h", "72h", "7d")
+            )
+            and evaa_replay.get("horizons", {}).get("24h", {}).get("metrics", {}).get(
+                "end_return_pct"
+            )
+            == "14.8908359048"
+            and evaa_replay.get("horizons", {}).get("72h", {}).get("metrics", {}).get(
+                "end_return_pct"
+            )
+            == "-39.2159479990"
+            and evaa_replay.get("horizons", {}).get("7d", {}).get("metrics", {}).get(
+                "end_return_pct"
+            )
+            == "-53.1921069765"
+            and ledger_by_root.get("ELON-2075164060409270485", {}).get("outcome_status")
+            == "mixed"
+            and ledger_by_root.get("ELON-2075164060409270485", {})
+            .get("market_provenance", {})
+            .get("series_sha256")
+            == evaa_replay.get("series_sha256"),
+            str(evaa_replay.get("series_sha256") or ""),
+        )
     except Exception as exc:
         add_check(checks, "ElonKely structured review parses", False, str(exc))
 

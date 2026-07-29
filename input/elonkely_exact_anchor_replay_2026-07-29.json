@@ -1,0 +1,234 @@
+{
+  "schema": "exact_anchor_market_replay.v1",
+  "generated_at_utc": "2026-07-29T04:30:36Z",
+  "purpose": "research_only_outcome_ledger_backfill",
+  "runtime_effect": "none",
+  "alert_effect": "none",
+  "trade_action_effect": "none",
+  "provenance": {
+    "venue": "Binance Alpha",
+    "official_docs_url": "https://developers.binance.com/docs/alpha/market-data/rest-api/klines",
+    "authentication": "none",
+    "interval": "1m"
+  },
+  "methodology": {
+    "anchor_rule": "First 1-minute candle whose open time is strictly after the signal timestamp; its open price is the replay base.",
+    "window_rule": "Each horizon is [anchor, anchor+horizon); MFE uses candle highs, MAE uses candle lows, and end return uses the final candle close.",
+    "closed_candles_only": true,
+    "interpolation": "forbidden",
+    "completion_rule": "A horizon is complete only when every expected 1-minute candle is present exactly once by open time."
+  },
+  "cases": [
+    {
+      "root_signal_id": "ELON-2074859463027408945",
+      "symbol": "PARTI",
+      "alpha_id": "ALPHA_127",
+      "pair": "ALPHA_127USDT",
+      "signal_time_utc": "2026-07-08T14:13:39Z",
+      "venue": "Binance Alpha",
+      "quote_asset": "USDT",
+      "interval": "1m",
+      "anchor_time_utc": "2026-07-08T14:14:00Z",
+      "requested_end_exclusive_utc": "2026-07-15T14:14:00Z",
+      "status": "blocked_incomplete_series",
+      "query": {
+        "queried_at_utc": "2026-07-29T04:30:29Z",
+        "symbol": "ALPHA_127USDT",
+        "interval": "1m",
+        "start_time_ms": 1783520040000,
+        "end_time_ms": 1784124839999,
+        "maximum_page_limit": 1500,
+        "pagination": "forward_by_last_open_time_plus_60000ms"
+      },
+      "registry_state": {
+        "token_list_present": true,
+        "token_list_symbol": "PARTI",
+        "exchange_info_present": false,
+        "exchange_info_status": null
+      },
+      "api_result": {
+        "code": "-1121",
+        "message": "Invalid symbol."
+      },
+      "fetch_state": {
+        "request_count": 1,
+        "last_cursor_ms": 1783520040000
+      },
+      "coverage": {
+        "expected_candle_count": 10080,
+        "source_row_count": 0,
+        "observed_candle_count": 0,
+        "missing_candle_count": 10080,
+        "invalid_close_time_count": 0,
+        "missing_ranges": [
+          {
+            "start_utc": "2026-07-08T14:14:00Z",
+            "end_exclusive_utc": "2026-07-15T14:14:00Z",
+            "minute_count": 10080
+          }
+        ]
+      },
+      "series_sha256": null,
+      "horizons": {
+        "24h": {
+          "status": "blocked_incomplete_series",
+          "coverage": {
+            "expected_candle_count": 1440,
+            "observed_candle_count": 0,
+            "missing_candle_count": 1440,
+            "missing_ranges": [
+              {
+                "start_utc": "2026-07-08T14:14:00Z",
+                "end_exclusive_utc": "2026-07-09T14:14:00Z",
+                "minute_count": 1440
+              }
+            ]
+          },
+          "metrics": null
+        },
+        "72h": {
+          "status": "blocked_incomplete_series",
+          "coverage": {
+            "expected_candle_count": 4320,
+            "observed_candle_count": 0,
+            "missing_candle_count": 4320,
+            "missing_ranges": [
+              {
+                "start_utc": "2026-07-08T14:14:00Z",
+                "end_exclusive_utc": "2026-07-11T14:14:00Z",
+                "minute_count": 4320
+              }
+            ]
+          },
+          "metrics": null
+        },
+        "7d": {
+          "status": "blocked_incomplete_series",
+          "coverage": {
+            "expected_candle_count": 10080,
+            "observed_candle_count": 0,
+            "missing_candle_count": 10080,
+            "missing_ranges": [
+              {
+                "start_utc": "2026-07-08T14:14:00Z",
+                "end_exclusive_utc": "2026-07-15T14:14:00Z",
+                "minute_count": 10080
+              }
+            ]
+          },
+          "metrics": null
+        }
+      }
+    },
+    {
+      "root_signal_id": "ELON-2075164060409270485",
+      "symbol": "EVAA",
+      "alpha_id": "ALPHA_409",
+      "pair": "ALPHA_409USDT",
+      "signal_time_utc": "2026-07-09T10:24:01Z",
+      "venue": "Binance Alpha",
+      "quote_asset": "USDT",
+      "interval": "1m",
+      "anchor_time_utc": "2026-07-09T10:25:00Z",
+      "requested_end_exclusive_utc": "2026-07-16T10:25:00Z",
+      "status": "complete",
+      "query": {
+        "queried_at_utc": "2026-07-29T04:30:36Z",
+        "symbol": "ALPHA_409USDT",
+        "interval": "1m",
+        "start_time_ms": 1783592700000,
+        "end_time_ms": 1784197499999,
+        "maximum_page_limit": 1500,
+        "pagination": "forward_by_last_open_time_plus_60000ms"
+      },
+      "registry_state": {
+        "token_list_present": true,
+        "token_list_symbol": "EVAA",
+        "exchange_info_present": true,
+        "exchange_info_status": "TRADING"
+      },
+      "api_result": {
+        "code": "000000",
+        "message": ""
+      },
+      "fetch_state": {
+        "request_count": 7,
+        "last_cursor_ms": 1784197500000
+      },
+      "coverage": {
+        "expected_candle_count": 10080,
+        "source_row_count": 10080,
+        "observed_candle_count": 10080,
+        "missing_candle_count": 0,
+        "invalid_close_time_count": 0,
+        "missing_ranges": []
+      },
+      "series_sha256": "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab",
+      "horizons": {
+        "24h": {
+          "status": "complete",
+          "coverage": {
+            "expected_candle_count": 1440,
+            "observed_candle_count": 1440,
+            "missing_candle_count": 0,
+            "missing_ranges": []
+          },
+          "metrics": {
+            "base_open": "2.19082382",
+            "mfe_pct": "30.1263617811",
+            "mfe_at_utc": "2026-07-10T08:00:00Z",
+            "mae_pct": "-26.8705016180",
+            "mae_at_utc": "2026-07-09T14:58:00Z",
+            "end_close": "2.51705580",
+            "end_return_pct": "14.8908359048",
+            "end_candle_open_utc": "2026-07-10T10:24:00Z",
+            "end_exclusive_utc": "2026-07-10T10:25:00Z",
+            "quote_volume": "4633651.01196195"
+          }
+        },
+        "72h": {
+          "status": "complete",
+          "coverage": {
+            "expected_candle_count": 4320,
+            "observed_candle_count": 4320,
+            "missing_candle_count": 0,
+            "missing_ranges": []
+          },
+          "metrics": {
+            "base_open": "2.19082382",
+            "mfe_pct": "32.3125225104",
+            "mfe_at_utc": "2026-07-10T11:10:00Z",
+            "mae_pct": "-85.8782916647",
+            "mae_at_utc": "2026-07-12T01:04:00Z",
+            "end_close": "1.33167149",
+            "end_return_pct": "-39.2159479990",
+            "end_candle_open_utc": "2026-07-12T10:24:00Z",
+            "end_exclusive_utc": "2026-07-12T10:25:00Z",
+            "quote_volume": "21284133.84290135"
+          }
+        },
+        "7d": {
+          "status": "complete",
+          "coverage": {
+            "expected_candle_count": 10080,
+            "observed_candle_count": 10080,
+            "missing_candle_count": 0,
+            "missing_ranges": []
+          },
+          "metrics": {
+            "base_open": "2.19082382",
+            "mfe_pct": "32.3125225104",
+            "mfe_at_utc": "2026-07-10T11:10:00Z",
+            "mae_pct": "-85.8782916647",
+            "mae_at_utc": "2026-07-12T01:04:00Z",
+            "end_close": "1.02547847",
+            "end_return_pct": "-53.1921069765",
+            "end_candle_open_utc": "2026-07-16T10:24:00Z",
+            "end_exclusive_utc": "2026-07-16T10:25:00Z",
+            "quote_volume": "42706292.54357297"
+          }
+        }
+      }
+    }
+  ]
+}

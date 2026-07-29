@@ -1,6 +1,6 @@
 {
   "schema": "kol_strategy_review.v1",
-  "updated_at": "2026-07-16",
+  "updated_at": "2026-07-29",
   "account": "ElonKely_",
   "source_url": "https://x.com/elonkely_",
   "source_scope": {
@@ -24,7 +24,7 @@
   "evidence_boundary": {
     "official": "No official source was used to promote a live action.",
     "onchain": "Only previously verified local PARTI cluster evidence is treated as on-chain evidence in this review.",
-    "market": "Previously verified local PARTI and B2 replays are used as counterexamples; post screenshots stay social claims.",
+    "market": "The EVAA root now has a complete exact-anchor Binance Alpha 1m replay. The PARTI root remains blocked because the pair is absent from current exchange info and the public Klines query could not return its historical series; the separate PARTI replay stays a distinct counterexample. Post screenshots remain social claims.",
     "social": "All posts, screenshots, wallet labels, route claims, profit descriptions, and market-regime opinions from the account.",
     "inference": "The adopted controls, field mappings, and deferred detector decisions."
   },
@@ -103,12 +103,27 @@
       "signal_time_utc": "2026-07-08T14:13:39Z",
       "source_post_url": "https://x.com/ElonKely_/status/2074859463027408945",
       "related_update_post_urls": ["https://x.com/ElonKely_/status/2075915168996118791"],
-      "entry_window_definition": "No locally verified entry; social discovery only.",
+      "entry_window_definition": "No locally verified entry; market replay anchor is the first complete 1m candle strictly after the social signal.",
       "invalidation": "Verified distribution, CEX redeposit, DEX sale with quote recovery, or fixed-horizon price failure.",
       "evaluation_horizons": {
-        "24h": "unresolved_exact_anchor_replay",
-        "72h": "unresolved_exact_anchor_replay",
-        "7d": "unresolved_exact_anchor_replay"
+        "24h": {
+          "status": "blocked_incomplete_series",
+          "expected_candle_count": 1440,
+          "observed_candle_count": 0,
+          "missing_candle_count": 1440
+        },
+        "72h": {
+          "status": "blocked_incomplete_series",
+          "expected_candle_count": 4320,
+          "observed_candle_count": 0,
+          "missing_candle_count": 4320
+        },
+        "7d": {
+          "status": "blocked_incomplete_series",
+          "expected_candle_count": 10080,
+          "observed_candle_count": 0,
+          "missing_candle_count": 10080
+        }
       },
       "mfe": null,
       "mae": null,
@@ -116,7 +131,21 @@
       "exit_path_verified": false,
       "outcome_status": "unresolved",
       "social_claimed_outcome": "lost",
-      "local_replay_status": "pending_exact_anchor_replay",
+      "local_replay_status": "blocked_official_public_series_unavailable_at_query_time",
+      "exact_anchor_replay_ref": "input/elonkely_exact_anchor_replay_2026-07-29.json",
+      "market_provenance": {
+        "venue": "Binance Alpha",
+        "pair": "ALPHA_127USDT",
+        "interval": "1m",
+        "signal_time_utc": "2026-07-08T14:13:39Z",
+        "anchor_time_utc": "2026-07-08T14:14:00Z",
+        "requested_end_exclusive_utc": "2026-07-15T14:14:00Z",
+        "query_time_utc": "2026-07-29T04:30:29Z",
+        "api_code": "-1121",
+        "observed_candle_count": 0,
+        "missing_candle_count": 10080
+      },
+      "market_provenance_boundary": "The token remains present in the official Alpha token list while the pair is absent from current exchange info. The failed current query does not prove that historical candles never existed.",
       "related_local_counterexample": "The separate same-day PARTI replay in cases/2026-07-13_miles082510_wallet_cluster_review.md is anchored to a different public post and cannot supply this root signal's exact horizon metrics."
     },
     {
@@ -125,18 +154,48 @@
       "signal_time_utc": "2026-07-09T10:24:01Z",
       "source_post_url": "https://x.com/ElonKely_/status/2075164060409270485",
       "related_update_post_urls": [],
-      "entry_window_definition": "No locally verified entry; evidence-response conflict case only.",
+      "entry_window_definition": "No locally verified entry; replay base is the 2026-07-09T10:25:00Z Binance Alpha 1m open, the first complete candle strictly after the signal.",
       "invalidation": "Price and real spot inventory fail to confirm the claimed accumulation and long-OI thesis.",
       "evaluation_horizons": {
-        "24h": "unresolved_local_replay",
-        "72h": "unresolved_local_replay",
-        "7d": "unresolved_local_replay"
+        "24h": {
+          "status": "complete",
+          "mfe_pct": "30.1263617811",
+          "mae_pct": "-26.8705016180",
+          "end_return_pct": "14.8908359048"
+        },
+        "72h": {
+          "status": "complete",
+          "mfe_pct": "32.3125225104",
+          "mae_pct": "-85.8782916647",
+          "end_return_pct": "-39.2159479990"
+        },
+        "7d": {
+          "status": "complete",
+          "mfe_pct": "32.3125225104",
+          "mae_pct": "-85.8782916647",
+          "end_return_pct": "-53.1921069765"
+        }
       },
-      "mfe": null,
-      "mae": null,
-      "end_return": null,
+      "mfe": "32.3125225104",
+      "mae": "-85.8782916647",
+      "end_return": "-53.1921069765",
       "exit_path_verified": false,
-      "outcome_status": "unresolved"
+      "outcome_status": "mixed",
+      "local_replay_status": "exact_anchor_replay_complete",
+      "outcome_interpretation": "The exact 24h close was positive, while the 72h and 7d closes were sharply negative; the fixed-horizon result is mixed.",
+      "exact_anchor_replay_ref": "input/elonkely_exact_anchor_replay_2026-07-29.json",
+      "market_provenance": {
+        "venue": "Binance Alpha",
+        "pair": "ALPHA_409USDT",
+        "interval": "1m",
+        "signal_time_utc": "2026-07-09T10:24:01Z",
+        "anchor_time_utc": "2026-07-09T10:25:00Z",
+        "requested_end_exclusive_utc": "2026-07-16T10:25:00Z",
+        "query_time_utc": "2026-07-29T04:30:36Z",
+        "observed_candle_count": 10080,
+        "missing_candle_count": 0,
+        "series_sha256": "43955bb41444a57f775dac1e0801007fe213b7d55ac68d55cb54f771469abeab"
+      }
     }
   ],
   "source_time_sanity_cases": [
