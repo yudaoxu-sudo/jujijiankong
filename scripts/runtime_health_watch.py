@@ -117,6 +117,17 @@ def latest_daily_report(root: Path) -> Path | None:
     return reports[-1] if reports else None
 
 
+def output_freshness_timestamp(name: str, path: Path) -> float:
+    if name != "alpha_opening":
+        return path.stat().st_mtime
+    snapshot = read_json(path, {})
+    rebuild = snapshot.get("direct_sell_evidence_rebuild") or {}
+    if rebuild.get("applied") is not True:
+        return path.stat().st_mtime
+    source_time = parse_time(rebuild.get("source_generated_at"))
+    return source_time.timestamp() if source_time is not None else 0.0
+
+
 def output_freshness(root: Path, max_age_seconds: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     current = time.time()
     rows: list[dict[str, Any]] = []
@@ -140,7 +151,10 @@ def output_freshness(root: Path, max_age_seconds: int) -> tuple[list[dict[str, A
             rows.append({"name": name, "path": str(path or ""), "exists": False, "age_seconds": None, "required": True})
             issues.append(issue("missing_output", name, f"missing critical output: {name}"))
             continue
-        age_seconds = max(0, int(current - path.stat().st_mtime))
+        age_seconds = max(
+            0,
+            int(current - output_freshness_timestamp(name, path)),
+        )
         rows.append({"name": name, "path": str(path), "exists": True, "age_seconds": age_seconds, "required": True})
         if age_seconds > max_age_seconds:
             issues.append(
@@ -264,6 +278,17 @@ def output_row_coverage_issue(
             return "project operator attribution contract error"
     elif output_name == "opening":
         if row.get("status") == "opened":
+            if (
+                row.get("cache_identity_status")
+                == "metadata_conflict_unresolved"
+            ):
+                return (
+                    "opening stable identity metadata conflict="
+                    + str(
+                        row.get("cache_identity_conflict")
+                        or "unknown"
+                    )
+                )
             if row.get("refresh_status") == "partial_opening_deadline":
                 return "opening evidence deadline exceeded before a usable snapshot"
             traces = [
@@ -341,6 +366,38 @@ def output_row_coverage_warning(
     }
     if unresolved:
         return "project operator attribution warning=" + ",".join(sorted(unresolved))
+    return ""
+
+
+def matching_rows_coverage_issue(
+    output_name: str,
+    rows: list[dict[str, Any]],
+    target_contract: str = "",
+) -> str:
+    for row in rows:
+        detail = output_row_coverage_issue(
+            output_name,
+            row,
+            target_contract=target_contract,
+        )
+        if detail:
+            return detail
+    return ""
+
+
+def matching_rows_coverage_warning(
+    output_name: str,
+    rows: list[dict[str, Any]],
+    target_contract: str = "",
+) -> str:
+    for row in rows:
+        detail = output_row_coverage_warning(
+            output_name,
+            row,
+            target_contract=target_contract,
+        )
+        if detail:
+            return detail
     return ""
 
 
@@ -501,9 +558,9 @@ def alpha_coverage_evaluation(
                     )
                 )
                 continue
-            detail = output_row_coverage_issue(
+            detail = matching_rows_coverage_issue(
                 output_name,
-                matching[0],
+                matching,
                 target_contract=contract,
             )
             if detail:
@@ -516,9 +573,9 @@ def alpha_coverage_evaluation(
                     )
                 )
                 continue
-            warning_detail = output_row_coverage_warning(
+            warning_detail = matching_rows_coverage_warning(
                 output_name,
-                matching[0],
+                matching,
                 target_contract=contract,
             )
             if warning_detail:

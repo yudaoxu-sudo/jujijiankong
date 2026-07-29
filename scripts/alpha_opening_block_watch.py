@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -219,8 +221,28 @@ def read_json(path: Path, default: Any) -> Any:
 
 
 def write_json(path: Path, payload: Any) -> None:
+    write_text_atomic(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def parse_utc8(value: str) -> datetime | None:
@@ -3756,27 +3778,99 @@ def build_events() -> list[dict[str, Any]]:
 
 def opening_event_identity(
     event: dict[str, Any],
-) -> tuple[str, str, str, int, str, str]:
+) -> tuple[str, str, int]:
     return (
         str(event.get("chain") or "").lower(),
         norm((event.get("token") or {}).get("address")),
-        norm((event.get("quote") or {}).get("address")),
         int(event.get("opening_block") or 0),
+    )
+
+
+def opening_event_exact_identity(
+    event: dict[str, Any],
+) -> tuple[str, str, int, str, str, str]:
+    return (
+        *opening_event_identity(event),
+        norm((event.get("quote") or {}).get("address")),
         str(event.get("start_time_utc") or ""),
         norm(event.get("pool_id")),
     )
 
 
+def opening_event_metadata_conflict(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+) -> str:
+    current_quote = norm((current.get("quote") or {}).get("address"))
+    previous_quote = norm((previous.get("quote") or {}).get("address"))
+    if not current_quote or not previous_quote:
+        return "quote_address_missing"
+    if current_quote != previous_quote:
+        return "quote_address_changed"
+    return ""
+
+
+def identity_conflict_refresh_complete(
+    event: dict[str, Any],
+) -> bool:
+    return (
+        event.get("refresh_status") == "full_refresh"
+        and "transfer_logs" in event
+        and int_from(event.get("scan_to_block"))
+        >= int_from(event.get("opening_block"))
+        > 0
+    )
+
+
 def previous_opened_events(
     snapshot: dict[str, Any],
-) -> dict[tuple[str, str, str, int, str, str], dict[str, Any]]:
-    return {
-        opening_event_identity(event): event
-        for event in snapshot.get("events", [])
-        if isinstance(event, dict)
-        and event.get("status") == "opened"
-        and opening_event_identity(event)[1]
+) -> dict[tuple[str, str, int], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for event in snapshot.get("events", []):
+        if (
+            not isinstance(event, dict)
+            or event.get("status") != "opened"
+            or not opening_event_identity(event)[1]
+        ):
+            continue
+        grouped.setdefault(opening_event_identity(event), []).append(event)
+    return grouped
+
+
+def select_previous_opened_event(
+    current: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    if not candidates:
+        return None, ""
+    exact = [
+        previous
+        for previous in candidates
+        if opening_event_exact_identity(previous)
+        == opening_event_exact_identity(current)
+        and not opening_event_metadata_conflict(current, previous)
+    ]
+    if len(exact) == 1:
+        return exact[0], ""
+    if len(exact) > 1:
+        return None, "ambiguous_exact_identity"
+    compatible = [
+        previous
+        for previous in candidates
+        if not opening_event_metadata_conflict(current, previous)
+    ]
+    if len(compatible) == 1:
+        return compatible[0], ""
+    if len(compatible) > 1:
+        return None, "ambiguous_stable_identity"
+    conflicts = {
+        opening_event_metadata_conflict(current, previous)
+        for previous in candidates
     }
+    conflicts.discard("")
+    if conflicts == {"quote_address_missing"}:
+        return None, "quote_address_missing"
+    return None, "quote_address_changed"
 
 
 def opened_event_traces_incomplete(
@@ -4064,12 +4158,36 @@ def build_snapshot() -> dict[str, Any]:
         current_events = build_events()
     except OpeningTraceDeadlineExceeded:
         return deadline_snapshot_from_previous(previous_snapshot)
+    current_identity_counts: dict[tuple[str, str, int], int] = {}
+    for event in current_events:
+        if event.get("opening_block") is None:
+            continue
+        identity = opening_event_identity(event)
+        current_identity_counts[identity] = (
+            current_identity_counts.get(identity, 0) + 1
+        )
     events = []
     for event in current_events:
         if event.get("opening_block") is None:
             event.update({"status": "waiting", "rows": [], "analysis": analyze_waiting(event)})
         else:
-            previous = previous_by_identity.get(opening_event_identity(event))
+            identity = opening_event_identity(event)
+            if current_identity_counts.get(identity, 0) > 1:
+                previous = None
+                metadata_conflict = "duplicate_current_identity"
+            else:
+                previous, metadata_conflict = select_previous_opened_event(
+                    event,
+                    previous_by_identity.get(identity, []),
+                )
+            if metadata_conflict:
+                previous = None
+                event["cache_identity_status"] = "metadata_conflict_unresolved"
+                event["cache_identity_conflict"] = metadata_conflict
+            elif previous:
+                event["cache_identity_status"] = "stable_match"
+            else:
+                event["cache_identity_status"] = "new_event"
             previous_generated_at = str(
                 previous_snapshot.get("generated_at") or ""
             )
@@ -4092,6 +4210,15 @@ def build_snapshot() -> dict[str, Any]:
             else:
                 try:
                     event.update(build_opened_event(event, previous))
+                    if (
+                        metadata_conflict
+                        and metadata_conflict
+                        != "duplicate_current_identity"
+                        and identity_conflict_refresh_complete(event)
+                    ):
+                        event["cache_identity_status"] = (
+                            "metadata_conflict_rebuilt"
+                        )
                 except OpeningTraceDeadlineExceeded:
                     full_attempt_at = now_iso()
                     fallback_snapshot = {
@@ -5184,10 +5311,12 @@ def short_addr(value: str) -> str:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    snapshot = build_snapshot()
-    write_json(LATEST_PATH, snapshot)
-    REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
-    maybe_send_telegram(snapshot)
+    with (OUT_DIR / ".lock").open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        snapshot = build_snapshot()
+        write_json(LATEST_PATH, snapshot)
+        write_text_atomic(REPORT_PATH, render(snapshot))
+        maybe_send_telegram(snapshot)
     print(LATEST_PATH)
     print(REPORT_PATH)
     print(f"events={snapshot['event_count']} alerts={snapshot['alert_count']}")

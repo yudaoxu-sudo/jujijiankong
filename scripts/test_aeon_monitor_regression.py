@@ -3033,7 +3033,196 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 )
             )
 
-    def test_opening_cache_identity_separates_quote_and_pool(self) -> None:
+    def test_opening_cache_identity_survives_metadata_drift(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        base = {
+            "chain": "bsc",
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+            },
+            "opening_block": 100,
+            "start_time_utc": "2026-07-27T10:00:00+00:00",
+            "pool_id": "0x" + "3" * 64,
+        }
+        changed_metadata = {
+            **base,
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "BSC-USD",
+            },
+            "start_time_utc": "2026-07-27T10:00:01+00:00",
+            "pool_id": "0x" + "5" * 64,
+        }
+
+        self.assertEqual(
+            opening.opening_event_identity(base),
+            opening.opening_event_identity(changed_metadata),
+        )
+        self.assertNotEqual(
+            opening.opening_event_identity(base),
+            opening.opening_event_identity(
+                {
+                    **base,
+                    "opening_block": 101,
+                }
+            ),
+        )
+        self.assertNotEqual(
+            opening.opening_event_identity(base),
+            opening.opening_event_identity(
+                {
+                    **base,
+                    "token": {"address": "0x" + "6" * 40},
+                }
+            ),
+        )
+        self.assertEqual(
+            opening.opening_event_metadata_conflict(
+                changed_metadata,
+                base,
+            ),
+            "",
+        )
+        self.assertEqual(
+            opening.opening_event_metadata_conflict(
+                {
+                    **base,
+                    "quote": {"address": "0x" + "7" * 40},
+                },
+                base,
+            ),
+            "quote_address_changed",
+        )
+        for current_quote, previous_quote in (
+            ("", "0x" + "2" * 40),
+            ("0x" + "2" * 40, ""),
+            ("", ""),
+        ):
+            self.assertEqual(
+                opening.opening_event_metadata_conflict(
+                    {
+                        **base,
+                        "quote": {"address": current_quote},
+                    },
+                    {
+                        **base,
+                        "quote": {"address": previous_quote},
+                    },
+                ),
+                "quote_address_missing",
+            )
+
+    def test_metadata_drift_reuses_opening_sell_evidence(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        tx_hash = "0x" + "3" * 64
+        evidence = {
+            "id": f"{tx_hash}:7",
+            "tx": tx_hash,
+            "log_index": 7,
+            "quote_received": "37331.42",
+            "route": "direct",
+            "recipient": "0x" + "4" * 40,
+        }
+        previous_event = {
+            "chain": "bsc",
+            "token": {"address": token},
+            "quote": {"address": quote, "symbol": "USDT"},
+            "opening_block": 100,
+            "start_time_utc": "2026-07-27T10:00:00+00:00",
+            "pool_id": "old-pool",
+            "status": "opened",
+            "rows": [
+                {
+                    "tx": tx_hash,
+                    "buyer": "0x" + "5" * 40,
+                    "block": 100,
+                    "token_bought": "1000",
+                    "buyer_trace": {
+                        "status": "mostly_exited_or_transferred",
+                        "coverage_complete": True,
+                        "coverage_status": "complete",
+                        "confirmed_sell_quote_received": "37331.42",
+                        "confirmed_sell_count": "1",
+                        "confirmed_sell_evidence": [evidence],
+                        "next_hop_watch_recipients": [],
+                        "as_of_block": "120",
+                    },
+                }
+            ],
+            "transfer_logs": 100,
+            "relevant_tx_count": 1,
+            "immutable_opening_generated_at": (
+                "2026-07-27T10:00:00+00:00"
+            ),
+            "deep_trace_generated_at": "2026-07-28T10:00:00+00:00",
+            "last_full_trace_attempt_at": "2026-07-28T10:00:00+00:00",
+            "last_full_trace_success_at": "2026-07-28T10:00:00+00:00",
+            "analysis": {
+                "cohort_confirmed_sell_quote": "37331.42",
+            },
+        }
+        current_event = {
+            **previous_event,
+            "quote": {"address": quote, "symbol": "BSC-USD"},
+            "start_time_utc": "2026-07-27T10:00:01+00:00",
+            "pool_id": "new-pool",
+            "latest_block": 121,
+            "rows": [],
+            "analysis": {},
+        }
+        previous_snapshot = {
+            "generated_at": "2026-07-28T10:00:00+00:00",
+            "events": [previous_event],
+        }
+
+        def read(path, default):
+            if path == opening.LATEST_PATH:
+                return previous_snapshot
+            return default
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_REUSE_OPENED_CACHE": "1"},
+            ),
+            mock.patch.object(opening, "read_json", side_effect=read),
+            mock.patch.object(
+                opening,
+                "build_events",
+                return_value=[current_event],
+            ),
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                side_effect=lambda *args, **kwargs: args[5],
+            ),
+            mock.patch.object(opening, "analyze_opened", return_value={}),
+            mock.patch.object(opening, "opening_transfer_logs") as logs,
+        ):
+            snapshot = opening.build_snapshot()
+
+        logs.assert_not_called()
+        event = snapshot["events"][0]
+        self.assertEqual(event["cache_identity_status"], "stable_match")
+        trace = event["rows"][0]["buyer_trace"]
+        self.assertEqual(
+            trace["confirmed_sell_quote_received"],
+            "37331.42",
+        )
+        self.assertEqual(trace["confirmed_sell_evidence"], [evidence])
+
+    def test_opening_cache_identity_rejects_ambiguous_fallback(self) -> None:
         import scripts.alpha_opening_block_watch as opening
 
         base = {
@@ -3042,24 +3231,219 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "quote": {"address": "0x" + "2" * 40},
             "opening_block": 100,
             "start_time_utc": "2026-07-27T10:00:00+00:00",
-            "pool_id": "0x" + "3" * 64,
+            "pool_id": "pool-current",
         }
-        different_quote = {
+        first = {
             **base,
-            "quote": {"address": "0x" + "4" * 40},
+            "start_time_utc": "2026-07-27T09:59:58+00:00",
+            "pool_id": "pool-one",
         }
-        different_pool = {
+        second = {
             **base,
-            "pool_id": "0x" + "5" * 64,
+            "start_time_utc": "2026-07-27T09:59:59+00:00",
+            "pool_id": "pool-two",
+        }
+        previous, conflict = opening.select_previous_opened_event(
+            base,
+            [first, second],
+        )
+        self.assertIsNone(previous)
+        self.assertEqual(conflict, "ambiguous_stable_identity")
+
+        previous, conflict = opening.select_previous_opened_event(
+            first,
+            [first, second],
+        )
+        self.assertIs(previous, first)
+        self.assertEqual(conflict, "")
+
+        missing_quote = {
+            **first,
+            "quote": {"address": ""},
+        }
+        previous, conflict = opening.select_previous_opened_event(
+            missing_quote,
+            [missing_quote],
+        )
+        self.assertIsNone(previous)
+        self.assertEqual(conflict, "quote_address_missing")
+
+    def test_quote_conflict_forces_fresh_opening_evidence(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        previous_event = {
+            "chain": "bsc",
+            "token": {"address": token},
+            "quote": {"address": "0x" + "2" * 40},
+            "opening_block": 100,
+            "status": "opened",
+            "rows": [{"buyer_trace": {"confirmed_sell_quote_received": "9"}}],
+        }
+        current_event = {
+            "chain": "bsc",
+            "token": {"address": token},
+            "quote": {"address": "0x" + "7" * 40},
+            "opening_block": 100,
+            "latest_block": 120,
+        }
+        previous_snapshot = {
+            "generated_at": "2026-07-28T10:00:00+00:00",
+            "events": [previous_event],
         }
 
-        self.assertNotEqual(
-            opening.opening_event_identity(base),
-            opening.opening_event_identity(different_quote),
+        def read(path, default):
+            if path == opening.LATEST_PATH:
+                return previous_snapshot
+            return default
+
+        with (
+            mock.patch.object(opening, "read_json", side_effect=read),
+            mock.patch.object(
+                opening,
+                "build_events",
+                return_value=[current_event],
+            ),
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                return_value={
+                    "status": "opened",
+                    "refresh_status": "full_refresh",
+                    "scan_to_block": 120,
+                    "transfer_logs": 0,
+                    "rows": [],
+                    "analysis": {},
+                },
+            ) as rebuild,
+        ):
+            snapshot = opening.build_snapshot()
+
+        rebuild.assert_called_once_with(current_event, None)
+        event = snapshot["events"][0]
+        self.assertEqual(
+            event["cache_identity_status"],
+            "metadata_conflict_rebuilt",
         )
-        self.assertNotEqual(
-            opening.opening_event_identity(base),
-            opening.opening_event_identity(different_pool),
+        self.assertEqual(
+            event["cache_identity_conflict"],
+            "quote_address_changed",
+        )
+        self.assertEqual(event["rows"], [])
+
+        self.assertFalse(
+            opening.identity_conflict_refresh_complete(
+                {
+                    "opening_block": 100,
+                    "refresh_status": "full_refresh",
+                }
+            )
+        )
+
+    def test_duplicate_current_opening_identity_stays_unresolved(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "symbol": "AEON",
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+            "opening_block": 100,
+            "latest_block": 120,
+        }
+        with (
+            mock.patch.object(opening, "read_json", return_value={}),
+            mock.patch.object(
+                opening,
+                "build_events",
+                return_value=[event.copy(), event.copy()],
+            ),
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                return_value={
+                    "status": "opened",
+                    "refresh_status": "full_refresh",
+                    "scan_to_block": 120,
+                    "transfer_logs": 0,
+                    "rows": [],
+                    "analysis": {},
+                },
+            ),
+        ):
+            snapshot = opening.build_snapshot()
+
+        self.assertEqual(
+            [
+                row["cache_identity_status"]
+                for row in snapshot["events"]
+            ],
+            [
+                "metadata_conflict_unresolved",
+                "metadata_conflict_unresolved",
+            ],
+        )
+        self.assertEqual(
+            {
+                row["cache_identity_conflict"]
+                for row in snapshot["events"]
+            },
+            {"duplicate_current_identity"},
+        )
+
+    def test_health_rejects_opening_quote_identity_conflict(self) -> None:
+        from scripts.runtime_health_watch import (
+            matching_rows_coverage_issue,
+            output_row_coverage_issue,
+        )
+
+        self.assertEqual(
+            output_row_coverage_issue(
+                "opening",
+                {
+                    "status": "opened",
+                    "cache_identity_status": "metadata_conflict_unresolved",
+                    "cache_identity_conflict": "quote_address_changed",
+                },
+            ),
+            (
+                "opening stable identity metadata conflict="
+                "quote_address_changed"
+            ),
+        )
+        self.assertEqual(
+            output_row_coverage_issue(
+                "opening",
+                {
+                    "status": "opened",
+                    "cache_identity_status": "metadata_conflict_rebuilt",
+                    "cache_identity_conflict": "quote_address_changed",
+                    "rows": [],
+                },
+            ),
+            "",
+        )
+        self.assertIn(
+            "quote_address_changed",
+            matching_rows_coverage_issue(
+                "opening",
+                [
+                    {
+                        "status": "opened",
+                        "cache_identity_status": "stable_match",
+                        "rows": [],
+                    },
+                    {
+                        "status": "opened",
+                        "cache_identity_status": (
+                            "metadata_conflict_unresolved"
+                        ),
+                        "cache_identity_conflict": (
+                            "quote_address_changed"
+                        ),
+                    },
+                ],
+            ),
         )
 
     def test_rpc_deadline_stops_multi_endpoint_retry(self) -> None:

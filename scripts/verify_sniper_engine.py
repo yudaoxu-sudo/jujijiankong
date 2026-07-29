@@ -491,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "test_project_continuity_acceptance.py",
         ROOT / "scripts" / "test_sniper_engine_units.py",
         ROOT / "scripts" / "test_aeon_monitor_regression.py",
+        ROOT / "scripts" / "rebuild_opening_sell_evidence.py",
+        ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py",
         ROOT / "scripts" / "test_micro_gas_boundaries.py",
         ROOT / "scripts" / "test_micro_gas_identity_gate.py",
         ROOT / "scripts" / "test_wash_volume_fixtures.py",
@@ -1444,6 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fixture_test_scripts = (
         ("AEON official-discovery and monitor-coverage regression tests", "test_aeon_monitor_regression.py"),
+        ("opening direct-sell evidence rebuild tests", "test_rebuild_opening_sell_evidence.py"),
         ("CEX micro-gas synthetic boundary regression tests", "test_micro_gas_boundaries.py"),
         ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
         ("wash-volume deferred synthetic fixture tests", "test_wash_volume_fixtures.py"),
@@ -2502,6 +2505,8 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_sniper_engine_units.py"),
         str(ROOT / "scripts" / "test_aeon_monitor_regression.py"),
+        str(ROOT / "scripts" / "rebuild_opening_sell_evidence.py"),
+        str(ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py"),
         str(ROOT / "scripts" / "test_micro_gas_boundaries.py"),
         str(ROOT / "scripts" / "test_micro_gas_identity_gate.py"),
         str(ROOT / "scripts" / "test_wash_volume_fixtures.py"),
