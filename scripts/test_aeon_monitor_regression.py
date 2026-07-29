@@ -1096,6 +1096,155 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             opening.Decimal("600000"),
         )
 
+    def test_v3_swap_emitter_is_excluded_when_executor_is_not_the_seller(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        executor = "0x" + "3" * 40
+        seller = "0x" + "4" * 40
+        router = "0x" + "5" * 40
+        pool = "0x4f28db6fdc5d85b5936ac202e59b4f8e4a64ad6c"
+        tx_hash = "0x" + "6" * 64
+        event = {
+            "chain": "bsc",
+            "token": {"address": token, "decimals": 8},
+            "quote": {"address": quote, "decimals": 18},
+        }
+        transfers = [
+            {
+                "tx": tx_hash,
+                "log_index": 1,
+                "token": token,
+                "from": seller,
+                "to": router,
+                "amount": opening.Decimal("1000"),
+            },
+            {
+                "tx": tx_hash,
+                "log_index": 2,
+                "token": quote,
+                "from": pool,
+                "to": router,
+                "amount": opening.Decimal("600"),
+            },
+            {
+                "tx": tx_hash,
+                "log_index": 3,
+                "token": token,
+                "from": router,
+                "to": pool,
+                "amount": opening.Decimal("1000"),
+            },
+            {
+                "tx": tx_hash,
+                "log_index": 4,
+                "token": quote,
+                "from": router,
+                "to": seller,
+                "amount": opening.Decimal("600"),
+            },
+        ]
+        receipt = {
+            "status": "0x1",
+            "from": executor,
+            "blockNumber": "0x64",
+            "transactionIndex": "0x1",
+            "logs": [
+                {
+                    "address": pool,
+                    "topics": [opening.V3_SWAP_TOPIC],
+                }
+            ],
+        }
+        nets = opening.net_by_address(transfers, token, quote)
+        swap_emitters = opening.receipt_swap_emitters(receipt)
+        self.assertEqual(swap_emitters, {pool})
+        self.assertEqual(
+            opening.best_buyer(event, nets, executor, swap_emitters),
+            ("", opening.Decimal(0), opening.Decimal(0)),
+        )
+        self.assertEqual(
+            opening.receipt_direction_buyer_exclusion_reason(
+                nets,
+                pool,
+                executor,
+                swap_emitters,
+            ),
+            "receipt_swap_emitter_counterparty",
+        )
+
+        with (
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                side_effect=[
+                    {"from": executor, "to": router, "input": "0x12345678"},
+                    receipt,
+                ],
+            ),
+            mock.patch.object(
+                opening,
+                "receipt_transfers_from_receipt",
+                return_value=transfers,
+            ),
+            mock.patch.object(
+                opening,
+                "largest_internal_native",
+                return_value={"amount": "0"},
+            ),
+        ):
+            opening_row = opening.summarize_tx(event, tx_hash)
+        self.assertEqual(opening_row["buyer"], "")
+        self.assertEqual(
+            opening_row["buyer_exclusion_reason"],
+            "receipt_swap_emitter_counterparty",
+        )
+
+        previous = {
+            "as_of_block": "100",
+            "coverage_complete": True,
+            "confirmed_sell_quote_received": "600",
+            "confirmed_sell_count": "1",
+            "confirmed_sell_evidence": [
+                {
+                    "tx": tx_hash,
+                    "log_index": 2,
+                    "quote_received": "600",
+                    "route": "direct",
+                    "recipient": pool,
+                }
+            ],
+        }
+        with (
+            mock.patch.object(opening, "quick_rpc_call", return_value=receipt),
+            mock.patch.object(
+                opening,
+                "receipt_transfers_from_receipt",
+                return_value=transfers,
+            ),
+            mock.patch.object(opening, "token_balance") as token_balance,
+            mock.patch.object(opening, "get_logs_quick") as get_logs,
+        ):
+            refreshed = opening.trace_buyer(
+                event,
+                pool,
+                100,
+                100,
+                opening.Decimal("1000"),
+                previous,
+                tx_hash,
+            )
+        token_balance.assert_not_called()
+        get_logs.assert_not_called()
+        self.assertEqual(refreshed["status"], "excluded_non_cohort_subject")
+        self.assertEqual(refreshed["confirmed_sell_quote_received"], "0")
+        self.assertEqual(refreshed["confirmed_sell_evidence"], [])
+        self.assertEqual(
+            refreshed["subject_exclusion_reason"],
+            "receipt_swap_emitter_counterparty",
+        )
+
     def test_pool_counterparty_is_not_buyer_or_confirmed_seller(self) -> None:
         import scripts.alpha_opening_block_watch as opening
 

@@ -43,6 +43,7 @@ SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 INCREASE_LIQUIDITY_TOPIC = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f"
 DECREASE_LIQUIDITY_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4"
 COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01"
@@ -2334,13 +2335,26 @@ def receipt_direction_buyer_exclusion_reason(
     nets: dict[str, dict[str, Decimal]],
     address: str,
     initiator: str,
+    swap_emitters: set[str] | None = None,
 ) -> str:
     address = norm(address)
     initiator = norm(initiator)
+    candidate_net = nets.get(address) or {}
+    if (
+        address in (swap_emitters or set())
+        and candidate_net.get("token", Decimal(0)) > 0
+        and candidate_net.get("quote", Decimal(0)) < 0
+        and any(
+            other_address != address
+            and amounts.get("token", Decimal(0)) < 0
+            and amounts.get("quote", Decimal(0)) > 0
+            for other_address, amounts in nets.items()
+        )
+    ):
+        return "receipt_swap_emitter_counterparty"
     if not is_address(initiator) or address == initiator:
         return ""
     initiator_net = nets.get(initiator) or {}
-    candidate_net = nets.get(address) or {}
     if (
         initiator_net.get("token", Decimal(0)) < 0
         and initiator_net.get("quote", Decimal(0)) > 0
@@ -2349,6 +2363,22 @@ def receipt_direction_buyer_exclusion_reason(
     ):
         return "receipt_direction_counterparty_to_initiator_sell"
     return ""
+
+
+def receipt_swap_emitters(receipt: dict[str, Any]) -> set[str]:
+    emitters: set[str] = set()
+    for log in receipt.get("logs", []) or []:
+        if not isinstance(log, dict):
+            continue
+        topics = log.get("topics") or []
+        if (
+            isinstance(topics, list)
+            and topics
+            and norm(topics[0]) == V3_SWAP_TOPIC
+            and is_address(log.get("address"))
+        ):
+            emitters.add(norm(log["address"]))
+    return emitters
 
 
 def opening_buyer_exclusion_reason(
@@ -2390,6 +2420,7 @@ def opening_buyer_exclusion_reason(
         nets,
         buyer,
         receipt.get("from", ""),
+        receipt_swap_emitters(receipt),
     )
 
 
@@ -2431,6 +2462,7 @@ def best_buyer(
     event: dict[str, Any],
     nets: dict[str, dict[str, Decimal]],
     initiator: str = "",
+    swap_emitters: set[str] | None = None,
 ) -> tuple[str, Decimal, Decimal]:
     candidates = []
     excluded = excluded_addresses(event)
@@ -2441,6 +2473,7 @@ def best_buyer(
                 nets,
                 address,
                 initiator,
+                swap_emitters,
             )
         ):
             continue
@@ -3191,10 +3224,14 @@ def summarize_tx(event: dict[str, Any], tx_hash: str) -> dict[str, Any]:
     )
     nets = net_by_address(transfers, event["token"]["address"], event["quote"]["address"])
     initiator = norm(tx.get("from"))
+    swap_emitters = receipt_swap_emitters(receipt)
     buyer_exclusion_reason = ""
     for address in nets:
         buyer_exclusion_reason = receipt_direction_buyer_exclusion_reason(
-            nets, address, initiator
+            nets,
+            address,
+            initiator,
+            swap_emitters,
         )
         if buyer_exclusion_reason:
             break
@@ -3202,6 +3239,7 @@ def summarize_tx(event: dict[str, Any], tx_hash: str) -> dict[str, Any]:
         event,
         nets,
         initiator,
+        swap_emitters,
     )
     price_source = "transfer"
     if token_bought and not spent_quote:
