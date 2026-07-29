@@ -24,6 +24,7 @@ import scripts.alpha_opening_block_watch as opening
 TransferRpc = Callable[[str, dict[str, Any]], Any]
 ReceiptRpc = Callable[[str, str], Any]
 ASSET_TRANSFER_MAX_BLOCK_SPAN = 100_000
+ASSET_TRANSFER_LOG_FALLBACK_BLOCK_SPAN = 5_000
 
 
 class IncompleteAcquisitionError(RuntimeError):
@@ -49,6 +50,112 @@ def remaining_timeout(deadline: float | None, maximum: int) -> int:
     if remaining <= 0:
         raise opening.RpcDeadlineExceeded("rebuild deadline exceeded")
     return max(1, min(maximum, int(remaining) or 1))
+
+
+def collect_from_transfer_logs(
+    chain: str,
+    query: dict[str, Any],
+    max_transactions: int,
+    deadline: float | None,
+    rpc: Callable[..., Any],
+    timeout: int,
+) -> dict[str, Any]:
+    try:
+        start = int(str(query.get("fromBlock")), 16)
+        end = int(str(query.get("toBlock")), 16)
+    except (TypeError, ValueError):
+        raise ValueError("invalid transfer log block range") from None
+    contracts = query.get("contractAddresses")
+    buyer = opening.norm(query.get("fromAddress"))
+    if (
+        start <= 0
+        or end < start
+        or not isinstance(contracts, list)
+        or len(contracts) != 1
+        or not opening.is_address(contracts[0])
+        or not opening.is_address(buyer)
+    ):
+        raise ValueError("invalid transfer log scope")
+    token = opening.norm(contracts[0])
+    transactions: list[dict[str, str]] = []
+    seen_transactions: set[str] = set()
+    seen_logs: set[tuple[str, int]] = set()
+    chunk_start = start
+    while chunk_start <= end:
+        chunk_end = min(
+            end,
+            chunk_start
+            + ASSET_TRANSFER_LOG_FALLBACK_BLOCK_SPAN
+            - 1,
+        )
+        result = rpc(
+            chain,
+            "eth_getLogs",
+            [
+                {
+                    "address": token,
+                    "fromBlock": hex(chunk_start),
+                    "toBlock": hex(chunk_end),
+                    "topics": [
+                        opening.TRANSFER_TOPIC,
+                        opening.address_topic(buyer),
+                        None,
+                    ],
+                }
+            ],
+            timeout=remaining_timeout(deadline, timeout),
+            deadline=deadline,
+        )
+        if not isinstance(result, list):
+            raise ValueError("invalid transfer log response")
+        for log in result:
+            if not isinstance(log, dict) or log.get("removed") is True:
+                raise ValueError("invalid transfer log row")
+            topics = log.get("topics")
+            try:
+                block = opening.hex_to_int(log.get("blockNumber"))
+                log_index = opening.hex_to_int(log.get("logIndex"))
+            except (TypeError, ValueError):
+                raise ValueError("invalid transfer log identity") from None
+            tx_hash = opening.norm(log.get("transactionHash"))
+            if (
+                opening.norm(log.get("address")) != token
+                or not isinstance(topics, list)
+                or len(topics) < 3
+                or opening.norm(topics[0])
+                != opening.TRANSFER_TOPIC
+                or opening.norm(topics[1])
+                != opening.address_topic(buyer)
+                or not isinstance(block, int)
+                or block < chunk_start
+                or block > chunk_end
+                or not isinstance(log_index, int)
+                or log_index < 0
+                or len(tx_hash) != 66
+                or not tx_hash.startswith("0x")
+            ):
+                raise ValueError("transfer log scope mismatch")
+            identity = (tx_hash, log_index)
+            if identity in seen_logs:
+                continue
+            seen_logs.add(identity)
+            if tx_hash in seen_transactions:
+                continue
+            seen_transactions.add(tx_hash)
+            transactions.append(
+                {
+                    "from": buyer,
+                    "contractAddress": token,
+                    "hash": tx_hash,
+                }
+            )
+            if len(transactions) > max_transactions:
+                return {
+                    "transfers": transactions,
+                    "pageKey": "",
+                }
+        chunk_start = chunk_end + 1
+    return {"transfers": transactions, "pageKey": ""}
 
 
 def collect(
@@ -684,13 +791,39 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     )
     deadline = time.monotonic() + args.max_seconds
     markdown_path = args.input.with_suffix(".md")
-    transfer_rpc = lambda chain, query: opening.rpc_call(
-        chain,
-        "nr_getAssetTransfers",
-        [query],
-        timeout=remaining_timeout(deadline, timeout),
-        deadline=deadline,
-    )
+    enhanced_transfer_available = True
+
+    def transfer_rpc(chain: str, query: dict[str, Any]) -> Any:
+        nonlocal enhanced_transfer_available
+        if enhanced_transfer_available:
+            try:
+                result = opening.rpc_call(
+                    chain,
+                    "nr_getAssetTransfers",
+                    [query],
+                    timeout=remaining_timeout(deadline, timeout),
+                    deadline=deadline,
+                )
+            except opening.RpcDeadlineExceeded:
+                raise
+            except Exception:
+                enhanced_transfer_available = False
+            else:
+                if (
+                    isinstance(result, dict)
+                    and isinstance(result.get("transfers"), list)
+                ):
+                    return result
+                enhanced_transfer_available = False
+        return collect_from_transfer_logs(
+            chain,
+            query,
+            args.max_transactions,
+            deadline,
+            opening.rpc_call,
+            timeout,
+        )
+
     receipt_rpc = lambda chain, tx_hash: opening.rpc_call(
         chain,
         "eth_getTransactionReceipt",

@@ -445,6 +445,65 @@ class RebuildTests(unittest.TestCase):
             ],
         )
 
+    def test_enhanced_rpc_failure_uses_receipt_safe_log_fallback(self):
+        def fallback_rpc(_chain, method, _params, **_kwargs):
+            if method == "nr_getAssetTransfers":
+                raise RuntimeError("enhanced rpc unavailable")
+            if method == "eth_getLogs":
+                return [
+                    transfer_log(
+                        TOKEN,
+                        BUYER,
+                        POOL,
+                        1000,
+                        SELL_TX,
+                        1,
+                    )
+                ]
+            if method == "eth_getTransactionReceipt":
+                return receipt()
+            raise AssertionError(method)
+
+        with tempfile.TemporaryDirectory() as temp:
+            json_path = Path(temp) / "latest.json"
+            json_path.write_text(json.dumps(snapshot()))
+            with mock.patch.object(
+                opening,
+                "rpc_call",
+                side_effect=fallback_rpc,
+            ):
+                summary = rebuild.execute(
+                    args_for(json_path, apply=False)
+                )
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["acquisition_status"], "complete")
+        self.assertEqual(summary["canonical_evidence_count"], 1)
+        self.assertFalse(summary["applied"])
+
+    def test_log_fallback_rejects_scope_mismatch(self):
+        wrong_sender = transfer_log(
+            TOKEN,
+            POOL,
+            BUYER,
+            1000,
+            SELL_TX,
+            1,
+        )
+        with self.assertRaises(ValueError):
+            rebuild.collect_from_transfer_logs(
+                "bsc",
+                {
+                    "fromBlock": hex(100),
+                    "toBlock": hex(200),
+                    "contractAddresses": [TOKEN],
+                    "fromAddress": BUYER,
+                },
+                10,
+                None,
+                lambda *_args, **_kwargs: [wrong_sender],
+                5,
+            )
+
     def test_token_out_without_quote_requires_next_hop_refresh(self):
         updated, summary = rebuild_aeon(
             snapshot(old_quote="0"),
