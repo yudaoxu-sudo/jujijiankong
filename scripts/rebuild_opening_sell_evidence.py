@@ -860,19 +860,18 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             json_state = file_state(args.input)
             markdown_state = file_state(markdown_path)
             source = args.input.read_text(encoding="utf-8")
-    updated, summary = rebuild_snapshot(
-        json.loads(source),
-        args.symbol,
-        args.token,
-        args.opening_block,
-        args.max_buyers,
-        args.max_pages,
-        args.max_transactions,
-        deadline,
-        transfer_rpc,
-        receipt_rpc,
-    )
-    with exclusive_lock(server_lock):
+        updated, summary = rebuild_snapshot(
+            json.loads(source),
+            args.symbol,
+            args.token,
+            args.opening_block,
+            args.max_buyers,
+            args.max_pages,
+            args.max_transactions,
+            deadline,
+            transfer_rpc,
+            receipt_rpc,
+        )
         with exclusive_lock(output_lock):
             apply_prepared_rebuild(
                 args.input,

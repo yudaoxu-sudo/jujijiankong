@@ -587,6 +587,44 @@ class RebuildTests(unittest.TestCase):
                 "partial",
             )
 
+    def test_apply_holds_server_lock_for_the_full_rebuild(self):
+        with tempfile.TemporaryDirectory() as temp:
+            json_path = Path(temp) / "latest.json"
+            markdown_path = Path(temp) / "latest.md"
+            server_lock = Path(temp) / "server.lock"
+            json_path.write_text(json.dumps(snapshot()))
+            markdown_path.write_text("old")
+            observed = []
+
+            def locked_rpc(chain, method, params, **_kwargs):
+                with self.assertRaises(rebuild.RuntimeBusyError):
+                    with rebuild.exclusive_lock(server_lock):
+                        pass
+                observed.append(method)
+                if method == "nr_getAssetTransfers":
+                    return pages(chain, params[0])
+                if method == "eth_getTransactionReceipt":
+                    return receipt()
+                raise AssertionError(method)
+
+            with (
+                mock.patch.object(
+                    opening,
+                    "rpc_call",
+                    side_effect=locked_rpc,
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {"SNIPER_RUN_LOCK_FILE": str(server_lock)},
+                ),
+            ):
+                summary = rebuild.execute(
+                    args_for(json_path, apply=True)
+                )
+            self.assertTrue(summary["applied"])
+            self.assertIn("nr_getAssetTransfers", observed)
+            self.assertIn("eth_getTransactionReceipt", observed)
+
     def test_apply_rejects_changed_or_incomplete_input(self):
         with tempfile.TemporaryDirectory() as temp:
             json_path = Path(temp) / "latest.json"
