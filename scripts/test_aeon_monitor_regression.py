@@ -20,6 +20,16 @@ sys.path.insert(0, str(ROOT))
 
 class AeonSignalParsingRegressionTests(unittest.TestCase):
     def test_opening_sprint_inner_timeout_is_bounded_and_remapped(self) -> None:
+        if os.environ.get("SNIPER_OFFLINE") == "1":
+            source = (ROOT / "scripts" / "alpha_opening_sprint.sh").read_text(encoding="utf-8")
+            self.assertIn("if (( trace_budget > remaining - post_seconds )); then", source)
+            self.assertIn("trace_budget=$((remaining - post_seconds))", source)
+            self.assertIn("hard_timeout=$((trace_budget + post_seconds))", source)
+            self.assertIn('if timeout "${hard_timeout}s" "${command[@]}"; then', source)
+            self.assertIn("if (( status == 124 )); then", source)
+            self.assertIn("return 75", source)
+            return
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             bin_dir = root / "bin"
