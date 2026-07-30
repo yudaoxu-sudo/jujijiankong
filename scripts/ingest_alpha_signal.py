@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
@@ -13,6 +14,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sniper_engine.token_aliases import apply_token_aliases, display_alias
+from scripts.alpha_prelaunch_research import (
+    build_prelaunch_research,
+    forecast_context_at,
+)
 SIGNAL_DIR = ROOT / "input" / "signals"
 OUT_DIR = ROOT / "output" / "signals"
 WATCHLIST_PATH = ROOT / "config" / "current_alpha_watchlist.json"
@@ -128,6 +133,7 @@ def source_files(paths: list[str]) -> list[Path]:
 def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
     source_policy = source_policy_from_headers(text)
     text = strip_signal_headers(text)
+    generated_at = now_iso()
     urls = unique(URL_RE.findall(text))
     pool_ids = normalize_pool_ids(POOL_ID_RE.findall(text) + extract_pool_ids_from_urls(urls))
     txs = extract_txs(text, urls, pool_ids)
@@ -142,8 +148,36 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
     links_by_type = classify_links(urls)
     blocks = [int(value) for value in unique(BLOCK_RE.findall(text))]
     pool_links = extract_pool_links(urls)
-    times = extract_times(text)
     primary_symbol = symbols[0] if symbols else ""
+    prelaunch_research, event_schedule = build_prelaunch_research(
+        text=text,
+        symbol=primary_symbol,
+        urls=urls,
+        addresses=addresses,
+        prices=prices,
+        facts=facts,
+        source_path=source_path,
+        observed_at=generated_at,
+        source_policy=source_policy,
+    )
+    alpha_open_times = unique(
+        [
+            row.get("time_utc8")
+            for row in event_schedule
+            if row.get("event_type") == "alpha_open"
+            and row.get("time_precision") == "exact"
+            and row.get("time_utc8")
+        ]
+    )
+    has_typed_schedule = any(
+        row.get("time_utc8") or row.get("time_text")
+        for row in event_schedule
+    )
+    times = (
+        alpha_open_times
+        if has_typed_schedule
+        else extract_times(text)
+    )
     title = guess_title(text, primary_symbol)
     priority = score_priority(
         addresses,
@@ -159,8 +193,27 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
         facts["alpha_launch_signal"] = True
         priority = promote_priority(priority, "P1_MONITOR")
 
+    watchlist_proposal = build_watchlist_proposal(
+        primary_symbol,
+        title,
+        addresses,
+        txs,
+        blocks,
+        times,
+        pool_ids,
+        pool_links,
+        links_by_type,
+        priority,
+    )
+    watchlist_proposal.update(
+        {
+            "facts": facts,
+            "event_schedule": event_schedule,
+            "prelaunch_research": prelaunch_research,
+        }
+    )
     parsed = {
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "source_path": str(source_path) if source_path else "",
         "title": title,
         "symbol": primary_symbol,
@@ -175,20 +228,11 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
         "blocks": blocks,
         "pool_ids": pool_ids,
         "times": times,
+        "event_schedule": event_schedule,
         "prices": prices,
         "facts": facts,
-        "watchlist_proposal": build_watchlist_proposal(
-            primary_symbol,
-            title,
-            addresses,
-            txs,
-            blocks,
-            times,
-            pool_ids,
-            pool_links,
-            links_by_type,
-            priority,
-        ),
+        "prelaunch_research": prelaunch_research,
+        "watchlist_proposal": watchlist_proposal,
         "prediction_proposals": build_prediction_proposals(primary_symbol, title, prediction_urls),
         "next_checks": next_checks(addresses, txs, pool_ids, prediction_urls, prices),
     }
@@ -199,7 +243,11 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
 
 def source_policy_from_headers(text: str) -> dict[str, Any]:
     fields: dict[str, str] = {}
-    for line in text.splitlines()[:16]:
+    lines = text.splitlines()
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    for line in lines[start : start + 16]:
         if not line.strip():
             break
         key, separator, value = line.partition(":")
@@ -222,11 +270,14 @@ def strip_signal_headers(text: str) -> str:
     lines = text.splitlines()
     if not lines:
         return text
-    first_lines = lines[:8]
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    first_lines = lines[start : start + 8]
     has_header = any(line.strip().lower().startswith(tuple(HEADER_PREFIXES)) for line in first_lines)
     if not has_header:
         return text
-    idx = 0
+    idx = start
     while idx < len(lines) and lines[idx].strip().lower().startswith(tuple(HEADER_PREFIXES)):
         idx += 1
     if idx < len(lines) and not lines[idx].strip():
@@ -305,7 +356,7 @@ def extract_prices(text: str) -> dict[str, str]:
     prices = {}
     for key, pattern in PRICE_PATTERNS.items():
         match = pattern.search(text)
-        if match:
+        if match and not match_is_forecast(text, match):
             prices[key] = match.group(1).strip()
     return prices
 
@@ -313,17 +364,22 @@ def extract_prices(text: str) -> dict[str, str]:
 def extract_facts(text: str) -> dict[str, Any]:
     facts: dict[str, Any] = {}
     match = TOTAL_SUPPLY_RE.search(text)
-    if match:
+    if match and not match_is_forecast(text, match):
         facts["total_supply"] = match.group(1).strip()
     match = INITIAL_FLOAT_RE.search(text)
-    if match:
+    if match and not match_is_forecast(text, match):
         facts["initial_float"] = match.group(1).strip()
     match = FINANCING_RE.search(text)
-    if match:
+    if match and not match_is_forecast(text, match):
         facts["financing"] = match.group(1).strip()
     allocations = []
-    for label, percent in ALLOCATION_LINE_RE.findall(text):
-        allocations.append({"label": label.strip(), "percent": percent.strip()})
+    for allocation_match in ALLOCATION_LINE_RE.finditer(text):
+        if match_is_forecast(text, allocation_match):
+            continue
+        label, percent = allocation_match.groups()
+        allocations.append(
+            {"label": label.strip(), "percent": percent.strip()}
+        )
     if allocations:
         facts["allocations"] = unique_dicts(allocations)
     for key, pattern in (
@@ -333,7 +389,7 @@ def extract_facts(text: str) -> dict[str, Any]:
         ("holding_cost", HOLDING_COST_RE),
     ):
         match = pattern.search(text)
-        if match:
+        if match and not match_is_forecast(text, match):
             facts[key] = match.group(1).replace(",", "")
     if ALPHA_VENUE_RE.search(text):
         facts.setdefault("venues", []).append("Binance Alpha")
@@ -345,17 +401,28 @@ def extract_facts(text: str) -> dict[str, Any]:
     return facts
 
 
+def match_is_forecast(text: str, match: re.Match[str]) -> bool:
+    return forecast_context_at(text, match.start())
+
+
 def extract_times(text: str) -> list[str]:
     full: list[str] = []
     for pattern in (CHINESE_DATETIME_RE, STANDARD_DATETIME_RE):
-        for year, month, day, hour, minute in pattern.findall(text):
+        for match in pattern.finditer(text):
+            if match_is_forecast(text, match):
+                continue
+            year, month, day, hour, minute = match.groups()
             full.append(
                 f"{int(year):04d}-{int(month):02d}-{int(day):02d} "
                 f"{int(hour):02d}:{int(minute):02d}"
             )
     if full:
         return unique(full)
-    return unique(value.replace("：", ":") for value in CLOCK_TIME_RE.findall(text))
+    return unique(
+        match.group(1).replace("：", ":")
+        for match in CLOCK_TIME_RE.finditer(text)
+        if not match_is_forecast(text, match)
+    )
 
 
 def classify_links(urls: list[str]) -> dict[str, list[str]]:
@@ -696,6 +763,125 @@ def apply_proposals(parsed: dict[str, Any]) -> None:
     write_json(PREDICTION_PATH, prediction)
 
 
+def evidence_rank(status: Any, authority: Any = "") -> int:
+    normalized_status = str(status or "").strip().lower()
+    normalized_authority = str(authority or "").strip().lower()
+    if normalized_status == "verified" or normalized_authority in {
+        "official",
+        "onchain",
+        "receipt_verified",
+    }:
+        return 3
+    if normalized_status in {"conflicted", "stale"}:
+        return 0
+    return 1
+
+
+def merge_event_schedule(
+    existing: list[Any],
+    candidate: list[Any],
+) -> list[Any]:
+    merged = [copy.deepcopy(row) for row in existing]
+    positions: dict[tuple[str, str, str], int] = {}
+    for index, row in enumerate(merged):
+        if not isinstance(row, dict):
+            continue
+        positions[
+            (
+                str(row.get("event_type") or "").lower(),
+                str(row.get("time_utc8") or row.get("time_text") or ""),
+                str(row.get("venue") or "").lower(),
+            )
+        ] = index
+    for row in candidate:
+        if not isinstance(row, dict):
+            if row not in merged:
+                merged.append(copy.deepcopy(row))
+            continue
+        key = (
+            str(row.get("event_type") or "").lower(),
+            str(row.get("time_utc8") or row.get("time_text") or ""),
+            str(row.get("venue") or "").lower(),
+        )
+        if key not in positions:
+            positions[key] = len(merged)
+            merged.append(copy.deepcopy(row))
+            continue
+        position = positions[key]
+        current = merged[position]
+        if not isinstance(current, dict):
+            merged[position] = copy.deepcopy(row)
+            continue
+        current_rank = evidence_rank(
+            current.get("verification_status"),
+            current.get("authority"),
+        )
+        candidate_rank = evidence_rank(
+            row.get("verification_status"),
+            row.get("authority"),
+        )
+        if candidate_rank > current_rank:
+            upgraded = {**current, **copy.deepcopy(row)}
+        else:
+            upgraded = copy.deepcopy(current)
+            for field, value in row.items():
+                if upgraded.get(field) in (None, "", [], {}):
+                    upgraded[field] = copy.deepcopy(value)
+        upgraded["evidence_ids"] = merge_list(
+            list(current.get("evidence_ids") or []),
+            list(row.get("evidence_ids") or []),
+        )
+        merged[position] = upgraded
+    return merged
+
+
+def merge_signal_facts(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    current = copy.deepcopy(existing or {})
+    incoming = copy.deepcopy(candidate or {})
+    current_rank = evidence_rank(current.get("verification_status"))
+    incoming_rank = evidence_rank(incoming.get("verification_status"))
+    if current_rank > incoming_rank:
+        return current
+    conflicts = list(current.get("_signal_conflicts") or [])
+    for key, value in incoming.items():
+        if key in {"verification_status", "_signal_conflicts"}:
+            continue
+        if key not in current or current.get(key) in (None, "", [], {}):
+            current[key] = value
+            continue
+        if current[key] == value:
+            continue
+        if incoming_rank > current_rank:
+            current[key] = value
+            continue
+        if isinstance(current[key], list) and isinstance(value, list):
+            current[key] = merge_list(current[key], value)
+            continue
+        conflict = {
+            "field": key,
+            "existing_value": current[key],
+            "candidate_value": value,
+            "existing_status": (
+                current.get("verification_status") or "unverified"
+            ),
+            "candidate_status": (
+                incoming.get("verification_status") or "unverified"
+            ),
+        }
+        if conflict not in conflicts:
+            conflicts.append(conflict)
+    if conflicts:
+        current["_signal_conflicts"] = conflicts
+    if incoming_rank > current_rank:
+        current["verification_status"] = (
+            incoming.get("verification_status") or "unverified"
+        )
+    return current
+
+
 def merge_by_symbol(items: list[dict[str, Any]], proposal: dict[str, Any]) -> list[dict[str, Any]]:
     symbol = proposal.get("symbol", "").upper()
     for idx, item in enumerate(items):
@@ -712,8 +898,26 @@ def merge_by_symbol(items: list[dict[str, Any]], proposal: dict[str, Any]) -> li
                 "required_checks",
             ]:
                 merged[key] = merge_list(merged.get(key, []), proposal.get(key, []))
+            merged["event_schedule"] = merge_event_schedule(
+                merged.get("event_schedule", []),
+                proposal.get("event_schedule", []),
+            )
             if proposal.get("facts"):
-                merged["facts"] = {**merged.get("facts", {}), **proposal.get("facts", {})}
+                merged["facts"] = merge_signal_facts(
+                    merged.get("facts", {}),
+                    proposal.get("facts", {}),
+                )
+            if proposal.get("prelaunch_research"):
+                from scripts.binance_alpha_catalog_watch import (
+                    merge_prelaunch_research,
+                )
+
+                merged["prelaunch_research"] = (
+                    merge_prelaunch_research(
+                        merged.get("prelaunch_research", {}),
+                        proposal["prelaunch_research"],
+                    )
+                )
             if priority_rank(str(proposal.get("priority", ""))) > priority_rank(str(merged.get("priority", ""))):
                 merged["priority"] = proposal.get("priority")
             for key in ["chain", "name"]:

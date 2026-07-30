@@ -68,6 +68,7 @@ FULL_HOLDER_SOURCE_ENV = "ALPHA_HOLDER_FULL_SOURCE"
 RETENTION_FLOW_START_HOURS = 72
 RETENTION_FLOW_DAYS = 30
 RETENTION_CEX_MIN_SUPPLY_BPS = 5
+BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
 RETENTION_PROJECT_ROLES = {
     "contract_owner",
     "deployer",
@@ -441,6 +442,62 @@ def transfer_logs(chain: str, token: str, from_block: int, to_block: int) -> tup
         return [], [], True
     rows.sort(key=lambda row: (block_number(row), log_index(row)))
     return rows, errors, truncated
+
+
+def bounded_bootstrap_transfer_logs(
+    chain: str,
+    token: str,
+    requested_from_block: int,
+    to_block: int,
+) -> tuple[list[dict[str, Any]], list[str], bool, int, dict[str, Any]]:
+    max_window = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_BOOTSTRAP_MAX_BLOCKS", "2400")),
+    )
+    min_window = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_BOOTSTRAP_MIN_BLOCKS", "16")),
+    )
+    max_attempts = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_BOOTSTRAP_MAX_ATTEMPTS", "7")),
+    )
+    span = min(max_window, max(1, to_block - requested_from_block + 1))
+    from_block = max(requested_from_block, to_block - span + 1)
+    attempts = 0
+    logs: list[dict[str, Any]] = []
+    errors: list[str] = []
+    truncated = True
+    while attempts < max_attempts:
+        attempts += 1
+        logs, errors, truncated = transfer_logs(
+            chain,
+            token,
+            from_block,
+            to_block,
+        )
+        if errors or not truncated:
+            break
+        current_span = to_block - from_block + 1
+        if current_span <= min_window:
+            break
+        next_span = max(min_window, current_span // 2)
+        if next_span >= current_span:
+            break
+        from_block = to_block - next_span + 1
+    return (
+        logs,
+        errors,
+        truncated,
+        from_block,
+        {
+            "active": True,
+            "requested_from_block": requested_from_block,
+            "selected_from_block": from_block,
+            "attempt_count": attempts,
+            "complete_selected_window": not errors and not truncated,
+        },
+    )
 
 
 def apply_transfers(balances: dict[str, int], logs: list[dict[str, Any]]) -> dict[str, int]:
@@ -1335,6 +1392,7 @@ def build_token_snapshot(
     token_state = tokens_state.get(key, {})
     previous_metrics = token_state.get("last_metrics")
     previous_tip = int(token_state.get("latest_block") or 0)
+    holder_baseline_status = str(token_state.get("holder_baseline_status") or "")
     retention_state = (
         token_state.get("retention_flow")
         if isinstance(token_state.get("retention_flow"), dict)
@@ -1350,7 +1408,39 @@ def build_token_snapshot(
         balances = {}
         basis_from_block = from_block
     logs, errors, truncated = transfer_logs(chain, token, from_block, tip)
+    bootstrap = {
+        "active": False,
+        "requested_from_block": from_block,
+        "selected_from_block": from_block,
+        "attempt_count": 0,
+        "complete_selected_window": not errors and not truncated,
+    }
+    if previous_tip <= 0 and truncated:
+        requested_from_block = from_block
+        (
+            logs,
+            errors,
+            truncated,
+            from_block,
+            bootstrap,
+        ) = bounded_bootstrap_transfer_logs(
+            chain,
+            token,
+            requested_from_block,
+            tip,
+        )
+        basis_from_block = from_block
     coverage_failed = bool(errors or truncated)
+    if (
+        holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE
+        or (bootstrap["active"] and not coverage_failed)
+    ):
+        holder_baseline_status = BOUNDED_BOOTSTRAP_UNRELIABLE
+    comparison_metrics = (
+        None
+        if holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE
+        else previous_metrics
+    )
     if not coverage_failed:
         balances = apply_transfers(balances, logs)
     decimals = int(token_state.get("decimals") or token_decimals(chain, token))
@@ -1383,15 +1473,23 @@ def build_token_snapshot(
             "effective_top10_pct": str(effective_pct),
             "raw_top10_infra_pct": str(infra_pct),
         }
-        if previous_metrics:
+        if comparison_metrics:
             metrics.update(
                 {
-                    "raw_top10_delta_pct": str(raw_pct - decimal_from(previous_metrics.get("raw_top10_pct"))),
-                    "effective_top10_delta_pct": str(effective_pct - decimal_from(previous_metrics.get("effective_top10_pct"))),
-                    "raw_top10_infra_delta_pct": str(infra_pct - decimal_from(previous_metrics.get("raw_top10_infra_pct"))),
+                    "raw_top10_delta_pct": str(raw_pct - decimal_from(comparison_metrics.get("raw_top10_pct"))),
+                    "effective_top10_delta_pct": str(effective_pct - decimal_from(comparison_metrics.get("effective_top10_pct"))),
+                    "raw_top10_infra_delta_pct": str(infra_pct - decimal_from(comparison_metrics.get("raw_top10_infra_pct"))),
                 }
             )
-        signal = classify_signal(metrics, previous_metrics)
+        if holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE:
+            signal = {
+                "direction": "baseline_unavailable",
+                "action": "holder基线不可用；仅保留链上流向监控",
+                "reason": "首次请求窗口超出日志上限，当前有界窗口及后续增量不用于筹码集中度比较",
+                "level": "INFO",
+            }
+        else:
+            signal = classify_signal(metrics, comparison_metrics)
     config_item = config_item_for_contract(config, symbol, chain, token)
     retention_flow = build_retention_flow(
         item=config_item,
@@ -1433,6 +1531,8 @@ def build_token_snapshot(
         if errors
         else "log_coverage_truncated"
         if truncated
+        else "bounded_bootstrap_window_after_truncation"
+        if bootstrap["active"]
         else "complete_from_genesis"
         if complete
         else "window_or_incremental_reconstruction"
@@ -1449,6 +1549,8 @@ def build_token_snapshot(
         "log_error_count": len(errors),
         "log_errors": errors[:3],
         "truncated": truncated,
+        "bounded_bootstrap": bootstrap,
+        "holder_baseline_status": holder_baseline_status,
         "complete_holder_reconstruction": complete,
         "coverage_note": coverage_note,
         "decimals": decimals,
@@ -1473,8 +1575,14 @@ def build_token_snapshot(
                 "decimals": decimals,
                 "basis_from_block": basis_from_block,
                 "latest_block": tip,
-                "last_metrics": metrics,
+                "last_metrics": (
+                    {}
+                    if holder_baseline_status
+                    == BOUNDED_BOOTSTRAP_UNRELIABLE
+                    else metrics
+                ),
                 "balances_raw": {addr: str(value) for addr, value in balances.items() if value != 0},
+                "holder_baseline_status": holder_baseline_status,
                 "retention_flow": {
                     "latest_block": int(retention_flow.get("latest_block") or tip),
                 },
@@ -1537,6 +1645,8 @@ def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def holder_signal_key(project: dict[str, Any]) -> str:
+    if project.get("holder_baseline_status") == BOUNDED_BOOTSTRAP_UNRELIABLE:
+        return ""
     signal = project.get("signal", {})
     if signal.get("level") not in {"HIGH", "CRITICAL"}:
         return ""

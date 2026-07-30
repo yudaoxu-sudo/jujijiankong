@@ -247,6 +247,401 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         )
 
 
+    def test_prelaunch_signal_uses_typed_alpha_time_and_forecast_schema(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        token = "0x" + "1" * 40
+        text = f"""
+$GRVT 币安 Alpha 2026年07月30日20:00上线
+Booster 20:10
+空投领取 21:00
+OKX Bybit Coinbase 多CEX交易所 22:00
+BSC: {token}
+总量: 1B
+初始流通: 11.43%
+池子价 0.30 → 0.15
+预计狙击金额: 300K
+预计 bribe amount: 200K
+预计均价: 0.46
+https://x.com/example/status/1
+"""
+
+        parsed = ingest.parse_signal(text)
+        research = parsed["prelaunch_research"]
+        schedule = parsed["event_schedule"]
+
+        self.assertEqual(parsed["times"], ["2026-07-30 20:00"])
+        self.assertEqual(
+            [
+                row["event_type"]
+                for row in schedule
+                if row.get("time_utc8")
+            ],
+            [
+                "alpha_open",
+                "booster",
+                "airdrop_claim",
+                "cex_trade",
+            ],
+        )
+        self.assertEqual(
+            research["opening_forecast"]["buy_quote_usdt"],
+            "300000",
+        )
+        self.assertEqual(
+            research["opening_forecast"]["bribe_quote_usdt"],
+            "200000",
+        )
+        self.assertEqual(
+            research["opening_forecast"]["predicted_fill_avg_usdt"],
+            "0.46",
+        )
+        self.assertNotIn("sniper_amount_quote", parsed["facts"])
+        self.assertNotIn("bribe_amount_quote", parsed["facts"])
+        self.assertEqual(
+            research["pool"]["price_revisions"][0][
+                "current_price_usdt"
+            ],
+            "0.15",
+        )
+        self.assertIn(
+            "价0.3",
+            prelaunch.valuation_text(research),
+        )
+
+    def test_prelaunch_provenance_keeps_sources_and_claim_scopes(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        parsed = ingest.parse_signal(
+            """
+source_evidence_layer: social
+source_authority: context_only
+source_context_only: true
+
+$SCOPE 币安 Alpha 2026-08-01 20:00 上线
+团队: 20%
+池子价: 0.30
+https://x.com/example/status/1
+https://example.org/official
+"""
+        )
+        research = parsed["prelaunch_research"]
+        evidence = research["evidence"]
+        source_refs = {
+            row["source_ref"]
+            for row in evidence
+            if row.get("evidence_role") == "source_reference"
+        }
+        claim_scopes = {
+            row.get("claim_scope")
+            for row in evidence
+            if row.get("evidence_role") == "claim_source"
+        }
+
+        self.assertEqual(
+            source_refs,
+            {
+                "https://x.com/example/status/1",
+                "https://example.org/official",
+            },
+        )
+        self.assertEqual(
+            claim_scopes,
+            {
+                "identity",
+                "timeline",
+                "pool",
+                "supply",
+                "venues",
+                "opening_forecast",
+                "valuation",
+            },
+        )
+        self.assertTrue(
+            all(row.get("context_only") is True for row in evidence)
+        )
+        allocation = research["supply"]["allocations"][0]
+        self.assertTrue(allocation["bucket_id"])
+        self.assertEqual(
+            allocation["aggregation_policy"],
+            "standalone",
+        )
+        timeline = research["timeline"][0]
+        self.assertEqual(timeline["time_utc8"], "2026-08-01 20:00")
+        self.assertEqual(
+            timeline["time_utc"],
+            "2026-08-01T12:00:00+00:00",
+        )
+
+    def test_prelaunch_normalizer_blocks_invalid_provenance(self) -> None:
+        import scripts.alpha_prelaunch_research as research
+
+        normalized = research.normalize_prelaunch_research(
+            {
+                "schema_version": "wrong",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "bad id",
+                        "source_ref": "inline_signal:fixture",
+                    }
+                ],
+                "identity": {
+                    "verification_status": "verified",
+                    "evidence_ids": ["missing"],
+                },
+                "missing_fields": [],
+                "conflicts": [],
+            }
+        )
+
+        self.assertEqual(normalized["research_status"], "blocked")
+        paths = {row["path"] for row in normalized["conflicts"]}
+        self.assertIn("schema_version", paths)
+        self.assertIn("evidence[0].evidence_id", paths)
+        self.assertIn("identity.evidence_ids", paths)
+
+        precision = research.normalize_prelaunch_research(
+            {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "precision-source",
+                        "source_ref": "inline_signal:precision",
+                    }
+                ],
+                "timeline": [
+                    {
+                        "event": "alpha_open",
+                        "time_utc8": "2026-08-01 20:00",
+                        "time_precision": "minute",
+                        "verification_status": "unverified",
+                        "evidence_ids": ["precision-source"],
+                    }
+                ],
+                "missing_fields": [],
+                "conflicts": [],
+            }
+        )
+        self.assertEqual(precision["research_status"], "blocked")
+        self.assertTrue(
+            any(
+                row["path"] == "timeline[0].time_precision"
+                for row in precision["conflicts"]
+            )
+        )
+
+    def test_estimated_prelaunch_values_do_not_become_facts_or_known_time(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        parsed = ingest.parse_signal(
+            """
+$TEST 币安 Alpha 预计 2026-08-01 20:00 上线
+预计总量: 2B
+预计初始流通: 20%
+预计融资: 10M
+预计团队: 20%
+预计池子价: 0.30
+"""
+        )
+
+        self.assertTrue(parsed["event_schedule"])
+        self.assertEqual(
+            parsed["event_schedule"][0]["time_precision"],
+            "estimated",
+        )
+        self.assertEqual(parsed["times"], [])
+        self.assertEqual(
+            parsed["watchlist_proposal"]["known_times"],
+            [],
+        )
+        self.assertNotIn("total_supply", parsed["facts"])
+        self.assertNotIn("initial_float", parsed["facts"])
+        self.assertNotIn("financing", parsed["facts"])
+        self.assertNotIn("allocations", parsed["facts"])
+        self.assertNotIn("pool_price", parsed["prices"])
+        self.assertNotIn(
+            "initial_price_usdt",
+            parsed["prelaunch_research"]["pool"],
+        )
+
+    def test_forecast_vocabulary_and_pool_predictions_stay_non_actual(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        for term in (
+            "预测",
+            "forecast",
+            "forecasted",
+            "forecasting",
+            "predict",
+            "predicted",
+            "predicting",
+            "prediction",
+            "projected",
+            "projecting",
+            "projection",
+            "estimating",
+        ):
+            with self.subTest(term=term):
+                parsed = ingest.parse_signal(
+                    f"""
+$TEST 币安 Alpha {term} 2026-08-01 20:00 上线
+{term} 总量: 2B
+{term} 池子价 0.30 -> 0.15
+{term} 池子区间 0.10-0.20 100K USDT
+"""
+                )
+                research = parsed["prelaunch_research"]
+                self.assertEqual(parsed["times"], [])
+                self.assertEqual(
+                    parsed["watchlist_proposal"]["known_times"],
+                    [],
+                )
+                self.assertNotIn("total_supply", parsed["facts"])
+                self.assertNotIn(
+                    "initial_price_usdt",
+                    research["pool"],
+                )
+                self.assertEqual(research["pool"]["segments"], [])
+                self.assertEqual(
+                    research["opening_forecast"][
+                        "predicted_pool_price_usdt"
+                    ],
+                    "0.15",
+                )
+                self.assertTrue(
+                    research["opening_forecast"][
+                        "predicted_pool_segments"
+                    ]
+                )
+        multi_line = ingest.parse_signal(
+            """
+$TEST 币安 Alpha 预测如下：
+2026-08-01 20:00 上线
+池子价 0.30 -> 0.15
+池子区间 0.10-0.20 100K USDT
+"""
+        )
+        multi_research = multi_line["prelaunch_research"]
+        self.assertEqual(multi_line["times"], [])
+        self.assertEqual(
+            multi_line["watchlist_proposal"]["known_times"],
+            [],
+        )
+        self.assertNotIn(
+            "initial_price_usdt",
+            multi_research["pool"],
+        )
+        self.assertEqual(multi_research["pool"]["segments"], [])
+        self.assertEqual(
+            multi_research["opening_forecast"][
+                "predicted_pool_price_usdt"
+            ],
+            "0.15",
+        )
+        self.assertTrue(
+            multi_research["opening_forecast"][
+                "predicted_pool_segments"
+            ]
+        )
+        spaced_forecast = ingest.parse_signal(
+            """
+$TEST 币安 Alpha 预测如下：
+
+2026-08-01 20:00 上线
+
+池子价 0.30 -> 0.15
+
+池子区间 0.10-0.20 100K USDT
+
+实际如下：
+池子价 0.40 -> 0.20
+"""
+        )
+        spaced_research = spaced_forecast["prelaunch_research"]
+        self.assertEqual(spaced_forecast["times"], [])
+        self.assertEqual(
+            spaced_research["opening_forecast"][
+                "predicted_pool_price_usdt"
+            ],
+            "0.15",
+        )
+        self.assertEqual(
+            spaced_research["pool"]["initial_price_usdt"],
+            "0.2",
+        )
+        self.assertEqual(
+            spaced_research["pool"]["segments"],
+            [],
+        )
+
+    def test_clock_only_schedule_uses_nearest_preceding_date(self) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        parsed = ingest.parse_signal(
+            """
+$TEST 币安 Alpha 2026-08-01 20:00 上线
+Booster 20:10
+2026-08-02 21:00 空投领取
+同日 22:00 多CEX交易所
+"""
+        )
+        schedule = parsed["event_schedule"]
+        by_event = {
+            row["event_type"]: row["time_utc8"]
+            for row in schedule
+            if row.get("time_utc8")
+        }
+
+        self.assertEqual(by_event["alpha_open"], "2026-08-01 20:00")
+        self.assertEqual(by_event["booster"], "2026-08-01 20:10")
+        self.assertEqual(by_event["airdrop_claim"], "2026-08-02 21:00")
+        self.assertEqual(by_event["cex_trade"], "2026-08-02 22:00")
+
+    def test_social_facts_cannot_overwrite_verified_existing_facts(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        items = [
+            {
+                "symbol": "SAFE",
+                "facts": {
+                    "total_supply": "1000000000",
+                    "verification_status": "verified",
+                },
+            }
+        ]
+        proposal = {
+            "symbol": "SAFE",
+            "facts": {
+                "total_supply": "2000000000",
+                "verification_status": "unverified",
+            },
+        }
+
+        merged = ingest.merge_by_symbol(items, proposal)[0]
+
+        self.assertEqual(
+            merged["facts"]["total_supply"],
+            "1000000000",
+        )
+        self.assertEqual(
+            merged["facts"]["verification_status"],
+            "verified",
+        )
+
+
 class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
     def test_verified_pool_replaces_same_window_catalog_placeholder(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -341,6 +736,68 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             "single_signal_artifact",
         )
         self.assertEqual(projects[0]["symbol"], "SAFE")
+
+    def test_signal_candidate_preserves_prelaunch_research_fields(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        parsed = {
+            "generated_at": "2026-07-30T01:00:00+00:00",
+            "symbol": "RESEARCH",
+            "title": "Binance Alpha RESEARCH opening",
+            "priority": "P0_DEEP_REVIEW",
+            "times": ["2026-07-30 20:00"],
+            "txs": ["0x" + "1" * 64],
+            "pool_ids": ["0x" + "2" * 64],
+            "watchlist_proposal": {
+                "contracts": [
+                    {
+                        "chain": "bsc",
+                        "address": "0x" + "3" * 40,
+                    }
+                ]
+            },
+            "chain_enrichment": [{"status": "ok"}],
+            "source_policy": {
+                "authority": "social_discovery",
+                "context_only": False,
+            },
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "partial",
+                "evidence": [
+                    {
+                        "evidence_id": "social-1",
+                        "evidence_kind": "social",
+                        "verification_status": "unverified",
+                    }
+                ],
+                "missing_fields": ["pool.segments"],
+            },
+            "market_context": {"premarket_reference_price_usdt": "0.20"},
+            "event_distributions": [
+                {"name": "Binance Alpha", "share_of_total": "1%"}
+            ],
+        }
+
+        project = catalog.signal_candidate_project(
+            parsed,
+            artifact_name="research.json",
+            updated_at="2026-07-30T01:00:00+00:00",
+        )
+
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(
+            project["prelaunch_research"]["schema_version"],
+            "alpha_prelaunch_research.v1",
+        )
+        self.assertEqual(
+            project["market_context"]["premarket_reference_price_usdt"],
+            "0.20",
+        )
+        self.assertEqual(
+            project["event_distributions"][0]["name"],
+            "Binance Alpha",
+        )
 
     def test_conflicting_signal_opening_times_fail_closed(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -484,6 +941,35 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
                     "times": ["2026-07-30 20:00"],
                     "pool_ids": [pool_id],
                     "facts": {"venues": ["Binance Alpha"]},
+                    "prelaunch_research": {
+                        "schema_version": "alpha_prelaunch_research.v1",
+                        "research_status": "partial",
+                        "evidence": [
+                            {
+                                "evidence_id": "social-1",
+                                "evidence_kind": "social",
+                                "verification_status": "unverified",
+                            }
+                        ],
+                        "timeline": [
+                            {
+                                "event": "listing",
+                                "time_utc": "2026-07-30T12:00:00+00:00",
+                                "verification_status": "unverified",
+                                "evidence_ids": ["social-1"],
+                            }
+                        ],
+                        "missing_fields": ["pool.segments"],
+                    },
+                    "market_context": {
+                        "premarket_reference_price_usdt": "0.20"
+                    },
+                    "event_distributions": [
+                        {
+                            "name": "Binance Alpha",
+                            "share_of_total": "1%",
+                        }
+                    ],
                     "sources": [
                         {
                             "authority": "social_discovery",
@@ -562,7 +1048,819 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             item["facts"]["lifecycle_first_seen_at"],
             "2026-07-29T15:15:02+00:00",
         )
+        self.assertEqual(
+            item["prelaunch_research"]["schema_version"],
+            "alpha_prelaunch_research.v1",
+        )
+        self.assertEqual(
+            item["market_context"]["premarket_reference_price_usdt"],
+            "0.20",
+        )
+        self.assertEqual(
+            item["event_distributions"][0]["share_of_total"],
+            "1%",
+        )
         self.assertEqual(item["project_lookback_blocks"], 50000)
+
+    def test_lower_grade_research_conflict_keeps_verified_value_and_blocks(
+        self,
+    ) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        existing = {
+            "symbol": "SAFE",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "1" * 40}
+            ],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "ready",
+                "pool": {
+                    "verification_status": "verified",
+                    "initial_price_usdt": "0.10",
+                    "evidence_ids": ["onchain-1"],
+                },
+                "missing_fields": [],
+                "conflicts": [],
+            },
+            "market_context": {
+                "premarket_reference_price_usdt": "0.20"
+            },
+            "event_distributions": [
+                {"name": "Alpha", "share_of_total": "1%"}
+            ],
+        }
+        candidate = {
+            "symbol": "SAFE",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "1" * 40}
+            ],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "partial",
+                "pool": {
+                    "verification_status": "unverified",
+                    "initial_price_usdt": "0.30",
+                    "evidence_ids": ["social-1"],
+                },
+                "missing_fields": ["supply.allocations"],
+                "conflicts": [],
+            },
+            "market_context": {"bridge_open_reported": True},
+            "event_distributions": [
+                {"name": "Booster", "share_of_total": "0.2%"}
+            ],
+        }
+
+        merged = catalog.merge_item(existing, candidate)
+        research = merged["prelaunch_research"]
+
+        self.assertEqual(research["pool"]["initial_price_usdt"], "0.10")
+        self.assertEqual(
+            research["pool"]["verification_status"],
+            "conflicted",
+        )
+        self.assertEqual(research["research_status"], "blocked")
+        self.assertTrue(
+            any(
+                row.get("path") == "pool.initial_price_usdt"
+                for row in research["conflicts"]
+            )
+        )
+        self.assertEqual(
+            merged["market_context"]["premarket_reference_price_usdt"],
+            "0.20",
+        )
+        self.assertTrue(merged["market_context"]["bridge_open_reported"])
+        self.assertEqual(
+            {row["name"] for row in merged["event_distributions"]},
+            {"Alpha", "Booster"},
+        )
+
+    def test_research_merge_keeps_same_chain_venues_distinct(self) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        research = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "partial",
+            "supply": {
+                "cross_chain": [
+                    {
+                        "chain": "eth",
+                        "venue": "OKX",
+                        "inventory_percent": "0.8",
+                    },
+                    {
+                        "chain": "eth",
+                        "venue": "Bybit",
+                        "inventory_percent": "0.25",
+                    },
+                ]
+            },
+            "missing_fields": ["cross_chain.receipts"],
+            "conflicts": [],
+        }
+
+        merged = catalog.merge_prelaunch_research(
+            research,
+            research,
+        )
+        rows = merged["supply"]["cross_chain"]
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row["venue"] for row in rows},
+            {"OKX", "Bybit"},
+        )
+
+    def test_research_status_never_ready_with_missing_or_conflicts(
+        self,
+    ) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        ready = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "ready",
+            "evidence": [
+                {
+                    "evidence_id": "fixture-ready",
+                    "source_ref": "inline_signal:ready",
+                }
+            ],
+            "missing_fields": [],
+            "conflicts": [],
+        }
+        partial = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "partial",
+            "evidence": [
+                {
+                    "evidence_id": "fixture-ready",
+                    "source_ref": "inline_signal:ready",
+                }
+            ],
+            "missing_fields": ["pool.position_ids"],
+            "conflicts": [],
+        }
+        conflicted = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "partial",
+            "evidence": [
+                {
+                    "evidence_id": "fixture-conflict",
+                    "source_ref": "inline_signal:conflict",
+                }
+            ],
+            "missing_fields": [],
+            "conflicts": [
+                {
+                    "path": "supply.total_supply",
+                    "detail": "conflict",
+                }
+            ],
+        }
+
+        merged = catalog.merge_prelaunch_research(ready, partial)
+        self.assertEqual(merged["research_status"], "partial")
+        self.assertTrue(merged["missing_fields"])
+        normalized = catalog.merge_prelaunch_research({}, conflicted)
+        self.assertEqual(normalized["research_status"], "blocked")
+
+    def test_catalog_consumer_blocks_invalid_nested_provenance(self) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        normalized = catalog.merge_prelaunch_research(
+            {},
+            {
+                "schema_version": "wrong",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "fixture-source",
+                        "source_ref": "",
+                    }
+                ],
+                "pool": {
+                    "verification_status": "conflicted",
+                    "evidence_ids": ["missing"],
+                },
+                "timeline": 1,
+                "sniper_curve": 2,
+                "valuation": 3,
+                "missing_fields": [],
+                "conflicts": [],
+            },
+        )
+
+        self.assertEqual(normalized["research_status"], "blocked")
+        paths = {row["path"] for row in normalized["conflicts"]}
+        self.assertIn("schema_version", paths)
+        self.assertIn("evidence[0].source_ref", paths)
+        self.assertIn("pool", paths)
+        self.assertIn("pool.evidence_ids", paths)
+        self.assertIn("timeline", paths)
+        self.assertIn("sniper_curve", paths)
+        self.assertIn("valuation", paths)
+
+        empty_shell = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "ready",
+            "evidence": [
+                {
+                    "evidence_id": "shell-source",
+                    "source_ref": "inline_signal:shell",
+                }
+            ],
+            "timeline": [{}],
+            "pool": {"segments": [{}]},
+            "supply": {
+                "allocations": [{}],
+                "cross_chain": [{}],
+            },
+            "venues": {"cex": [{}]},
+            "actors": {"market_makers": [{}]},
+            "sniper_curve": [{}],
+            "valuation": {"anchors": [{}]},
+            "sell_pressure_scenarios": [{}],
+            "missing_fields": [],
+            "conflicts": [],
+        }
+        shell_catalog = catalog.merge_prelaunch_research(
+            {},
+            empty_shell,
+        )
+        self.assertEqual(
+            shell_catalog["research_status"],
+            "blocked",
+        )
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        shell_watch = prelaunch.prepare_prelaunch_research(
+            {"prelaunch_research": empty_shell}
+        )
+        self.assertEqual(
+            shell_watch["research_status"],
+            "blocked",
+        )
+        shell_paths = {
+            row["path"]
+            for row in shell_watch["conflicts"]
+        }
+        for required_path in (
+            "timeline[0]",
+            "pool.segments[0]",
+            "supply.allocations[0]",
+            "supply.cross_chain[0]",
+            "venues.cex[0]",
+            "actors.market_makers[0]",
+            "sniper_curve[0]",
+            "valuation.anchors[0]",
+            "sell_pressure_scenarios[0]",
+        ):
+            self.assertIn(required_path, shell_paths)
+
+    def test_static_launch_time_conflict_keeps_only_official_anchor(
+        self,
+    ) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        contract = "0x" + "4" * 40
+        static = {
+            "items": [
+                {
+                    "symbol": "GRVT",
+                    "name": "GRVT",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "contracts": [
+                        {"chain": "bsc", "address": contract}
+                    ],
+                    "known_times": [
+                        {
+                            "time": "2026-07-30 20:00",
+                            "reason": "typed_alpha_open_social_candidate",
+                        }
+                    ],
+                    "event_schedule": [
+                        {
+                            "event_type": "alpha_open",
+                            "time_utc8": "2026-07-30 20:00",
+                        },
+                        {
+                            "event_type": "booster",
+                            "time_utc8": "2026-07-30 20:10",
+                        },
+                    ],
+                    "pool_ids": [
+                        {
+                            "chain": "bsc",
+                            "pool_id": "",
+                            "start_time_utc8": "2026-07-30 20:00",
+                        },
+                        {
+                            "chain": "bsc",
+                            "pool_id": "0x" + "a" * 64,
+                            "start_time_utc8": "2026-07-30 18:00",
+                            "source": "receipt_verified",
+                        }
+                    ],
+                    "facts": {
+                        "listing_time_utc": "2026-07-30T12:00:00+00:00",
+                        "listing_time_utc8": "2026-07-30 20:00",
+                    },
+                    "prelaunch_research": {
+                        "schema_version": "alpha_prelaunch_research.v1",
+                        "research_status": "ready",
+                        "evidence": [
+                            {
+                                "evidence_id": "social-launch",
+                                "source_ref": "https://x.com/example/status/1",
+                            }
+                        ],
+                        "timeline": [
+                            {
+                                "event": "alpha_open",
+                                "time_utc8": "2026-07-30 20:00",
+                                "verification_status": "unverified",
+                                "evidence_ids": ["social-launch"],
+                            }
+                        ],
+                        "missing_fields": [],
+                        "conflicts": [],
+                    },
+                }
+            ]
+        }
+        official = datetime(
+            2026,
+            7,
+            30,
+            13,
+            0,
+            tzinfo=timezone.utc,
+        )
+        response = {
+            "code": "000000",
+            "success": True,
+            "data": [
+                {
+                    "alphaId": "ALPHA_GRVT",
+                    "symbol": "GRVT",
+                    "name": "GRVT",
+                    "chainId": "56",
+                    "contractAddress": contract,
+                    "listingTime": int(official.timestamp() * 1000),
+                }
+            ],
+        }
+
+        payload, _ = catalog.build_runtime_watchlist(
+            static,
+            response,
+            current=datetime(
+                2026,
+                7,
+                30,
+                4,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            lookback_hours=168,
+            lookahead_hours=48,
+        )
+
+        item = payload["items"][0]
+        self.assertEqual(payload["static_time_conflict_count"], 1)
+        self.assertEqual(
+            [
+                row["time"]
+                for row in item["known_times"]
+                if isinstance(row, dict)
+            ],
+            ["2026-07-30 21:00"],
+        )
+        self.assertEqual(
+            [
+                row["time_utc8"]
+                for row in item["event_schedule"]
+                if row.get("event_type") == "alpha_open"
+            ],
+            [],
+        )
+        self.assertEqual(
+            {
+                (
+                    row.get("pool_id"),
+                    row.get("start_time_utc8"),
+                )
+                for row in item["pool_ids"]
+            },
+            {
+                ("0x" + "a" * 64, "2026-07-30 18:00"),
+                ("", "2026-07-30 21:00"),
+            },
+        )
+        self.assertEqual(
+            item["facts"]["listing_time_utc8"],
+            "2026-07-30 21:00",
+        )
+        self.assertEqual(
+            item["prelaunch_research"]["research_status"],
+            "blocked",
+        )
+        self.assertEqual(
+            item["prelaunch_research"]["timeline"][0][
+                "runtime_anchor_status"
+            ],
+            "superseded_by_official_catalog",
+        )
+
+    def test_fact_only_static_time_conflict_and_minute_precision(
+        self,
+    ) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        contract = "0x" + "6" * 40
+        existing = {
+            "symbol": "CLOCK",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "facts": {
+                "listing_time_utc": "2026-07-30T12:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 20:00",
+            },
+        }
+        candidate = {
+            "symbol": "CLOCK",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "known_times": [
+                {
+                    "time": "2026-07-30 21:00",
+                    "reason": "binance_alpha_listing_time",
+                }
+            ],
+            "facts": {
+                "source": "binance_alpha_public_catalog",
+                "listing_time_utc": "2026-07-30T13:00:30+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+
+        sanitized, conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                existing,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(conflict)
+        merged = catalog.merge_item(sanitized, candidate)
+        self.assertEqual(
+            merged["facts"]["listing_time_utc8"],
+            "2026-07-30 21:00",
+        )
+        same_minute = {
+            **existing,
+            "facts": {
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+        _, false_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                same_minute,
+                candidate,
+            )
+        )
+        self.assertIsNone(false_conflict)
+
+        utc8_wrong = {
+            **existing,
+            "facts": {
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 20:00",
+            },
+        }
+        sanitized_wrong, utc8_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                utc8_wrong,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(utc8_conflict)
+        merged_wrong = catalog.merge_item(
+            sanitized_wrong,
+            candidate,
+        )
+        self.assertEqual(
+            merged_wrong["facts"]["listing_time_utc8"],
+            "2026-07-30 21:00",
+        )
+
+        invalid_utc = {
+            **existing,
+            "facts": {
+                "listing_time_utc": "invalid",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+        sanitized_invalid, invalid_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                invalid_utc,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(invalid_conflict)
+        merged_invalid = catalog.merge_item(
+            sanitized_invalid,
+            candidate,
+        )
+        self.assertEqual(
+            merged_invalid["facts"]["listing_time_utc"],
+            "2026-07-30T13:00:30+00:00",
+        )
+        self.assertIsNotNone(catalog.item_listing_time(merged_invalid))
+
+        event_inconsistent = {
+            "symbol": "CLOCK",
+            "event_schedule": [
+                {
+                    "event_type": "alpha_open",
+                    "venue": "Binance Alpha",
+                    "time_utc": "2026-07-30T13:00:00+00:00",
+                    "time_utc8": "2026-07-30 20:00",
+                    "time_precision": "exact",
+                }
+            ],
+        }
+        sanitized_event, event_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                event_inconsistent,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(event_conflict)
+        self.assertEqual(sanitized_event["event_schedule"], [])
+
+        text_inconsistent = {
+            "symbol": "CLOCK",
+            "event_schedule": [
+                {
+                    "event_type": "alpha_open",
+                    "venue": "Binance Alpha",
+                    "time_utc": "2026-07-30T13:00:00+00:00",
+                    "time_utc8": "2026-07-30 21:00",
+                    "time_text": "20:00",
+                    "time_precision": "exact",
+                }
+            ],
+        }
+        sanitized_text, text_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                text_inconsistent,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(text_conflict)
+        self.assertEqual(sanitized_text["event_schedule"], [])
+
+        invalid_precision = {
+            "symbol": "CLOCK",
+            "event_schedule": [
+                {
+                    "event_type": "alpha_open",
+                    "venue": "Binance Alpha",
+                    "time_utc": "2026-07-30T13:00:00+00:00",
+                    "time_utc8": "2026-07-30 21:00",
+                    "time_text": "21:00",
+                    "time_precision": "minute",
+                }
+            ],
+        }
+        sanitized_precision, precision_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                invalid_precision,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(precision_conflict)
+        self.assertEqual(
+            sanitized_precision["event_schedule"],
+            [],
+        )
+
+        research_only = {
+            "symbol": "CLOCK",
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "research-clock",
+                        "source_ref": "https://x.com/example/status/clock",
+                    }
+                ],
+                "timeline": [
+                    {
+                        "event": "alpha_open",
+                        "venue": "Binance Alpha",
+                        "time_utc8": "2026-07-30 20:00",
+                        "time_precision": "exact",
+                        "verification_status": "unverified",
+                        "evidence_ids": ["research-clock"],
+                    }
+                ],
+                "missing_fields": [],
+                "conflicts": [],
+            },
+        }
+        sanitized_research, research_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                research_only,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(research_conflict)
+        self.assertEqual(
+            sanitized_research["prelaunch_research"][
+                "research_status"
+            ],
+            "blocked",
+        )
+        self.assertEqual(
+            sanitized_research["prelaunch_research"]["timeline"][0][
+                "runtime_anchor_status"
+            ],
+            "superseded_by_official_catalog",
+        )
+
+        invalid_known = {
+            "symbol": "CLOCK",
+            "known_times": [
+                {
+                    "time": "invalid",
+                    "reason": "binance_alpha_listing_time",
+                }
+            ],
+        }
+        sanitized_known, known_conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                invalid_known,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(known_conflict)
+        self.assertEqual(sanitized_known["known_times"], [])
+
+    def test_non_alpha_cex_listing_is_not_an_alpha_time_conflict(
+        self,
+    ) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        existing = {
+            "symbol": "VENUE",
+            "known_times": [
+                {
+                    "time": "2026-07-30 22:00",
+                    "reason": "coinbase_listing",
+                }
+            ],
+            "event_schedule": [
+                {
+                    "event_type": "listing",
+                    "venue": "Coinbase",
+                    "time_utc8": "2026-07-30 22:00",
+                }
+            ],
+        }
+        candidate = {
+            "symbol": "VENUE",
+            "facts": {
+                "source": "binance_alpha_public_catalog",
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+
+        sanitized, conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                existing,
+                candidate,
+            )
+        )
+
+        self.assertIsNone(conflict)
+        self.assertEqual(sanitized, existing)
+
+        self.assertEqual(
+            catalog.parse_iso_time(
+                "2026-07-30T13:00:00"
+            ).isoformat(),
+            "2026-07-30T13:00:00+00:00",
+        )
+
+    def test_chinese_alpha_listing_is_canonicalized(self) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        existing = {
+            "symbol": "CNALPHA",
+            "known_times": [
+                {
+                    "time": "2026-07-30 20:00",
+                    "reason": "币安 Alpha 上线",
+                }
+            ],
+            "event_schedule": [
+                {
+                    "event_type": "listing",
+                    "venue": "币安 Alpha",
+                    "time_utc8": "2026-07-30 20:00",
+                    "time_precision": "exact",
+                }
+            ],
+        }
+        candidate = {
+            "symbol": "CNALPHA",
+            "facts": {
+                "source": "binance_alpha_public_catalog",
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+
+        sanitized, conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                existing,
+                candidate,
+            )
+        )
+
+        self.assertIsNotNone(conflict)
+        self.assertEqual(sanitized["known_times"], [])
+        self.assertEqual(sanitized["event_schedule"], [])
+
+    def test_signal_ingest_time_is_superseded_by_official_catalog(
+        self,
+    ) -> None:
+        import scripts.ingest_alpha_signal as ingest
+
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        contract = "0x" + "7" * 40
+        parsed = ingest.parse_signal(
+            f"""
+$LIVE 币安 Alpha 2026-07-30 20:00 上线
+BSC: {contract}
+"""
+        )
+        existing = parsed["watchlist_proposal"]
+        self.assertEqual(
+            existing["known_times"][0]["reason"],
+            "signal_ingest",
+        )
+        candidate = {
+            "symbol": "LIVE",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "known_times": [
+                {
+                    "time": "2026-07-30 21:00",
+                    "reason": "binance_alpha_listing_time",
+                }
+            ],
+            "facts": {
+                "source": "binance_alpha_public_catalog",
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+
+        sanitized, conflict = (
+            catalog.sanitize_static_launch_time_conflict(
+                existing,
+                candidate,
+            )
+        )
+        self.assertIsNotNone(conflict)
+        merged = catalog.merge_item(sanitized, candidate)
+        self.assertEqual(
+            [row["time"] for row in merged["known_times"]],
+            ["2026-07-30 21:00"],
+        )
+        self.assertFalse(
+            any(
+                row.get("event_type") == "alpha_open"
+                and row.get("time_utc8") == "2026-07-30 20:00"
+                for row in merged.get("event_schedule", [])
+            )
+        )
 
     def test_unverified_or_context_only_registry_candidate_stays_pending(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -985,7 +2283,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(merged["contracts"]), 1)
         self.assertEqual(merged["contracts"][0]["confidence"], "curated")
-        self.assertEqual(catalog.DEFAULT_MAX_SELECTED, 8)
+        self.assertEqual(catalog.DEFAULT_MAX_SELECTED, 64)
 
     def test_catalog_retains_a_previous_cohort_for_thirty_days(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -1170,21 +2468,77 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(context["conclusion"], "target contract")
 
     def test_server_cycle_discovers_before_downstream(self) -> None:
-        text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
+        fast = (ROOT / "scripts" / "server_fast_lane.sh").read_text(
+            encoding="utf-8"
+        )
+        heavy = (ROOT / "scripts" / "server_run_once.sh").read_text(
+            encoding="utf-8"
+        )
 
-        catalog_index = text.index("binance_alpha_catalog_watch.py")
-        collector_index = text.index("telegram_signal_collector.py")
-        user_collector_index = text.index("telegram_user_signal_collector.py")
-        project_index = text.index("alpha_project_watch.py")
-        opening_index = text.index("alpha_opening_sprint.sh")
+        catalog_index = fast.index("binance_alpha_catalog_watch.py")
+        collector_index = fast.index("telegram_signal_collector.py")
+        user_collector_index = fast.index(
+            "telegram_user_signal_collector.py"
+        )
+        project_index = heavy.index("alpha_project_watch.py")
+        opening_index = heavy.index("alpha_opening_sprint.sh")
         self.assertLess(collector_index, catalog_index)
         self.assertLess(user_collector_index, catalog_index)
-        self.assertLess(catalog_index, project_index)
         self.assertLess(project_index, opening_index)
-        self.assertIn("ALPHA_WATCHLIST_PATH", text)
-        self.assertIn("SIGNAL_RUNTIME_CONTEXT=0", text)
-        self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", text)
-        self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', text)
+        self.assertIn("ALPHA_WATCHLIST_PATH", fast)
+        self.assertIn("ALPHA_WATCHLIST_PATH", heavy)
+        self.assertIn("SIGNAL_RUNTIME_CONTEXT=0", fast)
+        self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", fast)
+        self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", heavy)
+        self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', fast)
+        self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', heavy)
+        self.assertIn(
+            "flock is required for overlap protection",
+            fast,
+        )
+        self.assertNotIn("continuing without overlap lock", fast)
+        self.assertIn("collector_pid=$!", fast)
+        self.assertIn("user_collector_pid=$!", fast)
+        self.assertIn("prediction_pid=$!", fast)
+        self.assertIn("prelaunch_pid=$!", fast)
+        self.assertIn("perp_pid=$!", fast)
+        self.assertLess(
+            fast.index('wait "$perp_pid"'),
+            fast.index("alpha_price_momentum_watch.py"),
+        )
+
+    def test_fast_lane_health_returns_nonzero_when_unhealthy(self) -> None:
+        import scripts.fast_lane_health as health
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "health.md"
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["fast_lane_health.py"],
+                ),
+                mock.patch.object(
+                    health,
+                    "read_failures",
+                    return_value=[
+                        {
+                            "kind": "step_failed",
+                            "command": "collector",
+                        }
+                    ],
+                ),
+                mock.patch.object(
+                    health,
+                    "output_checks",
+                    return_value=([], []),
+                ),
+                mock.patch.object(health, "REPORT_PATH", report_path),
+                mock.patch.object(health, "atomic_write_json"),
+            ):
+                status = health.main()
+
+        self.assertEqual(status, 1)
 
     def test_server_cycle_preserves_external_disable_telegram(self) -> None:
         text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
@@ -1213,15 +2567,30 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
 
     def test_server_cycle_runs_fast_signals_before_opening_trace(self) -> None:
-        text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
+        fast = (ROOT / "scripts" / "server_fast_lane.sh").read_text(
+            encoding="utf-8"
+        )
+        heavy = (ROOT / "scripts" / "server_run_once.sh").read_text(
+            encoding="utf-8"
+        )
 
-        intraday_index = text.index("alpha_intraday_flow_watch.py")
-        price_index = text.index("alpha_price_momentum_watch.py")
-        flush_index = text.index("telegram_signal_collector.py --flush-pending")
-        opening_index = text.index("alpha_opening_sprint.sh")
+        intraday_index = heavy.index("alpha_intraday_flow_watch.py")
+        price_index = fast.index("alpha_price_momentum_watch.py")
+        flush_index = fast.index(
+            "telegram_signal_collector.py --flush-pending"
+        )
+        opening_index = heavy.index("alpha_opening_sprint.sh")
         self.assertLess(intraday_index, opening_index)
-        self.assertLess(price_index, opening_index)
-        self.assertLess(flush_index, opening_index)
+        self.assertLess(price_index, flush_index)
+        self.assertNotIn("alpha_price_momentum_watch.py", heavy)
+        post_opening_refresh = heavy.index(
+            "ALPHA_INTRADAY_REQUIRED_ONLY=1"
+        )
+        self.assertGreater(post_opening_refresh, opening_index)
+        self.assertIn(
+            "ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS",
+            heavy,
+        )
 
     def test_intraday_defaults_keep_the_fast_window_coverage_budget(self) -> None:
         text = (ROOT / "scripts" / "alpha_intraday_flow_watch.py").read_text(
@@ -1270,6 +2639,502 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         })
         self.assertEqual(unique[0]["start_time_utc8"], "2026-07-28 09:00")
 
+    def test_opening_forecast_and_receipt_actual_stay_separate(
+        self,
+    ) -> None:
+        from decimal import Decimal
+        from scripts.alpha_opening_block_watch import (
+            opening_forecast_comparison,
+        )
+
+        comparison = opening_forecast_comparison(
+            {
+                "opening_forecast": {
+                    "buy_quote_usdt": "300000",
+                    "bribe_quote_usdt": "200000",
+                    "predicted_fill_avg_usdt": "0.46",
+                }
+            },
+            actual_spent=Decimal("280000"),
+            weighted_avg=Decimal("0.44"),
+            max_bribe_native=Decimal("12"),
+            estimated_spent_used=False,
+        )
+
+        self.assertEqual(
+            comparison["forecast_buy_quote_usdt"],
+            "300000",
+        )
+        self.assertEqual(
+            comparison["actual_buy_quote_usdt"],
+            "280000",
+        )
+        self.assertEqual(
+            comparison["bribe_comparison_status"],
+            "different_units_not_compared",
+        )
+        self.assertEqual(
+            comparison["verification_status"],
+            "receipt_actual",
+        )
+
+    def test_prelaunch_research_renders_all_required_sections(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        item = {
+            "symbol": "RICH",
+            "name": "Rich Research",
+            "priority": "P0_DEEP_REVIEW",
+            "chain": "bsc",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "1" * 40}
+            ],
+            "known_times": [{"time": "2026-07-30 20:00"}],
+            "required_checks": ["opening_block"],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "official-1",
+                        "evidence_kind": "official",
+                        "source_ref": "https://example.com/official",
+                        "verification_status": "verified",
+                    },
+                    {
+                        "evidence_id": "social-1",
+                        "evidence_kind": "social",
+                        "source_ref": "https://x.com/example/status/1",
+                        "verification_status": "unverified",
+                    },
+                ],
+                "timeline": [
+                    {
+                        "event": "listing",
+                        "time_utc": "2026-07-30T12:00:00+00:00",
+                        "verification_status": "verified",
+                        "evidence_ids": ["official-1"],
+                    },
+                    {
+                        "event": "bridge_open",
+                        "time_utc": "2026-07-30T10:00:00+00:00",
+                        "verification_status": "unverified",
+                        "evidence_ids": ["social-1"],
+                    },
+                    {
+                        "event": "airdrop_claim",
+                        "time_utc": "2026-07-30T13:00:00+00:00",
+                        "verification_status": "unverified",
+                        "evidence_ids": ["social-1"],
+                    },
+                ],
+                "pool": {
+                    "pair": "RICH/USDT",
+                    "initial_price_usdt": "0.10",
+                    "verification_status": "verified",
+                    "evidence_ids": ["official-1"],
+                    "segments": [
+                        {
+                            "kind": "sell_zone",
+                            "min_price_usdt": "0.10",
+                            "max_price_usdt": "0.30",
+                            "token_amount": "1000000",
+                            "quote_amount_usdt": "0",
+                            "verification_status": "verified",
+                            "evidence_ids": ["official-1"],
+                        }
+                    ],
+                },
+                "supply": {
+                    "total_supply": "1000000000",
+                    "initial_float": "100000000",
+                    "allocations": [
+                        {
+                            "role": "airdrop",
+                            "percent": "1",
+                            "verification_status": "unverified",
+                            "evidence_ids": ["social-1"],
+                        }
+                    ],
+                    "cross_chain": [
+                        {
+                            "chain": "ethereum",
+                            "inventory": "200000000",
+                            "bridge_state": "open",
+                            "verification_status": "unverified",
+                            "evidence_ids": ["social-1"],
+                        }
+                    ],
+                },
+                "venues": {
+                    "cex": [
+                        {
+                            "venue": "Binance",
+                            "market": "alpha",
+                            "deposit_state": "open",
+                            "verification_status": "verified",
+                            "evidence_ids": ["official-1"],
+                        }
+                    ]
+                },
+                "actors": {
+                    "market_makers": [
+                        {
+                            "address": "0x" + "2" * 40,
+                            "role": "candidate",
+                            "verification_status": "unverified",
+                            "evidence_ids": ["social-1"],
+                        }
+                    ]
+                },
+                "opening_forecast": {
+                    "buy_quote_usdt": "300000",
+                    "bribe_quote_usdt": "200000",
+                    "predicted_fill_avg_usdt": "0.46",
+                    "verification_status": "unverified",
+                    "evidence_ids": ["social-1"],
+                },
+                "opening_actual": {
+                    "buy_quote_usdt": "280000",
+                    "bribe_quote_usdt": "180000",
+                    "weighted_avg_price_usdt": "0.44",
+                    "confirmed_sell_quote_usdt": "100000",
+                    "verification_status": "verified",
+                    "evidence_ids": ["official-1"],
+                },
+                "sniper_curve": [
+                    {
+                        "buy_pressure_usdt": "100000",
+                        "token_out": "500000",
+                        "avg_price_usdt": "0.20",
+                        "end_price_usdt": "0.24",
+                        "verification_status": "verified",
+                        "evidence_ids": ["official-1"],
+                    }
+                ],
+                "valuation": {
+                    "anchors": [
+                        {
+                            "kind": "premarket",
+                            "price_usdt": "0.18",
+                            "fdv_usd": "180000000",
+                            "verification_status": "unverified",
+                            "evidence_ids": ["social-1"],
+                        }
+                    ],
+                    "prediction_markets": [
+                        {
+                            "source": "predict_fun",
+                            "target_fdv_usd": "200000000",
+                            "probability": "0.60",
+                            "liquidity_usd": "10000",
+                            "verification_status": "unverified",
+                            "evidence_ids": ["social-1"],
+                        }
+                    ],
+                },
+                "sell_pressure_scenarios": [
+                    {
+                        "scenario": "stress",
+                        "expected_effect": "空投与跨链库存同时释放",
+                        "action": "Observe",
+                        "verification_status": "unverified",
+                        "evidence_ids": ["social-1"],
+                    }
+                ],
+                "decision": {
+                    "action": "Observe",
+                    "summary": "等待链上承接确认",
+                },
+                "missing_fields": [],
+                "conflicts": [],
+            },
+        }
+
+        events = prelaunch.build_events(
+            {"items": [item]},
+            datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["research_status"], "ready")
+        text = prelaunch.telegram_text(events)
+        for label in (
+            "时间轴",
+            "池子",
+            "筹码/跨链",
+            "CEX/MM",
+            "狙击预测",
+            "开盘实绩",
+            "狙击曲线",
+            "估值",
+            "卖压情景",
+            "证据",
+            "冲突",
+        ):
+            self.assertIn(label, text)
+        self.assertIn("[V]", text)
+        self.assertIn("[U]", text)
+        self.assertIn("买压300000U", text)
+        self.assertIn("实际均价0.44U", text)
+        report = prelaunch.render_report(
+            {
+                "generated_at": "2026-07-30T08:00:00+00:00",
+                "events": events,
+            }
+        )
+        self.assertIn("Evidence / Sources", report)
+        self.assertIn("official-1", report)
+        self.assertIn("https://example.com/official", report)
+        self.assertIn("airdrop_claim", report)
+        self.assertNotIn("；+1", report)
+        self.assertIn("；+1", text)
+
+    def test_prelaunch_consumer_blocks_invalid_supplied_research(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        normalized = prelaunch.prepare_prelaunch_research(
+            {
+                "prelaunch_research": {
+                    "schema_version": "wrong",
+                    "research_status": "ready",
+                    "evidence": [
+                        {
+                            "evidence_id": "source-row",
+                            "source_ref": "",
+                        }
+                    ],
+                    "identity": {
+                        "verification_status": "verified",
+                        "evidence_ids": ["missing"],
+                    },
+                    "timeline": 1,
+                    "sniper_curve": 2,
+                    "valuation": 3,
+                    "missing_fields": [],
+                    "conflicts": [],
+                }
+            }
+        )
+
+        self.assertEqual(normalized["research_status"], "blocked")
+        paths = {row["path"] for row in normalized["conflicts"]}
+        self.assertIn("schema_version", paths)
+        self.assertIn("evidence[0].source_ref", paths)
+        self.assertIn("identity.evidence_ids", paths)
+        self.assertIn("timeline", paths)
+        self.assertIn("sniper_curve", paths)
+        self.assertIn("valuation", paths)
+
+    def test_prelaunch_telegram_batches_preserve_every_event(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        events = [
+            {
+                "display_name": f"PROJECT-{index}",
+                "phase": "T_MINUS_1H",
+                "time_utc8": "2026-07-30 20:00",
+                "research_status": "partial",
+                "alert_key": f"key-{index}",
+                "prelaunch_research": {
+                    "missing_fields": (
+                        ["x" * 8100] if index == 3 else []
+                    ),
+                    "conflicts": [],
+                },
+            }
+            for index in range(1, 5)
+        ]
+
+        messages = prelaunch.telegram_messages(events)
+        combined = "\n".join(messages)
+
+        self.assertTrue(
+            all(f"PROJECT-{index}" in combined for index in range(1, 5))
+        )
+        self.assertTrue(
+            all(
+                len(message) <= prelaunch.TELEGRAM_LIMIT
+                for message in messages
+            )
+        )
+        self.assertGreater(len(messages), len(events))
+
+    def test_prelaunch_seen_advances_only_after_whole_event_delivery(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        events = [
+            {
+                "display_name": f"PROJECT-{index}",
+                "phase": "T_MINUS_1H",
+                "time_utc8": "2026-07-30 20:00",
+                "research_status": "partial",
+                "alert_key": f"key-{index}",
+                "prelaunch_research": {
+                    "missing_fields": [],
+                    "conflicts": [],
+                },
+            }
+            for index in range(1, 4)
+        ]
+        seen_order: list[str] = []
+        with (
+            mock.patch.object(
+                prelaunch,
+                "send_telegram",
+                side_effect=[
+                    {"ok": True},
+                    {"ok": False, "reason": "fixture_failure"},
+                ],
+            ) as send,
+            mock.patch.object(
+                prelaunch,
+                "write_seen_keys",
+            ) as write_seen,
+        ):
+            result = prelaunch.push_new_events(
+                events,
+                seen_order,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["delivered_event_count"], 1)
+        self.assertEqual(seen_order, ["key-1"])
+        self.assertEqual(send.call_count, 2)
+        write_seen.assert_called_once_with(["key-1"])
+
+    def test_prelaunch_research_fingerprint_ignores_observation_timestamps(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        base = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "observed_at": "2026-07-30T01:00:00+00:00",
+            "evidence": [
+                {
+                    "evidence_id": "market-1",
+                    "observed_at": "2026-07-30T01:00:00+00:00",
+                    "verification_status": "verified",
+                }
+            ],
+            "pool": {
+                "initial_price_usdt": "0.10",
+                "verification_status": "verified",
+            },
+        }
+        refreshed = json.loads(json.dumps(base))
+        refreshed["observed_at"] = "2026-07-30T02:00:00+00:00"
+        refreshed["evidence"][0]["observed_at"] = (
+            "2026-07-30T02:00:00+00:00"
+        )
+        revised = json.loads(json.dumps(refreshed))
+        revised["pool"]["initial_price_usdt"] = "0.11"
+
+        self.assertEqual(
+            prelaunch.research_fingerprint(base),
+            prelaunch.research_fingerprint(refreshed),
+        )
+        self.assertNotEqual(
+            prelaunch.research_fingerprint(base),
+            prelaunch.research_fingerprint(revised),
+        )
+        item = {
+            "symbol": "FINGERPRINT",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "4" * 40}
+            ],
+        }
+        start = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        base_key = prelaunch.alert_key(
+            item,
+            start,
+            "T_MINUS_6H",
+            prelaunch.research_fingerprint(base),
+        )
+        refreshed_key = prelaunch.alert_key(
+            item,
+            start,
+            "T_MINUS_6H",
+            prelaunch.research_fingerprint(refreshed),
+        )
+        revised_key = prelaunch.alert_key(
+            item,
+            start,
+            "T_MINUS_6H",
+            prelaunch.research_fingerprint(revised),
+        )
+        self.assertEqual(base_key, refreshed_key)
+        self.assertNotEqual(base_key, revised_key)
+
+    def test_prelaunch_missing_research_is_explicit_partial(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        events = prelaunch.build_events(
+            {
+                "items": [
+                    {
+                        "symbol": "THIN",
+                        "priority": "P1_MONITOR",
+                        "contracts": [
+                            {
+                                "chain": "bsc",
+                                "address": "0x" + "3" * 40,
+                            }
+                        ],
+                        "known_times": [{"time": "2026-07-30 20:00"}],
+                    }
+                ]
+            },
+            datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(events[0]["research_status"], "partial")
+        self.assertIn(
+            "prelaunch_research",
+            events[0]["prelaunch_research"]["missing_fields"],
+        )
+        text = prelaunch.telegram_text(events)
+        self.assertIn("partial", text)
+        self.assertIn("缺口", text)
+
+    def test_grvt_tracked_research_is_blocked_and_schema_consistent(
+        self,
+    ) -> None:
+        payload = json.loads(
+            (
+                ROOT / "config" / "current_alpha_watchlist.json"
+            ).read_text(encoding="utf-8")
+        )
+        item = next(
+            row
+            for row in payload["items"]
+            if row.get("symbol") == "GRVT"
+        )
+        research = item["prelaunch_research"]
+
+        self.assertEqual(research["research_status"], "blocked")
+        self.assertTrue(research["conflicts"])
+        self.assertTrue(
+            all(
+                row.get("time_utc8")
+                and row.get("time_precision")
+                and row.get("authority")
+                for row in research["timeline"]
+            )
+        )
+        self.assertTrue(
+            all(
+                row.get("projection_policy")
+                == "reference_only_do_not_sum"
+                and row.get("derived_from")
+                for row in item["event_distributions"]
+            )
+        )
+
     def test_watchers_accept_runtime_watchlist_path(self) -> None:
         module_names = [
             "scripts.alpha_project_watch",
@@ -1297,6 +3162,268 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 os.environ.pop("ALPHA_WATCHLIST_PATH", None)
             else:
                 os.environ["ALPHA_WATCHLIST_PATH"] = old_value
+
+    def test_perp_trend_rejects_days_old_baseline(self) -> None:
+        import scripts.perp_oi_funding_watch as perp
+
+        current_at = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        baseline_at = current_at - timedelta(days=3)
+        history = [
+            {
+                "generated_at": baseline_at.isoformat(),
+                "rows": [
+                    {
+                        "symbol": "AEON",
+                        "perp_symbol": "AEONUSDT",
+                        "status": "ok",
+                        "oi_event_time_ms": int(
+                            (
+                                baseline_at - timedelta(seconds=30)
+                            ).timestamp()
+                            * 1000
+                        ),
+                        "open_interest_usd": "100",
+                        "mark_price": "1",
+                        "last_funding_rate": "0",
+                    }
+                ],
+            }
+        ]
+        current = {
+            "symbol": "AEON",
+            "perp_symbol": "AEONUSDT",
+            "status": "ok",
+            "oi_event_time_ms": int(
+                (current_at - timedelta(seconds=30)).timestamp() * 1000
+            ),
+            "open_interest_usd": "91.21",
+            "mark_price": "1",
+            "last_funding_rate": "0",
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PERP_WATCH_TREND_MIN_AGE_MINUTES": "10",
+                "PERP_WATCH_TREND_MAX_AGE_MINUTES": "120",
+                "PERP_WATCH_CURRENT_EVENT_MAX_AGE_SECONDS": "300",
+            },
+        ):
+            trend = perp.trend_for_symbol(
+                history,
+                "AEON",
+                current,
+                current_at.isoformat(),
+            )
+
+        self.assertEqual(trend["trend_status"], "no_eligible_baseline")
+        self.assertEqual(trend["trend_hint"], "观察")
+        self.assertNotIn("oi_usd_delta_pct", trend)
+        self.assertEqual(
+            trend["baseline_rejection_counts"][
+                "baseline_interval_too_long"
+            ],
+            1,
+        )
+
+    def test_perp_trend_accepts_fresh_sixty_minute_baseline(self) -> None:
+        import scripts.perp_oi_funding_watch as perp
+
+        current_at = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        current_event_at = current_at - timedelta(seconds=30)
+        baseline_event_at = current_event_at - timedelta(minutes=60)
+        history = [
+            {
+                "generated_at": (
+                    baseline_event_at + timedelta(seconds=30)
+                ).isoformat(),
+                "rows": [
+                    {
+                        "symbol": "AEON",
+                        "perp_symbol": "AEONUSDT",
+                        "status": "ok",
+                        "oi_event_time_ms": int(
+                            baseline_event_at.timestamp() * 1000
+                        ),
+                        "open_interest_usd": "100",
+                        "mark_price": "1",
+                        "last_funding_rate": "0",
+                    }
+                ],
+            }
+        ]
+        current = {
+            "symbol": "AEON",
+            "perp_symbol": "AEONUSDT",
+            "status": "ok",
+            "oi_event_time_ms": int(
+                current_event_at.timestamp() * 1000
+            ),
+            "open_interest_usd": "91.21",
+            "mark_price": "0.99",
+            "last_funding_rate": "0",
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PERP_WATCH_TREND_MIN_AGE_MINUTES": "10",
+                "PERP_WATCH_TREND_MAX_AGE_MINUTES": "120",
+                "PERP_WATCH_CURRENT_EVENT_MAX_AGE_SECONDS": "300",
+            },
+        ):
+            trend = perp.trend_for_symbol(
+                history,
+                "AEON",
+                current,
+                current_at.isoformat(),
+            )
+
+        self.assertEqual(trend["trend_status"], "ok")
+        self.assertEqual(trend["baseline_age_minutes"], "60")
+        self.assertEqual(trend["oi_usd_delta_pct"], "-8.7900")
+        self.assertEqual(trend["trend_hint"], "降杠杆")
+        self.assertEqual(trend["current_oi_event_freshness"], "fresh")
+
+    def test_perp_trend_rejects_stale_current_event_time(self) -> None:
+        import scripts.perp_oi_funding_watch as perp
+
+        current_at = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        current = {
+            "symbol": "AEON",
+            "perp_symbol": "AEONUSDT",
+            "status": "ok",
+            "oi_event_time_ms": int(
+                (current_at - timedelta(hours=1)).timestamp() * 1000
+            ),
+            "open_interest_usd": "91.21",
+            "mark_price": "0.99",
+            "last_funding_rate": "0",
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {"PERP_WATCH_CURRENT_EVENT_MAX_AGE_SECONDS": "300"},
+        ):
+            trend = perp.trend_for_symbol(
+                [],
+                "AEON",
+                current,
+                current_at.isoformat(),
+            )
+
+        self.assertEqual(trend["trend_status"], "current_sample_stale")
+        self.assertEqual(trend["trend_hint"], "观察")
+        self.assertNotIn("oi_usd_delta_pct", trend)
+        self.assertEqual(
+            trend["current_oi_event_age_seconds"],
+            3600,
+        )
+
+    def test_perp_alert_rejects_stale_current_oi_event(self) -> None:
+        import scripts.perp_oi_funding_watch as perp
+
+        row = {
+            "status": "ok",
+            "current_oi_event_freshness": "stale",
+            "direction_hint": "拥挤",
+            "funding_history_state": "sustained_long_crowding",
+            "depth_state": "thin_depth",
+        }
+
+        self.assertFalse(perp.row_has_actionable_perp_alert(row))
+        row["current_oi_event_freshness"] = "fresh"
+        self.assertTrue(perp.row_has_actionable_perp_alert(row))
+        row.pop("current_oi_event_freshness")
+        self.assertFalse(perp.row_has_actionable_perp_alert(row))
+
+    def test_price_context_sanitizes_stale_current_oi_event(
+        self,
+    ) -> None:
+        import scripts.alpha_price_momentum_watch as price
+
+        current = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "perp.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": current.isoformat(),
+                        "rows": [
+                            {
+                                "symbol": "AEON",
+                                "status": "ok",
+                                "perp_state": "crowded_funding",
+                                "direction_hint": "拥挤",
+                                "action": "多头拥挤",
+                                "trend_status": "current_sample_stale",
+                                "trend_hint": "观察",
+                                "current_oi_event_freshness": "stale",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(price, "PERP_WATCH_PATH", path),
+                mock.patch.object(price, "now_utc", return_value=current),
+            ):
+                context = price.latest_perp_context("AEON")
+
+        self.assertEqual(context["snapshot_status"], "stale")
+        self.assertEqual(context["perp_state"], "stale_oi_event")
+        self.assertEqual(context["direction_hint"], "观察")
+        self.assertNotIn("多头拥挤", context["action"])
+        self.assertIn("事件时间", context["action"])
+        self.assertEqual(
+            price.perp_action_summary(context),
+            "合约快照过期，只作背景",
+        )
+        self.assertNotIn("多头拥挤", price.perp_summary(context))
+        self.assertFalse(
+            any(
+                key.startswith("perp_trend|")
+                for key in price.event_alert_keys(
+                    {
+                        "symbol": "AEON",
+                        "analysis": {
+                            "perp_context": context,
+                            "window_15m": {},
+                            "window_backfill": {},
+                        },
+                    }
+                )
+            )
+        )
 
     def test_health_reads_the_effective_runtime_watchlist(self) -> None:
         from scripts.runtime_health_watch import effective_runtime_watchlist_path
@@ -1369,6 +3496,137 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             issues = alpha_coverage_issues(root)
 
         self.assertEqual(issues[0]["kind"], "alpha_catalog_budget_exceeded")
+
+    def test_health_reports_static_official_launch_time_conflict(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = (
+                root
+                / "output"
+                / "binance_alpha_catalog_watch"
+                / "latest.json"
+            )
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "selected": [],
+                        "static_time_conflict_count": 1,
+                        "static_time_conflicts": [
+                            {
+                                "symbol": "GRVT",
+                                "static_opening_times_utc8": [
+                                    "2026-07-30 20:00"
+                                ],
+                                "official_listing_time_utc8": (
+                                    "2026-07-30 21:00"
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            issues = alpha_coverage_issues(root)
+
+        self.assertEqual(issues[0]["kind"], "alpha_static_time_conflict")
+        self.assertEqual(issues[0]["name"], "GRVT")
+
+    def test_health_rejects_static_time_conflict_summary_mismatch(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = (
+                root
+                / "output"
+                / "binance_alpha_catalog_watch"
+                / "latest.json"
+            )
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "selected": [],
+                        "static_time_conflict_count": 1,
+                        "static_time_conflicts": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            issues = alpha_coverage_issues(root)
+
+        self.assertEqual(
+            issues[0]["kind"],
+            "alpha_static_time_conflict_summary_invalid",
+        )
+
+    def test_legacy_prelaunch_receipt_gap_is_explicit_warning_only(self) -> None:
+        from scripts.runtime_health_watch import (
+            PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT,
+            legacy_prelaunch_delivery_warning,
+        )
+
+        detail = "historical prelaunch Telegram delivery receipt missing"
+        warning = legacy_prelaunch_delivery_warning(
+            {
+                "chain": "bsc",
+                "contract": (
+                    "0x277add739c6e0477616948357af9e79fe1ec9b80"
+                ),
+                "listing_time_utc": "2026-07-27T10:00:00+00:00",
+                "lifecycle_first_seen_at": "2026-07-26T07:11:00+00:00",
+            },
+            detail,
+        )
+        self.assertIn("delivery_unverified", warning)
+        self.assertIn("not evidence of delivery", warning)
+        self.assertEqual(
+            legacy_prelaunch_delivery_warning(
+                {
+                    "chain": "bsc",
+                    "contract": (
+                        "0x277add739c6e0477616948357af9e79fe1ec9b80"
+                    ),
+                    "listing_time_utc": PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT.isoformat(),
+                    "lifecycle_first_seen_at": "2026-07-26T07:11:00+00:00",
+                },
+                detail,
+            ),
+            "",
+        )
+        self.assertEqual(
+            legacy_prelaunch_delivery_warning(
+                {
+                    "symbol": "OTHER",
+                    "chain": "bsc",
+                    "contract": "0x" + "9" * 40,
+                    "listing_time_utc": "2026-07-27T10:00:00+00:00",
+                    "lifecycle_first_seen_at": (
+                        "2026-07-26T07:11:00+00:00"
+                    ),
+                },
+                detail,
+            ),
+            "",
+        )
+        self.assertEqual(
+            legacy_prelaunch_delivery_warning(
+                {"listing_time_utc": "2026-07-27T10:00:00+00:00"},
+                detail,
+            ),
+            "",
+        )
 
     def test_health_reports_recent_unsupported_chain_item(self) -> None:
         from scripts.runtime_health_watch import alpha_coverage_issues
@@ -1465,6 +3723,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             with self.subTest(status=status):
                 row = {
                     "status": "opened",
+                    "opening_cohort_coverage_complete": True,
+                    "opening_liquidity_coverage_complete": True,
+                    "opening_buyer_scope_complete": True,
                     "rows": [
                         {
                             "buyer_trace": {
@@ -2503,7 +4764,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     ],
                 },
             ),
-            "opening buyer trace coverage incomplete",
+            (
+                "opening buyer trace coverage incomplete; "
+                "opening buyer trace deadline reached"
+            ),
         )
 
     def test_trace_deadline_preserves_confirmed_sell_lower_bound(self) -> None:
@@ -3416,6 +5680,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         tx_hash = "0x" + "6" * 64
         previous = {
             "status": "opened",
+            "opening_buyer_scope_complete": True,
             "scan_to_block": 340,
             "transfer_logs": 3907,
             "relevant_tx_count": 8,
@@ -3511,6 +5776,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         import scripts.alpha_opening_block_watch as opening
 
         previous = {
+            "opening_cohort_coverage_complete": True,
+            "opening_log_required_windows_complete": True,
+            "opening_liquidity_coverage_complete": True,
+            "opening_buyer_scope_complete": True,
             "deep_trace_generated_at": "2026-07-28T11:00:00+00:00",
             "last_full_trace_attempt_at": "2026-07-28T11:00:00+00:00",
             "rows": [
@@ -3747,6 +6016,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "recipient": "0x" + "4" * 40,
         }
         previous_event = {
+            "symbol": "AEON",
             "chain": "bsc",
             "token": {"address": token},
             "quote": {"address": quote, "symbol": "USDT"},
@@ -3754,6 +6024,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "start_time_utc": "2026-07-27T10:00:00+00:00",
             "pool_id": "old-pool",
             "status": "opened",
+            "opening_log_required_windows_complete": True,
+            "opening_liquidity_coverage_complete": True,
+            "opening_buyer_scope_complete": True,
             "rows": [
                 {
                     "tx": tx_hash,
@@ -3787,8 +6060,6 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         current_event = {
             **previous_event,
             "quote": {"address": quote, "symbol": "BSC-USD"},
-            "start_time_utc": "2026-07-27T10:00:01+00:00",
-            "pool_id": "new-pool",
             "latest_block": 121,
             "rows": [],
             "analysis": {},
@@ -3865,7 +6136,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             [first, second],
         )
         self.assertIsNone(previous)
-        self.assertEqual(conflict, "ambiguous_stable_identity")
+        self.assertEqual(conflict, "pool_or_time_identity_changed")
 
         previous, conflict = opening.select_previous_opened_event(
             first,
@@ -3873,6 +6144,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertIs(previous, first)
         self.assertEqual(conflict, "")
+
+        previous, conflict = opening.select_previous_opened_event(
+            second,
+            [first],
+        )
+        self.assertIsNone(previous)
+        self.assertEqual(conflict, "pool_or_time_identity_changed")
 
         missing_quote = {
             **first,
@@ -4008,6 +6286,372 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             {"duplicate_current_identity"},
         )
 
+    def test_distinct_current_opening_pool_identities_are_independent(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        base_event = {
+            "chain": "bsc",
+            "symbol": "GRVT",
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+            "opening_block": 100,
+            "latest_block": 120,
+            "start_time_utc": "2026-07-30T12:00:00+00:00",
+        }
+        events = [
+            {**base_event, "pool_id": "0x" + "a" * 64},
+            {**base_event, "pool_id": "0x" + "b" * 64},
+        ]
+        with (
+            mock.patch.object(opening, "read_json", return_value={}),
+            mock.patch.object(opening, "build_events", return_value=events),
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                return_value={
+                    "status": "opened",
+                    "refresh_status": "full_refresh",
+                    "scan_to_block": 120,
+                    "transfer_logs": 0,
+                    "rows": [],
+                    "analysis": {},
+                },
+            ) as build_opened,
+        ):
+            snapshot = opening.build_snapshot()
+
+        self.assertEqual(build_opened.call_count, 2)
+        self.assertEqual(
+            [row["cache_identity_status"] for row in snapshot["events"]],
+            ["new_event", "new_event"],
+        )
+        self.assertTrue(
+            all(
+                "cache_identity_conflict" not in row
+                for row in snapshot["events"]
+            )
+        )
+
+    def test_new_pool_never_reuses_previous_pool_rows(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        base = {
+            "chain": "bsc",
+            "symbol": "GRVT",
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+            "opening_block": 100,
+            "latest_block": 120,
+            "start_time_utc": "2026-07-30T12:00:00+00:00",
+        }
+        previous = {
+            **base,
+            "pool_id": "pool-a",
+            "status": "opened",
+            "opening_buyer_scope_complete": True,
+            "rows": [{"tx": "pool-a-row"}],
+        }
+        current = {**base, "pool_id": "pool-b"}
+
+        def read(path: Path, default: object) -> object:
+            if path == opening.LATEST_PATH:
+                return {
+                    "generated_at": "2026-07-30T12:01:00+00:00",
+                    "events": [previous],
+                }
+            return default
+
+        with (
+            mock.patch.object(opening, "read_json", side_effect=read),
+            mock.patch.object(
+                opening,
+                "build_events",
+                return_value=[current],
+            ),
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                return_value={
+                    "status": "opened",
+                    "refresh_status": "full_refresh",
+                    "scan_to_block": 120,
+                    "transfer_logs": 1,
+                    "rows": [{"tx": "pool-b-row"}],
+                    "analysis": {},
+                },
+            ) as build_opened,
+        ):
+            snapshot = opening.build_snapshot()
+
+        self.assertIsNone(build_opened.call_args.args[1])
+        event = snapshot["events"][0]
+        self.assertEqual(event["rows"][0]["tx"], "pool-b-row")
+        self.assertEqual(
+            event["cache_identity_status"],
+            "metadata_conflict_rebuilt",
+        )
+        self.assertEqual(
+            event["cache_identity_conflict"],
+            "pool_or_time_identity_changed",
+        )
+
+    def test_opening_bounded_bootstrap_keeps_complete_cohort(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        def fetch(
+            _chain: str,
+            query: dict[str, object],
+            _chunk_blocks: int,
+            _max_logs: int,
+            _timeout: int,
+            _deadline: bool,
+        ) -> list[dict[str, object]]:
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            if start == 100:
+                return [
+                    {
+                        "blockNumber": hex(100),
+                        "transactionIndex": "0x0",
+                        "logIndex": "0x0",
+                        "transactionHash": "0x" + "1" * 64,
+                    }
+                ]
+            if end - start + 1 > 100:
+                raise opening.OpeningLogCoverageTruncated("fixture cap")
+            return [
+                {
+                    "blockNumber": hex(end),
+                    "transactionIndex": "0x0",
+                    "logIndex": "0x1",
+                    "transactionHash": "0x" + "2" * 64,
+                }
+            ]
+
+        event = {
+            "chain": "bsc",
+            "token": {"address": "0x" + "3" * 40},
+            "opening_block": 100,
+        }
+        with (
+            mock.patch.object(opening, "get_logs_quick", side_effect=fetch),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_RECENT_MIN_BLOCKS": "16",
+                    "ALPHA_OPENING_RECENT_MAX_ATTEMPTS": "6",
+                },
+            ),
+        ):
+            rows = opening.bounded_bootstrap_opening_transfer_logs(
+                event,
+                latest=1000,
+                scan_blocks=240,
+                recent_blocks=1200,
+                max_logs=5000,
+                chunk_blocks=200,
+                timeout=5,
+            )
+
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(event["opening_cohort_coverage_complete"])
+        self.assertTrue(
+            event["opening_recent_tail_selected_window_complete"]
+        )
+        self.assertFalse(event["opening_recent_tail_coverage_complete"])
+        self.assertEqual(
+            event["opening_log_coverage_status"],
+            "opening_complete_recent_tail_partial",
+        )
+
+    def test_opening_scope_covers_all_transfer_recipients_when_receipts_are_sampled(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        sender = "0x" + "3" * 40
+        recipients = ["0x" + f"{index:040x}" for index in range(10, 40)]
+        logs = [
+            {
+                "address": token,
+                "blockNumber": hex(100 + index),
+                "transactionIndex": "0x0",
+                "logIndex": "0x0",
+                "transactionHash": "0x" + f"{index + 1:064x}",
+                "topics": [
+                    opening.TRANSFER_TOPIC,
+                    opening.address_topic(sender),
+                    opening.address_topic(recipient),
+                ],
+                "data": hex(1000 + index),
+            }
+            for index, recipient in enumerate(recipients)
+        ]
+        event = {
+            "chain": "bsc",
+            "symbol": "SCOPE",
+            "token": {
+                "address": token,
+                "symbol": "SCOPE",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": quote,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "opening_block": 100,
+            "latest_block": 200,
+            "seconds_until_start": -60,
+            "opening_max_txs": 25,
+        }
+
+        def summary(_event: dict[str, object], tx_hash: str) -> dict[str, object]:
+            index = int(tx_hash, 16) - 1
+            return {
+                "tx": tx_hash,
+                "block": 100 + index,
+                "tx_index": 0,
+                "buyer": recipients[index],
+                "buyer_exclusion_reason": "",
+                "token_bought": "1000",
+                "spent_quote": "10000",
+                "largest_internal_native": {"amount": "0"},
+            }
+
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "opening_transfer_logs",
+                side_effect=lambda current, _latest: (
+                    current.update(
+                        {
+                            "opening_cohort_coverage_complete": True,
+                            "opening_recent_tail_coverage_complete": True,
+                            "opening_log_required_windows_complete": True,
+                            "opening_log_contiguous_coverage_complete": True,
+                            "opening_cohort_to_block": 340,
+                            "opening_log_covered_to_block": 200,
+                        }
+                    )
+                    or logs
+                ),
+            ),
+            mock.patch.object(
+                opening,
+                "summarize_tx",
+                side_effect=summary,
+            ),
+            mock.patch.object(
+                opening,
+                "trace_buyer",
+                return_value={"status": "unknown"},
+            ),
+            mock.patch.object(
+                opening,
+                "analyze_opened",
+                return_value={"attention": ""},
+            ),
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+        ):
+            result = opening.build_opened_event(event)
+
+        self.assertEqual(event["opening_cohort_unique_tx_count"], 30)
+        self.assertEqual(event["opening_receipt_selected_tx_count"], 25)
+        self.assertFalse(event["opening_receipt_classification_complete"])
+        self.assertTrue(event["opening_buyer_scope_complete"])
+        self.assertEqual(
+            set(event["opening_buyer_scope_addresses"]),
+            set(recipients),
+        )
+        self.assertIn("sampled_receipts_25_of_30", result["analysis"]["opening_receipt_scope"])
+
+    def test_opening_scope_rejects_malformed_topic_and_excludes_infrastructure(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+        from scripts.runtime_health_watch import output_row_coverage_issue
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        sender = "0x" + "3" * 40
+        buyer = "0x" + "4" * 40
+        pool = "0x" + "5" * 40
+        event = {
+            "chain": "bsc",
+            "token": {"address": token},
+            "quote": {"address": quote},
+            "opening_block": 100,
+            "opening_cohort_to_block": 340,
+            "opening_cohort_coverage_complete": True,
+            "watch_addresses": [
+                {
+                    "address": pool,
+                    "role": "pool",
+                    "control_scope": "pool",
+                }
+            ],
+        }
+        logs = [
+            {
+                "blockNumber": "0x64",
+                "transactionHash": "0x" + "6" * 64,
+                "topics": [
+                    opening.TRANSFER_TOPIC,
+                    opening.address_topic(sender),
+                    opening.address_topic(pool),
+                ],
+            },
+            {
+                "blockNumber": "0x65",
+                "transactionHash": "0x" + "7" * 64,
+                "topics": [
+                    opening.TRANSFER_TOPIC,
+                    opening.address_topic(pool),
+                    opening.address_topic(buyer),
+                ],
+            },
+            {
+                "blockNumber": "0x66",
+                "transactionHash": "0x" + "8" * 64,
+                "topics": [opening.TRANSFER_TOPIC],
+            },
+        ]
+        with mock.patch.object(
+            opening,
+            "global_address_labels",
+            return_value={},
+        ):
+            _, evidence = opening.opening_buyer_scope_from_transfer_logs(
+                event,
+                logs,
+            )
+
+        self.assertEqual(evidence["opening_buyer_scope_addresses"], [buyer])
+        self.assertFalse(evidence["opening_buyer_scope_complete"])
+        self.assertEqual(
+            output_row_coverage_issue(
+                "opening",
+                {
+                    "status": "opened",
+                    "opening_cohort_coverage_complete": True,
+                    "opening_buyer_scope_complete": False,
+                },
+            ),
+            "opening buyer address scope incomplete",
+        )
+
     def test_health_rejects_opening_quote_identity_conflict(self) -> None:
         from scripts.runtime_health_watch import (
             matching_rows_coverage_issue,
@@ -4019,6 +6663,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "opening",
                 {
                     "status": "opened",
+                    "opening_cohort_coverage_complete": True,
+                    "opening_liquidity_coverage_complete": True,
+                    "opening_buyer_scope_complete": True,
                     "cache_identity_status": "metadata_conflict_unresolved",
                     "cache_identity_conflict": "quote_address_changed",
                 },
@@ -4033,6 +6680,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "opening",
                 {
                     "status": "opened",
+                    "opening_cohort_coverage_complete": True,
+                    "opening_liquidity_coverage_complete": True,
+                    "opening_buyer_scope_complete": True,
                     "cache_identity_status": "metadata_conflict_rebuilt",
                     "cache_identity_conflict": "quote_address_changed",
                     "rows": [],
@@ -4047,11 +6697,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 [
                     {
                         "status": "opened",
+                        "opening_cohort_coverage_complete": True,
+                        "opening_liquidity_coverage_complete": True,
+                        "opening_buyer_scope_complete": True,
                         "cache_identity_status": "stable_match",
                         "rows": [],
                     },
                     {
                         "status": "opened",
+                        "opening_cohort_coverage_complete": True,
+                        "opening_liquidity_coverage_complete": True,
+                        "opening_buyer_scope_complete": True,
                         "cache_identity_status": (
                             "metadata_conflict_unresolved"
                         ),
@@ -4061,6 +6717,60 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     },
                 ],
             ),
+        )
+
+    def test_health_blocks_opening_cohort_gap_and_warns_on_tail(self) -> None:
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            output_row_coverage_warning,
+        )
+
+        self.assertEqual(
+            output_row_coverage_issue(
+                "opening",
+                {
+                    "status": "opened",
+                    "opening_cohort_coverage_complete": False,
+                    "rows": [],
+                },
+            ),
+            "opening cohort transfer coverage incomplete",
+        )
+        warning = output_row_coverage_warning(
+            "opening",
+            {
+                "status": "opened",
+                "opening_cohort_coverage_complete": True,
+                "opening_liquidity_coverage_complete": True,
+                "opening_recent_tail_coverage_complete": False,
+                "rows": [],
+            },
+        )
+        self.assertIn("recent transfer tail uses a bounded window", warning)
+        import scripts.alpha_opening_block_watch as opening
+
+        scoped = {
+            "status": "opened",
+            "opening_cohort_coverage_complete": True,
+            "opening_liquidity_coverage_complete": True,
+            "opening_buyer_scope_complete": True,
+            "opening_recent_tail_coverage_complete": True,
+            "opening_log_required_windows_complete": True,
+            "opening_log_contiguous_coverage_complete": False,
+            "rows": [],
+        }
+        self.assertTrue(opening.opening_coverage_complete(scoped))
+        self.assertIn(
+            "middle history belongs to intraday/holder stages",
+            output_row_coverage_warning("opening", scoped),
+        )
+        sampled = {
+            **scoped,
+            "opening_receipt_classification_complete": False,
+        }
+        self.assertIn(
+            "opening receipt attribution sampled",
+            output_row_coverage_warning("opening", sampled),
         )
 
     def test_rpc_deadline_stops_multi_endpoint_retry(self) -> None:
@@ -4895,6 +7605,236 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "budget_exhausted",
         )
 
+    def test_required_only_intraday_keeps_full_snapshot_intact(
+        self,
+    ) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        snapshot = {
+            "generated_at": "2026-07-30T12:00:00+00:00",
+            "refresh_scope": "required_only_refresh",
+            "event_count": 0,
+            "alert_count": 0,
+            "events": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir) / "intraday"
+            out_dir.mkdir()
+            latest_path = out_dir / "latest.json"
+            required_path = out_dir / "required_only_latest.json"
+            required_report = out_dir / "required_only_latest.md"
+            latest_path.write_text(
+                json.dumps({"scope": "full_snapshot"}),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_INTRADAY_REQUIRED_ONLY": "1"},
+                ),
+                mock.patch.object(intraday, "OUT_DIR", out_dir),
+                mock.patch.object(intraday, "LATEST_PATH", latest_path),
+                mock.patch.object(
+                    intraday,
+                    "REQUIRED_ONLY_LATEST_PATH",
+                    required_path,
+                ),
+                mock.patch.object(
+                    intraday,
+                    "REQUIRED_ONLY_REPORT_PATH",
+                    required_report,
+                ),
+                mock.patch.object(
+                    intraday,
+                    "build_event_specs",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    intraday,
+                    "run_with_watcher_alarm",
+                    return_value=snapshot,
+                ),
+                mock.patch.object(
+                    intraday,
+                    "record_cex_micro_gas_candidate_history",
+                ) as micro_history,
+                mock.patch.object(
+                    intraday,
+                    "record_withdrawal_candidate_history",
+                ) as withdrawal_history,
+                mock.patch.object(intraday, "maybe_send_telegram"),
+            ):
+                self.assertEqual(intraday.main(), 0)
+
+            self.assertEqual(
+                json.loads(latest_path.read_text(encoding="utf-8")),
+                {"scope": "full_snapshot"},
+            )
+            self.assertEqual(
+                json.loads(required_path.read_text(encoding="utf-8")),
+                snapshot,
+            )
+            self.assertTrue(required_report.exists())
+            micro_history.assert_not_called()
+            withdrawal_history.assert_not_called()
+
+    def test_health_does_not_fall_back_when_new_required_only_omits_target(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        contract = "0x" + "a" * 40
+        current = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        listing = current - timedelta(hours=1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def write(relative: str, payload: dict[str, object]) -> Path:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                return path
+
+            write(
+                "output/binance_alpha_catalog_watch/latest.json",
+                {
+                    "status": "pass",
+                    "selected": [
+                        {
+                            "symbol": "TARGET",
+                            "chain": "bsc",
+                            "contract": contract,
+                            "listing_time_utc": listing.isoformat(),
+                            "lifecycle_first_seen_at": (
+                                listing + timedelta(minutes=45)
+                            ).isoformat(),
+                        }
+                    ],
+                },
+            )
+            write(
+                "output/binance_alpha_catalog_watch/current_watchlist.json",
+                {
+                    "items": [
+                        {
+                            "symbol": "TARGET",
+                            "contracts": [
+                                {"chain": "bsc", "address": contract}
+                            ],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_project_watch/latest.json",
+                {
+                    "projects": [
+                        {
+                            "symbol": "TARGET",
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": contract,
+                                    "log_error_count": 0,
+                                    "operator_attribution_state": (
+                                        "owner_renounced"
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_opening_block_watch/latest.json",
+                {
+                    "events": [
+                        {
+                            "symbol": "TARGET",
+                            "chain": "bsc",
+                            "token": {"address": contract},
+                            "status": "opened",
+                            "opening_cohort_coverage_complete": True,
+                            "opening_liquidity_coverage_complete": True,
+                            "opening_buyer_scope_complete": True,
+                            "rows": [],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_price_momentum_watch/latest.json",
+                {
+                    "events": [
+                        {
+                            "symbol": "TARGET",
+                            "chain": "bsc",
+                            "contract": contract,
+                            "analysis": {"direction": "观察"},
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_holder_concentration_watch/latest.json",
+                {
+                    "projects": [
+                        {
+                            "symbol": "TARGET",
+                            "chain": "bsc",
+                            "address": contract,
+                            "log_error_count": 0,
+                            "truncated": False,
+                        }
+                    ]
+                },
+            )
+            full_path = write(
+                "output/alpha_intraday_flow_watch/latest.json",
+                {
+                    "events": [
+                        {
+                            "symbol": "TARGET",
+                            "chain": "bsc",
+                            "token": {"address": contract},
+                            "status": "scanned",
+                            "transfer_coverage": {
+                                "state": "requested_window_complete",
+                                "complete": True,
+                            },
+                            "analysis": {"scan_limited": False},
+                        }
+                    ]
+                },
+            )
+            required_path = write(
+                (
+                    "output/alpha_intraday_flow_watch/"
+                    "required_only_latest.json"
+                ),
+                {"events": []},
+            )
+            os.utime(full_path, (100, 100))
+            os.utime(required_path, (200, 200))
+
+            issues = alpha_coverage_issues(root, current=current)
+
+        self.assertTrue(
+            any(
+                row["detail"]
+                == "TARGET intraday output does not match official contract"
+                for row in issues
+            ),
+            issues,
+        )
+
     def test_health_warns_when_cex_gas_scan_is_time_limited(self) -> None:
         from scripts.runtime_health_watch import output_row_coverage_warning
 
@@ -4994,47 +7934,48 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "net_sell_quote": "0",
         }
         analyses = iter(
-            [
-                dict(strong_analysis),
-                dict(strong_analysis),
-                quiet_analysis,
-            ]
+            [dict(quiet_analysis), dict(quiet_analysis), quiet_analysis]
         )
         tx_hash = "0x" + "3" * 64
+        other_tx_hash = "0x" + "4" * 64
+        transfer_rows = [
+            {
+                "token": event["token"]["address"],
+                "from": "0x" + "5" * 40,
+                "to": "0x" + "6" * 40,
+                "amount": intraday.Decimal("100"),
+                "block": 150,
+                "transaction_index": 1,
+                "log_index": 0,
+                "tx": tx_hash,
+            },
+            {
+                "token": event["token"]["address"],
+                "from": "0x" + "7" * 40,
+                "to": "0x" + "8" * 40,
+                "amount": intraday.Decimal("50"),
+                "block": 151,
+                "transaction_index": 1,
+                "log_index": 1,
+                "tx": other_tx_hash,
+            },
+        ]
         with (
             mock.patch.dict(
                 os.environ,
-                {"ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0"},
-            ),
-            mock.patch.object(
-                intraday,
-                "aggregate_candidate_txs",
-                side_effect=[
-                    ([tx_hash], 2, 2),
-                    ([tx_hash], 1, 1),
-                    ([tx_hash], 1, 1),
-                ],
+                {
+                    "ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0",
+                    "ALPHA_INTRADAY_MAX_RECEIPTS": "1",
+                },
             ),
             mock.patch.object(
                 intraday,
                 "token_transfer_logs_with_coverage",
                 return_value=(
-                    [],
+                    transfer_rows,
                     {
                         "state": "requested_window_complete",
                         "complete": True,
-                    },
-                ),
-            ),
-            mock.patch.object(
-                intraday,
-                "deduplicate_transfer_logs",
-                return_value=(
-                    [],
-                    {
-                        "duplicate_log_count": 0,
-                        "conflicting_duplicate_log_count": 0,
-                        "missing_log_identity_count": 0,
                     },
                 ),
             ),
@@ -5075,24 +8016,45 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             missing = intraday.scan_event(event)
             failed_transaction = intraday.scan_event(event)
 
-        self.assertTrue(capped["analysis"]["scan_limited"])
+        self.assertFalse(capped["analysis"]["scan_limited"])
+        self.assertTrue(
+            capped["analysis"]["optional_market_scan_limited"]
+        )
         self.assertEqual(capped["analysis"]["selected_receipts"], 1)
         self.assertEqual(capped["analysis"]["sampled_receipts"], 1)
         self.assertEqual(capped["analysis"]["receipt_errors"], 0)
         self.assertEqual(
             capped["analysis"]["receipt_coverage"]["reasons"],
+            [],
+        )
+        self.assertEqual(
+            capped["analysis"]["receipt_coverage"][
+                "optional_market_sample"
+            ]["reasons"],
             ["candidate_selection_limit"],
         )
         self.assertEqual(intraday.event_alert_keys(capped), [])
-        self.assertTrue(missing["analysis"]["scan_limited"])
+        self.assertFalse(missing["analysis"]["scan_limited"])
+        self.assertTrue(
+            missing["analysis"]["optional_market_scan_limited"]
+        )
         self.assertEqual(missing["analysis"]["sampled_receipts"], 0)
         self.assertEqual(missing["analysis"]["receipt_errors"], 1)
         self.assertEqual(
             missing["analysis"]["receipt_coverage"]["reasons"],
-            ["receipt_error"],
+            [],
+        )
+        self.assertEqual(
+            missing["analysis"]["receipt_coverage"][
+                "optional_market_sample"
+            ]["reasons"],
+            ["candidate_selection_limit", "receipt_error"],
         )
         self.assertEqual(intraday.event_alert_keys(missing), [])
         self.assertFalse(failed_transaction["analysis"]["scan_limited"])
+        self.assertTrue(
+            failed_transaction["analysis"]["optional_market_scan_limited"]
+        )
         self.assertEqual(failed_transaction["analysis"]["sampled_receipts"], 1)
         self.assertEqual(failed_transaction["analysis"]["receipt_errors"], 0)
         self.assertTrue(
@@ -5117,7 +8079,16 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "block": 150,
                 "log_index": 0,
                 "tx": tx_hash,
-            }
+            },
+            {
+                "token": token,
+                "from": "0x" + "6" * 40,
+                "to": "0x" + "7" * 40,
+                "amount": intraday.Decimal("100"),
+                "block": 151,
+                "log_index": 1,
+                "tx": "0x" + "8" * 64,
+            },
         ]
         transfer_coverage = {
             "state": "requested_window_complete",
@@ -5126,7 +8097,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "requested_to_block": 200,
             "covered_through_block": 200,
             "max_logs": 100,
-            "returned_log_count": 1,
+            "returned_log_count": 2,
             "conflicting_duplicate_log_count": 0,
             "missing_log_identity_count": 0,
         }
@@ -5148,12 +8119,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         with (
             mock.patch.dict(
                 os.environ,
-                {"ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0"},
-            ),
-            mock.patch.object(
-                intraday,
-                "aggregate_candidate_txs",
-                return_value=([tx_hash], 1, 2),
+                {
+                    "ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0",
+                    "ALPHA_INTRADAY_MAX_RECEIPTS": "0",
+                },
             ),
             mock.patch.object(
                 intraday,
@@ -5185,19 +8154,214 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         ):
             result = intraday.scan_event(event)
 
-        self.assertTrue(result["analysis"]["scan_limited"])
+        self.assertFalse(result["analysis"]["scan_limited"])
+        self.assertTrue(
+            result["analysis"]["optional_market_scan_limited"]
+        )
         self.assertEqual(
             result["analysis"]["alert_policy"],
-            "complete_transfer_evidence_only",
+            (
+                "required_receipt_gate_complete_"
+                "optional_market_sample_report_only"
+            ),
         )
-        self.assertEqual(
-            result["configured_cex_inflow_aggregate_rows"][0][
-                "cex_token_deposit"
-            ],
-            "120000",
-        )
+        self.assertEqual(result["configured_cex_inflow_aggregate_rows"], [])
         self.assertEqual(result["analysis"]["cex_token_deposit"], "120000")
         self.assertTrue(intraday.event_alert_keys(result))
+
+    def test_required_opening_buyer_receipt_gap_remains_blocking(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        token = "0x" + "1" * 40
+        buyer = "0x" + "2" * 40
+        recipient = "0x" + "3" * 40
+        tx_hash = "0x" + "4" * 64
+        event = {
+            "symbol": "AEON",
+            "chain": "bsc",
+            "token": {"address": token, "decimals": 18},
+            "quote": {
+                "address": "0x" + "5" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "latest_block": 200,
+            "opening_block": 100,
+            "opening_buyer_addresses": [buyer],
+        }
+        transfer_rows = [
+            {
+                "token": token,
+                "from": buyer,
+                "to": recipient,
+                "amount": intraday.Decimal("100"),
+                "block": 150,
+                "transaction_index": 1,
+                "log_index": 0,
+                "tx": tx_hash,
+            }
+        ]
+        coverage = {
+            "state": "requested_window_complete",
+            "complete": True,
+            "returned_log_count": 1,
+        }
+        quiet = {
+            "direction": "观察",
+            "trade_signal": "fixture",
+            "spot_action": "观察",
+            "perp_action": "观察",
+            "net_buy_quote": "0",
+            "net_sell_quote": "0",
+            "cex_quote_estimate": "0",
+            "cex_token_deposit": "0",
+            "cex_deposit_count": 0,
+            "cex_gas_priming_count": 0,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS": "0"},
+            ),
+            mock.patch.object(
+                intraday,
+                "token_transfer_logs_with_coverage",
+                return_value=(transfer_rows, coverage),
+            ),
+            mock.patch.object(
+                intraday,
+                "aggregate_candidate_txs",
+                return_value=([], 1, 1),
+            ),
+            mock.patch.object(
+                intraday,
+                "runtime_cex_deposit_candidates",
+                return_value={},
+            ),
+            mock.patch.object(
+                intraday,
+                "collect_report_only_cex_micro_gas_samples",
+                return_value={},
+            ),
+            mock.patch.object(
+                intraday,
+                "cex_withdrawal_cluster",
+                return_value={},
+            ),
+            mock.patch.object(
+                intraday,
+                "runtime_cex_candidate_aggregate_rows",
+                return_value=[],
+            ),
+            mock.patch.object(
+                intraday,
+                "configured_cex_inflow_aggregate_rows",
+                return_value=[],
+            ),
+            mock.patch.object(
+                intraday,
+                "summarize_flow_tx",
+                return_value={},
+            ),
+            mock.patch.object(
+                intraday,
+                "analyze_rows",
+                side_effect=lambda *args: dict(quiet),
+            ),
+        ):
+            with mock.patch.object(
+                intraday.opening,
+                "quick_rpc_call",
+                return_value=None,
+            ):
+                missing = intraday.scan_event(event)
+            with mock.patch.object(
+                intraday.opening,
+                "quick_rpc_call",
+                return_value={"status": "0x0", "logs": []},
+            ):
+                complete = intraday.scan_event(event)
+
+        self.assertTrue(
+            missing["analysis"]["scan_limited"],
+            missing["analysis"]["receipt_coverage"],
+        )
+        self.assertEqual(
+            missing["analysis"]["receipt_coverage"]["reasons"],
+            ["receipt_error"],
+        )
+        self.assertEqual(
+            missing["analysis"]["receipt_coverage"][
+                "required_tx_counts_by_category"
+            ]["opening_buyer"],
+            1,
+        )
+        self.assertFalse(complete["analysis"]["scan_limited"])
+        self.assertTrue(
+            complete["analysis"]["receipt_coverage"]["complete"]
+        )
+
+    def test_health_requires_intraday_to_import_opening_buyers(self) -> None:
+        from scripts.runtime_health_watch import (
+            intraday_opening_buyer_scope_issue,
+        )
+
+        contract = "0x" + "1" * 40
+        buyer = "0x" + "2" * 40
+        excluded = "0x" + "3" * 40
+        scope_buyer = "0x" + "4" * 40
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "opening.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "events": [
+                            {
+                                "chain": "bsc",
+                                "token": {"address": contract},
+                                "opening_buyer_scope_addresses": [
+                                    scope_buyer
+                                ],
+                                "rows": [
+                                    {
+                                        "buyer": buyer,
+                                        "token_bought": "100",
+                                    },
+                                    {
+                                        "buyer": excluded,
+                                        "token_bought": "100",
+                                        "buyer_exclusion_reason": "fixture",
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                intraday_opening_buyer_scope_issue(
+                    path,
+                    ("bsc", contract),
+                    [],
+                ),
+                "intraday opening-buyer scope missing 2 address(es)",
+            )
+            self.assertEqual(
+                intraday_opening_buyer_scope_issue(
+                    path,
+                    ("bsc", contract),
+                    [
+                        {
+                            "opening_buyer_addresses": [
+                                buyer,
+                                scope_buyer,
+                            ]
+                        }
+                    ],
+                ),
+                "",
+            )
 
     def test_runtime_recovery_text_preserves_warning_scope(self) -> None:
         from scripts.runtime_health_watch import recovery_text
@@ -5281,14 +8445,30 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "high": "0.172",
                     "close": "0.089",
                     "peak_drawdown_pct": "48.25",
+                    "from_utc8": "2026-07-28 00:45",
                     "to_utc8": "2026-07-28 01:00",
                 },
             },
         }
-        keys = [key for key, _legacy in price.event_alert_key_pairs(event)]
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                27,
+                17,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            keys = [
+                key
+                for key, _legacy in price.event_alert_key_pairs(event)
+            ]
         self.assertTrue(any(key.startswith("alpha_peak_drawdown|AEON|") for key in keys))
 
-    def test_peak_drawdown_alerts_are_scoped_to_a_day(self) -> None:
+    def test_peak_drawdown_alerts_are_scoped_to_an_hour(self) -> None:
         import scripts.alpha_price_momentum_watch as price
 
         def event_at(value: str) -> dict[str, object]:
@@ -5306,13 +8486,48 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                         "high": "0.172",
                         "close": "0.089",
                         "peak_drawdown_pct": "48.25",
+                        "from_utc8": (
+                            datetime.strptime(
+                                value,
+                                "%Y-%m-%d %H:%M",
+                            )
+                            - timedelta(minutes=15)
+                        ).strftime("%Y-%m-%d %H:%M"),
                         "to_utc8": value,
                     },
                 },
             }
 
-        first = price.event_alert_keys(event_at("2026-07-28 01:00"))[0]
-        second = price.event_alert_keys(event_at("2026-07-29 01:00"))[0]
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                27,
+                17,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            first = price.event_alert_keys(
+                event_at("2026-07-28 01:00")
+            )[0]
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                28,
+                17,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            second = price.event_alert_keys(
+                event_at("2026-07-29 01:00")
+            )[0]
         self.assertNotEqual(first, second)
 
     def test_peak_drawdown_telegram_shows_risk_evidence(self) -> None:
@@ -5336,19 +8551,34 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "high": "0.21",
                     "close": "0.09",
                     "peak_drawdown_pct": "57.14",
+                    "from_utc8": "2026-07-28 00:45",
                     "to_utc8": "2026-07-28 01:00",
                 },
             },
         }
 
-        text = price.telegram_text(
-            {
-                "events": [event],
-                "alert_count": 1,
-                "new_alert_count": 1,
-                "_telegram_new_alert_keys": price.event_alert_keys(event),
-            }
-        )
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                27,
+                17,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            text = price.telegram_text(
+                {
+                    "events": [event],
+                    "alert_count": 1,
+                    "new_alert_count": 1,
+                    "_telegram_new_alert_keys": (
+                        price.event_alert_keys(event)
+                    ),
+                }
+            )
 
         self.assertIn("🚨AEON", text)
         self.assertIn("峰值回撤", text)
@@ -5378,12 +8608,166 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "high": "0.21",
                     "close": "0.09",
                     "peak_drawdown_pct": "57.14",
+                    "from_utc8": "2026-07-28 00:45",
                     "to_utc8": "2026-07-28 01:00",
                 },
             },
         }
 
-        self.assertIn("AEON", price.push_signature({"events": quiet + [aeon]}))
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                27,
+                17,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            signature = price.push_signature(
+                {"events": quiet + [aeon]}
+            )
+        self.assertIn("AEON", signature)
+
+    def test_late_first_observation_does_not_emit_historical_peak_alert(
+        self,
+    ) -> None:
+        import scripts.alpha_price_momentum_watch as price
+
+        event = {
+            "symbol": "LATE",
+            "analysis": {
+                "window_15m": {
+                    "quote_volume": "0",
+                    "to_utc8": "2026-07-30 16:00",
+                },
+                "window_backfill": {
+                    "high": "1",
+                    "close": "0.5",
+                    "peak_drawdown_pct": "50",
+                    "from_utc8": "2026-07-30 14:00",
+                    "to_utc8": "2026-07-30 16:00",
+                },
+                "previous_peak_drawdown_pct": None,
+            },
+        }
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                30,
+                8,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            self.assertFalse(
+                any(
+                    key.startswith("alpha_peak_drawdown|")
+                    for key in price.event_alert_keys(event)
+                )
+            )
+            event["analysis"]["previous_peak_drawdown_pct"] = "44"
+            self.assertTrue(
+                any(
+                    key.startswith("alpha_peak_drawdown|")
+                    for key in price.event_alert_keys(event)
+                )
+            )
+
+    def test_old_market_window_cannot_emit_price_alerts(self) -> None:
+        import scripts.alpha_price_momentum_watch as price
+
+        event = {
+            "symbol": "STALE",
+            "analysis": {
+                "window_15m": {
+                    "high_pct": "0",
+                    "low_pct": "-25",
+                    "close_pct": "-20",
+                    "quote_volume": "1000",
+                    "from_utc8": "2026-07-20 15:45",
+                    "to_utc8": "2026-07-20 16:00",
+                },
+                "window_backfill": {
+                    "high": "1",
+                    "close": "0.5",
+                    "peak_drawdown_pct": "50",
+                    "from_utc8": "2026-07-20 15:45",
+                    "to_utc8": "2026-07-20 16:00",
+                },
+            },
+        }
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                30,
+                8,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            self.assertEqual(price.event_alert_keys(event), [])
+
+    def test_price_telegram_only_displays_new_trigger_scope(self) -> None:
+        import scripts.alpha_price_momentum_watch as price
+
+        def event(symbol: str, close: str) -> dict[str, object]:
+            return {
+                "symbol": symbol,
+                "priority": "P1_MONITOR",
+                "analysis": {
+                    "direction": "快速下跌",
+                    "spot_action": "降风险",
+                    "venue": {"venue_class": "ALPHA_DOMINANT"},
+                    "window_15m": {
+                        "from_utc8": "2026-07-30 15:45",
+                        "to_utc8": "2026-07-30 16:00",
+                        "high_pct": "0",
+                        "low_pct": "-20",
+                        "close_pct": close,
+                        "quote_volume": "1000",
+                    },
+                    "window_backfill": {},
+                },
+            }
+
+        mars = event("MARSCOIN", "-20")
+        aeon = event("AEON", "-15")
+        with mock.patch.object(
+            price,
+            "now_utc",
+            return_value=datetime(
+                2026,
+                7,
+                30,
+                8,
+                5,
+                tzinfo=timezone.utc,
+            ),
+        ):
+            mars_key = next(
+                key
+                for key in price.event_alert_keys(mars)
+                if key.startswith("alpha_extreme_drop|")
+            )
+            text = price.telegram_text(
+                {
+                    "events": [mars, aeon],
+                    "_telegram_new_alert_keys": [mars_key],
+                }
+            )
+        self.assertIn("MARSCOIN", text)
+        self.assertNotIn("AEON", text)
+        self.assertIn("新增1｜触发1", text)
+        self.assertIn("15:45-16:00", text)
 
     def test_holder_budget_prioritizes_recent_catalog_items(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -5560,6 +8944,247 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(result["coverage_note"], "log_coverage_truncated")
         self.assertEqual(result["metrics"], before["tokens"][key]["last_metrics"])
+
+    def test_fresh_holder_bootstrap_shrinks_only_after_truncation(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            _token: str,
+            from_block: int,
+            to_block: int,
+        ) -> tuple[list[dict[str, object]], list[str], bool]:
+            calls.append((from_block, to_block))
+            if to_block - from_block + 1 > 100:
+                return [], [], True
+            return [
+                {
+                    "blockNumber": hex(from_block),
+                    "logIndex": "0x0",
+                }
+            ], [], False
+
+        with (
+            mock.patch.object(holder, "transfer_logs", side_effect=fetch),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_HOLDER_BOOTSTRAP_MAX_BLOCKS": "240",
+                    "ALPHA_HOLDER_BOOTSTRAP_MIN_BLOCKS": "16",
+                    "ALPHA_HOLDER_BOOTSTRAP_MAX_ATTEMPTS": "7",
+                },
+            ),
+        ):
+            logs, errors, truncated, selected_from, evidence = (
+                holder.bounded_bootstrap_transfer_logs(
+                    "bsc",
+                    "0x" + "1" * 40,
+                    requested_from_block=1,
+                    to_block=400,
+                )
+            )
+
+        self.assertEqual(calls, [(161, 400), (281, 400), (341, 400)])
+        self.assertEqual(selected_from, 341)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertTrue(evidence["complete_selected_window"])
+        self.assertEqual(evidence["attempt_count"], 3)
+
+    def test_bounded_holder_baseline_never_emits_directional_delta(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        account_a = "0x" + "2" * 40
+        account_b = "0x" + "3" * 40
+        state: dict[str, object] = {"tokens": {}}
+        apply_calls = 0
+
+        def apply(
+            _balances: dict[str, int],
+            _logs: list[dict[str, object]],
+        ) -> dict[str, int]:
+            nonlocal apply_calls
+            apply_calls += 1
+            return (
+                {account_a: -100, account_b: 100}
+                if apply_calls == 1
+                else {}
+            )
+
+        def rows(
+            balances: dict[str, int],
+            *_args: object,
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            return (
+                [{"pct": "10", "class": "wallet"}]
+                if balances
+                else []
+            )
+
+        with (
+            mock.patch.object(
+                holder,
+                "latest_block",
+                side_effect=[1000, 1001],
+            ),
+            mock.patch.object(
+                holder,
+                "transfer_logs",
+                side_effect=[
+                    ([], [], True),
+                    ([{"blockNumber": "0x3e9"}], [], False),
+                ],
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_bootstrap_transfer_logs",
+                return_value=(
+                    [{"blockNumber": "0x3e8"}],
+                    [],
+                    False,
+                    900,
+                    {
+                        "active": True,
+                        "requested_from_block": 0,
+                        "selected_from_block": 900,
+                        "attempt_count": 1,
+                        "complete_selected_window": True,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                holder,
+                "apply_transfers",
+                side_effect=apply,
+            ),
+            mock.patch.object(
+                holder,
+                "token_decimals",
+                return_value=18,
+            ),
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(
+                holder,
+                "top_rows",
+                side_effect=rows,
+            ),
+            mock.patch.object(
+                holder,
+                "build_retention_flow",
+                return_value={
+                    "status": "active",
+                    "complete": True,
+                    "latest_block": 1001,
+                    "events": [],
+                },
+            ),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_HOLDER_FINALITY_BLOCKS": "0",
+                    "ALPHA_HOLDER_LOOKBACK_BLOCKS": "50000",
+                },
+            ),
+        ):
+            first = holder.build_token_snapshot(
+                {
+                    "symbol": "TAIL",
+                    "name": "TAIL",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": []},
+                state,
+            )
+            second = holder.build_token_snapshot(
+                {
+                    "symbol": "TAIL",
+                    "name": "TAIL",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": []},
+                state,
+            )
+
+        key = f"bsc:{token}"
+        self.assertEqual(
+            first["holder_baseline_status"],
+            holder.BOUNDED_BOOTSTRAP_UNRELIABLE,
+        )
+        self.assertEqual(
+            second["signal"]["direction"],
+            "baseline_unavailable",
+        )
+        self.assertEqual(second["signal"]["level"], "INFO")
+        self.assertNotIn(
+            "effective_top10_delta_pct",
+            second["metrics"],
+        )
+        self.assertEqual(holder.holder_signal_key(second), "")
+        self.assertEqual(state["tokens"][key]["latest_block"], 1001)
+        self.assertEqual(state["tokens"][key]["last_metrics"], {})
+        retention_project = {
+            **second,
+            "retention_flow": {
+                "status": "active",
+                "events": [
+                    {
+                        "type": "cex_inflow_transfer_risk",
+                        "level": "HIGH",
+                        "sample_tx": "0x" + "4" * 64,
+                    }
+                ],
+            },
+        }
+        self.assertTrue(holder.alert_keys({"projects": [retention_project]}))
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            output_row_coverage_warning,
+        )
+
+        self.assertEqual(
+            output_row_coverage_issue("holder", second),
+            "",
+        )
+        self.assertIn(
+            "baseline unavailable",
+            output_row_coverage_warning("holder", second),
+        )
+        self.assertIn(
+            "unreliable baseline",
+            output_row_coverage_issue(
+                "holder",
+                {
+                    **second,
+                    "signal": {
+                        "level": "CRITICAL",
+                        "direction": "effective_top10_down",
+                    },
+                },
+            ),
+        )
 
     def test_holder_retention_flow_covers_sniper_project_and_cex_transfers(
         self,
@@ -6742,6 +10367,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                             "chain": "bsc",
                             "token": {"address": contract},
                             "status": "opened",
+                            "opening_cohort_coverage_complete": True,
+                            "opening_liquidity_coverage_complete": True,
+                            "opening_buyer_scope_complete": True,
                             "rows": [],
                         }
                     ]

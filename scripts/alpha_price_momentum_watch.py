@@ -36,6 +36,15 @@ UTC8 = timezone(timedelta(hours=8))
 
 
 def now_utc() -> datetime:
+    override = os.environ.get("ALPHA_PRICE_NOW_UTC", "").strip()
+    if override:
+        try:
+            parsed = datetime.fromisoformat(override.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).replace(microsecond=0)
+        except ValueError:
+            pass
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
@@ -120,6 +129,16 @@ def watchlist_events(token_by_contract: dict[str, dict[str, Any]]) -> list[dict[
                 "contract": contract,
                 "alpha_symbol": f"{alpha['alphaId']}USDT",
                 "alpha": alpha,
+                "listing_time_utc": (
+                    (item.get("facts") or {}).get("listing_time_utc")
+                    or item.get("listing_time_utc")
+                ),
+                "lifecycle_first_seen_at": (
+                    (item.get("facts") or {}).get(
+                        "lifecycle_first_seen_at"
+                    )
+                    or item.get("lifecycle_first_seen_at")
+                ),
             }
         )
     return events
@@ -367,7 +386,7 @@ def latest_perp_context(symbol: str) -> dict[str, Any]:
     for row in snapshot.get("rows", []):
         if str(row.get("symbol", "")).upper() != symbol.upper():
             continue
-        return {
+        context = {
             "snapshot_status": "stale" if stale else "ok",
             "generated_at": snapshot.get("generated_at", ""),
             "venue": row.get("venue", ""),
@@ -402,8 +421,37 @@ def latest_perp_context(symbol: str) -> dict[str, Any]:
             "trend_hint": row.get("trend_hint", ""),
             "trend_action": row.get("trend_action", ""),
             "baseline_age_minutes": row.get("baseline_age_minutes", ""),
+            "current_oi_event_time_utc": row.get(
+                "current_oi_event_time_utc",
+                "",
+            ),
+            "current_oi_event_age_seconds": row.get(
+                "current_oi_event_age_seconds",
+                "",
+            ),
+            "current_oi_event_freshness": row.get(
+                "current_oi_event_freshness",
+                "",
+            ),
             "error": row.get("error", ""),
         }
+        if context["current_oi_event_freshness"] != "fresh":
+            context.update(
+                {
+                    "snapshot_status": "stale",
+                    "perp_state": "stale_oi_event",
+                    "direction_hint": "观察",
+                    "action": (
+                        "当前 OI 事件时间无效或已过期，"
+                        "合约方向信号不使用"
+                    ),
+                    "trend_hint": "观察",
+                    "trend_action": (
+                        "当前 OI 事件时间无效或已过期"
+                    ),
+                }
+            )
+        return context
     return {"snapshot_status": "missing", "status": "missing", "action": "合约/OI快照缺失"}
 
 
@@ -535,21 +583,21 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
     spot_action = "观察"
     reason = "未触发价格/成交额阈值"
     alpha_dominant = venue.get("venue_class") == "ALPHA_DOMINANT"
-    if peak_drawdown >= peak_drawdown_threshold:
-        direction = "高位大幅回撤"
-        trade_signal = "Alpha 从监控窗口峰值大幅回撤；持仓降低风险"
-        spot_action = "持仓降低风险；空仓等待企稳和真实承接"
-        reason = (
-            f"监控窗口峰值 {fmt(wbackfill.get('high'))} 回撤 "
-            f"{fmt(peak_drawdown)}% 至 {fmt(wbackfill.get('close'))}"
-        )
-    elif close_pct <= -extreme_drop_threshold or low_pct <= -extreme_drop_threshold:
+    if close_pct <= -extreme_drop_threshold or low_pct <= -extreme_drop_threshold:
         direction = "快速下跌"
         trade_signal = "Alpha 短时极端下跌；持仓降低风险"
         spot_action = "持仓降低风险；空仓不接下落过程"
         reason = (
             f"15m close {fmt(close_pct)}%，低点 {fmt(low_pct)}%，"
             f"成交额≈{fmt(quote)} USDT"
+        )
+    elif peak_drawdown >= peak_drawdown_threshold:
+        direction = "高位大幅回撤"
+        trade_signal = "Alpha 从监控窗口峰值大幅回撤；持仓降低风险"
+        spot_action = "持仓降低风险；空仓等待企稳和真实承接"
+        reason = (
+            f"监控窗口峰值 {fmt(wbackfill.get('high'))} 回撤 "
+            f"{fmt(peak_drawdown)}% 至 {fmt(wbackfill.get('close'))}"
         )
     elif quote >= volume_threshold and close_pct <= -drop_threshold:
         direction = "放量走弱"
@@ -618,6 +666,12 @@ def analyze_event(event: dict[str, Any]) -> dict[str, Any]:
 
 def scan() -> dict[str, Any]:
     token_by_contract = load_alpha_tokens()
+    previous = read_json(LATEST_PATH, {"events": []})
+    previous_by_identity = {
+        price_event_identity(event): event
+        for event in previous.get("events", [])
+        if isinstance(event, dict) and event.get("contract")
+    }
     events = []
     for event in watchlist_events(token_by_contract):
         try:
@@ -631,6 +685,32 @@ def scan() -> dict[str, Any]:
                 "perp_action": "不开",
                 "reason": str(exc),
             }
+        previous_event = previous_by_identity.get(
+            price_event_identity(event),
+            {},
+        )
+        previous_analysis = (
+            previous_event.get("analysis")
+            if isinstance(previous_event.get("analysis"), dict)
+            else {}
+        )
+        previous_backfill = (
+            previous_analysis.get("window_backfill")
+            if isinstance(
+                previous_analysis.get("window_backfill"),
+                dict,
+            )
+            else {}
+        )
+        analysis["previous_peak_drawdown_pct"] = (
+            previous_backfill.get("peak_drawdown_pct")
+        )
+        analysis["window_15m_fresh"] = market_window_is_fresh(
+            analysis.get("window_15m") or {}
+        )
+        analysis["window_backfill_fresh"] = market_window_is_fresh(
+            analysis.get("window_backfill") or {}
+        )
         events.append({**event, "analysis": analysis})
     key_pairs = [pair for event in events for pair in event_alert_key_pairs(event)]
     keys = [key for key, _ in key_pairs]
@@ -658,6 +738,8 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
     quote = decimal_from(w15.get("quote_volume"))
     wbackfill = analysis.get("window_backfill", {})
     peak_drawdown = decimal_from(wbackfill.get("peak_drawdown_pct"))
+    w15_fresh = market_window_is_fresh(w15)
+    backfill_fresh = market_window_is_fresh(wbackfill)
     time_bucket = alert_time_bucket(
         str(w15.get("to_utc8") or ""),
         int(os.environ.get("ALPHA_PRICE_ALERT_TIME_BUCKET_MINUTES", "60")),
@@ -670,13 +752,17 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
         os.environ.get("ALPHA_PRICE_EXTREME_15M_DROP_PCT", "12")
     )
     price_alert = False
-    if peak_drawdown >= peak_drawdown_threshold:
+    if (
+        backfill_fresh
+        and peak_drawdown >= peak_drawdown_threshold
+        and peak_drawdown_alert_is_fresh(event)
+    ):
         peak_time_bucket = alert_time_bucket(
             str(wbackfill.get("to_utc8") or ""),
             int(
                 os.environ.get(
                     "ALPHA_PRICE_BACKFILL_ALERT_TIME_BUCKET_MINUTES",
-                    "1440",
+                    "60",
                 )
             ),
         )
@@ -695,7 +781,8 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
         )
     volume_threshold = Decimal(os.environ.get("ALPHA_PRICE_QUOTE_ALERT", "200000"))
     if (
-        quote < volume_threshold
+        w15_fresh
+        and quote < volume_threshold
         and (close_pct <= -extreme_drop_threshold or low_pct <= -extreme_drop_threshold)
     ):
         base_parts = [
@@ -706,7 +793,7 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
             time_bucket,
         ]
         pairs.append(("|".join(base_parts), []))
-    if quote < volume_threshold:
+    if not w15_fresh or quote < volume_threshold:
         price_alert = False
     else:
         price_alert = (
@@ -758,6 +845,86 @@ def event_alert_key_pairs(event: dict[str, Any]) -> list[tuple[str, list[str]]]:
 
 def unseen_alert_keys(key_pairs: list[tuple[str, list[str]]], seen: set[str]) -> list[str]:
     return [key for key, legacy_keys in key_pairs if key not in seen and not any(legacy in seen for legacy in legacy_keys)]
+
+
+def parse_utc8_minute(value: Any) -> datetime | None:
+    try:
+        return datetime.strptime(
+            str(value),
+            "%Y-%m-%d %H:%M",
+        ).replace(tzinfo=UTC8)
+    except (TypeError, ValueError):
+        return None
+
+
+def price_event_identity(event: dict[str, Any]) -> str:
+    listing = str(
+        event.get("listing_time_utc")
+        or event.get("lifecycle_first_seen_at")
+        or ""
+    )
+    return "|".join([norm(event.get("contract")), listing])
+
+
+def market_window_is_fresh(
+    window: dict[str, Any],
+    *,
+    current: datetime | None = None,
+) -> bool:
+    end = parse_utc8_minute(window.get("to_utc8"))
+    if end is None:
+        return False
+    current = (current or now_utc()).astimezone(UTC8)
+    age = current - end
+    max_age = timedelta(
+        minutes=int(
+            os.environ.get(
+                "ALPHA_PRICE_MAX_WINDOW_AGE_MINUTES",
+                "30",
+            )
+        )
+    )
+    max_future_skew = timedelta(
+        minutes=int(
+            os.environ.get(
+                "ALPHA_PRICE_MAX_FUTURE_SKEW_MINUTES",
+                "5",
+            )
+        )
+    )
+    return -max_future_skew <= age <= max_age
+
+
+def peak_drawdown_alert_is_fresh(event: dict[str, Any]) -> bool:
+    analysis = event.get("analysis") or {}
+    window = analysis.get("window_backfill") or {}
+    if not market_window_is_fresh(window):
+        return False
+    current = decimal_from(window.get("peak_drawdown_pct"))
+    previous_raw = analysis.get("previous_peak_drawdown_pct")
+    previous_known = previous_raw not in ("", None)
+    previous = decimal_from(previous_raw)
+    step = Decimal(
+        os.environ.get(
+            "ALPHA_PRICE_BACKFILL_ALERT_STEP_PCT",
+            "5",
+        )
+    )
+    if previous_known:
+        return bucket(current, step) > bucket(previous, step)
+    start = parse_utc8_minute(window.get("from_utc8"))
+    end = parse_utc8_minute(window.get("to_utc8"))
+    if start is None or end is None or end < start:
+        return False
+    first_observation_max_age = timedelta(
+        minutes=int(
+            os.environ.get(
+                "ALPHA_PRICE_BACKFILL_FIRST_ALERT_MAX_AGE_MINUTES",
+                "30",
+            )
+        )
+    )
+    return end - start <= first_observation_max_age
 
 
 def bucket(value: Decimal, step: Decimal) -> str:
@@ -815,17 +982,43 @@ def perp_summary(perp: dict[str, Any]) -> str:
 
 
 def telegram_text(snapshot: dict[str, Any]) -> str:
+    has_push_scope = "_telegram_new_alert_keys" in snapshot
     new_keys = set(snapshot.get("_telegram_new_alert_keys") or [])
+    keys_by_event = {
+        id(event): (
+            [
+                key
+                for key in event_alert_keys(event)
+                if key in new_keys
+            ]
+            if has_push_scope
+            else event_alert_keys(event)
+        )
+        for event in snapshot.get("events", [])
+    }
     active = sorted(
-        (event for event in snapshot.get("events", []) if event_alert_keys(event)),
+        (
+            event
+            for event in snapshot.get("events", [])
+            if keys_by_event[id(event)]
+        ),
         key=lambda event: (
-            0 if new_keys.intersection(event_alert_keys(event)) else 1,
-            *price_telegram_risk_key(event),
+            *price_telegram_risk_key(
+                event,
+                keys_by_event[id(event)],
+            ),
         ),
     )
     shown_events = active[:2]
-    trigger_count = int(snapshot.get("alert_count", sum(len(event_alert_keys(event)) for event in active)) or 0)
-    new_count = int(snapshot.get("new_alert_count", trigger_count) or 0)
+    trigger_count = sum(
+        len(keys_by_event[id(event)])
+        for event in active
+    )
+    new_count = (
+        len(new_keys)
+        if has_push_scope
+        else int(snapshot.get("new_alert_count", trigger_count) or 0)
+    )
     lines = [f"Alpha 价格动量｜新增{new_count}｜触发{trigger_count}"]
     if not shown_events:
         lines.append("无触发项目")
@@ -833,11 +1026,28 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
     for index, event in enumerate(shown_events):
         a = event.get("analysis", {})
         venue = a.get("venue", {})
-        direction = str(a.get("direction") or "观察")
+        event_keys = keys_by_event[id(event)]
+        direction = price_telegram_direction(event, event_keys)
         marker = (
             "🚨"
-            if direction
-            in {"高位大幅回撤", "快速下跌", "放量走弱", "放量下插", "冲高回落"}
+            if any(
+                key.startswith(
+                    (
+                        "alpha_peak_drawdown|",
+                        "alpha_extreme_drop|",
+                        "alpha_price|",
+                    )
+                )
+                for key in event_keys
+            )
+            and direction
+            in {
+                "高位大幅回撤",
+                "快速下跌",
+                "放量走弱",
+                "放量下插",
+                "冲高回落",
+            }
             else "❗"
         )
         if index:
@@ -845,8 +1055,17 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
         lines.extend(
             [
                 f"{marker}{event.get('symbol')} {event.get('priority')}｜{direction}｜{venue.get('venue_class', 'UNKNOWN')}",
-                f"动作：{price_telegram_action(event)}",
-                price_telegram_trigger_line(event),
+                (
+                    "动作："
+                    + price_telegram_action(
+                        event,
+                        event_keys,
+                    )
+                ),
+                price_telegram_trigger_line(
+                    event,
+                    event_keys,
+                ),
             ]
         )
     remaining = len(active) - len(shown_events)
@@ -855,33 +1074,75 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def price_telegram_risk_key(event: dict[str, Any]) -> tuple[int, Decimal, Decimal, str]:
+def price_telegram_direction(
+    event: dict[str, Any],
+    keys: list[str],
+) -> str:
+    if any(key.startswith("alpha_peak_drawdown|") for key in keys):
+        return "高位大幅回撤"
+    if any(key.startswith("alpha_extreme_drop|") for key in keys):
+        return "快速下跌"
+    if any(key.startswith("alpha_price|") for key in keys):
+        return str((event.get("analysis") or {}).get("direction") or "价格异动")
+    if any(key.startswith("perp_trend|") for key in keys):
+        hint = str(
+            ((event.get("analysis") or {}).get("perp_context") or {}).get(
+                "trend_hint"
+            )
+            or "变化"
+        )
+        return f"OI{hint}"
+    return "观察"
+
+
+def price_telegram_risk_key(
+    event: dict[str, Any],
+    keys: list[str] | None = None,
+) -> tuple[int, Decimal, Decimal, str]:
     analysis = event.get("analysis", {})
+    keys = event_alert_keys(event) if keys is None else keys
+    direction = price_telegram_direction(event, keys)
     direction_rank = {
         "高位大幅回撤": 6,
         "快速下跌": 6,
         "放量走弱": 5,
         "放量下插": 5,
         "冲高回落": 4,
+        "OI空头增量": 4,
+        "OI降杠杆": 3,
+        "OI多头增量": 2,
         "Alpha主导/观察": 3,
         "观察偏多": 2,
         "观察": 1,
     }
-    trend_rank = {"空头增量": 4, "降杠杆": 3, "多头增量": 2}
     perp = analysis.get("perp_context", {})
     w15 = analysis.get("window_15m", {})
     wbackfill = analysis.get("window_backfill", {})
-    severity = max(
-        direction_rank.get(str(analysis.get("direction") or ""), 0),
-        trend_rank.get(str(perp.get("trend_hint") or ""), 0),
-    )
-    magnitude = max(
-        abs(decimal_from(w15.get("high_pct"))),
-        abs(decimal_from(w15.get("low_pct"))),
-        abs(decimal_from(w15.get("close_pct"))),
-        abs(decimal_from(wbackfill.get("peak_drawdown_pct"))),
-        abs(decimal_from(perp.get("oi_usd_delta_pct"))),
-    )
+    severity = direction_rank.get(direction, 0)
+    magnitudes = []
+    if any(
+        key.startswith(
+            (
+                "alpha_price|",
+                "alpha_extreme_drop|",
+            )
+        )
+        for key in keys
+    ):
+        magnitudes.extend(
+            [
+                abs(decimal_from(w15.get("high_pct"))),
+                abs(decimal_from(w15.get("low_pct"))),
+                abs(decimal_from(w15.get("close_pct"))),
+            ]
+        )
+    if any(key.startswith("alpha_peak_drawdown|") for key in keys):
+        magnitudes.append(
+            abs(decimal_from(wbackfill.get("peak_drawdown_pct")))
+        )
+    if any(key.startswith("perp_trend|") for key in keys):
+        magnitudes.append(abs(decimal_from(perp.get("oi_usd_delta_pct"))))
+    magnitude = max(magnitudes, default=Decimal(0))
     return (-severity, -magnitude, -decimal_from(w15.get("quote_volume")), str(event.get("symbol") or ""))
 
 
@@ -904,9 +1165,12 @@ def compact_signed_pct(value: Any) -> str:
     return f"{prefix}{amount:f}%"
 
 
-def price_telegram_action(event: dict[str, Any]) -> str:
+def price_telegram_action(
+    event: dict[str, Any],
+    keys: list[str] | None = None,
+) -> str:
     analysis = event.get("analysis", {})
-    keys = event_alert_keys(event)
+    keys = event_alert_keys(event) if keys is None else keys
     has_price = any(
         key.startswith(("alpha_price|", "alpha_peak_drawdown|", "alpha_extreme_drop|"))
         for key in keys
@@ -921,9 +1185,12 @@ def price_telegram_action(event: dict[str, Any]) -> str:
     return str(analysis.get("spot_action") or "观察")
 
 
-def price_telegram_trigger_line(event: dict[str, Any]) -> str:
+def price_telegram_trigger_line(
+    event: dict[str, Any],
+    keys: list[str] | None = None,
+) -> str:
     analysis = event.get("analysis", {})
-    keys = event_alert_keys(event)
+    keys = event_alert_keys(event) if keys is None else keys
     parts: list[str] = []
     if any(key.startswith("alpha_peak_drawdown|") for key in keys):
         backfill = analysis.get("window_backfill", {})
@@ -935,14 +1202,16 @@ def price_telegram_trigger_line(event: dict[str, Any]) -> str:
     if any(key.startswith("alpha_extreme_drop|") for key in keys):
         w15 = analysis.get("window_15m", {})
         parts.append(
-            f"15m 极跌｜低{compact_signed_pct(w15.get('low_pct'))}/"
+            f"15m 极跌 {w15.get('from_utc8', '')[-5:]}-{w15.get('to_utc8', '')[-5:]}｜"
+            f"低{compact_signed_pct(w15.get('low_pct'))}/"
             f"收{compact_signed_pct(w15.get('close_pct'))}｜"
             f"量{compact_amount(w15.get('quote_volume'))} USDT"
         )
     if any(key.startswith("alpha_price|") for key in keys):
         w15 = analysis.get("window_15m", {})
         price_part = (
-            f"15m 高{compact_signed_pct(w15.get('high_pct'))}/"
+            f"15m {w15.get('from_utc8', '')[-5:]}-{w15.get('to_utc8', '')[-5:]}｜"
+            f"高{compact_signed_pct(w15.get('high_pct'))}/"
             f"低{compact_signed_pct(w15.get('low_pct'))}/"
             f"收{compact_signed_pct(w15.get('close_pct'))}｜量{compact_amount(w15.get('quote_volume'))} USDT"
         )
@@ -1004,12 +1273,15 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         return
     seen = set(read_json(SEEN_PATH, []))
     new_keys = unseen_alert_keys(key_pairs, seen)
-    if not new_keys and os.environ.get("ALPHA_PRICE_FORCE_TELEGRAM") != "1":
+    force = os.environ.get("ALPHA_PRICE_FORCE_TELEGRAM") == "1"
+    if not new_keys and not force:
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
-    if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_PRICE_FORCE_TELEGRAM") != "1":
+    if suppress_repeat_push(snapshot) and not force:
         write_json(SEEN_PATH, sorted(seen | set(keys)))
         return
+    if force and not new_keys:
+        new_keys = keys
     push_snapshot = {**snapshot, "_telegram_new_alert_keys": new_keys}
     text = telegram_text(push_snapshot)[:TELEGRAM_LIMIT]
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}

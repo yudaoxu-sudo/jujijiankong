@@ -56,9 +56,6 @@ run_step() {
   fi
 }
 
-run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_signal_collector.py --defer-analysis
-run_step "${TELEGRAM_USER_COLLECTOR_TIMEOUT_SECONDS:-120}" env SIGNAL_RUNTIME_CONTEXT=0 python3 scripts/telegram_user_signal_collector.py
-run_step "${BINANCE_ALPHA_CATALOG_TIMEOUT_SECONDS:-45}" python3 scripts/binance_alpha_catalog_watch.py
 if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
   runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
   runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
@@ -75,12 +72,9 @@ if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
 fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
 run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
-run_step "${ALPHA_PRELAUNCH_TIMEOUT_SECONDS:-60}" python3 scripts/alpha_prelaunch_watch.py
 run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" python3 scripts/alpha_intraday_flow_watch.py
-run_step "${PERP_OI_FUNDING_TIMEOUT_SECONDS:-90}" python3 scripts/perp_oi_funding_watch.py
-run_step "${ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS:-90}" python3 scripts/alpha_price_momentum_watch.py
-run_step "${TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90}" python3 scripts/telegram_signal_collector.py --flush-pending
 run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_sprint.sh
+run_step "${ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-240}" env ALPHA_INTRADAY_REQUIRED_ONLY=1 python3 scripts/alpha_intraday_flow_watch.py
 run_step "${OPENING_COHORT_FUNDER_TIMEOUT_SECONDS:-90}" python3 scripts/review_opening_cohort_funders.py --lookback-blocks "${OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS:-120}" --max-scan-seconds "${OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS:-25}"
 run_step "${ALPHA_HOLDER_TIMEOUT_SECONDS:-240}" python3 scripts/alpha_holder_concentration_watch.py
 run_step "${SURF_AUX_MARKET_TIMEOUT_SECONDS:-180}" python3 scripts/surf_aux_market_watch.py
@@ -94,7 +88,6 @@ if [[ "${RUN_ARX_LAUNCH_WATCH:-0}" == "1" ]]; then
 else
   echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) skipped ARX launch watch; RUN_ARX_LAUNCH_WATCH=1 to enable"
 fi
-run_step "${PREDICTION_MARKET_TIMEOUT_SECONDS:-90}" python3 scripts/prediction_market_watch.py
 run_step "${EXTERNAL_AUX_SOURCE_TIMEOUT_SECONDS:-45}" python3 scripts/external_aux_source_readiness.py
 if [[ "${RUN_EXTERNAL_AUX_LIVE_PROBE:-0}" == "1" ]]; then
   run_step "${EXTERNAL_AUX_LIVE_PROBE_TIMEOUT_SECONDS:-60}" python3 scripts/external_aux_live_probe.py

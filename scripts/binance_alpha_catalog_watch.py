@@ -6,9 +6,19 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 import urllib.request
+
+try:
+    from scripts.alpha_prelaunch_research import (
+        normalize_prelaunch_research as strict_normalize_prelaunch_research,
+    )
+except ModuleNotFoundError:
+    from alpha_prelaunch_research import (
+        normalize_prelaunch_research as strict_normalize_prelaunch_research,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +47,7 @@ USDT_BY_CHAIN = {
     "bsc": "0x55d398326f99059ff775485246999027b3197955",
 }
 SUPPORTED_CHAINS = {"bsc"}
-DEFAULT_MAX_SELECTED = 8
+DEFAULT_MAX_SELECTED = 64
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_INTRADAY_MAX_AGE_HOURS = 72
 DEFAULT_SCHEMA_MIN_RATIO = 0.5
@@ -47,6 +57,13 @@ GENERIC_SYMBOLS = {"", "UNKNOWN", "LP", "POOL", "TOKEN", "V3", "V4", "BN", "BSC"
 TIME_CONFLICT_REASONS = {
     "conflicting_single_signal_opening_times",
     "official_signal_opening_time_conflict",
+}
+VALID_TIME_PRECISIONS = {
+    "",
+    "exact",
+    "estimated",
+    "unknown",
+    "time_only",
 }
 
 
@@ -156,9 +173,12 @@ def listing_datetime(row: dict[str, Any]) -> datetime | None:
 
 def parse_iso_time(value: Any) -> datetime | None:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(
-            timezone.utc
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
         )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -252,7 +272,7 @@ def signal_candidate_project(
             for row in proposal.get("pool_ids", [])
             if isinstance(row, dict) and str(row.get("pool_id") or "").strip()
         ]
-    return {
+    project = {
         "_candidate_provenance": "single_signal_artifact",
         "project_key": f"signal_artifact:{artifact_name}",
         "symbol": str(parsed.get("symbol") or proposal.get("symbol") or "").upper(),
@@ -272,6 +292,17 @@ def signal_candidate_project(
             row for row in enrichment if isinstance(row, dict)
         ],
     }
+    for key, expected_type in (
+        ("prelaunch_research", dict),
+        ("market_context", dict),
+        ("event_distributions", list),
+    ):
+        value = parsed.get(key)
+        if not isinstance(value, expected_type):
+            value = proposal.get(key)
+        if isinstance(value, expected_type):
+            project[key] = copy.deepcopy(value)
+    return project
 
 
 def load_signal_candidate_projects(
@@ -612,6 +643,14 @@ def verified_registry_candidates(
                 "opening_anchor_status": "verified_prelaunch_pool",
             },
         }
+        for key, expected_type in (
+            ("prelaunch_research", dict),
+            ("market_context", dict),
+            ("event_distributions", list),
+        ):
+            value = project.get(key)
+            if isinstance(value, expected_type):
+                item[key] = copy.deepcopy(value)
         ready.append(item)
     ready, conflict_rows = reject_candidate_time_conflicts(ready)
     pending.extend(conflict_rows)
@@ -883,6 +922,333 @@ def unique_list(values: list[Any]) -> list[Any]:
     return out
 
 
+VERIFICATION_RANK = {
+    "verified": 3,
+    "unverified": 1,
+    "stale": 0,
+    "conflicted": -1,
+}
+RESEARCH_REFRESH_TIMESTAMP_KEYS = {
+    "as_of",
+    "generated_at",
+    "last_checked_at",
+    "observed_at",
+    "updated_at",
+}
+
+
+def verification_rank(value: Any) -> int:
+    return VERIFICATION_RANK.get(str(value or "").strip().lower(), 0)
+
+
+def missing_research_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def research_row_key(path: str, row: dict[str, Any]) -> str:
+    suffix = path.rsplit(".", 1)[-1]
+    key_fields: tuple[str, ...] = ()
+    if suffix == "evidence":
+        key_fields = ("evidence_id",)
+    elif suffix == "timeline":
+        event = str(
+            row.get("event") or row.get("event_type") or ""
+        ).strip().lower()
+        time_value = str(
+            row.get("time_utc8")
+            or row.get("time_utc")
+            or row.get("time_text")
+            or ""
+        ).strip().lower()
+        venue = str(row.get("venue") or "").strip().lower()
+        if event or time_value or venue:
+            return f"{suffix}:{event}|{time_value}|{venue}"
+    elif suffix == "segments":
+        key_fields = ("position_id",)
+    elif suffix == "allocations":
+        key_fields = (
+            "bucket_id",
+            "role",
+            "name",
+            "label",
+            "unlock_time_utc",
+        )
+    elif suffix == "cross_chain":
+        key_fields = (
+            "chain",
+            "venue",
+            "address",
+            "inventory_address",
+        )
+    elif suffix == "cex":
+        key_fields = ("venue", "market")
+    elif suffix == "market_makers":
+        key_fields = ("address",)
+    elif suffix == "sniper_curve":
+        key_fields = ("buy_pressure_usdt",)
+    elif suffix == "anchors":
+        key_fields = ("kind", "source")
+    elif suffix == "prediction_markets":
+        key_fields = ("source", "target_fdv_usd", "expiry")
+    elif suffix == "sell_pressure_scenarios":
+        key_fields = ("scenario",)
+    elif suffix == "event_distributions":
+        key_fields = ("name",)
+    values = tuple(str(row.get(field) or "").strip().lower() for field in key_fields)
+    if key_fields and any(values):
+        return suffix + ":" + "|".join(values)
+    stable = {
+        key: value
+        for key, value in row.items()
+        if key
+        not in RESEARCH_REFRESH_TIMESTAMP_KEYS
+        | {"verification_status", "evidence_ids"}
+    }
+    return suffix + ":" + json.dumps(
+        stable,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def research_conflict(
+    path: str,
+    left: Any,
+    right: Any,
+    left_status: str,
+    right_status: str,
+) -> dict[str, Any]:
+    return {
+        "path": path,
+        "existing_value": copy.deepcopy(left),
+        "candidate_value": copy.deepcopy(right),
+        "existing_status": left_status or "unverified",
+        "candidate_status": right_status or "unverified",
+    }
+
+
+def merge_research_list(
+    existing: list[Any],
+    candidate: list[Any],
+    *,
+    path: str,
+    conflicts: list[dict[str, Any]],
+    existing_status: str,
+    candidate_status: str,
+) -> list[Any]:
+    if not all(isinstance(row, dict) for row in existing + candidate):
+        return unique_list(copy.deepcopy(existing) + copy.deepcopy(candidate))
+    merged = copy.deepcopy(existing)
+    index = {
+        research_row_key(path, row): position
+        for position, row in enumerate(merged)
+    }
+    for row in candidate:
+        key = research_row_key(path, row)
+        position = index.get(key)
+        if position is None:
+            index[key] = len(merged)
+            merged.append(copy.deepcopy(row))
+            continue
+        merged[position] = merge_research_value(
+            merged[position],
+            row,
+            path=f"{path}[{key}]",
+            conflicts=conflicts,
+            existing_status=existing_status,
+            candidate_status=candidate_status,
+        )
+    return merged
+
+
+def merge_research_value(
+    existing: Any,
+    candidate: Any,
+    *,
+    path: str,
+    conflicts: list[dict[str, Any]],
+    existing_status: str = "",
+    candidate_status: str = "",
+) -> Any:
+    if missing_research_value(existing):
+        return copy.deepcopy(candidate)
+    if missing_research_value(candidate):
+        return copy.deepcopy(existing)
+    if isinstance(existing, dict) and isinstance(candidate, dict):
+        left_status = str(
+            existing.get("verification_status") or existing_status or ""
+        ).lower()
+        right_status = str(
+            candidate.get("verification_status") or candidate_status or ""
+        ).lower()
+        conflict_start = len(conflicts)
+        merged: dict[str, Any] = {}
+        for key in dict.fromkeys([*existing.keys(), *candidate.keys()]):
+            left = existing.get(key)
+            right = candidate.get(key)
+            child_path = f"{path}.{key}" if path else key
+            if key == "verification_status":
+                continue
+            if key == "research_status":
+                values = {
+                    str(value or "").lower()
+                    for value in (left, right)
+                    if value
+                }
+                if "blocked" in values:
+                    merged[key] = "blocked"
+                elif "ready" in values:
+                    merged[key] = "ready"
+                else:
+                    merged[key] = "partial"
+                continue
+            if key == "revision":
+                numeric = [
+                    int(value)
+                    for value in (left, right)
+                    if str(value or "").isdigit()
+                ]
+                merged[key] = max(numeric) if numeric else (right or left)
+                continue
+            if key in RESEARCH_REFRESH_TIMESTAMP_KEYS:
+                merged[key] = copy.deepcopy(right or left)
+                continue
+            if key in {"evidence_ids", "missing_fields", "conflicts"}:
+                merged[key] = unique_list(
+                    list(copy.deepcopy(left) or [])
+                    + list(copy.deepcopy(right) or [])
+                )
+                continue
+            merged[key] = merge_research_value(
+                left,
+                right,
+                path=child_path,
+                conflicts=conflicts,
+                existing_status=left_status,
+                candidate_status=right_status,
+            )
+        if "verification_status" in existing or "verification_status" in candidate:
+            if len(conflicts) > conflict_start:
+                merged["verification_status"] = "conflicted"
+            elif verification_rank(right_status) > verification_rank(left_status):
+                merged["verification_status"] = right_status
+            else:
+                merged["verification_status"] = left_status or right_status
+        return merged
+    if isinstance(existing, list) and isinstance(candidate, list):
+        return merge_research_list(
+            existing,
+            candidate,
+            path=path,
+            conflicts=conflicts,
+            existing_status=existing_status,
+            candidate_status=candidate_status,
+        )
+    if existing == candidate:
+        return copy.deepcopy(existing)
+    conflicts.append(
+        research_conflict(
+            path,
+            existing,
+            candidate,
+            existing_status,
+            candidate_status,
+        )
+    )
+    if verification_rank(candidate_status) > verification_rank(existing_status):
+        return copy.deepcopy(candidate)
+    return copy.deepcopy(existing)
+
+
+def merge_prelaunch_research(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    if not existing:
+        return finalize_prelaunch_research(
+            copy.deepcopy(candidate),
+            [candidate.get("research_status")],
+        )
+    if not candidate:
+        return finalize_prelaunch_research(
+            copy.deepcopy(existing),
+            [existing.get("research_status")],
+        )
+    conflicts: list[dict[str, Any]] = []
+    merged = merge_research_value(
+        existing,
+        candidate,
+        path="",
+        conflicts=conflicts,
+    )
+    assert isinstance(merged, dict)
+    merged_conflicts = unique_list(
+        list(merged.get("conflicts") or []) + conflicts
+    )
+    if merged_conflicts:
+        merged["conflicts"] = merged_conflicts
+    merged.setdefault("schema_version", "alpha_prelaunch_research.v1")
+    candidate_complete = (
+        str(candidate.get("research_status") or "").lower()
+        == "ready"
+        and not candidate.get("missing_fields")
+        and not candidate.get("conflicts")
+    )
+    if candidate_complete and not merged_conflicts:
+        merged["missing_fields"] = []
+    return finalize_prelaunch_research(
+        merged,
+        (
+            [candidate.get("research_status")]
+            if candidate_complete and not merged_conflicts
+            else [
+                existing.get("research_status"),
+                candidate.get("research_status"),
+            ]
+        ),
+    )
+
+
+def finalize_prelaunch_research(
+    research: dict[str, Any],
+    source_statuses: list[Any] | None = None,
+) -> dict[str, Any]:
+    merged = copy.deepcopy(research)
+    merged.setdefault("schema_version", "alpha_prelaunch_research.v1")
+    statuses = {
+        str(value or "").strip().lower()
+        for value in (
+            list(source_statuses or [])
+            + [merged.get("research_status")]
+        )
+        if value
+    }
+    if merged.get("conflicts") or "blocked" in statuses:
+        merged["research_status"] = "blocked"
+    elif merged.get("missing_fields"):
+        merged["research_status"] = "partial"
+    elif statuses == {"ready"}:
+        merged["research_status"] = "ready"
+    else:
+        merged["research_status"] = "partial"
+    return strict_normalize_prelaunch_research(merged)
+
+
+def block_research_on_conflicts(
+    research: dict[str, Any],
+    conflicts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not conflicts:
+        return research
+    merged = copy.deepcopy(research)
+    merged.setdefault("schema_version", "alpha_prelaunch_research.v1")
+    merged["research_status"] = "blocked"
+    merged["conflicts"] = unique_list(
+        list(merged.get("conflicts") or []) + conflicts
+    )
+    return merged
+
+
 def merge_contract_rows(
     existing_rows: list[Any],
     candidate_rows: list[Any],
@@ -980,6 +1346,410 @@ def merge_known_time_rows(
             **copy.deepcopy(value),
         }
     return unkeyed + list(keyed.values())
+
+
+def minute_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc).replace(second=0, microsecond=0)
+
+
+def alpha_launch_reason(value: Any) -> bool:
+    reason = str(value or "").strip().lower()
+    return (
+        "alpha_open" in reason
+        or (
+            (
+                "binance_alpha" in reason
+                or "binance alpha" in reason
+                or "bn_alpha" in reason
+                or "bn alpha" in reason
+                or ("币安" in reason and "alpha" in reason)
+            )
+            and any(
+                marker in reason
+                for marker in (
+                    "listing",
+                    "launch",
+                    "opening",
+                    "上线",
+                    "开盘",
+                )
+            )
+        )
+    )
+
+
+def launch_known_time_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in item.get("known_times", []):
+        if not isinstance(row, dict):
+            continue
+        if not alpha_launch_reason(row.get("reason")):
+            continue
+        parsed = parse_utc8_time(row.get("time"))
+        rows.append(
+            {
+                **copy.deepcopy(row),
+                "_parsed_time": (
+                    minute_utc(parsed)
+                    if parsed is not None
+                    else None
+                ),
+                "_display_time": (
+                    parsed.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+                    if parsed is not None
+                    else "invalid_known_times.time"
+                ),
+                "_source": "known_times",
+            }
+        )
+    return rows
+
+
+def static_listing_fact_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
+    facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for key, parser in (
+        ("listing_time_utc", parse_iso_time),
+        ("listing_time_utc8", parse_utc8_time),
+    ):
+        raw = facts.get(key)
+        if raw in (None, ""):
+            continue
+        parsed = parser(raw)
+        rows.append(
+            {
+                "_parsed_time": (
+                    minute_utc(parsed)
+                    if parsed is not None
+                    else None
+                ),
+                "_display_time": (
+                    parsed.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+                    if parsed is not None
+                    else f"invalid_{key}"
+                ),
+                "_source": f"facts.{key}",
+            }
+        )
+    return rows
+
+
+def alpha_launch_event(row: dict[str, Any]) -> bool:
+    event_type = str(
+        row.get("event_type") or row.get("event") or ""
+    ).strip().lower()
+    if event_type == "alpha_open":
+        return True
+    if event_type not in {"listing", "launch"}:
+        return False
+    venue = (
+        str(row.get("venue") or "")
+        .strip()
+        .lower()
+        .replace("_", " ")
+    )
+    return (
+        (
+            "binance" in venue
+            or "bn alpha" in venue
+            or "币安" in venue
+        )
+        and "alpha" in venue
+    )
+
+
+def exact_alpha_launch_event(row: dict[str, Any]) -> bool:
+    precision = str(row.get("time_precision") or "").strip().lower()
+    return (
+        alpha_launch_event(row)
+        and precision not in {"estimated", "unknown", "time_only"}
+    )
+
+
+def invalid_alpha_time_precision(row: dict[str, Any]) -> bool:
+    precision = str(row.get("time_precision") or "").strip().lower()
+    return alpha_launch_event(row) and precision not in VALID_TIME_PRECISIONS
+
+
+def event_schedule_time_rows(
+    row: dict[str, Any],
+    *,
+    source_prefix: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, parser in (
+        ("time_utc", parse_iso_time),
+        ("time_utc8", parse_utc8_time),
+    ):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        parsed = parser(raw)
+        rows.append(
+            {
+                "_parsed_time": (
+                    minute_utc(parsed)
+                    if parsed is not None
+                    else None
+                ),
+                "_display_time": (
+                    parsed.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+                    if parsed is not None
+                    else f"invalid_{source_prefix}.{key}"
+                ),
+                "_source": f"{source_prefix}.{key}",
+            }
+        )
+    if row.get("time_text"):
+        raw_time_text = str(row.get("time_text") or "").strip()
+        parsed = parse_utc8_time(raw_time_text)
+        if parsed is None:
+            clock_match = re.fullmatch(
+                r"((?:[01]?\d|2[0-3]))[:：](\d{2})",
+                raw_time_text,
+            )
+            anchor = next(
+                (
+                    value.get("_parsed_time")
+                    for value in rows
+                    if value.get("_parsed_time") is not None
+                ),
+                None,
+            )
+            if clock_match and anchor is not None:
+                parsed = anchor.astimezone(UTC8).replace(
+                    hour=int(clock_match.group(1)),
+                    minute=int(clock_match.group(2)),
+                )
+        rows.append(
+            {
+                "_parsed_time": (
+                    minute_utc(parsed)
+                    if parsed is not None
+                    else None
+                ),
+                "_display_time": (
+                    parsed.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+                    if parsed is not None
+                    else f"invalid_{source_prefix}.time_text"
+                ),
+                "_source": f"{source_prefix}.time_text",
+            }
+        )
+    return rows
+
+
+def alpha_event_time_conflicts(
+    row: dict[str, Any],
+    official_time: datetime,
+) -> bool:
+    if invalid_alpha_time_precision(row):
+        return True
+    if not exact_alpha_launch_event(row):
+        return False
+    time_rows = event_schedule_time_rows(
+        row,
+        source_prefix="event_schedule",
+    )
+    return bool(time_rows) and any(
+        value.get("_parsed_time") is None
+        or value["_parsed_time"] != official_time
+        for value in time_rows
+    )
+
+
+def static_launch_time_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = launch_known_time_rows(item)
+    rows.extend(static_listing_fact_rows(item))
+    for row in item.get("event_schedule", []):
+        if not isinstance(row, dict):
+            continue
+        if invalid_alpha_time_precision(row):
+            rows.append(
+                {
+                    "_parsed_time": None,
+                    "_display_time": (
+                        "invalid_event_schedule.time_precision"
+                    ),
+                    "_source": "event_schedule.time_precision",
+                }
+            )
+        if not exact_alpha_launch_event(row):
+            continue
+        rows.extend(
+            event_schedule_time_rows(
+                row,
+                source_prefix="event_schedule",
+            )
+        )
+    research = item.get("prelaunch_research")
+    research = research if isinstance(research, dict) else {}
+    for row in research.get("timeline", []):
+        if not isinstance(row, dict):
+            continue
+        if invalid_alpha_time_precision(row):
+            rows.append(
+                {
+                    "_parsed_time": None,
+                    "_display_time": (
+                        "invalid_prelaunch_research.timeline.time_precision"
+                    ),
+                    "_source": (
+                        "prelaunch_research.timeline.time_precision"
+                    ),
+                }
+            )
+        if not exact_alpha_launch_event(row):
+            continue
+        rows.extend(
+            event_schedule_time_rows(
+                row,
+                source_prefix="prelaunch_research.timeline",
+            )
+        )
+    return rows
+
+
+def official_catalog_listing_time(item: dict[str, Any]) -> datetime | None:
+    facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+    if facts.get("source") != "binance_alpha_public_catalog":
+        return None
+    parsed = parse_iso_time(facts.get("listing_time_utc"))
+    return minute_utc(parsed) if parsed is not None else None
+
+
+def sanitize_static_launch_time_conflict(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    official_time = official_catalog_listing_time(candidate)
+    if official_time is None:
+        return copy.deepcopy(existing), None
+    conflicting_rows = [
+        row
+        for row in static_launch_time_rows(existing)
+        if row.get("_parsed_time") is None
+        or row["_parsed_time"] != official_time
+    ]
+    if not conflicting_rows:
+        return copy.deepcopy(existing), None
+
+    conflicting_minutes = {
+        row["_parsed_time"]
+        for row in conflicting_rows
+        if row.get("_parsed_time") is not None
+    }
+    conflicting_times = sorted(
+        {
+            str(
+                row.get("_display_time")
+                or row["_parsed_time"].astimezone(UTC8).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+            )
+            for row in conflicting_rows
+        }
+    )
+    official_utc8 = official_time.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+    sanitized = copy.deepcopy(existing)
+    sanitized["known_times"] = [
+        row
+        for row in sanitized.get("known_times", [])
+        if not (
+            isinstance(row, dict)
+            and (
+                (
+                    parse_utc8_time(row.get("time")) is not None
+                    and minute_utc(parse_utc8_time(row.get("time")))
+                    in conflicting_minutes
+                )
+                or (
+                    parse_utc8_time(row.get("time")) is None
+                    and alpha_launch_reason(row.get("reason"))
+                )
+            )
+        )
+    ]
+    sanitized["event_schedule"] = [
+        row
+        for row in sanitized.get("event_schedule", [])
+        if not (
+            isinstance(row, dict)
+            and alpha_event_time_conflicts(row, official_time)
+        )
+    ]
+    sanitized["pool_ids"] = [
+        row
+        for row in sanitized.get("pool_ids", [])
+        if not (
+            isinstance(row, dict)
+            and not str(row.get("pool_id") or "").strip()
+            and parse_utc8_time(row.get("start_time_utc8")) is not None
+            and minute_utc(parse_utc8_time(row.get("start_time_utc8")))
+            in conflicting_minutes
+        )
+    ]
+    research = (
+        copy.deepcopy(sanitized.get("prelaunch_research"))
+        if isinstance(sanitized.get("prelaunch_research"), dict)
+        else {}
+    )
+    timeline = []
+    for row in research.get("timeline", []):
+        if not isinstance(row, dict):
+            timeline.append(copy.deepcopy(row))
+            continue
+        normalized_row = copy.deepcopy(row)
+        if alpha_event_time_conflicts(row, official_time):
+            normalized_row["runtime_anchor_status"] = (
+                "superseded_by_official_catalog"
+            )
+            normalized_row["canonical_runtime_anchor"] = False
+        timeline.append(normalized_row)
+    if timeline or "timeline" in research:
+        research["timeline"] = timeline
+    facts = (
+        copy.deepcopy(sanitized.get("facts"))
+        if isinstance(sanitized.get("facts"), dict)
+        else {}
+    )
+    if any(
+        str(row.get("_source") or "").startswith("facts.")
+        for row in conflicting_rows
+    ):
+        facts.pop("listing_time_utc", None)
+        facts.pop("listing_time_utc8", None)
+    facts["opening_time_conflict_status"] = "blocked_static_anchor"
+    facts["static_opening_times_utc8"] = conflicting_times
+    facts["official_listing_time_utc8"] = official_utc8
+    sanitized["facts"] = facts
+    conflict = {
+        "path": "timeline.alpha_open",
+        "detail": (
+            "static launch anchor "
+            + ",".join(conflicting_times)
+            + f" conflicts with official Binance Alpha listing {official_utc8}"
+        ),
+    }
+    sanitized["prelaunch_research"] = block_research_on_conflicts(
+        research,
+        [conflict],
+    )
+    return sanitized, {
+        "symbol": str(candidate.get("symbol") or existing.get("symbol") or "").upper(),
+        "chain": str(candidate.get("chain") or existing.get("chain") or "").lower(),
+        "contract": next(
+            (
+                contract
+                for chain, contract in item_contracts(candidate)
+                if chain and contract
+            ),
+            "",
+        ),
+        "static_opening_times_utc8": conflicting_times,
+        "official_listing_time_utc8": official_utc8,
+        "status": "blocked_static_anchor",
+    }
 
 
 def item_contracts(item: dict[str, Any]) -> set[tuple[str, str]]:
@@ -1370,10 +2140,78 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
         list(merged.get("known_times", [])),
         list(candidate.get("known_times", [])),
     )
+    research_conflicts: list[dict[str, Any]] = []
+    existing_context = (
+        merged.get("market_context")
+        if isinstance(merged.get("market_context"), dict)
+        else {}
+    )
+    candidate_context = (
+        candidate.get("market_context")
+        if isinstance(candidate.get("market_context"), dict)
+        else {}
+    )
+    if existing_context or candidate_context:
+        merged["market_context"] = merge_research_value(
+            existing_context,
+            candidate_context,
+            path="market_context",
+            conflicts=research_conflicts,
+        )
+    existing_distributions = (
+        merged.get("event_distributions")
+        if isinstance(merged.get("event_distributions"), list)
+        else []
+    )
+    candidate_distributions = (
+        candidate.get("event_distributions")
+        if isinstance(candidate.get("event_distributions"), list)
+        else []
+    )
+    if existing_distributions or candidate_distributions:
+        merged["event_distributions"] = merge_research_list(
+            existing_distributions,
+            candidate_distributions,
+            path="event_distributions",
+            conflicts=research_conflicts,
+            existing_status="",
+            candidate_status="",
+        )
+    existing_research = (
+        merged.get("prelaunch_research")
+        if isinstance(merged.get("prelaunch_research"), dict)
+        else {}
+    )
+    candidate_research = (
+        candidate.get("prelaunch_research")
+        if isinstance(candidate.get("prelaunch_research"), dict)
+        else {}
+    )
+    if existing_research or candidate_research:
+        merged["prelaunch_research"] = merge_prelaunch_research(
+            existing_research,
+            candidate_research,
+        )
+    if research_conflicts:
+        merged["prelaunch_research"] = block_research_on_conflicts(
+            merged.get("prelaunch_research")
+            if isinstance(merged.get("prelaunch_research"), dict)
+            else {},
+            research_conflicts,
+        )
     if contract_migration:
         merged["facts"] = {**merged.get("facts", {}), **candidate.get("facts", {})}
     else:
         merged["facts"] = {**candidate.get("facts", {}), **merged.get("facts", {})}
+    candidate_facts = (
+        candidate.get("facts")
+        if isinstance(candidate.get("facts"), dict)
+        else {}
+    )
+    if candidate_facts.get("source") == "binance_alpha_public_catalog":
+        for key in ("listing_time_utc", "listing_time_utc8"):
+            if candidate_facts.get(key) not in (None, ""):
+                merged["facts"][key] = candidate_facts[key]
     first_seen_values = [
         parsed
         for parsed in (
@@ -1528,13 +2366,21 @@ def build_runtime_watchlist(
         for item in static_watchlist.get("items", [])
         if isinstance(item, dict)
     ]
+    static_time_conflicts: list[dict[str, Any]] = []
     registry_lifecycle_targets = registry_selected
     for candidate in selected + registry_selected:
         index = matching_item_index(items, candidate)
         if index is None:
             items.append(candidate)
         else:
-            items[index] = merge_item(items[index], candidate)
+            existing = items[index]
+            sanitized, conflict = sanitize_static_launch_time_conflict(
+                existing,
+                candidate,
+            )
+            if conflict is not None:
+                static_time_conflicts.append(conflict)
+            items[index] = merge_item(sanitized, candidate)
     covered_identities = {
         f"{chain}:{contract}"
         for item in items
@@ -1590,6 +2436,8 @@ def build_runtime_watchlist(
             for item in registry_lifecycle_targets
         ],
         "registry_pending": registry_pending,
+        "static_time_conflict_count": len(static_time_conflicts),
+        "static_time_conflicts": static_time_conflicts,
         "items": items,
     }
     return payload, selected
@@ -1651,6 +2499,12 @@ def public_summary(
         ),
         "registry_selected": list(runtime_watchlist.get("registry_selected") or []),
         "registry_pending": list(runtime_watchlist.get("registry_pending") or []),
+        "static_time_conflict_count": int(
+            runtime_watchlist.get("static_time_conflict_count") or 0
+        ),
+        "static_time_conflicts": list(
+            runtime_watchlist.get("static_time_conflicts") or []
+        ),
         "runtime_watchlist_item_count": len(runtime_watchlist.get("items", [])),
         "selected": [catalog_summary_row(item) for item in selected],
     }

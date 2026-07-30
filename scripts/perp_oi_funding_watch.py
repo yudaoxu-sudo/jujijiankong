@@ -81,6 +81,8 @@ def append_history(snapshot: dict[str, Any]) -> None:
                 "perp_state": row.get("perp_state", ""),
                 "mark_price": row.get("mark_price", ""),
                 "open_interest_usd": row.get("open_interest_usd", ""),
+                "oi_event_time_ms": row.get("oi_event_time_ms", ""),
+                "oi_observed_at": row.get("oi_observed_at", ""),
                 "total_open_interest_usd": row.get("total_open_interest_usd", ""),
                 "oi_venue_components": row.get("oi_venue_components") or aggregate_open_interest_components(row),
                 "last_funding_rate": row.get("last_funding_rate", ""),
@@ -474,6 +476,7 @@ def fetch_okx_symbol(inst_id: str) -> dict[str, Any]:
         "funding_interval_hint_hours": str(interval_hint) if interval_hint > 0 else "",
         "open_interest": str(decimal_from(oi.get("oi"))),
         "open_interest_usd": str(decimal_from(oi.get("oiUsd"))),
+        "oi_event_time_ms": oi.get("ts", ""),
         "price_change_pct_24h": str(percent_change(last, decimal_from(ticker.get("open24h")))),
         "quote_volume_24h": str(vol_base * last),
         "count_24h": 0,
@@ -762,7 +765,18 @@ def bybit_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_bybit_symbol(symbol: str) -> dict[str, Any]:
-    ticker = bybit_json("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    payload = http_json_base(
+        BYBIT_API,
+        "/v5/market/tickers",
+        {"category": "linear", "symbol": symbol},
+        timeout=int(os.environ.get("PERP_WATCH_HTTP_TIMEOUT", "30")),
+    )
+    if int(payload.get("retCode", -1)) != 0:
+        raise RuntimeError(
+            f"Bybit API error: {payload.get('retMsg') or payload.get('retCode')}"
+        )
+    rows = payload.get("result", {}).get("list") or []
+    ticker = rows[0] if rows else {}
     return {
         "mark_price": str(decimal_from(ticker.get("markPrice") or ticker.get("lastPrice"))),
         "index_price": str(decimal_from(ticker.get("indexPrice"))),
@@ -770,6 +784,7 @@ def fetch_bybit_symbol(symbol: str) -> dict[str, Any]:
         "next_funding_time": ticker.get("nextFundingTime", ""),
         "open_interest": str(decimal_from(ticker.get("openInterest"))),
         "open_interest_usd": str(decimal_from(ticker.get("openInterestValue"))),
+        "oi_event_time_ms": payload.get("time", ""),
         "price_change_pct_24h": str(decimal_from(ticker.get("price24hPcnt")) * Decimal(100)),
         "quote_volume_24h": str(decimal_from(ticker.get("turnover24h"))),
         "count_24h": 0,
@@ -964,34 +979,193 @@ def history_rows_for_symbol(
     return rows
 
 
+def oi_event_datetime(row: dict[str, Any]) -> datetime | None:
+    raw = row.get("oi_event_time_ms")
+    if isinstance(raw, bool):
+        return None
+    try:
+        timestamp_ms = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if timestamp_ms <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(
+            timestamp_ms / 1000,
+            timezone.utc,
+        )
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def oi_sample_time_diagnostic(
+    row: dict[str, Any],
+    observed_at: datetime | None,
+) -> tuple[dict[str, Any], datetime | None]:
+    event_time = oi_event_datetime(row)
+    diagnostic = {
+        "oi_event_time_ms": row.get("oi_event_time_ms", ""),
+        "oi_event_time_utc": (
+            event_time.isoformat() if event_time is not None else ""
+        ),
+        "oi_event_age_seconds": "",
+        "oi_event_freshness": "missing",
+    }
+    if event_time is None or observed_at is None:
+        if observed_at is None:
+            diagnostic["oi_event_freshness"] = "invalid_observed_at"
+        return diagnostic, event_time
+    age_seconds = int((observed_at - event_time).total_seconds())
+    diagnostic["oi_event_age_seconds"] = age_seconds
+    max_age_seconds = max(
+        1,
+        int(
+            os.environ.get(
+                "PERP_WATCH_CURRENT_EVENT_MAX_AGE_SECONDS",
+                "300",
+            )
+        ),
+    )
+    future_tolerance_seconds = max(
+        0,
+        int(
+            os.environ.get(
+                "PERP_WATCH_EVENT_FUTURE_TOLERANCE_SECONDS",
+                "60",
+            )
+        ),
+    )
+    if age_seconds < -future_tolerance_seconds:
+        diagnostic["oi_event_freshness"] = "future"
+    elif age_seconds > max_age_seconds:
+        diagnostic["oi_event_freshness"] = "stale"
+    else:
+        diagnostic["oi_event_freshness"] = "fresh"
+    return diagnostic, event_time
+
+
 def trend_for_symbol(history: list[dict[str, Any]], symbol: str, current: dict[str, Any], generated_at: str) -> dict[str, Any]:
-    current_time = parse_iso(generated_at)
+    current_time = (
+        parse_iso(current.get("oi_observed_at"))
+        or parse_iso(generated_at)
+    )
+    current_time_diagnostic, current_event_time = (
+        oi_sample_time_diagnostic(current, current_time)
+    )
+    current_diagnostic = {
+        "current_oi_event_time_ms": current_time_diagnostic[
+            "oi_event_time_ms"
+        ],
+        "current_oi_event_time_utc": current_time_diagnostic[
+            "oi_event_time_utc"
+        ],
+        "current_oi_event_age_seconds": current_time_diagnostic[
+            "oi_event_age_seconds"
+        ],
+        "current_oi_event_freshness": current_time_diagnostic[
+            "oi_event_freshness"
+        ],
+        "oi_observed_at": (
+            current_time.isoformat() if current_time is not None else ""
+        ),
+    }
+    if current_time_diagnostic["oi_event_freshness"] != "fresh":
+        return {
+            "trend_status": (
+                "current_sample_"
+                + str(current_time_diagnostic["oi_event_freshness"])
+            ),
+            **current_diagnostic,
+            "trend_hint": "观察",
+            "trend_action": "当前 OI 样本事件时间无效或已过期",
+        }
     rows = history_rows_for_symbol(history, symbol, current_time, current)
     if not rows:
-        return {"trend_status": "no_history", "trend_hint": "观察", "trend_action": "历史样本不足"}
+        return {
+            "trend_status": "no_history",
+            **current_diagnostic,
+            "trend_hint": "观察",
+            "trend_action": "历史样本不足",
+        }
 
     lookback = int(os.environ.get("PERP_WATCH_TREND_LOOKBACK_MINUTES", "60"))
-    target_time = current_time.timestamp() - lookback * 60 if current_time else None
-    baseline = rows[0]
-    if target_time is not None:
-        older = [row for row in rows if (parse_iso(row.get("generated_at")) or current_time).timestamp() <= target_time]
-        if older:
-            baseline = older[-1]
-    previous = rows[-1]
-    base_time = parse_iso(baseline.get("generated_at"))
-    age_minutes = ""
-    if current_time and base_time:
-        age_minutes = str(max(0, int((current_time - base_time).total_seconds() // 60)))
-    min_age = int(os.environ.get("PERP_WATCH_TREND_MIN_AGE_MINUTES", "10"))
-    if age_minutes != "" and int(age_minutes) < min_age:
+    min_age = max(
+        0,
+        int(os.environ.get("PERP_WATCH_TREND_MIN_AGE_MINUTES", "10")),
+    )
+    max_age = int(
+        os.environ.get(
+            "PERP_WATCH_TREND_MAX_AGE_MINUTES",
+            "180",
+        )
+    )
+    if max_age < min_age:
         return {
-            "trend_status": "short_history",
-            "baseline_generated_at": baseline.get("generated_at", ""),
-            "baseline_age_minutes": age_minutes,
-            "previous_generated_at": previous.get("generated_at", ""),
+            "trend_status": "invalid_baseline_interval_config",
+            **current_diagnostic,
+            "baseline_min_age_minutes": min_age,
+            "baseline_max_age_minutes": max_age,
             "trend_hint": "观察",
-            "trend_action": "历史窗口不足",
+            "trend_action": "OI 基线最大间隔小于最小间隔",
         }
+    eligible: list[tuple[int, datetime, dict[str, Any]]] = []
+    rejection_counts = {
+        "invalid_snapshot_time": 0,
+        "baseline_event_time_missing": 0,
+        "baseline_sample_stale": 0,
+        "baseline_interval_too_short": 0,
+        "baseline_interval_too_long": 0,
+    }
+    for row in rows:
+        snapshot_time = (
+            parse_iso(row.get("oi_observed_at"))
+            or parse_iso(row.get("generated_at"))
+        )
+        if snapshot_time is None:
+            rejection_counts["invalid_snapshot_time"] += 1
+            continue
+        baseline_time_diagnostic, baseline_event_time = (
+            oi_sample_time_diagnostic(row, snapshot_time)
+        )
+        baseline_freshness = baseline_time_diagnostic[
+            "oi_event_freshness"
+        ]
+        if baseline_event_time is None:
+            rejection_counts["baseline_event_time_missing"] += 1
+            continue
+        if baseline_freshness != "fresh":
+            rejection_counts["baseline_sample_stale"] += 1
+            continue
+        age_seconds = int(
+            (current_event_time - baseline_event_time).total_seconds()
+        )
+        if age_seconds < min_age * 60:
+            rejection_counts["baseline_interval_too_short"] += 1
+            continue
+        if age_seconds > max_age * 60:
+            rejection_counts["baseline_interval_too_long"] += 1
+            continue
+        eligible.append((age_seconds, baseline_event_time, row))
+    if not eligible:
+        return {
+            "trend_status": "no_eligible_baseline",
+            **current_diagnostic,
+            "baseline_min_age_minutes": min_age,
+            "baseline_max_age_minutes": max_age,
+            "baseline_candidate_count": len(rows),
+            "baseline_rejection_counts": rejection_counts,
+            "trend_hint": "观察",
+            "trend_action": "没有同时满足最小和最大间隔的有效 OI 基线",
+        }
+    baseline_age_seconds, baseline_event_time, baseline = min(
+        eligible,
+        key=lambda item: (
+            abs(item[0] - lookback * 60),
+            -item[1].timestamp(),
+        ),
+    )
+    previous = max(eligible, key=lambda item: item[1])[2]
+    age_minutes = str(baseline_age_seconds // 60)
 
     current_oi = decimal_from(current.get("open_interest_usd"))
     base_oi = decimal_from(baseline.get("open_interest_usd"))
@@ -1066,8 +1240,16 @@ def trend_for_symbol(history: list[dict[str, Any]], symbol: str, current: dict[s
 
     return {
         "trend_status": "ok",
+        **current_diagnostic,
         "baseline_generated_at": baseline.get("generated_at", ""),
+        "baseline_oi_event_time_ms": baseline.get(
+            "oi_event_time_ms",
+            "",
+        ),
+        "baseline_oi_event_time_utc": baseline_event_time.isoformat(),
         "baseline_age_minutes": age_minutes,
+        "baseline_min_age_minutes": min_age,
+        "baseline_max_age_minutes": max_age,
         "previous_generated_at": previous.get("generated_at", ""),
         "oi_usd_delta": str(oi_delta),
         "oi_usd_delta_pct": str(oi_delta_pct),
@@ -1094,6 +1276,7 @@ def fetch_symbol(symbol: str) -> dict[str, Any]:
         "next_funding_time": premium.get("nextFundingTime", ""),
         "open_interest": str(open_interest),
         "open_interest_usd": str(open_interest * mark),
+        "oi_event_time_ms": oi.get("time", ""),
         "price_change_pct_24h": str(decimal_from(ticker.get("priceChangePercent"))),
         "quote_volume_24h": str(decimal_from(ticker.get("quoteVolume"))),
         "count_24h": ticker.get("count", 0),
@@ -1133,6 +1316,35 @@ def classify_perp(row: dict[str, Any]) -> dict[str, Any]:
         "direction_hint": "观察",
         "action": "合约已上线，暂未出现明显OI/资金费率信号",
     }
+
+
+def row_has_actionable_perp_alert(row: dict[str, Any]) -> bool:
+    if (
+        row.get("status") != "ok"
+        or row.get("current_oi_event_freshness") != "fresh"
+    ):
+        return False
+    return bool(
+        row.get("direction_hint") in {"拥挤", "可观察"}
+        or row.get("cross_venue_notes")
+        or row.get("depth_state")
+        in {"thin_depth", "wide_spread", "ask_thin", "bid_thin"}
+        or row.get("liquidation_state")
+        in {
+            "long_liquidation_pressure",
+            "short_liquidation_pressure",
+            "two_sided_liquidation",
+        }
+        or row.get("funding_history_state")
+        in {
+            "sustained_long_crowding",
+            "sustained_short_crowding",
+            "funding_flip_positive",
+            "funding_flip_negative",
+            "recent_long_crowding",
+            "recent_short_crowding",
+        }
+    )
 
 
 def build_snapshot() -> dict[str, Any]:
@@ -1191,7 +1403,12 @@ def build_snapshot() -> dict[str, Any]:
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
                 row["oi_venue_components"] = aggregate_open_interest_components(row)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
+                trend = trend_for_symbol(
+                    history,
+                    item["symbol"],
+                    row,
+                    now_iso(),
+                )
                 row.update(trend)
                 rows.append(row)
             else:
@@ -1214,7 +1431,12 @@ def build_snapshot() -> dict[str, Any]:
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
                 row["oi_venue_components"] = aggregate_open_interest_components(row)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
+                trend = trend_for_symbol(
+                    history,
+                    item["symbol"],
+                    row,
+                    now_iso(),
+                )
                 row.update(trend)
                 rows.append(row)
             else:
@@ -1246,7 +1468,12 @@ def build_snapshot() -> dict[str, Any]:
             row["total_open_interest_usd"] = str(total_open_interest(row, extra_venues))
             row["oi_venue_components"] = aggregate_open_interest_components(row)
             row["cross_venue_notes"] = venue_notes
-            trend = trend_for_symbol(history, item["symbol"], row, generated_at)
+            trend = trend_for_symbol(
+                history,
+                item["symbol"],
+                row,
+                now_iso(),
+            )
             row.update(trend)
             rows.append(row)
         except Exception as exc:
@@ -1266,31 +1493,20 @@ def build_snapshot() -> dict[str, Any]:
                 row["listed_venues"] = listed_venue_names(row, other_venues)
                 row["total_open_interest_usd"] = str(total_open_interest(row, other_venues))
                 row["oi_venue_components"] = aggregate_open_interest_components(row)
-                trend = trend_for_symbol(history, item["symbol"], row, generated_at)
+                trend = trend_for_symbol(
+                    history,
+                    item["symbol"],
+                    row,
+                    now_iso(),
+                )
                 row.update(trend)
                 rows.append(row)
             else:
                 rows.append(dict(base, status="fetch_failed", error=str(exc), direction_hint="观察", action="合约指标拉取失败"))
-    alert_liquidation_states = {"long_liquidation_pressure", "short_liquidation_pressure", "two_sided_liquidation"}
-    alert_funding_history_states = {
-        "sustained_long_crowding",
-        "sustained_short_crowding",
-        "funding_flip_positive",
-        "funding_flip_negative",
-        "recent_long_crowding",
-        "recent_short_crowding",
-    }
     alerts = [
         row
         for row in rows
-        if row.get("status") == "ok"
-        and (
-            row.get("direction_hint") in {"拥挤", "可观察"}
-            or bool(row.get("cross_venue_notes"))
-            or row.get("depth_state") in {"thin_depth", "wide_spread", "ask_thin", "bid_thin"}
-            or row.get("liquidation_state") in alert_liquidation_states
-            or row.get("funding_history_state") in alert_funding_history_states
-        )
+        if row_has_actionable_perp_alert(row)
     ]
     funding_cache["updated_at"] = generated_at
     write_json(FUNDING_HISTORY_CACHE_PATH, funding_cache)

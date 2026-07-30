@@ -640,6 +640,619 @@
         "raw_symbol": "WDATAIP",
         "display_symbol": "DATA"
       }
+    },
+    {
+      "symbol": "GRVT",
+      "name": "Grvt",
+      "priority": "P0_DEEP_REVIEW",
+      "chain": "bsc",
+      "active_monitoring": true,
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0x46f2564e0fa8248d15125e7e54173cfbdef91be7",
+          "confidence": "social_prelaunch_candidate_requires_runtime_receipt"
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha opening",
+        "Booster distribution",
+        "community airdrop claim",
+        "multi-CEX trading"
+      ],
+      "known_times": [
+        {
+          "time": "2026-07-30 20:00",
+          "reason": "typed_alpha_open_social_candidate"
+        }
+      ],
+      "event_schedule": [
+        {
+          "event_type": "alpha_open",
+          "venue": "Binance Alpha",
+          "time_utc8": "2026-07-30 20:00",
+          "time_precision": "exact",
+          "authority": "social_discovery",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "event_type": "booster",
+          "venue": "Binance Booster",
+          "time_utc8": "2026-07-30 20:10",
+          "time_precision": "exact",
+          "authority": "social_discovery",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "event_type": "airdrop_claim",
+          "venue": "Grvt",
+          "time_utc8": "2026-07-30 21:00",
+          "time_precision": "exact",
+          "authority": "social_discovery",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "event_type": "cex_trade",
+          "venue": "multi-CEX",
+          "time_utc8": "2026-07-30 22:00",
+          "time_precision": "exact",
+          "authority": "social_discovery",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "event_type": "cex_trade",
+          "venue": "Coinbase",
+          "time_utc8": "",
+          "time_text": "预计凌晨",
+          "time_precision": "unknown",
+          "authority": "social_discovery",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        }
+      ],
+      "required_checks": [
+        "official_contract",
+        "receipt_verified_pool",
+        "pool_price_revision",
+        "pool_active_range_depth",
+        "buy_depth_simulation",
+        "supply_bucket_address_map",
+        "airdrop_unlock_and_claim",
+        "cross_chain_inventory",
+        "cex_deposit_and_trading_status",
+        "opening_forecast_vs_actual"
+      ],
+      "market_context": {
+        "initial_pool_price_usdt": "0.15",
+        "premarket_reference_price_usdt": "0.42",
+        "premarket_reference_venue": "Aspecta",
+        "premarket_reference_status": "unverified_social",
+        "opening_forecast_buy_quote_usdt": "300000",
+        "opening_forecast_bribe_quote_usdt": "200000",
+        "opening_forecast_avg_price_usdt": "0.46"
+      },
+      "event_distributions": [
+        {
+          "name": "initial_float_parent",
+          "bucket_id": "initial_float",
+          "share_of_total": "11.43%",
+          "aggregation_policy": "parent_not_summed_with_children",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "prelaunch_research.supply.allocations.initial_float",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "name": "community_airdrop",
+          "bucket_id": "community_airdrop",
+          "parent_bucket_id": "initial_float",
+          "share_of_total": "7.43%",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "prelaunch_research.supply.allocations.community_airdrop",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        {
+          "name": "ecosystem",
+          "bucket_id": "ecosystem_float",
+          "parent_bucket_id": "initial_float",
+          "share_of_total": "4%",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "prelaunch_research.supply.allocations.ecosystem_float",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        }
+      ],
+      "prelaunch_research": {
+        "schema_version": "alpha_prelaunch_research.v1",
+        "revision": 1,
+        "as_of": "2026-07-30T08:00:27+00:00",
+        "research_status": "blocked",
+        "evidence": [
+          {
+            "evidence_id": "grvt-social-prelaunch",
+            "evidence_kind": "social",
+            "source_ref": "https://x.com/2024macbookpro/status/2082738077819343327",
+            "published_at": "2026-07-30T08:00:27+00:00",
+            "observed_at": "2026-07-30T08:00:27+00:00",
+            "verification_status": "unverified"
+          },
+          {
+            "evidence_id": "grvt-official-token",
+            "evidence_kind": "official",
+            "source_ref": "https://grvt.io/blog/introducing-grvt-token/",
+            "observed_at": "2026-07-30T09:05:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "grvt-official-airdrop",
+            "evidence_kind": "official",
+            "source_ref": "https://help.grvt.io/en/articles/15886309-grvt-token-registration-and-multiplier-guide",
+            "observed_at": "2026-07-30T09:05:00+00:00",
+            "verification_status": "verified"
+          }
+        ],
+        "identity": {
+          "chain": "bsc",
+          "contract": "0x46f2564e0fa8248d15125e7e54173cfbdef91be7",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        "timeline": [
+          {
+            "event": "alpha_open",
+            "venue": "Binance Alpha",
+            "time_utc8": "2026-07-30 20:00",
+            "time_precision": "exact",
+            "authority": "social_discovery",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          },
+          {
+            "event": "booster",
+            "venue": "Binance Booster",
+            "time_utc8": "2026-07-30 20:10",
+            "time_precision": "exact",
+            "authority": "social_discovery",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          },
+          {
+            "event": "airdrop_claim",
+            "venue": "Grvt",
+            "time_utc8": "2026-07-30 21:00",
+            "time_precision": "exact",
+            "authority": "social_discovery",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          },
+          {
+            "event": "cex_trade",
+            "venue": "multi-CEX",
+            "time_utc8": "2026-07-30 22:00",
+            "time_precision": "exact",
+            "authority": "social_discovery",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          }
+        ],
+        "pool": {
+          "dex": "PancakeSwap",
+          "pair": "GRVT/USDT",
+          "initial_price_usdt": "0.15",
+          "price_revisions": [
+            {
+              "previous_price_usdt": "0.30",
+              "current_price_usdt": "0.15",
+              "change_pct": "-50",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "sell_zone",
+              "min_price_usdt": "0.15",
+              "max_price_usdt": "1.5",
+              "token_amount": "666660",
+              "quote_amount_usdt": "",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "kind": "sell_zone",
+              "min_price_usdt": "0.15",
+              "max_price_usdt": "0.75",
+              "token_amount": "499990",
+              "quote_amount_usdt": "",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "kind": "buy_support",
+              "min_price_usdt": "0.074",
+              "max_price_usdt": "0.15",
+              "token_amount": "",
+              "quote_amount_usdt": "174990",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "kind": "two_sided_full_range",
+              "min_price_usdt": "",
+              "max_price_usdt": "",
+              "token_amount": "500000",
+              "quote_amount_usdt": "75000",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ]
+        },
+        "supply": {
+          "total_supply": "1000000000",
+          "total_supply_claim": {
+            "amount": "1000000000",
+            "verification_status": "verified",
+            "evidence_ids": [
+              "grvt-official-token"
+            ]
+          },
+          "initial_float": "11.43%",
+          "allocations": [
+            {
+              "bucket_id": "initial_float",
+              "role": "initial_float",
+              "percent": "11.43",
+              "aggregation_policy": "parent_not_summed_with_children",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "community_airdrop",
+              "parent_bucket_id": "initial_float",
+              "role": "airdrop",
+              "percent": "7.43",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "ecosystem_float",
+              "parent_bucket_id": "initial_float",
+              "role": "ecosystem",
+              "percent": "4",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "binance_inventory",
+              "role": "cex_inventory",
+              "percent": "0.6",
+              "aggregation_policy": "parent_not_summed_with_children",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "binance_booster",
+              "parent_bucket_id": "binance_inventory",
+              "role": "booster",
+              "percent": "0.15",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "binance_alpha",
+              "parent_bucket_id": "binance_inventory",
+              "role": "alpha",
+              "percent": "0.3",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "bucket_id": "binance_future",
+              "parent_bucket_id": "binance_inventory",
+              "role": "future_distribution",
+              "percent": "0.15",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ],
+          "cross_chain": [
+            {
+              "chain": "bsc",
+              "inventory_percent": "1.35",
+              "bridge_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "chain": "eth",
+              "venue": "OKX",
+              "inventory_percent": "0.8",
+              "bridge_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "chain": "eth",
+              "venue": "Bybit",
+              "inventory_percent": "0.25",
+              "inventory_amount": "2500000",
+              "possible_overlap": true,
+              "bridge_state": "unknown",
+              "verification_status": "conflicted",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ]
+        },
+        "venues": {
+          "cex": [
+            {
+              "venue": "Binance",
+              "market": "alpha",
+              "deposit_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "venue": "OKX",
+              "market": "spot",
+              "deposit_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "venue": "Bybit",
+              "market": "spot",
+              "deposit_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "venue": "Coinbase",
+              "market": "spot",
+              "deposit_state": "unknown",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ]
+        },
+        "actors": {
+          "market_makers": [
+            {
+              "name": "SLX",
+              "role": "candidate_market_maker",
+              "inventory_percent": "0.046",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ]
+        },
+        "opening_forecast": {
+          "buy_quote_usdt": "300000",
+          "bribe_quote_usdt": "200000",
+          "predicted_fill_avg_usdt": "0.46",
+          "verification_status": "unverified",
+          "evidence_ids": [
+            "grvt-social-prelaunch"
+          ]
+        },
+        "opening_actual": {},
+        "sniper_curve": [],
+        "valuation": {
+          "anchors": [
+            {
+              "kind": "pool",
+              "price_usdt": "0.15",
+              "fdv_usd": "150000000",
+              "as_of": "2026-07-30T08:00:27+00:00",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "kind": "premarket",
+              "venue": "Aspecta",
+              "price_usdt": "0.42",
+              "fdv_usd": "420000000",
+              "as_of": "2026-07-30T08:00:27+00:00",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "kind": "opening_forecast",
+              "price_usdt": "0.46",
+              "fdv_usd": "460000000",
+              "as_of": "2026-07-30T08:00:27+00:00",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ],
+          "prediction_markets": [
+            {
+              "source": "polymarket",
+              "target_fdv_usd": "200000000",
+              "probability": "0.91",
+              "liquidity_usd": "",
+              "use_policy": "context_only_until_liquidity_verified",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "source": "polymarket",
+              "target_fdv_usd": "300000000",
+              "probability": "0.75",
+              "liquidity_usd": "",
+              "use_policy": "context_only_until_liquidity_verified",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            },
+            {
+              "source": "polymarket",
+              "target_fdv_usd": "500000000",
+              "probability": "0.33",
+              "liquidity_usd": "",
+              "use_policy": "context_only_until_liquidity_verified",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "grvt-social-prelaunch"
+              ]
+            }
+          ]
+        },
+        "sell_pressure_scenarios": [
+          {
+            "scenario": "base",
+            "triggers": [
+              "Alpha and Booster inventory enters active pool"
+            ],
+            "expected_effect": "先观察池中真实成交、补池和首批承接",
+            "action": "Observe",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          },
+          {
+            "scenario": "stress",
+            "triggers": [
+              "airdrop claim opens",
+              "claim inventory routes to CEX or DEX",
+              "support range loses quote depth"
+            ],
+            "expected_effect": "解锁率、领取率和卖出率均未核验，卖压金额保持区间情景",
+            "action": "Avoid",
+            "verification_status": "unverified",
+            "evidence_ids": [
+              "grvt-social-prelaunch"
+            ]
+          }
+        ],
+        "decision": {
+          "action": "Observe",
+          "summary": "盘前结构信息较完整；池状态、供应地址、解锁规则、跨链库存和CEX状态仍需链上或官方升级",
+          "entry_conditions": [
+            "receipt确认精确池与可卖出路径",
+            "100K/200K/300K/400K买压曲线可复现",
+            "空投领取与CEX入金没有形成同步卖压",
+            "首批买家后出现真实承接"
+          ],
+          "exit_triggers": [
+            "支持区quote深度显著下降",
+            "项目/MM单边卖池或CEX入金",
+            "首批狙击完成卖出且无承接",
+            "跨链库存或空投领取形成新增供应"
+          ],
+          "next_checks": [
+            "pool_position_and_as_of_block",
+            "supply_bucket_address_map",
+            "airdrop_unlock_rule",
+            "cex_deposit_status",
+            "opening_forecast_vs_actual"
+          ]
+        },
+        "missing_fields": [
+          "pool.position_ids",
+          "pool.as_of_block",
+          "supply.address_map",
+          "airdrop.unlock_rule_official",
+          "cross_chain.ethereum_receipt_coverage",
+          "sniper_curve",
+          "cex.deposit_status",
+          "valuation.prediction_market_liquidity"
+        ],
+        "conflicts": [
+          {
+            "path": "supply.cross_chain.bybit_inventory",
+            "detail": "0.25% and an additional 2.5M transfer may describe the same inventory; do not sum before address-level reconciliation"
+          }
+        ]
+      },
+      "facts": {
+        "project_name": "Grvt",
+        "raw_symbol": "GRVT",
+        "display_symbol": "GRVT",
+        "total_supply": "1000000000",
+        "research_source_policy": "official_onchain_market_social_inference_separated"
+      }
     }
   ]
 }

@@ -104,6 +104,27 @@ PROTOCOL_COUNTERPARTY_CLASSES = {
     "hook_operator",
     "lp_locker_or_staking",
 }
+OPENING_SCOPE_EVIDENCE_FIELDS = (
+    "opening_cohort_unique_tx_count",
+    "opening_receipt_selected_tx_count",
+    "opening_receipt_classification_complete",
+    "opening_buyer_scope_addresses",
+    "opening_buyer_scope_address_count",
+    "opening_buyer_scope_method",
+    "opening_buyer_scope_complete",
+    "opening_buyer_scope_malformed_log_count",
+)
+OPENING_COVERAGE_EVIDENCE_FIELDS = (
+    *OPENING_SCOPE_EVIDENCE_FIELDS,
+    "opening_cohort_coverage_complete",
+    "opening_recent_tail_coverage_complete",
+    "opening_log_required_windows_complete",
+    "opening_log_contiguous_coverage_complete",
+    "opening_log_coverage_complete",
+    "opening_log_coverage_status",
+    "opening_log_covered_to_block",
+    "opening_liquidity_coverage_complete",
+)
 OWNER_SELECTORS = {
     "owner": "0x8da5cb5b",
     "getOwner": "0x893d20e8",
@@ -118,6 +139,10 @@ BOOL_RISK_SELECTORS = {
 
 
 class OpeningTraceDeadlineExceeded(RuntimeError):
+    pass
+
+
+class OpeningLogCoverageTruncated(RuntimeError):
     pass
 
 
@@ -379,7 +404,7 @@ def get_logs(chain: str, query: dict[str, Any], chunk_blocks: int, max_logs: int
         rows.extend(rpc_call(chain, "eth_getLogs", [chunk_query]) or [])
         start = end + 1
     if len(rows) > max_logs or start <= to_block:
-        raise RuntimeError(
+        raise OpeningLogCoverageTruncated(
             f"eth_getLogs coverage truncated at {max_logs} rows for "
             f"{from_block}-{to_block}"
         )
@@ -419,7 +444,7 @@ def get_logs_quick(
         )
         start = end + 1
     if len(rows) > max_logs or start <= to_block:
-        raise RuntimeError(
+        raise OpeningLogCoverageTruncated(
             f"eth_getLogs coverage truncated at {max_logs} rows for "
             f"{from_block}-{to_block}"
         )
@@ -752,6 +777,188 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
     }
 
 
+def bounded_recent_transfer_logs(
+    event: dict[str, Any],
+    from_block: int,
+    to_block: int,
+    max_logs: int,
+    chunk_blocks: int,
+    timeout: int,
+) -> tuple[list[dict[str, Any]], int, bool, bool, int]:
+    min_blocks = max(
+        1,
+        int(os.environ.get("ALPHA_OPENING_RECENT_MIN_BLOCKS", "16")),
+    )
+    max_attempts = max(
+        1,
+        int(os.environ.get("ALPHA_OPENING_RECENT_MAX_ATTEMPTS", "6")),
+    )
+    requested_from = from_block
+    attempts = 0
+    while attempts < max_attempts:
+        attempts += 1
+        query = {
+            "address": event["token"]["address"],
+            "fromBlock": hex(from_block),
+            "toBlock": hex(to_block),
+            "topics": [TRANSFER_TOPIC],
+        }
+        try:
+            rows = get_logs_quick(
+                event["chain"],
+                query,
+                chunk_blocks,
+                max_logs,
+                timeout,
+                True,
+            )
+            return rows, from_block, True, from_block == requested_from, attempts
+        except OpeningLogCoverageTruncated:
+            span = to_block - from_block + 1
+            if span <= min_blocks:
+                break
+            next_span = max(min_blocks, span // 2)
+            if next_span >= span:
+                break
+            from_block = to_block - next_span + 1
+    return [], from_block, False, False, attempts
+
+
+def bounded_bootstrap_opening_transfer_logs(
+    event: dict[str, Any],
+    latest: int,
+    scan_blocks: int,
+    recent_blocks: int,
+    max_logs: int,
+    chunk_blocks: int,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    opening_block = int(event["opening_block"])
+    opening_to = min(latest, opening_block + scan_blocks)
+    opening_query = {
+        "address": event["token"]["address"],
+        "fromBlock": hex(opening_block),
+        "toBlock": hex(opening_to),
+        "topics": [TRANSFER_TOPIC],
+    }
+    try:
+        opening_rows = get_logs_quick(
+            event["chain"],
+            opening_query,
+            chunk_blocks,
+            max_logs,
+            timeout,
+            True,
+        )
+    except OpeningLogCoverageTruncated:
+        event.update(
+            {
+                "opening_cohort_coverage_complete": False,
+                "opening_recent_tail_coverage_complete": False,
+                "opening_log_coverage_complete": False,
+                "opening_log_coverage_status": "opening_cohort_truncated",
+                "opening_log_requested_from_block": opening_block,
+                "opening_log_requested_to_block": latest,
+                "opening_log_covered_to_block": opening_block - 1,
+            }
+        )
+        raise
+
+    recent_from = max(opening_to + 1, latest - recent_blocks)
+    recent_rows: list[dict[str, Any]] = []
+    recent_selected_from = recent_from
+    recent_selected_complete = True
+    recent_full_requested = True
+    recent_attempts = 0
+    if recent_from <= latest:
+        recent_max_logs = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_OPENING_RECENT_MAX_LOGS",
+                    str(max_logs),
+                )
+            ),
+        )
+        (
+            recent_rows,
+            recent_selected_from,
+            recent_selected_complete,
+            recent_full_requested,
+            recent_attempts,
+        ) = bounded_recent_transfer_logs(
+            event,
+            recent_from,
+            latest,
+            recent_max_logs,
+            chunk_blocks,
+            timeout,
+        )
+
+    seen: set[tuple[Any, Any]] = set()
+    rows: list[dict[str, Any]] = []
+    for row in [*opening_rows, *recent_rows]:
+        key = (row.get("transactionHash"), row.get("logIndex"))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            int(row.get("blockNumber") or "0x0", 16),
+            int(row.get("transactionIndex") or "0x0", 16),
+            int(row.get("logIndex") or "0x0", 16),
+        )
+    )
+    recent_complete = recent_selected_complete and recent_full_requested
+    middle_gap = (
+        recent_from <= latest
+        and recent_from > opening_to + 1
+    )
+    contiguous_complete = recent_complete and not middle_gap
+    event.update(
+        {
+            "opening_cohort_coverage_complete": True,
+            "opening_recent_tail_coverage_complete": recent_complete,
+            "opening_recent_tail_selected_window_complete": (
+                recent_selected_complete
+            ),
+            "opening_recent_tail_requested_from_block": (
+                recent_from if recent_from <= latest else 0
+            ),
+            "opening_recent_tail_selected_from_block": (
+                recent_selected_from if recent_from <= latest else 0
+            ),
+            "opening_recent_tail_attempt_count": recent_attempts,
+            "opening_log_required_windows_complete": recent_complete,
+            "opening_log_contiguous_coverage_complete": (
+                contiguous_complete
+            ),
+            "opening_log_coverage_complete": contiguous_complete,
+            "opening_log_coverage_status": (
+                "full"
+                if contiguous_complete
+                else "opening_and_recent_complete_with_middle_gap"
+                if recent_complete
+                else "opening_complete_recent_tail_partial"
+            ),
+            "opening_log_requested_from_block": opening_block,
+            "opening_log_requested_to_block": latest,
+            "opening_log_covered_to_block": (
+                latest if recent_complete else opening_to
+            ),
+            "opening_cohort_to_block": opening_to,
+            "opening_log_gap_from_block": (
+                opening_to + 1 if middle_gap else 0
+            ),
+            "opening_log_gap_to_block": (
+                recent_from - 1 if middle_gap else 0
+            ),
+        }
+    )
+    return rows
+
+
 def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, Any]]:
     scan_blocks = int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240"))
     recent_blocks = int(os.environ.get("ALPHA_OPENING_RECENT_BLOCKS", "1200"))
@@ -774,10 +981,20 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
     seen = set()
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_LOG_CHUNK_BLOCKS", "200"))
     timeout = int(os.environ.get("ALPHA_OPENING_CLASSIFY_RPC_TIMEOUT", "5"))
+    if event.get("opening_bounded_bootstrap"):
+        return bounded_bootstrap_opening_transfer_logs(
+            event,
+            latest,
+            scan_blocks,
+            recent_blocks,
+            max_logs,
+            chunk_blocks,
+            timeout,
+        )
     for range_index, (from_block, to_block) in enumerate(ranges):
         remaining = max_logs - len(rows)
         if remaining <= 0:
-            raise RuntimeError(
+            raise OpeningLogCoverageTruncated(
                 f"eth_getLogs coverage truncated at {max_logs} rows for "
                 f"{opening_block}-{latest}"
             )
@@ -801,11 +1018,121 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
             seen.add(key)
             rows.append(row)
         if len(rows) >= max_logs and range_index + 1 < len(ranges):
-            raise RuntimeError(
+            raise OpeningLogCoverageTruncated(
                 f"eth_getLogs coverage truncated at {max_logs} rows for "
                 f"{opening_block}-{latest}"
             )
+    opening_to = opening_range[1]
+    middle_gap = (
+        len(ranges) > 1
+        and recent_range[0] > opening_to + 1
+    )
+    event.update(
+        {
+            "opening_cohort_coverage_complete": True,
+            "opening_recent_tail_coverage_complete": True,
+            "opening_recent_tail_selected_window_complete": True,
+            "opening_recent_tail_requested_from_block": (
+                recent_range[0] if len(ranges) > 1 else 0
+            ),
+            "opening_recent_tail_selected_from_block": (
+                recent_range[0] if len(ranges) > 1 else 0
+            ),
+            "opening_recent_tail_attempt_count": (
+                1 if len(ranges) > 1 else 0
+            ),
+            "opening_log_required_windows_complete": True,
+            "opening_log_contiguous_coverage_complete": not middle_gap,
+            "opening_log_coverage_complete": not middle_gap,
+            "opening_log_coverage_status": (
+                "full"
+                if not middle_gap
+                else "opening_and_recent_complete_with_middle_gap"
+            ),
+            "opening_log_requested_from_block": opening_block,
+            "opening_log_requested_to_block": latest,
+            "opening_log_covered_to_block": latest,
+            "opening_cohort_to_block": opening_to,
+            "opening_log_gap_from_block": (
+                opening_to + 1 if middle_gap else 0
+            ),
+            "opening_log_gap_to_block": (
+                recent_range[0] - 1 if middle_gap else 0
+            ),
+        }
+    )
     return rows
+
+
+def opening_cohort_transfer_logs(
+    event: dict[str, Any],
+    logs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    opening_block = int(event.get("opening_block") or 0)
+    opening_to = int(
+        event.get("opening_cohort_to_block")
+        or (
+            opening_block
+            + int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240"))
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    malformed = 0
+    for log in logs:
+        if not isinstance(log, dict):
+            malformed += 1
+            continue
+        try:
+            block = int(log.get("blockNumber") or "0x0", 16)
+        except (TypeError, ValueError):
+            malformed += 1
+            continue
+        if block < opening_block or block > opening_to:
+            continue
+        topics = log.get("topics")
+        if (
+            not isinstance(topics, list)
+            or len(topics) < 3
+            or norm(topics[0]) != TRANSFER_TOPIC
+            or not is_address(topic_addr(str(topics[2])))
+            or not str(log.get("transactionHash") or "")
+        ):
+            malformed += 1
+            continue
+        rows.append(log)
+    return rows, malformed
+
+
+def opening_buyer_scope_from_transfer_logs(
+    event: dict[str, Any],
+    logs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cohort_logs, malformed = opening_cohort_transfer_logs(event, logs)
+    excluded = excluded_addresses(event)
+    recipients = {
+        topic_addr(str(log["topics"][2]))
+        for log in cohort_logs
+        if topic_addr(str(log["topics"][2])) not in excluded
+    }
+    unique_txs = {
+        str(log.get("transactionHash") or "")
+        for log in cohort_logs
+        if str(log.get("transactionHash") or "")
+    }
+    complete = (
+        event.get("opening_cohort_coverage_complete") is True
+        and malformed == 0
+    )
+    return cohort_logs, {
+        "opening_cohort_unique_tx_count": len(unique_txs),
+        "opening_buyer_scope_addresses": sorted(recipients),
+        "opening_buyer_scope_address_count": len(recipients),
+        "opening_buyer_scope_method": (
+            "complete_transfer_recipient_superset"
+        ),
+        "opening_buyer_scope_complete": complete,
+        "opening_buyer_scope_malformed_log_count": malformed,
+    }
 
 
 def receipt_token_transfers(chain: str, tx_hash: str, token: dict[str, Any], quote: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2312,7 +2639,12 @@ def net_by_address(transfers: list[dict[str, Any]], token_addr: str, quote_addr:
 
 
 def excluded_addresses(event: dict[str, Any]) -> set[str]:
-    out = {ZERO, norm(event["token"]["address"]), norm(event["quote"]["address"])}
+    out = {
+        ZERO,
+        DEAD,
+        norm(event["token"]["address"]),
+        norm(event["quote"]["address"]),
+    }
     for value in (event.get("hook"), event.get("operator")):
         if is_address(value):
             out.add(norm(value))
@@ -3740,6 +4072,21 @@ def build_events() -> list[dict[str, Any]]:
                     "pool_manager": pool.get("pool_manager", ""),
                     "initial_price": first_value_by_prefix(pool, "initial_price"),
                     "market_context": item.get("market_context", {}),
+                    "prelaunch_research": item.get(
+                        "prelaunch_research",
+                        {},
+                    ),
+                    "opening_forecast": (
+                        item.get("prelaunch_research", {}).get(
+                            "opening_forecast",
+                            {},
+                        )
+                        if isinstance(
+                            item.get("prelaunch_research"),
+                            dict,
+                        )
+                        else {}
+                    ),
                     "known_contracts": item.get("known_contracts", []),
                     "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
                     "cex_addresses": item.get("cex_addresses", []),
@@ -3822,6 +4169,16 @@ def identity_conflict_refresh_complete(
     )
 
 
+def cached_opening_scope_evidence(
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(previous[key])
+        for key in OPENING_COVERAGE_EVIDENCE_FIELDS
+        if previous and key in previous
+    }
+
+
 def previous_opened_events(
     snapshot: dict[str, Any],
 ) -> dict[tuple[str, str, int], list[dict[str, Any]]]:
@@ -3854,15 +4211,6 @@ def select_previous_opened_event(
         return exact[0], ""
     if len(exact) > 1:
         return None, "ambiguous_exact_identity"
-    compatible = [
-        previous
-        for previous in candidates
-        if not opening_event_metadata_conflict(current, previous)
-    ]
-    if len(compatible) == 1:
-        return compatible[0], ""
-    if len(compatible) > 1:
-        return None, "ambiguous_stable_identity"
     conflicts = {
         opening_event_metadata_conflict(current, previous)
         for previous in candidates
@@ -3870,7 +4218,9 @@ def select_previous_opened_event(
     conflicts.discard("")
     if conflicts == {"quote_address_missing"}:
         return None, "quote_address_missing"
-    return None, "quote_address_changed"
+    if "quote_address_changed" in conflicts:
+        return None, "quote_address_changed"
+    return None, "pool_or_time_identity_changed"
 
 
 def opened_event_traces_incomplete(
@@ -3908,6 +4258,8 @@ def previous_opened_event_needs_full_retry(
     previous: dict[str, Any],
     previous_generated_at: str,
 ) -> bool:
+    if not opening_coverage_complete(previous):
+        return True
     if not opened_event_traces_incomplete(previous.get("rows", [])):
         return False
     last_full_attempt_at = str(
@@ -3930,6 +4282,7 @@ def incremental_opened_event(
     previous: dict[str, Any],
     previous_generated_at: str,
 ) -> dict[str, Any]:
+    event.update(cached_opening_scope_evidence(previous))
     rows = copy.deepcopy(previous.get("rows", []))
     latest = int(event.get("latest_block") or 0)
     deadline_exceeded = False
@@ -3996,6 +4349,7 @@ def incremental_opened_event(
     except OpeningTraceDeadlineExceeded:
         deadline_exceeded = True
         analysis = analyze_opened(event, rows, allow_rpc=False)
+    analysis = apply_opening_coverage_gate(event, analysis)
     as_of_block = trace_as_of_block(rows)
     refresh_at = now_iso()
     incomplete = opened_event_traces_incomplete(rows)
@@ -4019,6 +4373,7 @@ def incremental_opened_event(
     )
     return {
         "status": "opened",
+        **cached_opening_scope_evidence(previous),
         "refresh_status": refresh_status,
         "immutable_opening_generated_at": str(
             previous.get("immutable_opening_generated_at")
@@ -4130,6 +4485,10 @@ def deadline_snapshot_from_previous(
             ],
             allow_rpc=False,
         )
+        event["analysis"] = apply_opening_coverage_gate(
+            event,
+            event["analysis"],
+        )
     alerts = [
         key
         for event in events
@@ -4158,11 +4517,14 @@ def build_snapshot() -> dict[str, Any]:
         current_events = build_events()
     except OpeningTraceDeadlineExceeded:
         return deadline_snapshot_from_previous(previous_snapshot)
-    current_identity_counts: dict[tuple[str, str, int], int] = {}
+    current_identity_counts: dict[
+        tuple[str, str, int, str, str, str],
+        int,
+    ] = {}
     for event in current_events:
         if event.get("opening_block") is None:
             continue
-        identity = opening_event_identity(event)
+        identity = opening_event_exact_identity(event)
         current_identity_counts[identity] = (
             current_identity_counts.get(identity, 0) + 1
         )
@@ -4172,7 +4534,13 @@ def build_snapshot() -> dict[str, Any]:
             event.update({"status": "waiting", "rows": [], "analysis": analyze_waiting(event)})
         else:
             identity = opening_event_identity(event)
-            if current_identity_counts.get(identity, 0) > 1:
+            if (
+                current_identity_counts.get(
+                    opening_event_exact_identity(event),
+                    0,
+                )
+                > 1
+            ):
                 previous = None
                 metadata_conflict = "duplicate_current_identity"
             else:
@@ -4219,6 +4587,13 @@ def build_snapshot() -> dict[str, Any]:
                         event["cache_identity_status"] = (
                             "metadata_conflict_rebuilt"
                         )
+                except OpeningLogCoverageTruncated:
+                    event.update(
+                        partial_opening_coverage_event(
+                            event,
+                            previous,
+                        )
+                    )
                 except OpeningTraceDeadlineExceeded:
                     full_attempt_at = now_iso()
                     fallback_snapshot = {
@@ -4251,6 +4626,8 @@ def build_snapshot() -> dict[str, Any]:
                                     "last_full_trace_success_at",
                                     "partial_since",
                                 }
+                                or key
+                                in OPENING_COVERAGE_EVIDENCE_FIELDS
                             }
                         )
                         event["last_full_trace_attempt_at"] = full_attempt_at
@@ -4261,6 +4638,29 @@ def build_snapshot() -> dict[str, Any]:
                     else:
                         event.update(
                             {
+                                "opening_cohort_coverage_complete": False,
+                                "opening_recent_tail_coverage_complete": False,
+                                "opening_log_required_windows_complete": False,
+                                "opening_log_contiguous_coverage_complete": False,
+                                "opening_log_coverage_complete": False,
+                                "opening_log_coverage_status": (
+                                    "deadline_before_opening_evidence"
+                                ),
+                                "opening_liquidity_coverage_complete": False,
+                                "opening_receipt_classification_complete": False,
+                                "opening_buyer_scope_complete": False,
+                            }
+                        )
+                        analysis = apply_opening_coverage_gate(
+                            event,
+                            analyze_opened(
+                                event,
+                                [],
+                                allow_rpc=False,
+                            ),
+                        )
+                        event.update(
+                            {
                                 "status": "opened",
                                 "refresh_status": "partial_opening_deadline",
                                 "refresh_error": "deadline_before_opening_evidence",
@@ -4268,11 +4668,7 @@ def build_snapshot() -> dict[str, Any]:
                                 "last_full_trace_success_at": "",
                                 "partial_since": full_attempt_at,
                                 "rows": [],
-                                "analysis": analyze_opened(
-                                    event,
-                                    [],
-                                    allow_rpc=False,
-                                ),
+                                "analysis": analysis,
                             }
                         )
         events.append(event)
@@ -4288,18 +4684,213 @@ def build_snapshot() -> dict[str, Any]:
     }
 
 
+def opening_coverage_complete(event: dict[str, Any]) -> bool:
+    required_windows = event.get("opening_log_required_windows_complete")
+    if required_windows is None:
+        required_windows = event.get("opening_log_coverage_complete")
+    return (
+        event.get("opening_cohort_coverage_complete") is True
+        and required_windows is True
+        and event.get("opening_liquidity_coverage_complete") is True
+        and event.get("opening_buyer_scope_complete") is True
+    )
+
+
+def apply_opening_coverage_gate(
+    event: dict[str, Any],
+    analysis: dict[str, str],
+) -> dict[str, str]:
+    if opening_coverage_complete(event):
+        if event.get("opening_receipt_classification_complete") is False:
+            sampled = dict(analysis)
+            selected = int(
+                event.get("opening_receipt_selected_tx_count") or 0
+            )
+            total = int(
+                event.get("opening_cohort_unique_tx_count") or 0
+            )
+            sampled["opening_receipt_scope"] = (
+                f"sampled_receipts_{selected}_of_{total}"
+            )
+            note = (
+                f"开盘收据归因抽样 {selected}/{total}；"
+                "完整 Transfer 收件地址范围已进入盘中必查，"
+                "未抽样交易不能解释为无狙击或无卖出。"
+            )
+            sampled["attention"] = " ".join(
+                part
+                for part in [
+                    note,
+                    str(sampled.get("attention") or ""),
+                ]
+                if part
+            )
+            return sampled
+        return analysis
+    gated = dict(analysis)
+    gated.update(
+        {
+            "opening_coverage_status": "partial",
+            "opening_coverage_gate": "blocked_partial_coverage",
+            "onchain_netflow_reliable": "False",
+        }
+    )
+    coverage_note = "开盘链上覆盖不完整；缺失区间不能解释为无动作。"
+    gated["attention"] = " ".join(
+        part
+        for part in [
+            coverage_note,
+            str(gated.get("attention") or ""),
+        ]
+        if part
+    )
+    confirmed_sell = decimal_from(
+        gated.get("cohort_confirmed_sell_quote")
+    )
+    liquidity_risk = str(gated.get("liquidity_flow_risk") or "")
+    confirmed_risk = (
+        confirmed_sell > 0
+        or liquidity_risk
+        in {
+            "lp_remove",
+            "lp_collect",
+            "project_quote_in",
+            "project_quote_out",
+            "pool_token_out",
+        }
+    )
+    if not confirmed_risk:
+        gated.update(
+            {
+                "conclusion": (
+                    f"{event.get('symbol')} 已保存有界开盘证据，"
+                    "当前覆盖不完整。"
+                ),
+                "spot_action": "不执行；等待覆盖补齐或新的确认风险证据",
+                "perp_action": "不开；覆盖不完整",
+                "direction": "覆盖不完整",
+                "trade_signal": "阻断；开盘链上覆盖不完整",
+            }
+        )
+    return gated
+
+
+def partial_opening_coverage_event(
+    event: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    refresh_at = now_iso()
+    rows = copy.deepcopy(
+        [
+            row
+            for row in (previous or {}).get("rows", [])
+            if isinstance(row, dict)
+        ]
+    )
+    event.setdefault("opening_cohort_coverage_complete", False)
+    event["opening_buyer_scope_complete"] = False
+    event.setdefault(
+        "opening_buyer_scope_method",
+        "complete_transfer_recipient_superset",
+    )
+    event.setdefault("opening_buyer_scope_addresses", [])
+    event.setdefault("opening_buyer_scope_address_count", 0)
+    event.setdefault("opening_buyer_scope_malformed_log_count", 0)
+    event.setdefault("opening_cohort_unique_tx_count", 0)
+    event.setdefault("opening_receipt_selected_tx_count", 0)
+    event.setdefault("opening_receipt_classification_complete", False)
+    event.setdefault("opening_recent_tail_coverage_complete", False)
+    event["opening_log_coverage_complete"] = False
+    event.setdefault(
+        "opening_log_coverage_status",
+        "opening_cohort_truncated",
+    )
+    event.setdefault(
+        "opening_log_covered_to_block",
+        int(event.get("opening_block") or 1) - 1,
+    )
+    analysis = apply_opening_coverage_gate(
+        event,
+        analyze_opened(event, rows, allow_rpc=False),
+    )
+    return {
+        "status": "opened",
+        "error": "opening_cohort_coverage_incomplete",
+        "refresh_status": "partial_opening_coverage",
+        "refresh_error": "opening_log_coverage_truncated",
+        "scan_to_block": int(
+            event.get("opening_log_covered_to_block")
+            or (previous or {}).get("scan_to_block")
+            or 0
+        ),
+        "transfer_logs": int_from(
+            (previous or {}).get("transfer_logs")
+        ),
+        "relevant_tx_count": len(rows),
+        "immutable_opening_generated_at": str(
+            (previous or {}).get("immutable_opening_generated_at")
+            or refresh_at
+        ),
+        "deep_trace_generated_at": str(
+            (previous or {}).get("deep_trace_generated_at")
+            or ""
+        ),
+        "deep_trace_as_of_block": trace_as_of_block(rows),
+        "last_full_trace_attempt_at": refresh_at,
+        "last_full_trace_success_at": str(
+            (previous or {}).get("last_full_trace_success_at")
+            or ""
+        ),
+        "partial_since": str(
+            (previous or {}).get("partial_since")
+            or refresh_at
+        ),
+        "rows": rows,
+        "analysis": analysis,
+    }
+
+
 def build_opened_event(
     event: dict[str, Any],
     previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     latest = int(event["latest_block"])
-    event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
+    bootstrap_max_age = max(
+        0,
+        int(
+            os.environ.get(
+                "ALPHA_OPENING_BOUNDED_BOOTSTRAP_MAX_AGE_SECONDS",
+                "10800",
+            )
+        ),
+    )
+    seconds_until = int(event.get("seconds_until_start") or 0)
+    event["opening_bounded_bootstrap"] = bool(
+        previous is None
+        and "seconds_until_start" in event
+        and -bootstrap_max_age <= seconds_until <= 0
+    )
+    event["opening_liquidity_coverage_complete"] = True
+    try:
+        event["liquidity_flow"] = scan_key_liquidity_flows(
+            event,
+            latest,
+        )
+    except OpeningLogCoverageTruncated:
+        event["opening_liquidity_coverage_complete"] = False
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志超过有界预算，覆盖不完整",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+        }
     previous_rows = [
         row
         for row in (previous or {}).get("rows", [])
         if isinstance(row, dict)
+        and (previous or {}).get("opening_buyer_scope_complete") is True
     ]
     if previous_rows:
+        event.update(cached_opening_scope_evidence(previous))
         rows = copy.deepcopy(previous_rows)
         transfer_logs = int_from((previous or {}).get("transfer_logs"))
         relevant_tx_count = int_from(
@@ -4308,16 +4899,46 @@ def build_opened_event(
         )
     else:
         logs = opening_transfer_logs(event, latest)
+        event.setdefault("opening_cohort_coverage_complete", True)
+        event.setdefault(
+            "opening_recent_tail_coverage_complete",
+            True,
+        )
+        event.setdefault("opening_log_coverage_complete", True)
+        event.setdefault("opening_log_coverage_status", "full")
         max_txs = capped_event_int_setting(
             event,
             "opening_max_txs",
             "ALPHA_OPENING_MAX_TXS",
             25,
         )
+        cohort_logs, scope_evidence = (
+            opening_buyer_scope_from_transfer_logs(event, logs)
+        )
+        event.update(scope_evidence)
+        selected_hashes = selected_tx_hashes(cohort_logs, max_txs)
         rows = [
             summarize_tx(event, tx_hash)
-            for tx_hash in selected_tx_hashes(logs, max_txs)
+            for tx_hash in selected_hashes
         ]
+        verified_buyers = {
+            norm(row.get("buyer"))
+            for row in rows
+            if is_address(row.get("buyer"))
+            and decimal_from(row.get("token_bought")) > 0
+            and not row.get("buyer_exclusion_reason")
+        }
+        scope_addresses = set(
+            event.get("opening_buyer_scope_addresses") or []
+        )
+        scope_addresses.update(verified_buyers)
+        event["opening_buyer_scope_addresses"] = sorted(scope_addresses)
+        event["opening_buyer_scope_address_count"] = len(scope_addresses)
+        event["opening_receipt_selected_tx_count"] = len(selected_hashes)
+        event["opening_receipt_classification_complete"] = (
+            len(selected_hashes)
+            == int(event.get("opening_cohort_unique_tx_count") or 0)
+        )
         transfer_logs = len(logs)
         relevant_tx_count = len(rows)
     trace_buyers = capped_event_int_setting(
@@ -4368,13 +4989,17 @@ def build_opened_event(
     except OpeningTraceDeadlineExceeded:
         deadline_exceeded = True
         analysis = analyze_opened(event, rows, allow_rpc=False)
+    analysis = apply_opening_coverage_gate(event, analysis)
     scan_to_block = (
         int_from((previous or {}).get("scan_to_block"))
         if previous_rows
-        else min(
-            latest,
-            int(event["opening_block"])
-            + int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240")),
+        else int(
+            event.get("opening_log_covered_to_block")
+            or min(
+                latest,
+                int(event["opening_block"])
+                + int(os.environ.get("ALPHA_OPENING_SCAN_BLOCKS", "240")),
+            )
         )
     )
     refresh_at = now_iso()
@@ -4390,7 +5015,9 @@ def build_opened_event(
         "transfer_logs": transfer_logs,
         "relevant_tx_count": relevant_tx_count,
         "refresh_status": (
-            "partial_trace_deadline"
+            "partial_opening_coverage"
+            if not opening_coverage_complete(event)
+            else "partial_trace_deadline"
             if deadline_exceeded
             else "partial_trace_error"
             if trace_error
@@ -4494,6 +5121,57 @@ def analyze_waiting(event: dict[str, Any]) -> dict[str, str]:
         "weighted_avg_price": "",
         "max_bribe_native": "",
     }
+
+
+def opening_forecast_comparison(
+    event: dict[str, Any],
+    *,
+    actual_spent: Decimal,
+    weighted_avg: Decimal,
+    max_bribe_native: Decimal,
+    estimated_spent_used: bool,
+) -> dict[str, Any]:
+    forecast = event.get("opening_forecast")
+    if not isinstance(forecast, dict) or not forecast:
+        return {"status": "no_prelaunch_forecast"}
+    expected_spent = decimal_from(forecast.get("buy_quote_usdt"))
+    expected_avg = decimal_from(
+        forecast.get("predicted_fill_avg_usdt")
+    )
+    result: dict[str, Any] = {
+        "status": (
+            "partial_estimated_actual"
+            if estimated_spent_used
+            else "receipt_actual_ready"
+        ),
+        "forecast_buy_quote_usdt": decimal_str(expected_spent),
+        "actual_buy_quote_usdt": decimal_str(actual_spent),
+        "forecast_fill_avg_usdt": decimal_str(expected_avg),
+        "actual_weighted_avg_usdt": (
+            decimal_str(weighted_avg) if weighted_avg else ""
+        ),
+        "forecast_bribe_quote_usdt": str(
+            forecast.get("bribe_quote_usdt") or ""
+        ),
+        "actual_max_bribe_native": decimal_str(max_bribe_native),
+        "bribe_comparison_status": "different_units_not_compared",
+        "verification_status": "receipt_actual"
+        if not estimated_spent_used
+        else "partial_estimate",
+    }
+    if expected_spent > 0 and not estimated_spent_used:
+        result["buy_quote_delta_pct"] = decimal_str(
+            (actual_spent - expected_spent)
+            / expected_spent
+            * Decimal(100)
+        )
+    if expected_avg > 0 and weighted_avg > 0:
+        result["fill_avg_delta_pct"] = decimal_str(
+            (weighted_avg - expected_avg)
+            / expected_avg
+            * Decimal(100)
+        )
+    return result
 
 
 SMART_MONEY_BLOCK_CLASSES = {
@@ -4762,6 +5440,13 @@ def analyze_opened(
         "estimated_spent_used": "true" if estimated_used else "false",
         "weighted_avg_price": decimal_str(weighted_avg) if weighted_avg else "",
         "max_bribe_native": decimal_str(max_bribe),
+        "opening_forecast_comparison": opening_forecast_comparison(
+            event,
+            actual_spent=actual_spent,
+            weighted_avg=weighted_avg,
+            max_bribe_native=max_bribe,
+            estimated_spent_used=estimated_used,
+        ),
         "sell_zone_consumed_pct": decimal_str(sell_zone_consumed_pct) if sell_zone_consumed_pct else "",
         "current_cohort_token": decimal_str(Decimal(str(cohort.get("current_token") or "0"))),
         "current_cohort_quote_est": decimal_str(Decimal(str(cohort.get("current_quote_est") or "0"))),
@@ -4865,13 +5550,24 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                         "trade_signal",
                         event["symbol"],
                         str(event.get("opening_block", "")),
+                        str(event.get("pool_id", "")),
                         analysis.get("trade_signal", ""),
                         analysis.get("direction", ""),
                     ]
                 )
             )
         if analysis.get("liquidity_flow_risk") and analysis.get("liquidity_flow_risk") not in {"none", "skipped_old_opening"}:
-            keys.append("|".join(["liquidity_flow", event["symbol"], str(event.get("opening_block", "")), analysis.get("liquidity_flow_risk", "")]))
+            keys.append(
+                "|".join(
+                    [
+                        "liquidity_flow",
+                        event["symbol"],
+                        str(event.get("opening_block", "")),
+                        str(event.get("pool_id", "")),
+                        analysis.get("liquidity_flow_risk", ""),
+                    ]
+                )
+            )
         for row in meaningful_buy_rows(event.get("rows", []))[:10]:
             spent = effective_spent_quote(row)
             bribe = decimal_from(row.get("largest_internal_native", {}).get("amount", "0"))
@@ -4879,7 +5575,21 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                 spent >= Decimal(os.environ.get("ALPHA_OPENING_BUY_ALERT_MIN_QUOTE", "50000"))
                 or bribe >= Decimal(os.environ.get("ALPHA_OPENING_BUY_ALERT_MIN_BRIBE_NATIVE", "10"))
             ):
-                keys.append("|".join(["buy", event["symbol"], row.get("tx", ""), row.get("buyer", ""), alert_amount_bucket(spent, Decimal("50000"))]))
+                keys.append(
+                    "|".join(
+                        [
+                            "buy",
+                            event["symbol"],
+                            str(event.get("pool_id", "")),
+                            row.get("tx", ""),
+                            row.get("buyer", ""),
+                            alert_amount_bucket(
+                                spent,
+                                Decimal("50000"),
+                            ),
+                        ]
+                    )
+                )
             trace = row.get("buyer_trace") or {}
             if trace:
                 alert_status = str(
@@ -4896,6 +5606,7 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                         [
                             "trace",
                             event["symbol"],
+                            str(event.get("pool_id", "")),
                             row.get("buyer", ""),
                             alert_status,
                             trace.get("out_destination_classes", ""),
@@ -4919,17 +5630,43 @@ def alert_key_seen(key: str, seen: set[str]) -> bool:
     if key in seen:
         return True
     parts = key.split("|")
-    if len(parts) >= 5 and parts[0] == "trade_signal":
-        legacy_prefix = "|".join([parts[0], parts[1], parts[3]]) + "|"
-        return any(old.startswith(legacy_prefix) for old in seen)
-    if len(parts) >= 5 and parts[0] == "trace":
-        if len(parts) >= 6 and parts[5] != "0":
-            return False
-        legacy_key = "|".join(parts[:5])
-        return any(
-            old == legacy_key and len(old.split("|")) == 5
-            for old in seen
+    if len(parts) >= 6 and parts[0] == "trade_signal":
+        legacy_key = "|".join(
+            [parts[0], parts[1], parts[2], parts[4], parts[5]]
         )
+        if legacy_key in seen:
+            return True
+        oldest_prefix = "|".join(
+            [parts[0], parts[1], parts[4]]
+        ) + "|"
+        return any(old.startswith(oldest_prefix) for old in seen)
+    if len(parts) >= 5 and parts[0] == "liquidity_flow":
+        legacy_key = "|".join(
+            [parts[0], parts[1], parts[2], parts[4]]
+        )
+        return legacy_key in seen
+    if len(parts) >= 6 and parts[0] == "buy":
+        legacy_key = "|".join(
+            [parts[0], parts[1], parts[3], parts[4], parts[5]]
+        )
+        return legacy_key in seen
+    if len(parts) >= 7 and parts[0] == "trace":
+        legacy_key = "|".join(
+            [parts[0], parts[1], *parts[3:]]
+        )
+        if legacy_key in seen:
+            return True
+        if parts[6] != "0":
+            return False
+        oldest_key = "|".join(
+            [parts[0], parts[1], parts[3], parts[4], parts[5]]
+        )
+        return oldest_key in seen
+    if len(parts) >= 6 and parts[0] == "trace":
+        if parts[5] != "0":
+            return False
+        oldest_key = "|".join(parts[:5])
+        return oldest_key in seen
     return False
 
 
@@ -4985,6 +5722,12 @@ def telegram_event_evidence(event: dict[str, Any]) -> str:
     analysis = event.get("analysis", {})
     quote_symbol = event.get("quote", {}).get("symbol", "")
     parts = []
+    if event.get("opening_receipt_classification_complete") is False:
+        parts.append(
+            "开盘归因抽样"
+            f"{int(event.get('opening_receipt_selected_tx_count') or 0)}/"
+            f"{int(event.get('opening_cohort_unique_tx_count') or 0)}"
+        )
     confirmed_sell = decimal_from(analysis.get("cohort_confirmed_sell_quote"))
     confirmed_sell_threshold = Decimal(os.environ.get("ALPHA_OPENING_CONFIRMED_SELL_MIN_QUOTE", "10000"))
     if confirmed_sell > 0:
@@ -5052,9 +5795,20 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
         analysis = event.get("analysis", {})
         rank = telegram_event_rank(event)[0]
         marker = "🔴" if rank == 0 else "🟠" if rank <= 2 else "🟡"
+        pool_id = str(event.get("pool_id") or "")
+        pool_label = (
+            pool_id
+            if len(pool_id) <= 16
+            else pool_id[:8] + "…" + pool_id[-6:]
+        )
         lines.extend(
             [
-                f"{marker} {event.get('symbol')} {event.get('priority')}｜{analysis.get('trade_signal', '观察')}",
+                (
+                    f"{marker} {event.get('symbol')} "
+                    f"{event.get('priority')}"
+                    f"{f'｜池 {pool_label}' if pool_label else ''}"
+                    f"｜{analysis.get('trade_signal', '观察')}"
+                ),
                 f"关键：{telegram_event_evidence(event)}",
                 f"动作：{analysis.get('spot_action', '')}",
             ]
@@ -5106,6 +5860,18 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- estimated_spent_used: `{analysis.get('estimated_spent_used', '')}`",
                 f"- weighted_avg_price: `{analysis.get('weighted_avg_price', '')}`",
                 f"- max_bribe_native: `{analysis.get('max_bribe_native', '')}`",
+                (
+                    "- opening_forecast_comparison: `"
+                    + json.dumps(
+                        analysis.get(
+                            "opening_forecast_comparison",
+                            {},
+                        ),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "`"
+                ),
                 f"- sell_zone_consumed_pct: `{analysis.get('sell_zone_consumed_pct', '')}`",
                 f"- current_cohort_token: `{analysis.get('current_cohort_token', '')}`",
                 f"- current_cohort_quote_est: `{analysis.get('current_cohort_quote_est', '')}`",

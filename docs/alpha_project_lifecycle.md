@@ -9,7 +9,7 @@
 | 发现 | 官方目录、官方公告、Telegram user/bot、人工导入或链上 Hook 出现项目线索 | 写入 project registry；P0/P1 推送线索 | registry 项目键、消息审计、推送结果 |
 | 身份核验 | 获得候选 ticker、链、合约、交易和 pool | 核对 receipt、token 元数据和 quote token | receipt 成功；项目合约与 pool token 一致；BSC quote 为 USDT |
 | 监控接管 | 身份核验通过，并有唯一精确开盘时间 | 自动加入 runtime watchlist | `registry_selected` 和 runtime 合约身份一致 |
-| 上线前 | 开盘时间进入 48 小时窗口 | 推送分阶段提醒，准备开盘块、首批买家、bribe 和承接检查 | prelaunch event 与 `seen_alerts` 发送回执 |
+| 上线前 | 开盘时间进入 48 小时窗口 | 生成结构化盘前投研，推送分阶段提醒，准备开盘块、首批买家、bribe 和承接检查 | `alpha_prelaunch_research.v1`、prelaunch event 与 `seen_alerts` 发送回执 |
 | 开盘 | 到达开盘窗口 | 跟踪 pool、交易顺序、首批买家和项目/做市地址 | opening 输出匹配同一 chain+contract |
 | 上线后 | 开盘完成 | 持续跟踪价格、holder、盘中流向、狙击手退出、项目/做市出货 | project/opening/intraday/price/holder 输出均匹配身份 |
 | 持续观察 | 超出 72 小时盘中核心窗口仍在 30 天保留期 | 复用 holder 连续增量日志，跟踪首批狙击地址转出、项目/做市地址外流、CEX 入金和价格 | retention flow checkpoint 与健康检查 |
@@ -20,9 +20,12 @@
 - 自动进入 runtime watchlist 需要 P0/P1、Binance Alpha 语境、唯一 token/USDT 身份、pool、交易和精确开盘时间；pool、交易、时间必须来自同一条 signal artifact，交易 receipt 负责核验 pool/token 身份。
 - project registry 的跨消息聚合只能生成候选缺口，不能证明时间与 pool 的绑定关系。
 - Telegram user、Telegram bot 和人工导入使用固定的非递归 artifact 入口，每个入口最多读取最近 400 个 JSON。
+- 官方目录默认保留最多 64 个当前/30 天内 lifecycle target；任何 eligible 项目因容量被丢弃都会让 runtime health 失败，禁止静默漏监控。
 - 缺合约、缺 receipt、缺 pool、时间歧义或不支持的链保持候选状态，并由 runtime health 报准备缺口。
 - 同一合约的单条证据出现不同开盘时间时 fail-closed，等待人工核定。
 - 官方 Alpha `listingTime` 与同合约 signal 开盘时间冲突时保留官方基础监控并阻断 signal 增强；项目 TGE/空投释放时间单独记录，不能替代 Alpha 开盘时间。
+- `alpha_prelaunch_research.v1` 固定记录证据等级、精确事件时间轴、池子区间与修订、父子供应桶、跨链库存、CEX/MM、狙击预测、估值锚、卖压情景、缺口和冲突。社交预测与开盘 receipt 实绩分栏，预测金额不能写入已发生事实。
+- 同一阶段只有投研指纹发生实质变化才再次提醒；刷新时间变化不会重复推送。冲突证据保留并将投研标为 blocked，供应父桶与子桶禁止重复相加。
 - `context_only` 来源不进入候选、canonical registry、watchlist、prediction、交易动作或二次 Telegram 推送。
 - 同 ticker 以 `chain+contract` 区分，禁止仅按 symbol 合并。
 - 每个 lifecycle target 持久化 `lifecycle_first_seen_at`；若项目在开盘至少 10 分钟前被发现，开盘后仍核验至少一条历史预上线 Telegram 送达回执；SLA 内及开盘后 30 分钟内发现的项目可由同身份 `LIVE_WINDOW` 回执补证。
@@ -32,11 +35,17 @@
 - official catalog、receipt-verified signal target 和已有 static identity 使用同一覆盖门禁。
 - 任一 active lifecycle target 始终需要 runtime、project、holder；BSC 项目始终需要 opening。
 - 距开盘 48 小时内需要 prelaunch；开盘后需要 price；开盘后 72 小时核心窗口内额外需要完整 receipt intraday。
+- 发现、目录、盘前、预测、OI、价格和 Telegram flush 由独立分钟级 fast lane 执行；两个 Telegram collector 并行完成后再生成目录，预测/盘前/OI 并行完成后再运行依赖最新 OI 的价格层。默认最坏阶段预算 110 秒，重入锁跳过重叠轮次；缺少 `flock`、任一步失败或输出超龄都会让 fast-lane heartbeat 非健康并返回非零。链上深扫描由 5 分钟 heavy cycle 执行，2 分钟 watchdog 同时检查两条心跳。
+- 价格触发要求行情窗口末端距当前不超过 30 分钟；OI 当前事件默认不超过 5 分钟，方向基线间隔必须在 10 至 180 分钟内。超时样本只保留诊断状态，不生成方向告警。
+- opening 将完整开盘 cohort 与近期转账尾部分开取证；cohort 或流动性覆盖不完整会阻断健康，cohort 完整而高频尾部使用有限窗口时生成明确 warning。相同 token/时间下的不同精确 pool identity 独立接管。
+- 核心 intraday 只读取一次完整 Transfer 窗口；触达首批有效买家、项目/MM、配置/全局/运行时 CEX 路径的交易全部进入 required receipt gate 并优先处理。其余市场交易作为 optional sample，抽样不完整会从动作计算中排除并生成 warning，required 任一缺口继续 fail-closed。
 - 72 小时至 30 天由 holder 本轮已读取的 Transfer logs 生成 `retention_flow`，不得增加重复全量 RPC；区块必须从上一 checkpoint 连续推进，RPC error、截断、事件截断或 block gap 均阻断健康和 checkpoint。
 - 长尾 Transfer 命中先推送转移风险；只有同交易 direct quote-recovery 收据证据存在时才升级为已实现卖出。
 - 未知地址向 CEX 的单笔转账先按本轮扫描窗口聚合，合计达到流通量 5 bps 才提醒；已知狙击手、项目或做市来源的命中不受该阈值抑制。推送展示风险类型合计笔数、合计数量和有限样本路径。
 - 长尾快照先原子落盘，Telegram 新信号送达后才原子提交 holder/retention checkpoint；发送失败保留旧 checkpoint，下一轮重试。
 - 首次发现时间已晚于 72 小时核心窗口且没有既有 holder checkpoint 的项目，只能以首次成功的有限扫描建立长尾基线并生成明确 warning；`lifecycle_first_seen_at` 仅用于证明允许晚发现基线，更早历史明确留在监控范围外。在核心窗口内已知或已有 holder checkpoint 却缺少 retention checkpoint 的项目要求历史回填，健康保持 fail-closed。
+- 新 token 首次 holder 窗口超过日志上限时，系统记录原始起点并递减到可完整读取的最近连续窗口；已有 checkpoint 的增量缺口仍保持失败关闭。
+- `prelaunch_receipt_v1` 生效前已经发现且已经开盘的 legacy 项目若缺持久化回执，只能标记 `delivery_unverified` warning，不能据此声称曾送达；跨越生效点和之后发现的项目继续强制回执门禁。
 - intraday 的 transfer 或 receipt 覆盖不完整均阻断健康；CEX gas 辅助回溯受限会保留已确认转账风险并生成覆盖 warning。
 - intraday 单轮总预算硬封顶 420 秒，并由进程级绝对截止中断慢 RPC；预算耗尽的对象写入显式 incomplete 行，由 runtime health 报错，服务器 480 秒外层限制仍留有落盘余量。
 - 上线前提醒只有 alert key 出现在 `alpha_prelaunch_watch/seen_alerts.json` 后才视为送达。

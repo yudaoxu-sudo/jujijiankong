@@ -28,9 +28,12 @@ CHAIN = "bsc"
 CONFIG_PATH = Path(
     os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
 )
+OPENING_CONTEXT_PATH = ROOT / "output" / "alpha_opening_block_watch" / "latest.json"
 OUT_DIR = ROOT / "output" / "alpha_intraday_flow_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
+REQUIRED_ONLY_LATEST_PATH = OUT_DIR / "required_only_latest.json"
+REQUIRED_ONLY_REPORT_PATH = OUT_DIR / "required_only_latest.md"
 SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 WITHDRAWAL_CANDIDATE_HISTORY_PATH = OUT_DIR / "withdrawal_candidate_history.json"
@@ -57,6 +60,42 @@ BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
 BLOCK_TIME_CACHE: dict[tuple[str, int, str], str | None] = {}
 WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
 RECEIPT_UNSET = object()
+REQUIRED_PROJECT_ROLES = {
+    "contract_owner",
+    "deployer",
+    "market_maker",
+    "market_maker_wallet",
+    "mm",
+    "project",
+    "project_operator",
+    "project_treasury",
+    "project_wallet",
+    "token_controller",
+}
+REQUIRED_PROJECT_ADDRESS_KEYS = (
+    "mm_or_project_suspect_addresses",
+    "project_rebalance_addresses",
+    "project_treasury_addresses",
+)
+REQUIRED_CEX_ADDRESS_KEYS = (
+    "cex_deposit_addresses",
+    "cex_addresses",
+    "cex_hot_wallet_addresses",
+    "exchange_addresses",
+    "known_cex_addresses",
+    "exchange_aggregator_addresses",
+    "exchange_aggregator_suspect_addresses",
+    "exchange_rebalance_addresses",
+)
+REQUIRED_CEX_ROLES = {
+    "cex",
+    "cex_deposit",
+    "cex_hot_wallet",
+    "exchange",
+    "exchange_aggregator",
+    "exchange_aggregator_suspect",
+    "exchange_rebalance",
+}
 
 
 class WatcherBudgetExceeded(BaseException):
@@ -739,6 +778,62 @@ def incomplete_intraday_event(
     }
 
 
+def opening_buyer_addresses_from_context(
+    payload: dict[str, Any],
+    symbol: str,
+    chain: str,
+    token_address: str,
+    opening_block: int | None = None,
+) -> list[str]:
+    buyers: set[str] = set()
+    for event in payload.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        event_token = norm((event.get("token") or {}).get("address"))
+        if (
+            str(event.get("symbol") or "").upper() != symbol.upper()
+            or str(event.get("chain") or "").lower() != chain.lower()
+            or event_token != norm(token_address)
+        ):
+            continue
+        if event.get("opening_buyer_scope_complete") is not True:
+            continue
+        try:
+            context_opening_block = int(event.get("opening_block"))
+        except (TypeError, ValueError):
+            context_opening_block = None
+        if (
+            opening_block is not None
+            and context_opening_block is not None
+            and context_opening_block != opening_block
+        ):
+            continue
+        for address in (
+            event.get("opening_buyer_scope_addresses") or []
+        ):
+            address = norm(address)
+            if opening.is_address(address):
+                buyers.add(address)
+        for row in event.get("rows", []) or []:
+            if (
+                not isinstance(row, dict)
+                or decimal_from(row.get("token_bought")) <= 0
+                or row.get("buyer_exclusion_reason")
+            ):
+                continue
+            trace = (
+                row.get("buyer_trace")
+                if isinstance(row.get("buyer_trace"), dict)
+                else {}
+            )
+            buyer = norm(row.get("buyer"))
+            if opening.is_address(buyer) and not trace.get(
+                "subject_exclusion_reason"
+            ):
+                buyers.add(buyer)
+    return sorted(buyers)
+
+
 def build_event_specs() -> list[dict[str, Any]]:
     config = read_json(CONFIG_PATH, {"items": []})
     review_symbol = os.environ.get("ALPHA_INTRADAY_REVIEW_SYMBOL", "").upper()
@@ -830,6 +925,7 @@ def build_events(
     watcher_deadline: float | None = None,
     event_specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    opening_context = read_json(OPENING_CONTEXT_PATH, {"events": []})
     latest_cache: dict[str, int] = {}
     events = []
     for spec in event_specs if event_specs is not None else build_event_specs():
@@ -884,6 +980,13 @@ def build_events(
                     ),
                 ),
                 "market_context": item.get("market_context", {}),
+                "opening_buyer_addresses": opening_buyer_addresses_from_context(
+                    opening_context,
+                    symbol,
+                    CHAIN,
+                    token_address,
+                    opening_block,
+                ),
                 "watch_addresses": watch_addresses,
                 "known_contracts": item.get("known_contracts", []),
                 "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
@@ -911,7 +1014,11 @@ def build_events(
     return events
 
 
-def aggregate_candidate_txs(event: dict[str, Any], from_block: int, to_block: int) -> tuple[list[str], int, int]:
+def aggregate_candidate_txs(
+    event: dict[str, Any],
+    from_block: int,
+    to_block: int,
+) -> tuple[list[str], int, int]:
     query = {
         "address": event["token"]["address"],
         "fromBlock": hex(from_block),
@@ -959,6 +1066,216 @@ def aggregate_candidate_txs(event: dict[str, Any], from_block: int, to_block: in
         if len(selected) >= max_candidates:
             break
     return selected, len(logs), len(aggregate)
+
+
+def sampled_candidate_txs_from_transfers(
+    transfer_rows: list[dict[str, Any]],
+) -> list[str]:
+    aggregate: dict[str, dict[str, Any]] = {}
+    for transfer in transfer_rows:
+        tx_hash = canonical_rpc_hash(transfer.get("tx"))
+        if tx_hash is None:
+            continue
+        aggregate_row = aggregate.setdefault(
+            tx_hash,
+            {
+                "tx": tx_hash,
+                "sum": Decimal(0),
+                "max": Decimal(0),
+                "order": transfer_order(transfer),
+            },
+        )
+        amount = decimal_from(transfer.get("amount"))
+        aggregate_row["sum"] += amount
+        aggregate_row["max"] = max(aggregate_row["max"], amount)
+    max_candidates = max(
+        0,
+        int(os.environ.get("ALPHA_INTRADAY_MAX_RECEIPTS", "300")),
+    )
+    if not max_candidates:
+        return []
+    top_max = sorted(
+        aggregate.values(),
+        key=lambda row: row["max"],
+        reverse=True,
+    )[:max_candidates]
+    top_sum = sorted(
+        aggregate.values(),
+        key=lambda row: row["sum"],
+        reverse=True,
+    )[: max(20, max_candidates // 2)]
+    ordered = sorted(aggregate.values(), key=lambda row: row["order"])
+    tail = ordered[-max(20, max_candidates // 3) :]
+    selected: list[str] = []
+    for row in top_max + top_sum + tail:
+        if row["tx"] not in selected:
+            selected.append(row["tx"])
+        if len(selected) >= max_candidates:
+            break
+    return selected
+
+
+def required_receipt_address_scope(
+    event: dict[str, Any],
+    runtime_cex_candidates: dict[str, dict[str, Any]],
+) -> dict[str, set[str]]:
+    scope: dict[str, set[str]] = {}
+
+    def add(address: Any, category: str) -> None:
+        normalized = norm(address)
+        if opening.is_address(normalized):
+            scope.setdefault(normalized, set()).add(category)
+
+    opening_buyers = event.get("opening_buyer_addresses")
+    if not isinstance(opening_buyers, list):
+        opening_buyers = opening_buyer_addresses_from_context(
+            read_json(OPENING_CONTEXT_PATH, {"events": []}),
+            str(event.get("symbol") or ""),
+            str(event.get("chain") or ""),
+            str((event.get("token") or {}).get("address") or ""),
+            int(event["opening_block"])
+            if str(event.get("opening_block") or "").isdigit()
+            else None,
+        )
+    for address in opening_buyers:
+        add(address, "opening_buyer")
+
+    for source in (event, event.get("market_context", {}) or {}):
+        for row in source.get("watch_addresses", []) or []:
+            if not isinstance(row, dict):
+                continue
+            role = str(row.get("role") or "").strip().lower()
+            identity_status = str(
+                row.get("identity_status") or ""
+            ).strip().lower()
+            control_scope = str(
+                row.get("control_scope") or ""
+            ).strip().lower()
+            if role in REQUIRED_CEX_ROLES:
+                add(row.get("address"), "cex_path")
+            if role in REQUIRED_PROJECT_ROLES or (
+                identity_status == "verified" and control_scope == "token"
+            ):
+                add(row.get("address"), "project_or_mm")
+        for key in REQUIRED_PROJECT_ADDRESS_KEYS:
+            for raw in source.get(key, []) or []:
+                add(
+                    raw.get("address") if isinstance(raw, dict) else raw,
+                    "project_or_mm",
+                )
+        for key in REQUIRED_CEX_ADDRESS_KEYS:
+            for raw in source.get(key, []) or []:
+                add(
+                    raw.get("address") if isinstance(raw, dict) else raw,
+                    "cex_path",
+                )
+    for address in runtime_cex_candidates:
+        add(address, "runtime_cex_path")
+    return scope
+
+
+def required_receipt_transactions(
+    event: dict[str, Any],
+    transfer_rows: list[dict[str, Any]],
+    runtime_cex_candidates: dict[str, dict[str, Any]],
+) -> tuple[list[str], dict[str, Any]]:
+    address_scope = required_receipt_address_scope(
+        event,
+        runtime_cex_candidates,
+    )
+    required_txs: list[str] = []
+    tx_categories: dict[str, set[str]] = {}
+    seen: set[str] = set()
+    for row in sorted(transfer_rows, key=transfer_order):
+        tx_hash = canonical_rpc_hash(row.get("tx"))
+        if tx_hash is None:
+            continue
+        categories: set[str] = set()
+        for address in (norm(row.get("from")), norm(row.get("to"))):
+            categories.update(address_scope.get(address, set()))
+            role = str(
+                opening.configured_address_class(event, address) or ""
+            ).strip().lower()
+            if role in REQUIRED_CEX_ROLES:
+                address_scope.setdefault(address, set()).add("cex_path")
+                categories.add("cex_path")
+            elif role in REQUIRED_PROJECT_ROLES:
+                address_scope.setdefault(address, set()).add(
+                    "project_or_mm"
+                )
+                categories.add("project_or_mm")
+        if not categories:
+            continue
+        tx_categories.setdefault(tx_hash, set()).update(categories)
+        if tx_hash not in seen:
+            seen.add(tx_hash)
+            required_txs.append(tx_hash)
+    category_address_counts = {
+        category: sum(
+            category in categories
+            for categories in address_scope.values()
+        )
+        for category in (
+            "opening_buyer",
+            "project_or_mm",
+            "cex_path",
+            "runtime_cex_path",
+        )
+    }
+    category_tx_counts = {
+        category: sum(
+            category in categories
+            for categories in tx_categories.values()
+        )
+        for category in category_address_counts
+    }
+    return required_txs, {
+        "scope": (
+            "all_token_transfer_transactions_touching_known_"
+            "opening_buyer_project_mm_or_cex_path_addresses"
+        ),
+        "address_count": len(address_scope),
+        "address_counts_by_category": category_address_counts,
+        "tx_counts_by_category": category_tx_counts,
+    }
+
+
+def receipt_scope_coverage(
+    scope: str,
+    candidate_tx_count: int,
+    selected_tx_count: int,
+    counters: dict[str, Any],
+    selection_gap_reason: str = "",
+) -> dict[str, Any]:
+    reasons = [selection_gap_reason] if selection_gap_reason else []
+    if (
+        counters["deadline_reached"]
+        or counters["attempted"] < selected_tx_count
+    ):
+        reasons.append("scan_deadline_reached")
+    if counters["errors"]:
+        reasons.append("receipt_error")
+    if not (
+        0
+        <= counters["successful"]
+        <= counters["attempted"]
+        <= selected_tx_count
+        <= candidate_tx_count
+        and counters["successful"] + counters["errors"]
+        == counters["attempted"]
+    ):
+        reasons.append("counter_invariant_failed")
+    return {
+        "scope": scope,
+        "complete": not reasons,
+        "reasons": reasons,
+        "candidate_tx_count": candidate_tx_count,
+        "selected_tx_count": selected_tx_count,
+        "attempted_receipt_count": counters["attempted"],
+        "successful_receipt_count": counters["successful"],
+        "receipt_error_count": counters["errors"],
+        "deadline_reached": counters["deadline_reached"],
+    }
 
 
 def token_transfer_logs_with_coverage(
@@ -1643,6 +1960,7 @@ def summarize_flow_tx(
     runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
     receipt: Any = RECEIPT_UNSET,
     scan_deadline: float | None = None,
+    defer_gas_priming: bool = False,
 ) -> dict[str, Any] | None:
     if receipt is RECEIPT_UNSET:
         receipt = opening.quick_rpc_call(
@@ -1689,6 +2007,7 @@ def summarize_flow_tx(
     gas_rows: list[dict[str, Any]] = []
     gas_bnb = Decimal(0)
     gas_scan_limited = False
+    deferred_gas_priming: dict[str, Any] | None = None
     gas_targets = {
         address
         for row in cex_path_rows
@@ -1696,32 +2015,42 @@ def summarize_flow_tx(
         if opening.is_address(address)
     }
     if (cex_significant or cex_internal_significant) and gas_targets:
-        gas_budget_seconds = max(
-            0,
-            int(
-                os.environ.get(
-                    "ALPHA_INTRADAY_GAS_PRIMING_MAX_SECONDS",
-                    "4",
-                )
-            ),
-        )
-        gas_deadline = (
-            time.monotonic() + gas_budget_seconds
-            if gas_budget_seconds
-            else time.monotonic()
-        )
-        if scan_deadline is not None:
-            gas_deadline = min(gas_deadline, scan_deadline)
-        gas_rows, gas_scan_limited = cex_gas_priming_transfers(
-            event,
-            gas_targets,
-            opening.hex_to_int(receipt.get("blockNumber")) or 0,
-            deadline=gas_deadline,
-        )
-        gas_bnb = sum((row["amount_bnb"] for row in gas_rows), Decimal(0))
+        deposit_block = opening.hex_to_int(receipt.get("blockNumber")) or 0
+        if defer_gas_priming:
+            deferred_gas_priming = {
+                "targets": sorted(gas_targets),
+                "deposit_block": deposit_block,
+            }
+        else:
+            gas_budget_seconds = max(
+                0,
+                int(
+                    os.environ.get(
+                        "ALPHA_INTRADAY_GAS_PRIMING_MAX_SECONDS",
+                        "4",
+                    )
+                ),
+            )
+            gas_deadline = (
+                time.monotonic() + gas_budget_seconds
+                if gas_budget_seconds
+                else time.monotonic()
+            )
+            if scan_deadline is not None:
+                gas_deadline = min(gas_deadline, scan_deadline)
+            gas_rows, gas_scan_limited = cex_gas_priming_transfers(
+                event,
+                gas_targets,
+                deposit_block,
+                deadline=gas_deadline,
+            )
+            gas_bnb = sum(
+                (row["amount_bnb"] for row in gas_rows),
+                Decimal(0),
+            )
     if spent < min_quote and got_quote < min_quote and not cex_significant and not cex_internal_significant:
         return None
-    return {
+    summary = {
         "tx": tx_hash,
         "block": opening.hex_to_int(receipt.get("blockNumber")),
         "tx_index": opening.hex_to_int(receipt.get("transactionIndex")),
@@ -1765,6 +2094,108 @@ def summarize_flow_tx(
         "cex_gas_priming_bnb": opening.decimal_str(gas_bnb),
         "cex_gas_priming_sources": ",".join(sorted({row["source_class"] for row in gas_rows})),
         "cex_gas_priming_scan_limited": gas_scan_limited,
+    }
+    if deferred_gas_priming is not None:
+        summary["_deferred_cex_gas_priming"] = deferred_gas_priming
+    return summary
+
+
+def enrich_required_gas_priming(
+    event: dict[str, Any],
+    rows: list[dict[str, Any]],
+    scan_deadline: float | None,
+) -> dict[str, Any]:
+    deferred_rows = [
+        row
+        for row in rows
+        if isinstance(row.get("_deferred_cex_gas_priming"), dict)
+    ]
+    budget_seconds = max(
+        0,
+        int(
+            os.environ.get(
+                "ALPHA_INTRADAY_REQUIRED_GAS_ENRICHMENT_MAX_SECONDS",
+                os.environ.get(
+                    "ALPHA_INTRADAY_GAS_PRIMING_MAX_SECONDS",
+                    "4",
+                ),
+            )
+        ),
+    )
+    enrichment_deadline = time.monotonic() + budget_seconds
+    if scan_deadline is not None:
+        enrichment_deadline = min(
+            enrichment_deadline,
+            scan_deadline,
+        )
+    completed_count = 0
+    limited_count = 0
+    for row in deferred_rows:
+        deferred = row.pop("_deferred_cex_gas_priming")
+        row["cex_gas_priming_enrichment_scope"] = (
+            "post_required_receipt_gate"
+        )
+        targets = {
+            norm(address)
+            for address in deferred.get("targets", [])
+            if opening.is_address(address)
+        }
+        deposit_block = int(deferred.get("deposit_block") or 0)
+        if (
+            not targets
+            or deposit_block <= 0
+            or time.monotonic() >= enrichment_deadline
+        ):
+            row["cex_gas_priming_scan_limited"] = True
+            row["cex_gas_priming_enrichment_state"] = (
+                "budget_or_input_limited"
+            )
+            limited_count += 1
+            continue
+        try:
+            gas_rows, gas_scan_limited = cex_gas_priming_transfers(
+                event,
+                targets,
+                deposit_block,
+                deadline=enrichment_deadline,
+            )
+        except Exception:
+            gas_rows = []
+            gas_scan_limited = True
+            row["cex_gas_priming_enrichment_state"] = "collector_error"
+        else:
+            row["cex_gas_priming_enrichment_state"] = (
+                "limited" if gas_scan_limited else "complete"
+            )
+        row["cex_gas_priming_count"] = len(gas_rows)
+        row["cex_gas_priming_bnb"] = opening.decimal_str(
+            sum(
+                (gas_row["amount_bnb"] for gas_row in gas_rows),
+                Decimal(0),
+            )
+        )
+        row["cex_gas_priming_sources"] = ",".join(
+            sorted(
+                {
+                    str(gas_row.get("source_class") or "")
+                    for gas_row in gas_rows
+                    if gas_row.get("source_class")
+                }
+            )
+        )
+        row["cex_gas_priming_scan_limited"] = bool(
+            gas_scan_limited
+        )
+        if gas_scan_limited:
+            limited_count += 1
+        else:
+            completed_count += 1
+    return {
+        "scope": "post_required_receipt_gate",
+        "budget_seconds": budget_seconds,
+        "deferred_count": len(deferred_rows),
+        "completed_count": completed_count,
+        "limited_count": limited_count,
     }
 
 
@@ -3030,9 +3461,6 @@ def scan_event(
         window = int(os.environ.get("ALPHA_INTRADAY_WINDOW_BLOCKS", "360"))
         from_block = max(int(event["opening_block"]), latest - window)
         to_block = latest
-    tx_hashes, logs, txs = aggregate_candidate_txs(event, from_block, to_block)
-    if budget_exhausted(watcher_deadline):
-        return incomplete_intraday_event(event)
     raw_transfer_rows, transfer_coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
     if budget_exhausted(watcher_deadline):
         return incomplete_intraday_event(event)
@@ -3041,41 +3469,116 @@ def scan_event(
     if deduplication["conflicting_duplicate_log_count"] or deduplication["missing_log_identity_count"]:
         transfer_coverage["state"] = "invalid_transfer_log_identity"
         transfer_coverage["complete"] = False
+    required_only_refresh = (
+        os.environ.get("ALPHA_INTRADAY_REQUIRED_ONLY", "0") == "1"
+    )
+    optional_tx_hashes = (
+        []
+        if required_only_refresh
+        else sampled_candidate_txs_from_transfers(transfer_rows)
+    )
+    complete_window_tx_hashes = {
+        tx_hash
+        for row in transfer_rows
+        if (tx_hash := canonical_rpc_hash(row.get("tx"))) is not None
+    }
+    logs = int(
+        transfer_coverage.get("returned_log_count")
+        or len(raw_transfer_rows)
+    )
+    txs = len(complete_window_tx_hashes)
     runtime_candidates = runtime_cex_deposit_candidates(event, from_block, to_block, transfer_rows)
-    try:
-        report_only_cex_micro_gas_samples = collect_report_only_cex_micro_gas_samples(
-            event,
-            transfer_rows,
-            transfer_coverage,
-            runtime_candidates,
+    required_tx_hashes, required_scope = required_receipt_transactions(
+        event,
+        transfer_rows,
+        runtime_candidates,
+    )
+    required_tx_set = set(required_tx_hashes)
+    optional_tx_hashes = [
+        tx_hash
+        for tx_hash in optional_tx_hashes
+        if (
+            tx_hash in complete_window_tx_hashes
+            and tx_hash not in required_tx_set
         )
-    except Exception as exc:
+    ]
+    receipt_plan = [
+        *(
+            (tx_hash, "required_known_path")
+            for tx_hash in required_tx_hashes
+        ),
+        *(
+            (tx_hash, "optional_market_sample")
+            for tx_hash in optional_tx_hashes
+        ),
+    ]
+    if required_only_refresh:
         report_only_cex_micro_gas_samples = {
             "schema": "report_only_cex_micro_gas_samples.v1",
-            "status": "collector_error",
+            "status": "skipped_by_required_only_refresh",
             "alert_policy": "report_only",
             "runtime_effect": "none",
             "action_guard": "no_runtime_action_mutation",
             "candidate_count": 0,
             "window_reviews": [],
             "candidates": [],
-            "collector_error": {
-                "code": "report_only_collector_error",
-                "detail": f"{type(exc).__name__}: {exc}",
-            },
         }
-    withdrawal_cluster = cex_withdrawal_cluster(
-        event,
-        transfer_rows,
-        from_block,
-        to_block,
-        transfer_coverage,
-    )
+        withdrawal_cluster = {
+            "type": "cex_withdrawal_cluster",
+            "status": "skipped_by_required_only_refresh",
+            "direction": "unknown",
+            "action": "",
+            "alert_policy": "report_only",
+            "candidate_count": 0,
+            "clusters": [],
+        }
+    else:
+        try:
+            report_only_cex_micro_gas_samples = (
+                collect_report_only_cex_micro_gas_samples(
+                    event,
+                    transfer_rows,
+                    transfer_coverage,
+                    runtime_candidates,
+                )
+            )
+        except Exception as exc:
+            report_only_cex_micro_gas_samples = {
+                "schema": "report_only_cex_micro_gas_samples.v1",
+                "status": "collector_error",
+                "alert_policy": "report_only",
+                "runtime_effect": "none",
+                "action_guard": "no_runtime_action_mutation",
+                "candidate_count": 0,
+                "window_reviews": [],
+                "candidates": [],
+                "collector_error": {
+                    "code": "report_only_collector_error",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                },
+            }
+        withdrawal_cluster = cex_withdrawal_cluster(
+            event,
+            transfer_rows,
+            from_block,
+            to_block,
+            transfer_coverage,
+        )
     rows: list[dict[str, Any]] = []
-    receipt_attempt_count = 0
-    receipt_success_count = 0
-    receipt_error_count = 0
-    deadline_reached = False
+    receipt_counters = {
+        "required_known_path": {
+            "attempted": 0,
+            "successful": 0,
+            "errors": 0,
+            "deadline_reached": False,
+        },
+        "optional_market_sample": {
+            "attempted": 0,
+            "successful": 0,
+            "errors": 0,
+            "deadline_reached": False,
+        },
+    }
     timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"))
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     if watcher_deadline is not None:
@@ -3084,27 +3587,53 @@ def scan_event(
             if deadline is not None
             else watcher_deadline
         )
-    for tx_hash in tx_hashes:
+    configured_rpc_timeout = int(
+        os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")
+    )
+    required_gas_enrichment: dict[str, Any] | None = None
+    for tx_hash, receipt_scope in receipt_plan:
+        if (
+            receipt_scope == "optional_market_sample"
+            and required_gas_enrichment is None
+        ):
+            required_gas_enrichment = enrich_required_gas_priming(
+                event,
+                rows,
+                deadline,
+            )
+        counters = receipt_counters[receipt_scope]
         if deadline is not None and time.monotonic() >= deadline:
-            deadline_reached = True
+            counters["deadline_reached"] = True
             break
-        receipt_attempt_count += 1
+        receipt_timeout = (
+            acquisition_rpc_timeout(
+                event["chain"],
+                deadline,
+                configured_rpc_timeout,
+            )
+            if deadline is not None
+            else float(configured_rpc_timeout)
+        )
+        if receipt_timeout is None:
+            counters["deadline_reached"] = True
+            break
+        counters["attempted"] += 1
         try:
             receipt = opening.quick_rpc_call(
                 event["chain"],
                 "eth_getTransactionReceipt",
                 [tx_hash],
-                int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6")),
+                receipt_timeout,
             )
             if not isinstance(receipt, dict):
-                receipt_error_count += 1
+                counters["errors"] += 1
                 continue
             receipt_status = opening.hex_to_int(receipt.get("status"))
             if receipt_status not in {0, 1}:
-                receipt_error_count += 1
+                counters["errors"] += 1
                 continue
             if receipt_status == 0:
-                receipt_success_count += 1
+                counters["successful"] += 1
                 continue
             row = summarize_flow_tx(
                 event,
@@ -3112,13 +3641,27 @@ def scan_event(
                 runtime_candidates,
                 receipt=receipt,
                 scan_deadline=deadline,
+                defer_gas_priming=(
+                    receipt_scope == "required_known_path"
+                ),
             )
-            receipt_success_count += 1
+            counters["successful"] += 1
         except Exception:
-            receipt_error_count += 1
+            counters["errors"] += 1
             continue
         if row:
-            rows.append(row)
+            rows.append(
+                {
+                    **row,
+                    "receipt_scope": receipt_scope,
+                }
+            )
+    if required_gas_enrichment is None:
+        required_gas_enrichment = enrich_required_gas_priming(
+            event,
+            rows,
+            deadline,
+        )
     runtime_candidate_rows = runtime_cex_candidate_aggregate_rows(event, runtime_candidates, transfer_coverage)
     configured_cex_inflow_rows = configured_cex_inflow_aggregate_rows(
         event,
@@ -3129,44 +3672,120 @@ def scan_event(
         rows,
         runtime_candidates,
     )
-    receipt_coverage_reasons: list[str] = []
-    if len(tx_hashes) < txs:
-        receipt_coverage_reasons.append("candidate_selection_limit")
-    if deadline_reached or receipt_attempt_count < len(tx_hashes):
-        receipt_coverage_reasons.append("scan_deadline_reached")
-    if receipt_error_count:
-        receipt_coverage_reasons.append("receipt_error")
-    counters_valid = (
-        0
-        <= receipt_success_count
-        <= receipt_attempt_count
-        <= len(tx_hashes)
-        <= txs
-        and receipt_success_count + receipt_error_count == receipt_attempt_count
+    transfer_complete = (
+        transfer_coverage.get("state") == "requested_window_complete"
+        and transfer_coverage.get("complete") is True
     )
-    if not counters_valid:
-        receipt_coverage_reasons.append("counter_invariant_failed")
-    receipt_coverage = {
-        "state": (
-            "selected_receipts_complete"
-            if not receipt_coverage_reasons
-            else "partial_receipt_coverage"
+    required_counters = receipt_counters["required_known_path"]
+    optional_counters = receipt_counters["optional_market_sample"]
+    optional_total_tx_count = (
+        0
+        if required_only_refresh
+        else max(0, txs - len(required_tx_hashes))
+    )
+    required_receipt_coverage = receipt_scope_coverage(
+        required_scope["scope"],
+        len(required_tx_hashes),
+        len(required_tx_hashes),
+        required_counters,
+        "" if transfer_complete else "transfer_coverage_incomplete",
+    )
+    optional_receipt_coverage = receipt_scope_coverage(
+        (
+            "required_only_refresh"
+            if required_only_refresh
+            else "market_transactions_outside_required_known_paths"
         ),
-        "complete": not receipt_coverage_reasons,
-        "reasons": receipt_coverage_reasons,
+        optional_total_tx_count,
+        len(optional_tx_hashes),
+        optional_counters,
+        (
+            ""
+            if (
+                required_only_refresh
+                or len(optional_tx_hashes) == optional_total_tx_count
+            )
+            else "candidate_selection_limit"
+        ),
+    )
+
+    receipt_attempt_count = sum(
+        counters["attempted"]
+        for counters in receipt_counters.values()
+    )
+    receipt_success_count = sum(
+        counters["successful"]
+        for counters in receipt_counters.values()
+    )
+    receipt_error_count = sum(
+        counters["errors"]
+        for counters in receipt_counters.values()
+    )
+    deadline_reached = any(
+        counters["deadline_reached"]
+        for counters in receipt_counters.values()
+    )
+    if required_only_refresh:
+        optional_receipt_coverage["state"] = (
+            "skipped_required_only_refresh"
+        )
+        optional_receipt_coverage["runtime_effect"] = (
+            "skipped_by_explicit_refresh_scope"
+        )
+    else:
+        optional_receipt_coverage["state"] = (
+            "all_optional_market_receipts_complete"
+            if optional_receipt_coverage["complete"]
+            else "partial_optional_market_receipt_sample"
+        )
+        optional_receipt_coverage["runtime_effect"] = (
+            "full_market_flow"
+            if optional_receipt_coverage["complete"]
+            else "report_only_sample"
+        )
+    receipt_coverage = {
+        **required_receipt_coverage,
+        "state": (
+            "required_known_path_receipts_complete"
+            if required_receipt_coverage["complete"]
+            else "partial_required_known_path_receipt_coverage"
+        ),
+        "required_address_count": required_scope["address_count"],
+        "required_address_counts_by_category": required_scope[
+            "address_counts_by_category"
+        ],
+        "required_tx_counts_by_category": required_scope[
+            "tx_counts_by_category"
+        ],
+        "required_tx_count": required_receipt_coverage[
+            "candidate_tx_count"
+        ],
+        "required_attempted_receipt_count": required_counters["attempted"],
+        "required_successful_receipt_count": required_counters[
+            "successful"
+        ],
+        "required_receipt_error_count": required_counters["errors"],
+        "required_deadline_reached": required_counters[
+            "deadline_reached"
+        ],
         "candidate_tx_count": txs,
-        "selected_tx_count": len(tx_hashes),
+        "selected_tx_count": len(receipt_plan),
         "attempted_receipt_count": receipt_attempt_count,
         "successful_receipt_count": receipt_success_count,
         "receipt_error_count": receipt_error_count,
         "signal_row_count": len(rows),
         "deadline_reached": deadline_reached,
+        "refresh_scope": (
+            "required_only_refresh"
+            if required_only_refresh
+            else "scheduled_full_scan"
+        ),
+        "optional_market_sample": optional_receipt_coverage,
     }
     scan_limited = not receipt_coverage["complete"]
-    transfer_complete = (
-        transfer_coverage.get("state") == "requested_window_complete"
-        and transfer_coverage.get("complete") is True
-    )
+    optional_market_scan_limited = not optional_receipt_coverage[
+        "complete"
+    ]
     if scan_limited and transfer_complete:
         configured_cex_inflow_rows = configured_cex_inflow_aggregate_rows(
             event,
@@ -3177,7 +3796,16 @@ def scan_event(
             [],
             runtime_candidates,
         )
-    action_rows = rows + runtime_candidate_rows + configured_cex_inflow_rows
+    required_rows = [
+        row
+        for row in rows
+        if row.get("receipt_scope") == "required_known_path"
+    ]
+    action_rows = (
+        rows
+        if not optional_market_scan_limited
+        else required_rows
+    ) + runtime_candidate_rows + configured_cex_inflow_rows
     if scan_limited:
         action_rows = runtime_candidate_rows + configured_cex_inflow_rows
     if not transfer_complete:
@@ -3185,16 +3813,38 @@ def scan_event(
     analysis = analyze_rows(event, action_rows, from_block, to_block, logs, txs)
     analysis["cex_withdrawal_cluster"] = withdrawal_cluster
     analysis["scan_limited"] = scan_limited
-    analysis["selected_receipts"] = len(tx_hashes)
+    analysis["optional_market_scan_limited"] = (
+        optional_market_scan_limited
+    )
+    analysis["refresh_scope"] = (
+        "required_only_refresh"
+        if required_only_refresh
+        else "scheduled_full_scan"
+    )
+    analysis["required_gas_priming_enrichment"] = (
+        required_gas_enrichment
+    )
+    analysis["selected_receipts"] = len(receipt_plan)
+    analysis["required_receipts"] = len(required_tx_hashes)
+    analysis["optional_selected_receipts"] = len(
+        optional_tx_hashes
+    )
     analysis["receipt_attempts"] = receipt_attempt_count
     analysis["sampled_receipts"] = receipt_success_count
     analysis["receipt_errors"] = receipt_error_count
     analysis["signal_receipt_rows"] = len(rows)
+    analysis["required_signal_receipt_rows"] = len(required_rows)
     analysis["receipt_coverage"] = receipt_coverage
     if not transfer_complete:
         analysis["alert_policy"] = "report_only_incomplete_transfer_coverage"
     elif scan_limited:
         analysis["alert_policy"] = "complete_transfer_evidence_only"
+    elif required_only_refresh:
+        analysis["alert_policy"] = "required_only_refresh"
+    elif optional_market_scan_limited:
+        analysis["alert_policy"] = (
+            "required_receipt_gate_complete_optional_market_sample_report_only"
+        )
     else:
         analysis["alert_policy"] = "normal"
     if scan_limited and all(
@@ -3208,6 +3858,32 @@ def scan_event(
     ):
         analysis["operator_behavior"] = (
             "已成功处理的收据样本中未观察到可归属的已实现卖出证据。"
+        )
+    elif required_only_refresh and all(
+        decimal_from(analysis.get(key)) == 0
+        for key in (
+            "verified_controller_sell_quote",
+            "candidate_related_sell_quote",
+            "functional_sell_quote",
+            "unattributed_sell_quote",
+        )
+    ):
+        analysis["operator_behavior"] = (
+            "本轮仅刷新已知首批买家、项目/MM 与 CEX 必查路径；"
+            "这些收据中未观察到可归属的已实现卖出。"
+        )
+    elif optional_market_scan_limited and all(
+        decimal_from(analysis.get(key)) == 0
+        for key in (
+            "verified_controller_sell_quote",
+            "candidate_related_sell_quote",
+            "functional_sell_quote",
+            "unattributed_sell_quote",
+        )
+    ):
+        analysis["operator_behavior"] = (
+            "已知首批买家、项目/MM 与 CEX 路径的必查收据中未观察到"
+            "可归属的已实现卖出；其余市场交易仅作抽样。"
         )
     return {
         **event,
@@ -3228,7 +3904,9 @@ def scan_event(
             "from_block": from_block,
             "to_block": to_block,
             "transfer_coverage": transfer_coverage,
-            "scan_limited": scan_limited,
+            "scan_limited": (
+                scan_limited or optional_market_scan_limited
+            ),
         },
     }
 
@@ -3471,7 +4149,14 @@ def telegram_event_metrics(event: dict[str, Any]) -> str:
 
     sampled = analysis.get("sampled_receipts", analysis.get("sampled_rows", 0))
     candidates = analysis.get("candidate_txs", 0)
-    scan_state = "扫描受限" if analysis.get("scan_limited") else "扫描完成"
+    if analysis.get("scan_limited"):
+        scan_state = "必查路径扫描受限"
+    elif analysis.get("refresh_scope") == "required_only_refresh":
+        scan_state = "必查路径刷新完成"
+    elif analysis.get("optional_market_scan_limited"):
+        scan_state = "必查路径完成/市场抽样"
+    else:
+        scan_state = "全市场扫描完成"
     metrics.append(f"{scan_state} {sampled}/{candidates}")
     return "｜".join(metrics)
 
@@ -3611,6 +4296,11 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- candidate_logs: `{analysis.get('candidate_logs')}`",
                 f"- candidate_txs: `{analysis.get('candidate_txs')}`",
                 f"- scan_limited: `{analysis.get('scan_limited')}`",
+                f"- optional_market_scan_limited: `{analysis.get('optional_market_scan_limited')}`",
+                f"- refresh_scope: `{analysis.get('refresh_scope')}`",
+                f"- required_receipts: `{analysis.get('required_receipts')}`",
+                f"- optional_selected_receipts: `{analysis.get('optional_selected_receipts')}`",
+                f"- required_gas_priming_enrichment: `{analysis.get('required_gas_priming_enrichment')}`",
                 f"- sampled_receipts: `{analysis.get('sampled_receipts')}`",
                 f"- sampled_rows: `{analysis.get('sampled_rows')}`",
                 f"- total_buy_quote: `{analysis.get('total_buy_quote')}`",
@@ -3769,13 +4459,23 @@ def main() -> int:
             event_specs,
             budget_seconds,
         )
-    atomic_write_json(LATEST_PATH, snapshot)
-    record_cex_micro_gas_candidate_history(snapshot)
-    record_withdrawal_candidate_history(snapshot, forward_scans)
-    REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
+    required_only = (
+        os.environ.get("ALPHA_INTRADAY_REQUIRED_ONLY", "0") == "1"
+    )
+    latest_path = (
+        REQUIRED_ONLY_LATEST_PATH if required_only else LATEST_PATH
+    )
+    report_path = (
+        REQUIRED_ONLY_REPORT_PATH if required_only else REPORT_PATH
+    )
+    atomic_write_json(latest_path, snapshot)
+    if not required_only:
+        record_cex_micro_gas_candidate_history(snapshot)
+        record_withdrawal_candidate_history(snapshot, forward_scans)
+    report_path.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)
-    print(LATEST_PATH)
-    print(REPORT_PATH)
+    print(latest_path)
+    print(report_path)
     print(f"events={snapshot['event_count']} alerts={snapshot['alert_count']}")
     return 0
 

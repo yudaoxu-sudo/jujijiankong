@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 REPORT = ROOT / "output" / "sniper_engine" / "verification_report.md"
 PYCACHE_DIR = Path(tempfile.gettempdir()) / "sniper_pycache"
 
@@ -367,34 +368,45 @@ required_contract = (
     'project_dir="${SNIPER_PROJECT_DIR:-/home/ubuntu/sniper}"',
     'mkdir -p "$project_dir/logs"',
     'crontab -l >"$current" 2>/dev/null || true',
-    '*"$project_dir/scripts/server_run_once.sh"*|*"$project_dir/scripts/server_health_watchdog.sh"*)',
+    '*"$project_dir/scripts/server_fast_lane.sh"*|*"$project_dir/scripts/server_run_once.sh"*|*"$project_dir/scripts/server_health_watchdog.sh"*)',
+    '* * * * * $project_dir/scripts/server_fast_lane.sh',
     '*/5 * * * * $project_dir/scripts/server_run_once.sh',
-    '*/10 * * * * $project_dir/scripts/server_health_watchdog.sh',
+    '*/2 * * * * $project_dir/scripts/server_health_watchdog.sh',
     'crontab "$next"',
 )
 assert all(item in source for item in required_contract), 'cron installer contract drifted'
 
 
 def apply_contract(lines, project_dir):
+    fast_lane = project_dir + '/scripts/server_fast_lane.sh'
     run_once = project_dir + '/scripts/server_run_once.sh'
     watchdog = project_dir + '/scripts/server_health_watchdog.sh'
-    kept = [line for line in lines if run_once not in line and watchdog not in line]
+    kept = [
+        line
+        for line in lines
+        if fast_lane not in line
+        and run_once not in line
+        and watchdog not in line
+    ]
     return kept + [
+        '* * * * * ' + fast_lane + ' >> ' + project_dir + '/logs/server_fast_lane.log 2>&1',
         '*/5 * * * * ' + run_once + ' >> ' + project_dir + '/logs/server_run_once.log 2>&1',
-        '*/10 * * * * ' + watchdog + ' >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1',
+        '*/2 * * * * ' + watchdog + ' >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1',
     ]
 
 
 project_dir = '/offline/synthetic/sniper'
 initial = [
     '17 3 * * * /usr/local/bin/unrelated-job',
+    '*/7 * * * * ' + project_dir + '/scripts/server_fast_lane.sh',
     '1 1 * * * ' + project_dir + '/scripts/server_run_once.sh',
 ]
 once = apply_contract(initial, project_dir)
 twice = apply_contract(once, project_dir)
 assert once == twice, (once, twice)
+assert once.count('* * * * * ' + project_dir + '/scripts/server_fast_lane.sh >> ' + project_dir + '/logs/server_fast_lane.log 2>&1') == 1
 assert once.count('*/5 * * * * ' + project_dir + '/scripts/server_run_once.sh >> ' + project_dir + '/logs/server_run_once.log 2>&1') == 1
-assert once.count('*/10 * * * * ' + project_dir + '/scripts/server_health_watchdog.sh >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1') == 1
+assert once.count('*/2 * * * * ' + project_dir + '/scripts/server_health_watchdog.sh >> ' + project_dir + '/logs/server_health_watchdog.log 2>&1') == 1
 assert '17 3 * * * /usr/local/bin/unrelated-job' in once
 print('PURE_PYTHON_OFFLINE_CRON_CONTRACT_OK')
 """
@@ -467,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "sniper_score_local.py",
         ROOT / "scripts" / "alpha_project_watch.py",
         ROOT / "scripts" / "alpha_holder_concentration_watch.py",
+        ROOT / "scripts" / "alpha_prelaunch_research.py",
         ROOT / "scripts" / "alpha_prelaunch_watch.py",
         ROOT / "scripts" / "alpha_opening_block_watch.py",
         ROOT / "scripts" / "alpha_price_momentum_watch.py",
@@ -485,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "external_aux_source_readiness.py",
         ROOT / "scripts" / "external_aux_live_probe.py",
         ROOT / "scripts" / "position_cost_watch.py",
+        ROOT / "scripts" / "fast_lane_health.py",
         ROOT / "scripts" / "runtime_health_watch.py",
         ROOT / "scripts" / "project_continuity_local.py",
         ROOT / "scripts" / "project_continuity_acceptance.py",
@@ -527,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "fixtures" / "elonkely_exact_anchor_replay_synthetic.json",
         ROOT / "scripts" / "o1_address_attribution.py",
         ROOT / "scripts" / "sniper_monitor.py",
+        ROOT / "scripts" / "server_fast_lane.sh",
         ROOT / "scripts" / "server_run_once.sh",
         ROOT / "scripts" / "o1_block_verifier.py",
         ROOT / "scripts" / "o1_decode_pancake_v3.py",
@@ -604,6 +619,21 @@ def main(argv: list[str] | None = None) -> int:
         "intraday": (
             ROOT / "scripts" / "alpha_intraday_flow_watch.py"
         ).read_text(encoding="utf-8"),
+        "opening": (
+            ROOT / "scripts" / "alpha_opening_block_watch.py"
+        ).read_text(encoding="utf-8"),
+        "catalog": (
+            ROOT / "scripts" / "binance_alpha_catalog_watch.py"
+        ).read_text(encoding="utf-8"),
+        "research": (
+            ROOT / "scripts" / "alpha_prelaunch_research.py"
+        ).read_text(encoding="utf-8"),
+        "ingest": (
+            ROOT / "scripts" / "ingest_alpha_signal.py"
+        ).read_text(encoding="utf-8"),
+        "fast_health": (
+            ROOT / "scripts" / "fast_lane_health.py"
+        ).read_text(encoding="utf-8"),
     }
     lifecycle_tokens = {
         "holder": (
@@ -612,14 +642,46 @@ def main(argv: list[str] | None = None) -> int:
             "project_or_mm_outflow_transfer_risk",
             "cex_inflow_transfer_risk",
             "receipt_quote_recovery",
+            "bounded_bootstrap_transfer_logs",
         ),
         "health": (
             "retention_flow_coverage_issue",
             "historical_prelaunch_delivery_issue",
+            "PRELAUNCH_RECEIPT_POLICY_VERSION",
+            "opening cohort transfer coverage incomplete",
+            "intraday_opening_buyer_scope_issue",
         ),
         "intraday": (
             "DEFAULT_WATCHER_BUDGET_SECONDS = 420",
-            "atomic_write_json(LATEST_PATH, snapshot)",
+            "atomic_write_json(latest_path, snapshot)",
+            "opening_buyer_addresses_from_context",
+            "required_receipt_transactions",
+            "optional_market_scan_limited",
+        ),
+        "opening": (
+            "bounded_bootstrap_opening_transfer_logs",
+            "opening_event_exact_identity",
+            "opening_recent_tail_coverage_complete",
+        ),
+        "catalog": (
+            "DEFAULT_MAX_SELECTED = 64",
+        ),
+        "research": (
+            'SCHEMA_VERSION = "alpha_prelaunch_research.v1"',
+            "extract_event_schedule",
+            "extract_pool_research",
+            "extract_opening_forecast",
+            "build_prelaunch_research",
+        ),
+        "ingest": (
+            "forecast_context_at",
+            '"event_schedule": event_schedule',
+            '"prelaunch_research": prelaunch_research',
+        ),
+        "fast_health": (
+            'schema": "sniper_fast_lane_health.v1',
+            "CORE_OUTPUTS",
+            "atomic_write_json(HEARTBEAT_PATH, snapshot)",
         ),
     }
     lifecycle_missing = [
@@ -630,9 +692,316 @@ def main(argv: list[str] | None = None) -> int:
     ]
     checks.append(
         (
-            "Alpha lifecycle covers prelaunch, core receipts, and 30-day retention flow",
+            "Alpha lifecycle covers structured prelaunch, fast health, core receipts, and 30-day retention flow",
             not lifecycle_missing,
             ",".join(lifecycle_missing),
+        )
+    )
+
+    prelaunch_release_ok = False
+    prelaunch_release_msg = ""
+    try:
+        from datetime import datetime, timezone
+
+        import scripts.alpha_prelaunch_research as prelaunch_research
+        import scripts.alpha_prelaunch_watch as prelaunch_watch
+        import scripts.binance_alpha_catalog_watch as alpha_catalog
+        import scripts.ingest_alpha_signal as signal_ingest
+
+        for forecast_term in (
+            "预计",
+            "预测",
+            "forecast",
+            "forecasted",
+            "forecasting",
+            "predict",
+            "predicted",
+            "predicting",
+            "prediction",
+            "projected",
+            "projecting",
+            "projection",
+            "estimating",
+        ):
+            estimated = signal_ingest.parse_signal(
+                f"$SAFE 币安 Alpha {forecast_term} "
+                "2026-08-01 20:00 上线\n"
+                f"{forecast_term} 总量: 2B\n"
+                f"{forecast_term} 池子价 0.30 -> 0.15\n"
+                f"{forecast_term} 池子区间 0.10-0.20 100K USDT"
+            )
+            assert estimated["times"] == [], estimated["times"]
+            assert (
+                estimated["watchlist_proposal"]["known_times"] == []
+            ), estimated["watchlist_proposal"]["known_times"]
+            assert "total_supply" not in estimated["facts"]
+            assert "pool_price" not in estimated["prices"]
+            assert "initial_price_usdt" not in (
+                estimated["prelaunch_research"]["pool"]
+            ), estimated["prelaunch_research"]["pool"]
+            assert (
+                estimated["prelaunch_research"]["pool"]["segments"] == []
+            ), estimated["prelaunch_research"]["pool"]
+            assert estimated["prelaunch_research"]["opening_forecast"][
+                "predicted_pool_price_usdt"
+            ] == "0.15", estimated["prelaunch_research"]["opening_forecast"]
+        multi_date = signal_ingest.parse_signal(
+            "$SAFE 币安 Alpha 2026-08-01 20:00 上线\n"
+            "Booster 20:10\n"
+            "2026-08-02 21:00 空投领取\n"
+            "同日 22:00 多CEX交易所"
+        )
+        multi_date_times = {
+            row["event_type"]: row["time_utc8"]
+            for row in multi_date["event_schedule"]
+            if row.get("time_utc8")
+        }
+        assert multi_date_times["cex_trade"] == "2026-08-02 22:00", (
+            multi_date_times
+        )
+        multi_line_forecast = signal_ingest.parse_signal(
+            "$SAFE 币安 Alpha 预测如下：\n\n"
+            "2026-08-01 20:00 上线\n"
+            "\n池子价 0.30 -> 0.15\n"
+            "池子区间 0.10-0.20 100K USDT"
+        )
+        assert multi_line_forecast["times"] == [], multi_line_forecast
+        assert "initial_price_usdt" not in (
+            multi_line_forecast["prelaunch_research"]["pool"]
+        ), multi_line_forecast["prelaunch_research"]
+        assert (
+            multi_line_forecast["prelaunch_research"]["pool"]["segments"]
+            == []
+        ), multi_line_forecast["prelaunch_research"]
+        assert multi_line_forecast["prelaunch_research"][
+            "opening_forecast"
+        ]["predicted_pool_price_usdt"] == "0.15", (
+            multi_line_forecast["prelaunch_research"]
+        )
+        protected = signal_ingest.merge_signal_facts(
+            {
+                "total_supply": "1000000000",
+                "verification_status": "verified",
+            },
+            {
+                "total_supply": "2000000000",
+                "verification_status": "unverified",
+            },
+        )
+        assert protected["total_supply"] == "1000000000", protected
+        cross_chain_research = {
+            "schema_version": "alpha_prelaunch_research.v1",
+            "research_status": "partial",
+            "supply": {
+                "cross_chain": [
+                    {"chain": "eth", "venue": "OKX"},
+                    {"chain": "eth", "venue": "Bybit"},
+                ]
+            },
+            "missing_fields": ["cross_chain.receipts"],
+            "conflicts": [],
+        }
+        cross_merged = alpha_catalog.merge_prelaunch_research(
+            cross_chain_research,
+            cross_chain_research,
+        )
+        assert {
+            row.get("venue")
+            for row in cross_merged["supply"]["cross_chain"]
+        } == {"OKX", "Bybit"}, cross_merged
+        invalid = prelaunch_research.normalize_prelaunch_research(
+            {
+                "schema_version": "wrong",
+                "research_status": "ready",
+                "evidence": [
+                    {
+                        "evidence_id": "bad id",
+                        "source_ref": "inline_signal:fixture",
+                    }
+                ],
+                "identity": {
+                    "verification_status": "verified",
+                    "evidence_ids": ["missing"],
+                },
+                "timeline": 1,
+                "sniper_curve": 2,
+                "valuation": 3,
+                "missing_fields": [],
+                "conflicts": [],
+            }
+        )
+        assert invalid["research_status"] == "blocked", invalid
+        assert {
+            "timeline",
+            "sniper_curve",
+            "valuation",
+        }.issubset(
+            {row.get("path") for row in invalid["conflicts"]}
+        ), invalid
+        invalid_catalog = alpha_catalog.merge_prelaunch_research(
+            {},
+            {
+                **invalid,
+                "research_status": "ready",
+            },
+        )
+        assert invalid_catalog["research_status"] == "blocked", (
+            invalid_catalog
+        )
+        invalid_watch = prelaunch_watch.prepare_prelaunch_research(
+            {
+                "prelaunch_research": {
+                    **invalid,
+                    "research_status": "ready",
+                }
+            }
+        )
+        assert invalid_watch["research_status"] == "blocked", invalid_watch
+        chunks = prelaunch_watch.split_telegram_text("x" * 8100)
+        assert len(chunks) == 3 and max(map(len, chunks)) <= 4000, chunks
+        static_watchlist = json.loads(
+            (
+                ROOT / "config" / "current_alpha_watchlist.json"
+            ).read_text(encoding="utf-8")
+        )
+        grvt = next(
+            row
+            for row in static_watchlist["items"]
+            if row.get("symbol") == "GRVT"
+        )
+        assert (
+            grvt["prelaunch_research"]["research_status"] == "blocked"
+        ), grvt["prelaunch_research"]
+        assert all(
+            row.get("time_utc8")
+            and row.get("time_precision")
+            and row.get("authority")
+            for row in grvt["prelaunch_research"]["timeline"]
+        ), grvt["prelaunch_research"]["timeline"]
+        grvt_events = prelaunch_watch.build_events(
+            {"items": [grvt]},
+            datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc),
+        )
+        grvt_report = prelaunch_watch.render_report(
+            {
+                "generated_at": "2026-07-30T08:00:00+00:00",
+                "events": grvt_events,
+            }
+        )
+        for detail in (
+            "airdrop_claim",
+            "buy_support",
+            "ecosystem",
+            "Bybit",
+            "Coinbase",
+        ):
+            assert detail in grvt_report, detail
+        assert "；+" not in grvt_report, grvt_report
+        official_listing = datetime(
+            2026,
+            7,
+            30,
+            13,
+            0,
+            tzinfo=timezone.utc,
+        )
+        conflict_payload, _ = alpha_catalog.build_runtime_watchlist(
+            static_watchlist,
+            {
+                "code": "000000",
+                "success": True,
+                "data": [
+                    {
+                        "alphaId": "ALPHA_GRVT",
+                        "symbol": "GRVT",
+                        "name": "GRVT",
+                        "chainId": "56",
+                        "contractAddress": grvt["contracts"][0][
+                            "address"
+                        ],
+                        "listingTime": int(
+                            official_listing.timestamp() * 1000
+                        ),
+                    }
+                ],
+            },
+            current=datetime(
+                2026,
+                7,
+                30,
+                4,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            lookback_hours=168,
+            lookahead_hours=48,
+        )
+        conflict_grvt = next(
+            row
+            for row in conflict_payload["items"]
+            if row.get("symbol") == "GRVT"
+        )
+        assert conflict_payload["static_time_conflict_count"] == 1, (
+            conflict_payload["static_time_conflicts"]
+        )
+        assert [
+            row.get("time")
+            for row in conflict_grvt["known_times"]
+            if isinstance(row, dict)
+        ] == ["2026-07-30 21:00"], conflict_grvt["known_times"]
+        assert (
+            conflict_grvt["prelaunch_research"]["research_status"]
+            == "blocked"
+        ), conflict_grvt["prelaunch_research"]
+        assert conflict_grvt["prelaunch_research"]["timeline"][0][
+            "runtime_anchor_status"
+        ] == "superseded_by_official_catalog", (
+            conflict_grvt["prelaunch_research"]["timeline"]
+        )
+        producer_item = signal_ingest.parse_signal(
+            "$PRODUCER 币安 Alpha 2026-07-30 20:00 上线\n"
+            f"BSC: {grvt['contracts'][0]['address']}"
+        )["watchlist_proposal"]
+        producer_sanitized, producer_conflict = (
+            alpha_catalog.sanitize_static_launch_time_conflict(
+                producer_item,
+                {
+                    "symbol": "PRODUCER",
+                    "chain": "bsc",
+                    "contracts": grvt["contracts"],
+                    "known_times": [
+                        {
+                            "time": "2026-07-30 21:00",
+                            "reason": "binance_alpha_listing_time",
+                        }
+                    ],
+                    "facts": {
+                        "source": "binance_alpha_public_catalog",
+                        "listing_time_utc": (
+                            "2026-07-30T13:00:00+00:00"
+                        ),
+                        "listing_time_utc8": "2026-07-30 21:00",
+                    },
+                },
+            )
+        )
+        assert producer_conflict is not None, producer_item
+        assert producer_sanitized["known_times"] == [], (
+            producer_sanitized["known_times"]
+        )
+        prelaunch_release_ok = True
+        prelaunch_release_msg = (
+            "forecast vocabulary/pool/date gated; verified facts protected; "
+            "multi-venue research preserved; producer/consumers blocked; "
+            "official time canonical; Markdown complete; Telegram bounded"
+        )
+    except Exception as exc:
+        prelaunch_release_msg = str(exc)
+    checks.append(
+        (
+            "prelaunch release gates preserve forecast provenance and delivery",
+            prelaunch_release_ok,
+            prelaunch_release_msg,
         )
     )
 
@@ -2087,6 +2456,86 @@ assert readback_gate['can_follow'] is False, readback_gate
         current_watchlist_msg = str(exc)
     checks.append(("current alpha watchlist parses", current_watchlist_ok, current_watchlist_msg))
 
+    fast_lane_ok = False
+    fast_lane_msg = ""
+    try:
+        fast_lane_text = (
+            ROOT / "scripts" / "server_fast_lane.sh"
+        ).read_text(encoding="utf-8")
+        fast_components = (
+            "telegram_signal_collector.py --defer-analysis",
+            "telegram_user_signal_collector.py",
+            "binance_alpha_catalog_watch.py",
+            "prediction_market_watch.py",
+            "alpha_prelaunch_watch.py",
+            "perp_oi_funding_watch.py",
+            "alpha_price_momentum_watch.py",
+            "telegram_signal_collector.py --flush-pending",
+            "fast_lane_health.py",
+        )
+        fast_component_positions = [
+            fast_lane_text.index(component)
+            for component in fast_components
+            if component in fast_lane_text
+        ]
+        fast_component_order = (
+            len(fast_component_positions) == len(fast_components)
+            and fast_component_positions == sorted(fast_component_positions)
+        )
+        fast_lane_ok = (
+            "flock -n" in fast_lane_text
+            and "flock is required for overlap protection"
+            in fast_lane_text
+            and "continuing without overlap lock"
+            not in fast_lane_text
+            and "timeout" in fast_lane_text
+            and "FAST_LANE_FAILURE_FILE" in fast_lane_text
+            and "fast-lane step failed with status" in fast_lane_text
+            and "FAST_TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-20"
+            in fast_lane_text
+            and "FAST_TELEGRAM_USER_COLLECTOR_TIMEOUT_SECONDS:-25"
+            in fast_lane_text
+            and "FAST_BINANCE_ALPHA_CATALOG_TIMEOUT_SECONDS:-20"
+            in fast_lane_text
+            and "FAST_PREDICTION_MARKET_TIMEOUT_SECONDS:-20"
+            in fast_lane_text
+            and "FAST_ALPHA_PRELAUNCH_TIMEOUT_SECONDS:-15"
+            in fast_lane_text
+            and "FAST_PERP_OI_FUNDING_TIMEOUT_SECONDS:-25"
+            in fast_lane_text
+            and "FAST_ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS:-25"
+            in fast_lane_text
+            and "FAST_TELEGRAM_FLUSH_TIMEOUT_SECONDS:-15"
+            in fast_lane_text
+            and "collector_pid=$!" in fast_lane_text
+            and "user_collector_pid=$!" in fast_lane_text
+            and "prediction_pid=$!" in fast_lane_text
+            and "prelaunch_pid=$!" in fast_lane_text
+            and "perp_pid=$!" in fast_lane_text
+            and 'wait "$perp_pid"' in fast_lane_text
+            and "ALPHA_WATCHLIST_PATH" in fast_lane_text
+            and "BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS" in fast_lane_text
+            and "DISABLE_TELEGRAM" in fast_lane_text
+            and '--failure-file "$FAST_LANE_FAILURE_FILE"'
+            in fast_lane_text
+            and '--started-at "$FAST_LANE_STARTED_AT"' in fast_lane_text
+            and fast_component_order
+        )
+        fast_lane_msg = (
+            "required lock+bounded parallel stages+failure capture+watchlist fallback+ordered dependencies+health present"
+            if fast_lane_ok
+            else "missing fast-lane runtime guard or component order"
+        )
+    except Exception as exc:
+        fast_lane_msg = str(exc)
+    checks.append(
+        (
+            "server fast lane has bounded ordered components and health",
+            fast_lane_ok,
+            fast_lane_msg,
+        )
+    )
+
     server_run_ok = False
     server_run_msg = ""
     try:
@@ -2110,50 +2559,54 @@ assert readback_gate['can_follow'] is False, readback_gate
         )
         intraday_run = "alpha_intraday_flow_watch.py"
         opening_funder_run = "review_opening_cohort_funders.py"
-        perp_run = "perp_oi_funding_watch.py"
-        price_run = "alpha_price_momentum_watch.py"
-        flush_run = "telegram_signal_collector.py --flush-pending"
         holder_run = "alpha_holder_concentration_watch.py"
         external_live_probe_run = "external_aux_live_probe.py"
         position_cost_run = "position_cost_watch.py"
+        daily_report_run = "build_alpha_daily_report.py"
         verification_run = "verify_sniper_engine.py"
         runtime_health_run = "runtime_health_watch.py --mode cycle"
         holder_context_order = (
             intraday_run in server_run_text
-            and perp_run in server_run_text
-            and price_run in server_run_text
+            and "alpha_opening_sprint.sh" in server_run_text
+            and opening_funder_run in server_run_text
             and holder_run in server_run_text
-            and server_run_text.index(intraday_run) < server_run_text.index(perp_run) < server_run_text.index(price_run) < server_run_text.index(holder_run)
+            and server_run_text.index(intraday_run)
+            < server_run_text.index("alpha_opening_sprint.sh")
+            < server_run_text.index(opening_funder_run)
+            < server_run_text.index(holder_run)
         )
         opening_funder_order = (
             "alpha_opening_sprint.sh" in server_run_text
             and opening_funder_run in server_run_text
             and intraday_run in server_run_text
-            and price_run in server_run_text
-            and server_run_text.index(intraday_run) < server_run_text.index(price_run) < server_run_text.index("alpha_opening_sprint.sh") < server_run_text.index(opening_funder_run)
+            and server_run_text.index(intraday_run)
+            < server_run_text.index("alpha_opening_sprint.sh")
+            < server_run_text.index(opening_funder_run)
         )
-        fast_flush_order = (
-            flush_run in server_run_text
-            and price_run in server_run_text
-            and "alpha_opening_sprint.sh" in server_run_text
-            and server_run_text.index(price_run) < server_run_text.index(flush_run) < server_run_text.index("alpha_opening_sprint.sh")
+        fast_only_commands = (
+            "python3 scripts/telegram_signal_collector.py",
+            "python3 scripts/telegram_user_signal_collector.py",
+            "python3 scripts/binance_alpha_catalog_watch.py",
+            "python3 scripts/prediction_market_watch.py",
+            "python3 scripts/alpha_prelaunch_watch.py",
+            "python3 scripts/perp_oi_funding_watch.py",
+            "python3 scripts/alpha_price_momentum_watch.py",
         )
         server_run_ok = (
             "flock -n" in server_run_text
             and "timeout" in server_run_text
             and "SNIPER_MONITOR_TIMEOUT_SECONDS" in server_run_text
             and "ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS" in server_run_text
-            and "ALPHA_PRELAUNCH_TIMEOUT_SECONDS" in server_run_text
-            and "alpha_prelaunch_watch.py" in server_run_text
+            and "ALPHA_INTRADAY_TIMEOUT_SECONDS" in server_run_text
             and "ALPHA_OPENING_TIMEOUT_SECONDS" in server_run_text
+            and "ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS"
+            in server_run_text
             and "OPENING_COHORT_FUNDER_TIMEOUT_SECONDS" in server_run_text
             and "OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS" in server_run_text
             and "OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS" in server_run_text
             and opening_funder_run in server_run_text
-            and "ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS" in server_run_text
-            and "alpha_price_momentum_watch.py" in server_run_text
-            and "PERP_OI_FUNDING_TIMEOUT_SECONDS" in server_run_text
-            and "perp_oi_funding_watch.py" in server_run_text
+            and "ALPHA_HOLDER_TIMEOUT_SECONDS" in server_run_text
+            and holder_run in server_run_text
             and "SURF_AUX_MARKET_TIMEOUT_SECONDS" in server_run_text
             and "surf_aux_market_watch.py" in server_run_text
             and "EXTERNAL_AUX_SOURCE_TIMEOUT_SECONDS" in server_run_text
@@ -2163,6 +2616,8 @@ assert readback_gate['can_follow'] is False, readback_gate
             and external_live_probe_run in server_run_text
             and "POSITION_COST_TIMEOUT_SECONDS" in server_run_text
             and position_cost_run in server_run_text
+            and "DAILY_REPORT_TIMEOUT_SECONDS" in server_run_text
+            and daily_report_run in server_run_text
             and "alpha_opening_sprint.sh" in server_run_text
             and "ARX_OPENING_TIMEOUT_SECONDS" in server_run_text
             and "arx_opening_sprint.sh" in server_run_text
@@ -2180,13 +2635,26 @@ assert readback_gate['can_follow'] is False, readback_gate
             and arx_launch_guard
             and arx_opening_before_launch
             and opening_funder_order
-            and fast_flush_order
             and holder_context_order
+            and all(
+                command not in server_run_text
+                for command in fast_only_commands
+            )
         )
-        server_run_msg = "lock+timeout+failure capture+health alert+O1 pause+ARX refresh/launch+opening funder+perp+surf+position guarded+order present; local continuity excluded" if server_run_ok else "missing runtime guard"
+        server_run_msg = (
+            "lock+timeouts+failure capture+cycle health+O1 pause+ARX refresh/launch+opening/intraday/funder/holder/surf/position/report/verifier order present; fast components separated"
+            if server_run_ok
+            else "missing heavy runtime guard or component separation"
+        )
     except Exception as exc:
         server_run_msg = str(exc)
-    checks.append(("server run has overlap lock and timeouts", server_run_ok, server_run_msg))
+    checks.append(
+        (
+            "server heavy run has overlap lock and core timeouts",
+            server_run_ok,
+            server_run_msg,
+        )
+    )
 
     opening_sprint_ok = False
     opening_sprint_msg = ""
@@ -2239,24 +2707,49 @@ assert readback_gate['can_follow'] is False, readback_gate
         installer = (ROOT / "scripts" / "install_server_cron.sh").read_text(encoding="utf-8")
         watchdog = (ROOT / "scripts" / "server_health_watchdog.sh").read_text(encoding="utf-8")
         cron_watchdog_ok = (
-            "server_run_once.sh" in installer
+            "server_fast_lane.sh" in installer
+            and "server_run_once.sh" in installer
             and "server_health_watchdog.sh" in installer
+            and "* * * * * $project_dir/scripts/server_fast_lane.sh"
+            in installer
             and "*/5 * * * *" in installer
-            and "*/10 * * * *" in installer
+            and "*/2 * * * *" in installer
             and 'mkdir -p "$project_dir/logs"' in installer
             and "runtime_health_watch.py --mode watchdog" in watchdog
             and "RUNTIME_HEALTH_WATCHDOG_TIMEOUT_SECONDS" in watchdog
         )
-        cron_watchdog_msg = "main cron plus independent stale-cycle watchdog present" if cron_watchdog_ok else "missing watchdog cron guard"
+        cron_watchdog_msg = (
+            "fast every minute, heavy every 5 minutes, watchdog every 2 minutes"
+            if cron_watchdog_ok
+            else "missing fast/heavy/watchdog cron guard"
+        )
     except Exception as exc:
         cron_watchdog_msg = str(exc)
-    checks.append(("server cron includes independent health watchdog", cron_watchdog_ok, cron_watchdog_msg))
+    checks.append(
+        (
+            "server cron includes fast, heavy, and independent watchdog schedules",
+            cron_watchdog_ok,
+            cron_watchdog_msg,
+        )
+    )
 
     perp_watch_code = """
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 import scripts.perp_oi_funding_watch as perp_module
-from scripts.perp_oi_funding_watch import aggregate_open_interest_quality, best_ok_venue, cached_funding_records, canonical_funding_records, classify_perp, depth_action_note, depth_metrics, funding_history_note, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, summarize_funding_history, total_open_interest, trend_for_symbol, venue_signal_notes
+from scripts.perp_oi_funding_watch import aggregate_open_interest_quality, best_ok_venue, cached_funding_records, canonical_funding_records, classify_perp, depth_action_note, depth_metrics, funding_history_note, liquidation_action_note, liquidation_metrics, listed_venue_names, okx_inst_family, row_has_actionable_perp_alert, summarize_funding_history, total_open_interest, trend_for_symbol, venue_signal_notes
+
+def event_ms(value):
+    return int(
+        datetime.fromisoformat(value)
+        .replace(tzinfo=timezone.utc)
+        .timestamp()
+        * 1000
+    )
+
+baseline_event_ms = event_ms('2026-06-30T00:00:00')
+current_event_ms = event_ms('2026-06-30T01:00:00')
 
 thin = classify_perp({'open_interest_usd': '1000', 'last_funding_rate': '0', 'quote_volume_24h': '0'})
 assert thin['status'] == 'thin_or_unusable', thin
@@ -2266,6 +2759,16 @@ active = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0'
 assert active['status'] == 'active_perp_market', active
 quiet = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0', 'quote_volume_24h': '1000', 'price_change_pct_24h': '1'})
 assert quiet['status'] == 'listed_quiet', quiet
+stale_alert = {
+    'status': 'ok',
+    'current_oi_event_freshness': 'stale',
+    'direction_hint': '拥挤',
+    'funding_history_state': 'sustained_long_crowding',
+    'depth_state': 'thin_depth',
+}
+assert row_has_actionable_perp_alert(stale_alert) is False, stale_alert
+stale_alert['current_oi_event_freshness'] = 'fresh'
+assert row_has_actionable_perp_alert(stale_alert) is True, stale_alert
 normalized_crowded = classify_perp({'open_interest_usd': '1000000', 'last_funding_rate': '0.0001', 'current_funding_rate_8h': '0.0008', 'quote_volume_24h': '1000', 'price_change_pct_24h': '1'})
 assert normalized_crowded['status'] == 'crowded_funding', normalized_crowded
 canonical = canonical_funding_records(
@@ -2316,12 +2819,13 @@ history = [{
     'rows': [{
         'symbol': 'CAP',
         'status': 'ok',
+        'oi_event_time_ms': baseline_event_ms,
         'mark_price': '0.02',
         'open_interest_usd': '1000000',
         'last_funding_rate': '0.0001',
     }],
 }]
-trend = trend_for_symbol(history, 'CAP', {'mark_price': '0.022', 'open_interest_usd': '1200000', 'last_funding_rate': '0.0002'}, '2026-06-30T01:00:00+00:00')
+trend = trend_for_symbol(history, 'CAP', {'oi_event_time_ms': current_event_ms, 'mark_price': '0.022', 'open_interest_usd': '1200000', 'last_funding_rate': '0.0002'}, '2026-06-30T01:00:00+00:00')
 assert trend['trend_hint'] == '多头增量', trend
 aggregate_history = [{
     'generated_at': '2026-06-30T00:00:00+00:00',
@@ -2329,6 +2833,7 @@ aggregate_history = [{
         'symbol': 'TOTAL',
         'perp_symbol': 'TOTALUSDT',
         'status': 'ok',
+        'oi_event_time_ms': baseline_event_ms,
         'venue': 'binance_usdm',
         'mark_price': '1',
         'open_interest_usd': '1000000',
@@ -2347,6 +2852,7 @@ aggregate_trend = trend_for_symbol(
     {
         'perp_symbol': 'TOTALUSDT',
         'venue': 'binance_usdm',
+        'oi_event_time_ms': current_event_ms,
         'mark_price': '1',
         'open_interest_usd': '1000000',
         'total_open_interest_usd': '9000000',
@@ -2384,6 +2890,7 @@ try:
     roundtrip_trend = trend_for_symbol(roundtrip, 'TOTAL', {
         'perp_symbol': 'TOTALUSDT',
         'venue': 'binance_usdm',
+        'oi_event_time_ms': current_event_ms,
         'mark_price': '1',
         'open_interest_usd': '1000000',
         'total_open_interest_usd': '9000000',
@@ -2410,6 +2917,7 @@ incomplete_trend = trend_for_symbol(
     {
         'perp_symbol': 'TOTALUSDT',
         'venue': 'binance_usdm',
+        'oi_event_time_ms': current_event_ms,
         'mark_price': '1',
         'open_interest_usd': '0',
         'total_open_interest_usd': '0',
@@ -2430,6 +2938,7 @@ scope_mismatch = trend_for_symbol(
     {
         'perp_symbol': 'TOTALUSDT',
         'venue': 'binance_usdm',
+        'oi_event_time_ms': current_event_ms,
         'mark_price': '1',
         'open_interest_usd': '1000000',
         'total_open_interest_usd': '7000000',
@@ -2447,12 +2956,13 @@ history_cross_venue = [{
         'symbol': 'GRAM',
         'perp_symbol': 'GRAM-USDT-SWAP',
         'status': 'ok',
+        'oi_event_time_ms': baseline_event_ms,
         'mark_price': '0.02',
         'open_interest_usd': '1000000',
         'last_funding_rate': '0.0001',
     }],
 }]
-cross_venue_trend = trend_for_symbol(history_cross_venue, 'GRAM', {'perp_symbol': 'GRAMUSDT', 'mark_price': '0.022', 'open_interest_usd': '5000000', 'last_funding_rate': '0.0001'}, '2026-06-30T01:00:00+00:00')
+cross_venue_trend = trend_for_symbol(history_cross_venue, 'GRAM', {'perp_symbol': 'GRAMUSDT', 'oi_event_time_ms': current_event_ms, 'mark_price': '0.022', 'open_interest_usd': '5000000', 'last_funding_rate': '0.0001'}, '2026-06-30T01:00:00+00:00')
 assert cross_venue_trend['trend_status'] == 'no_history', cross_venue_trend
 venues = [
     {'venue': 'okx_swap', 'status': 'ok', 'open_interest_usd': '2000000', 'last_funding_rate': '0.0006', 'direction_hint': '拥挤'},
@@ -2527,6 +3037,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "sniper_score_local.py"),
         str(ROOT / "scripts" / "alpha_project_watch.py"),
         str(ROOT / "scripts" / "alpha_holder_concentration_watch.py"),
+        str(ROOT / "scripts" / "alpha_prelaunch_research.py"),
         str(ROOT / "scripts" / "alpha_prelaunch_watch.py"),
         str(ROOT / "scripts" / "alpha_opening_block_watch.py"),
         str(ROOT / "scripts" / "alpha_price_momentum_watch.py"),
@@ -2542,6 +3053,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "external_aux_source_readiness.py"),
         str(ROOT / "scripts" / "external_aux_live_probe.py"),
         str(ROOT / "scripts" / "position_cost_watch.py"),
+        str(ROOT / "scripts" / "fast_lane_health.py"),
         str(ROOT / "scripts" / "runtime_health_watch.py"),
         str(ROOT / "scripts" / "project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
@@ -5634,8 +6146,12 @@ for _ in range(2):
     result = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr or result.stdout
 text = store.read_text(encoding='utf-8')
+assert text.count(str(project_dir / 'scripts' / 'server_fast_lane.sh')) == 1, text
 assert text.count(str(project_dir / 'scripts' / 'server_run_once.sh')) == 1, text
 assert text.count(str(project_dir / 'scripts' / 'server_health_watchdog.sh')) == 1, text
+assert '* * * * * ' + str(project_dir / 'scripts' / 'server_fast_lane.sh') in text, text
+assert '*/5 * * * * ' + str(project_dir / 'scripts' / 'server_run_once.sh') in text, text
+assert '*/2 * * * * ' + str(project_dir / 'scripts' / 'server_health_watchdog.sh') in text, text
 assert '/usr/local/bin/unrelated-job' in text, text
 assert (project_dir / 'logs').is_dir(), project_dir
 """
@@ -6391,10 +6907,11 @@ import scripts.telegram_signal_collector as module
 
 assert (
     module.GET_UPDATES_ATTEMPTS * module.GET_UPDATES_TIMEOUT_SECONDS
-    + module.GET_UPDATES_MAX_RETRY_DELAY_SECONDS
-) < 90
-server_run_source = open('scripts/server_run_once.sh', encoding='utf-8').read()
-assert 'TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-90' in server_run_source, server_run_source
+) <= 30
+assert module.GET_UPDATES_MAX_RETRY_DELAY_SECONDS <= 5
+fast_lane_source = open('scripts/server_fast_lane.sh', encoding='utf-8').read()
+assert 'FAST_TELEGRAM_COLLECTOR_TIMEOUT_SECONDS:-20' in fast_lane_source, fast_lane_source
+assert 'telegram_signal_collector.py --defer-analysis' in fast_lane_source, fast_lane_source
 
 calls = []
 sleeps = []
@@ -7634,9 +8151,11 @@ print(len(text))
     alpha_price_perp_text_msg = ""
     alpha_price_perp_text_code = """
 import importlib.util
+import os
 from pathlib import Path
 
 root = Path.cwd()
+os.environ['ALPHA_PRICE_NOW_UTC'] = '2026-07-30T08:05:00+00:00'
 spec = importlib.util.spec_from_file_location('alpha_price_momentum_watch', root / 'scripts' / 'alpha_price_momentum_watch.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -7666,7 +8185,7 @@ snapshot = {
             'trade_signal': 'Alpha 收盘价放量走强；等待链上确认',
             'spot_action': '小仓只等回踩，不追市价',
             'perp_action': module.perp_action_summary(perp_context),
-            'window_15m': {'open': '0.01', 'high': '0.04', 'low': '0.009', 'close': '0.03', 'high_pct': '18', 'low_pct': '-10', 'close_pct': '9', 'quote_volume': '300000'},
+            'window_15m': {'open': '0.01', 'high': '0.04', 'low': '0.009', 'close': '0.03', 'high_pct': '18', 'low_pct': '-10', 'close_pct': '9', 'quote_volume': '300000', 'from_utc8': '2026-07-30 15:45', 'to_utc8': '2026-07-30 16:00'},
             'depth': {'ask_5pct_usdt': '120000', 'bid_5pct_usdt': '90000'},
             'venue': {'venue_class': 'ALPHA_DOMINANT', 'coverage': 'ONCHAIN_NETFLOW_UNRELIABLE'},
             'perp_context': perp_context,
@@ -7675,7 +8194,7 @@ snapshot = {
 }
 text = module.telegram_text(snapshot)
 assert text.startswith('Alpha 价格动量｜新增'), text
-assert '15m 高+18%/低-10%/收+9%｜量300K USDT' in text, text
+assert '15m 15:45-16:00｜高+18%/低-10%/收+9%｜量300K USDT' in text, text
 assert 'OI 多头增量 +12%｜价格+6%｜总OI 3.4M USDT' in text, text
 assert '动作：现货 小仓只等回踩，不追市价｜合约 OI扩张且价格上涨' in text, text
 assert '有效总结' not in text and '项目总结汇总' not in text and '合约层:' not in text, text
@@ -7710,25 +8229,25 @@ down_price_event = {
     'analysis': {
         'direction': '放量走弱',
         'trade_signal': 'Alpha 放量收跌；卖出/减仓观察',
-        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000', 'from_utc8': '2026-07-02 15:31', 'to_utc8': '2026-07-02 15:45'},
+        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000', 'from_utc8': '2026-07-30 15:31', 'to_utc8': '2026-07-30 15:45'},
         'perp_context': {},
     },
 }
 down_keys = module.event_alert_keys(down_price_event)
 assert down_keys and down_keys[0].startswith('alpha_price|LAB|放量走弱'), down_keys
-legacy_down_key = 'alpha_price|LAB|放量走弱|0|15|0|300000|2026-07-02 15:31|2026-07-02 15:45'
+legacy_down_key = 'alpha_price|LAB|放量走弱|0|15|0|300000|2026-07-30 15:31|2026-07-30 15:45'
 assert module.unseen_alert_keys(module.event_alert_key_pairs(down_price_event), {legacy_down_key}) == [], module.event_alert_key_pairs(down_price_event)
 down_price_event_later = {
     'symbol': 'LAB',
     'analysis': {
         'direction': '放量走弱',
         'trade_signal': 'Alpha 放量收跌；卖出/减仓观察',
-        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000', 'from_utc8': '2026-07-02 15:36', 'to_utc8': '2026-07-02 15:50'},
+        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000', 'from_utc8': '2026-07-30 15:36', 'to_utc8': '2026-07-30 15:50'},
         'perp_context': {},
     },
 }
 assert module.event_alert_keys(down_price_event_later) == down_keys, (module.event_alert_keys(down_price_event_later), down_keys)
-assert '2026-07-02 15:45' not in down_keys[0], down_keys
+assert '2026-07-30 15:45' not in down_keys[0], down_keys
 new_perp_event = {**quiet_price_event, 'symbol': 'NEW'}
 silent_event = {
     'symbol': 'SILENT',
@@ -7747,7 +8266,8 @@ new_first_text = module.telegram_text({
     '_telegram_new_alert_keys': module.event_alert_keys(new_perp_event),
 })
 assert 'NEW' in new_first_text and 'SILENT' not in new_first_text, new_first_text
-assert new_first_text.count('动作：') == 2 and '另有1项｜详情已归档' in new_first_text, new_first_text
+assert 'CAP P1' not in new_first_text and 'LAB' not in new_first_text, new_first_text
+assert new_first_text.count('动作：') == 1 and '另有' not in new_first_text, new_first_text
 assert len(new_first_text) <= 700 and len(new_first_text.splitlines()) <= 10, (len(new_first_text), new_first_text)
 crossed = module.depth_stats({'bids': [['1.2', '10']], 'asks': [['1.0', '10']]}, module.Decimal('1.1'))
 assert crossed.get('orderbook_status') == 'crossed_or_stale', crossed
@@ -7761,7 +8281,7 @@ crossed_text = module.telegram_text({'events': [{
         'trade_signal': '无价格异动',
         'spot_action': '观察',
         'perp_action': '不开仓',
-        'window_15m': {'open': '1', 'high': '1', 'low': '1', 'close': '1', 'high_pct': '20', 'low_pct': '0', 'close_pct': '10', 'quote_volume': '300000'},
+        'window_15m': {'open': '1', 'high': '1', 'low': '1', 'close': '1', 'high_pct': '20', 'low_pct': '0', 'close_pct': '10', 'quote_volume': '300000', 'from_utc8': '2026-07-30 15:45', 'to_utc8': '2026-07-30 16:00'},
         'depth': crossed,
         'venue': {},
         'perp_context': {},
@@ -7784,7 +8304,7 @@ noted_text = module.telegram_text({'events': [{
         'direction': '放量走弱',
         'trade_signal': 'Alpha 放量收跌；卖出/减仓观察',
         'spot_action': '减仓',
-        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000'},
+        'window_15m': {'high_pct': '1', 'low_pct': '-18', 'close_pct': '-9', 'quote_volume': '300000', 'from_utc8': '2026-07-30 15:45', 'to_utc8': '2026-07-30 16:00'},
         'depth': noted_depth,
         'venue': {},
         'perp_context': {},

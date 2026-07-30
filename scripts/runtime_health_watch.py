@@ -16,6 +16,26 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS = 48
 DEFAULT_INTRADAY_CORE_HOURS = 72
+# Historical prelaunch receipt enforcement first became a runtime-health
+# invariant in commit 4bf8d53. Projects both discovered and opened before this
+# boundary cannot acquire a persisted delivery receipt retroactively.
+PRELAUNCH_RECEIPT_POLICY_VERSION = "prelaunch_receipt_v1"
+PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT = datetime(
+    2026,
+    7,
+    30,
+    7,
+    36,
+    39,
+    tzinfo=timezone.utc,
+)
+LEGACY_PRELAUNCH_DELIVERY_UNVERIFIED_IDENTITIES = {
+    (
+        "bsc",
+        "0x277add739c6e0477616948357af9e79fe1ec9b80",
+        "2026-07-27T10:00:00+00:00",
+    ),
+}
 
 CRITICAL_OUTPUTS = (
     ("binance_alpha_catalog", "output/binance_alpha_catalog_watch/latest.json"),
@@ -235,6 +255,10 @@ def row_contract_identities(
         address = str(row.get("contract") or "").lower()
         chain = str(row.get("chain") or "bsc").lower()
         return {(chain, address)} if address else set()
+    if output_name == "catalog":
+        address = str(row.get("contract") or "").lower()
+        chain = str(row.get("chain") or "bsc").lower()
+        return {(chain, address)} if address else set()
     if output_name == "holder":
         address = str(row.get("address") or "").lower()
         chain = str(row.get("chain") or "").lower()
@@ -280,6 +304,12 @@ def output_row_coverage_issue(
             return "project operator attribution contract error"
     elif output_name == "opening":
         if row.get("status") == "opened":
+            if row.get("opening_cohort_coverage_complete") is not True:
+                return "opening cohort transfer coverage incomplete"
+            if row.get("opening_buyer_scope_complete") is not True:
+                return "opening buyer address scope incomplete"
+            if row.get("opening_liquidity_coverage_complete") is not True:
+                return "opening liquidity flow coverage incomplete"
             if (
                 row.get("cache_identity_status")
                 == "metadata_conflict_unresolved"
@@ -318,6 +348,13 @@ def output_row_coverage_issue(
     elif output_name == "holder":
         if int(row.get("log_error_count") or 0) or row.get("truncated"):
             return "holder scan incomplete"
+        if (
+            row.get("holder_baseline_status")
+            == "bounded_bootstrap_unreliable"
+            and str((row.get("signal") or {}).get("level") or "").upper()
+            in {"HIGH", "CRITICAL"}
+        ):
+            return "holder emitted directional risk from an unreliable baseline"
     return ""
 
 
@@ -337,8 +374,28 @@ def output_row_coverage_warning(
             warnings.append(
                 "intraday CEX gas-priming scan time-limited; transfer risk retained"
             )
+        if analysis.get("optional_market_scan_limited"):
+            warnings.append(
+                "intraday required known paths complete; remaining market receipts sampled"
+            )
         return "; ".join(warnings)
     if output_name == "opening" and row.get("status") == "opened":
+        warnings: list[str] = []
+        if row.get("opening_recent_tail_coverage_complete") is False:
+            warnings.append(
+                "opening cohort complete; recent transfer tail uses a bounded window"
+            )
+        if (
+            row.get("opening_log_required_windows_complete") is True
+            and row.get("opening_log_contiguous_coverage_complete") is False
+        ):
+            warnings.append(
+                "opening watcher covers the cohort and recent tail; middle history belongs to intraday/holder stages"
+            )
+        if row.get("opening_receipt_classification_complete") is False:
+            warnings.append(
+                "opening receipt attribution sampled; complete transfer-recipient scope remains required intraday"
+            )
         traces = [
             item.get("buyer_trace") or {}
             for item in row.get("rows", [])
@@ -354,10 +411,19 @@ def output_row_coverage_warning(
             or trace.get("status") in partial_statuses
             for trace in traces
         ):
-            return "opening buyer trace coverage incomplete"
+            warnings.append("opening buyer trace coverage incomplete")
         if row.get("refresh_status") == "partial_trace_deadline":
-            return "opening buyer trace deadline reached"
-        return ""
+            warnings.append("opening buyer trace deadline reached")
+        return "; ".join(warnings)
+    if (
+        output_name == "holder"
+        and row.get("holder_baseline_status")
+        == "bounded_bootstrap_unreliable"
+    ):
+        return (
+            "holder concentration baseline unavailable after bounded "
+            "bootstrap; receipt-backed retention flow remains active"
+        )
     if output_name != "project":
         return ""
     contracts = [item for item in row.get("contracts", []) if isinstance(item, dict)]
@@ -411,6 +477,64 @@ def matching_rows_coverage_warning(
         if detail:
             return detail
     return ""
+
+
+def opening_buyer_addresses_for_identity(
+    path: Path,
+    identity: tuple[str, str],
+) -> set[str]:
+    buyers: set[str] = set()
+    for event in snapshot_rows(path):
+        if identity not in row_contract_identities(event, "opening"):
+            continue
+        for address in event.get("opening_buyer_scope_addresses", []) or []:
+            address = str(address or "").lower()
+            if address:
+                buyers.add(address)
+        for row in event.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                token_bought = float(row.get("token_bought") or 0)
+            except (TypeError, ValueError):
+                token_bought = 0
+            trace = (
+                row.get("buyer_trace")
+                if isinstance(row.get("buyer_trace"), dict)
+                else {}
+            )
+            buyer = str(row.get("buyer") or "").lower()
+            if (
+                token_bought > 0
+                and buyer
+                and not row.get("buyer_exclusion_reason")
+                and not trace.get("subject_exclusion_reason")
+            ):
+                buyers.add(buyer)
+    return buyers
+
+
+def intraday_opening_buyer_scope_issue(
+    opening_path: Path,
+    identity: tuple[str, str],
+    intraday_rows: list[dict[str, Any]],
+) -> str:
+    expected = opening_buyer_addresses_for_identity(
+        opening_path,
+        identity,
+    )
+    observed = {
+        str(address or "").lower()
+        for row in intraday_rows
+        for address in (row.get("opening_buyer_addresses") or [])
+        if address
+    }
+    missing = expected - observed
+    return (
+        f"intraday opening-buyer scope missing {len(missing)} address(es)"
+        if missing
+        else ""
+    )
 
 
 def retention_flow_required(
@@ -618,6 +742,41 @@ def historical_prelaunch_delivery_issue(
     return "historical prelaunch Telegram delivery receipt missing"
 
 
+def legacy_prelaunch_delivery_warning(
+    row: dict[str, Any],
+    delivery_detail: str,
+) -> str:
+    if delivery_detail != "historical prelaunch Telegram delivery receipt missing":
+        return ""
+    listing = parse_time(row.get("listing_time_utc"))
+    first_seen = parse_time(row.get("lifecycle_first_seen_at"))
+    if listing is None or first_seen is None:
+        return ""
+    if (
+        listing >= PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT
+        or first_seen >= PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT
+    ):
+        return ""
+    listing_key = listing.isoformat()
+    identities = {
+        (chain, contract, listing_key)
+        for chain, contract in row_contract_identities(row, "catalog")
+    }
+    if not (
+        identities
+        & LEGACY_PRELAUNCH_DELIVERY_UNVERIFIED_IDENTITIES
+    ):
+        return ""
+    return (
+        "historical prelaunch delivery_unverified under legacy migration; "
+        f"policy={PRELAUNCH_RECEIPT_POLICY_VERSION}; "
+        f"first_seen={first_seen.isoformat()}; "
+        f"listing={listing.isoformat()}; "
+        f"enforced_at={PRELAUNCH_RECEIPT_POLICY_ENFORCED_AT.isoformat()}; "
+        "missing persisted receipt is not evidence of delivery"
+    )
+
+
 def alpha_coverage_evaluation(
     root: Path,
     *,
@@ -658,6 +817,53 @@ def alpha_coverage_evaluation(
         )
     issues: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    static_time_conflicts = [
+        row
+        for row in catalog.get("static_time_conflicts", [])
+        if isinstance(row, dict)
+    ]
+    static_time_conflict_count = int(
+        catalog.get("static_time_conflict_count") or 0
+    )
+    if static_time_conflict_count != len(static_time_conflicts):
+        issues.append(
+            issue(
+                "alpha_static_time_conflict_summary_invalid",
+                "binance_alpha_catalog",
+                (
+                    "static launch conflict count does not match detail rows: "
+                    f"count={static_time_conflict_count}, "
+                    f"rows={len(static_time_conflicts)}"
+                ),
+                (
+                    "alpha_static_time_conflict_summary_invalid:"
+                    f"{static_time_conflict_count}:"
+                    f"{len(static_time_conflicts)}"
+                ),
+            )
+        )
+    for row in static_time_conflicts:
+        symbol = str(row.get("symbol") or "UNKNOWN").upper()
+        static_times = ",".join(
+            str(value)
+            for value in row.get("static_opening_times_utc8", [])
+        )
+        official_time = str(row.get("official_listing_time_utc8") or "")
+        issues.append(
+            issue(
+                "alpha_static_time_conflict",
+                symbol,
+                (
+                    f"{symbol} static launch anchor {static_times or 'unknown'} "
+                    f"conflicts with official Alpha listing "
+                    f"{official_time or 'unknown'}"
+                ),
+                (
+                    f"alpha_static_time_conflict:{symbol}:"
+                    f"{static_times}:{official_time}"
+                ),
+            )
+        )
     dropped_count = int(catalog.get("dropped_count") or 0)
     if dropped_count:
         dropped_rows = [
@@ -749,6 +955,7 @@ def alpha_coverage_evaluation(
         "prelaunch": root / "output" / "alpha_prelaunch_watch" / "latest.json",
         "opening": root / "output" / "alpha_opening_block_watch" / "latest.json",
         "intraday": root / "output" / "alpha_intraday_flow_watch" / "latest.json",
+        "intraday_required": root / "output" / "alpha_intraday_flow_watch" / "required_only_latest.json",
         "price": root / "output" / "alpha_price_momentum_watch" / "latest.json",
         "holder": root / "output" / "alpha_holder_concentration_watch" / "latest.json",
     }
@@ -781,6 +988,25 @@ def alpha_coverage_evaluation(
                 for candidate in candidates
                 if identity in row_contract_identities(candidate, output_name)
             ]
+            if output_name == "intraday":
+                required_path = output_paths["intraday_required"]
+                main_path = output_paths["intraday"]
+                required_is_current = (
+                    required_path.exists()
+                    and (
+                        not main_path.exists()
+                        or required_path.stat().st_mtime
+                        >= main_path.stat().st_mtime
+                    )
+                )
+                if required_is_current:
+                    required_matching = [
+                        candidate
+                        for candidate in snapshot_rows(required_path)
+                        if identity
+                        in row_contract_identities(candidate, "intraday")
+                    ]
+                    matching = required_matching
             if not matching:
                 issues.append(
                     issue(
@@ -806,6 +1032,25 @@ def alpha_coverage_evaluation(
                     )
                 )
                 continue
+            if output_name == "intraday":
+                scope_detail = intraday_opening_buyer_scope_issue(
+                    output_paths["opening"],
+                    identity,
+                    matching,
+                )
+                if scope_detail:
+                    issues.append(
+                        issue(
+                            "alpha_coverage_gap",
+                            symbol,
+                            f"{symbol} {scope_detail}",
+                            (
+                                f"alpha_coverage_gap:{identity_label}:intraday:"
+                                "opening_buyer_scope"
+                            ),
+                        )
+                    )
+                    continue
             warning_detail = matching_rows_coverage_warning(
                 output_name,
                 matching,
@@ -878,14 +1123,31 @@ def alpha_coverage_evaluation(
             current,
         )
         if historical_delivery_detail:
-            issues.append(
-                issue(
-                    "alpha_coverage_gap",
-                    symbol,
-                    f"{symbol} prelaunch: {historical_delivery_detail}",
-                    f"alpha_coverage_gap:{identity_label}:prelaunch:historical_delivery_receipt",
-                )
+            legacy_warning = legacy_prelaunch_delivery_warning(
+                row,
+                historical_delivery_detail,
             )
+            if legacy_warning:
+                warnings.append(
+                    issue(
+                        "alpha_coverage_warning",
+                        symbol,
+                        f"{symbol} prelaunch: {legacy_warning}",
+                        (
+                            f"alpha_coverage_warning:{identity_label}:prelaunch:"
+                            f"legacy_delivery_unverified:{PRELAUNCH_RECEIPT_POLICY_VERSION}"
+                        ),
+                    )
+                )
+            else:
+                issues.append(
+                    issue(
+                        "alpha_coverage_gap",
+                        symbol,
+                        f"{symbol} prelaunch: {historical_delivery_detail}",
+                        f"alpha_coverage_gap:{identity_label}:prelaunch:historical_delivery_receipt",
+                    )
+                )
     return issues, warnings
 
 
@@ -914,6 +1176,58 @@ def signature_for(issues: list[dict[str, str]]) -> str:
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
 
+def fast_lane_heartbeat_issues(
+    out_dir: Path,
+    max_age_seconds: int,
+) -> tuple[list[dict[str, str]], dict[str, Any], int | None]:
+    path = out_dir / "fast_lane_last_cycle.json"
+    snapshot = read_json(path, {})
+    if not path.exists() or not snapshot:
+        return (
+            [
+                issue(
+                    "missing_fast_lane_heartbeat",
+                    "fast_lane",
+                    "no completed fast-lane heartbeat exists",
+                )
+            ],
+            {},
+            None,
+        )
+    age_seconds = max(0, int(time.time() - path.stat().st_mtime))
+    if age_seconds > max_age_seconds:
+        return (
+            [
+                issue(
+                    "stale_fast_lane_heartbeat",
+                    "fast_lane",
+                    (
+                        f"last fast lane is {age_seconds}s old; "
+                        f"limit is {max_age_seconds}s"
+                    ),
+                )
+            ],
+            snapshot,
+            age_seconds,
+        )
+    rows = []
+    if snapshot.get("status") != "healthy":
+        for row in snapshot.get("issues", []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or row.get("command") or "fast_lane")
+            detail = str(row.get("detail") or row.get("command") or "fast lane failed")
+            rows.append(
+                issue(
+                    "fast_lane_unhealthy",
+                    name,
+                    detail,
+                    f"fast_lane_unhealthy:{row.get('kind')}:{name}",
+                )
+            )
+    return rows, snapshot, age_seconds
+
+
 def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     failed_steps = parse_failure_file(Path(args.failure_file) if args.failure_file else None)
     issues = [
@@ -927,6 +1241,16 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
     ]
     freshness, freshness_issues = output_freshness(root, args.max_output_age_seconds)
     issues.extend(freshness_issues)
+    fast_lane: dict[str, Any] = {}
+    fast_lane_age_seconds: int | None = None
+    if (root / "scripts" / "server_fast_lane.sh").exists():
+        fast_lane_issues, fast_lane, fast_lane_age_seconds = (
+            fast_lane_heartbeat_issues(
+                root / "output" / "runtime_health",
+                args.max_fast_lane_age_seconds,
+            )
+        )
+        issues.extend(fast_lane_issues)
     issues.extend(verification_issues(root))
     coverage_issues, warnings = alpha_coverage_evaluation(root)
     issues.extend(coverage_issues)
@@ -943,6 +1267,8 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
         "warnings": warnings,
         "failed_steps": failed_steps,
         "freshness": freshness,
+        "fast_lane_generated_at": fast_lane.get("generated_at", ""),
+        "fast_lane_age_seconds": fast_lane_age_seconds,
     }
 
 
@@ -967,6 +1293,16 @@ def build_watchdog_snapshot(args: argparse.Namespace, out_dir: Path) -> dict[str
         elif last_cycle.get("status") == "unhealthy":
             issues.extend(last_cycle.get("issues", []))
         warnings.extend(last_cycle.get("warnings", []))
+    fast_lane: dict[str, Any] = {}
+    fast_lane_age_seconds: int | None = None
+    if (Path(args.root).resolve() / "scripts" / "server_fast_lane.sh").exists():
+        fast_lane_issues, fast_lane, fast_lane_age_seconds = (
+            fast_lane_heartbeat_issues(
+                out_dir,
+                args.max_fast_lane_age_seconds,
+            )
+        )
+        issues.extend(fast_lane_issues)
     return {
         "schema": "runtime_health.v1",
         "generated_at": now_iso(),
@@ -979,6 +1315,8 @@ def build_watchdog_snapshot(args: argparse.Namespace, out_dir: Path) -> dict[str
         "warnings": warnings,
         "last_cycle_generated_at": last_cycle.get("generated_at", ""),
         "last_cycle_age_seconds": age_seconds,
+        "fast_lane_generated_at": fast_lane.get("generated_at", ""),
+        "fast_lane_age_seconds": fast_lane_age_seconds,
     }
 
 
@@ -1169,6 +1507,7 @@ def main() -> int:
     parser.add_argument("--started-at", default="")
     parser.add_argument("--max-output-age-seconds", type=int, default=int(os.environ.get("RUNTIME_HEALTH_MAX_OUTPUT_AGE_SECONDS", "1800")))
     parser.add_argument("--max-cycle-age-seconds", type=int, default=int(os.environ.get("RUNTIME_HEALTH_MAX_CYCLE_AGE_SECONDS", "1200")))
+    parser.add_argument("--max-fast-lane-age-seconds", type=int, default=int(os.environ.get("RUNTIME_HEALTH_MAX_FAST_LANE_AGE_SECONDS", "240")))
     parser.add_argument("--repeat-minutes", type=int, default=int(os.environ.get("RUNTIME_HEALTH_REPEAT_MINUTES", "360")))
     parser.add_argument("--telegram-timeout", type=int, default=15)
     parser.add_argument("--no-telegram", action="store_true")
