@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -496,6 +497,69 @@ def bounded_bootstrap_transfer_logs(
             "selected_from_block": from_block,
             "attempt_count": attempts,
             "complete_selected_window": not errors and not truncated,
+        },
+    )
+
+
+def bounded_incremental_transfer_logs(
+    chain: str,
+    token: str,
+    from_block: int,
+    requested_to_block: int,
+) -> tuple[list[dict[str, Any]], list[str], bool, int, dict[str, Any]]:
+    max_window = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_CATCHUP_MAX_BLOCKS", "8000")),
+    )
+    min_window = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_CATCHUP_MIN_BLOCKS", "16")),
+    )
+    max_attempts = max(
+        1,
+        int(os.environ.get("ALPHA_HOLDER_CATCHUP_MAX_ATTEMPTS", "10")),
+    )
+    selected_to = min(
+        requested_to_block,
+        from_block + max_window - 1,
+    )
+    attempts = 0
+    logs: list[dict[str, Any]] = []
+    errors: list[str] = []
+    truncated = True
+    while attempts < max_attempts:
+        attempts += 1
+        logs, errors, truncated = transfer_logs(
+            chain,
+            token,
+            from_block,
+            selected_to,
+        )
+        if errors or not truncated:
+            break
+        current_span = selected_to - from_block + 1
+        if current_span <= min_window:
+            break
+        next_span = max(min_window, current_span // 2)
+        if next_span >= current_span:
+            break
+        selected_to = from_block + next_span - 1
+    complete_selected = not errors and not truncated
+    return (
+        logs,
+        errors,
+        truncated,
+        selected_to,
+        {
+            "applicable": True,
+            "active": selected_to < requested_to_block,
+            "requested_to_block": requested_to_block,
+            "selected_to_block": selected_to,
+            "attempt_count": attempts,
+            "complete_selected_window": complete_selected,
+            "complete_requested_window": (
+                complete_selected and selected_to == requested_to_block
+            ),
         },
     )
 
@@ -1372,6 +1436,33 @@ def full_holder_source_status(chain: str, token: str) -> dict[str, Any]:
     }
 
 
+def merge_retention_events(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for event in (
+        event
+        for group in groups
+        for event in group
+        if isinstance(event, dict)
+    ):
+        identity = (
+            str(event.get("sample_tx") or event.get("tx") or ""),
+            str(
+                event.get("sample_log_index")
+                or event.get("log_index")
+                or 0
+            ),
+            str(event.get("type") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(copy.deepcopy(event))
+    return merged
+
+
 def build_token_snapshot(
     item: dict[str, str],
     config: dict[str, Any],
@@ -1403,11 +1494,38 @@ def build_token_snapshot(
         from_block = previous_tip + 1
         balances = {addr: int(value) for addr, value in token_state.get("balances_raw", {}).items()}
         basis_from_block = int(token_state.get("basis_from_block") or max(0, tip - lookback))
+        (
+            logs,
+            errors,
+            truncated,
+            scan_tip,
+            incremental_catchup,
+        ) = bounded_incremental_transfer_logs(
+            chain,
+            token,
+            from_block,
+            tip,
+        )
     else:
         from_block = max(0, tip - lookback)
         balances = {}
         basis_from_block = from_block
-    logs, errors, truncated = transfer_logs(chain, token, from_block, tip)
+        logs, errors, truncated = transfer_logs(
+            chain,
+            token,
+            from_block,
+            tip,
+        )
+        scan_tip = tip
+        incremental_catchup = {
+            "applicable": False,
+            "active": False,
+            "requested_to_block": tip,
+            "selected_to_block": tip,
+            "attempt_count": 1,
+            "complete_selected_window": not errors and not truncated,
+            "complete_requested_window": not errors and not truncated,
+        }
     bootstrap = {
         "active": False,
         "requested_from_block": from_block,
@@ -1430,6 +1548,7 @@ def build_token_snapshot(
             tip,
         )
         basis_from_block = from_block
+        scan_tip = tip
     coverage_failed = bool(errors or truncated)
     if (
         holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE
@@ -1502,7 +1621,7 @@ def build_token_snapshot(
         decimals=decimals,
         supply_raw=supply_raw,
         scan_from_block=from_block,
-        scan_to_block=tip,
+        scan_to_block=scan_tip,
         previous_latest_block=retention_previous_tip,
         holder_previous_latest_block=previous_tip,
         context=retention_context
@@ -1511,6 +1630,59 @@ def build_token_snapshot(
             "project": read_json(PROJECT_CONTEXT_PATH, {"projects": []}),
         },
     )
+    catchup_pending = bool(
+        not coverage_failed
+        and
+        incremental_catchup.get("applicable") is True
+        and incremental_catchup.get("complete_requested_window") is not True
+    )
+    previous_pending_retention = [
+        event
+        for event in retention_state.get("pending_alert_events", [])
+        if isinstance(event, dict)
+    ]
+    current_retention_events = [
+        event
+        for event in retention_flow.get("events", [])
+        if isinstance(event, dict)
+    ]
+    pending_retention_events: list[dict[str, Any]] = []
+    if catchup_pending:
+        pending_retention_events = merge_retention_events(
+            previous_pending_retention,
+            [
+                event
+                for event in current_retention_events
+                if str(event.get("level") or "").upper()
+                in {"HIGH", "CRITICAL"}
+            ],
+        )
+    else:
+        historical_catchup_events = [
+            {
+                **event,
+                "historical_catchup": True,
+                "alert_eligible": False,
+            }
+            for event in previous_pending_retention
+        ]
+        retention_flow["events"] = merge_retention_events(
+            historical_catchup_events,
+            current_retention_events,
+        )
+    retention_flow["pending_alert_event_count"] = len(
+        pending_retention_events
+    )
+    if catchup_pending:
+        signal = {
+            "direction": "catchup_pending",
+            "action": "holder增量积压追赶中；暂不发方向信号",
+            "reason": (
+                f"已完整处理至区块 {scan_tip}，"
+                f"目标区块 {tip}；追平后统一比较筹码变化"
+            ),
+            "level": "INFO",
+        }
     checkpoint_can_advance = (
         not coverage_failed
         and (
@@ -1518,7 +1690,7 @@ def build_token_snapshot(
             or retention_flow.get("complete") is True
         )
     )
-    checkpoint_tip = tip if checkpoint_can_advance else previous_tip
+    checkpoint_tip = scan_tip if checkpoint_can_advance else previous_tip
     negative_count = sum(1 for value in balances.values() if value < 0)
     positive_count = sum(1 for value in balances.values() if value > 0)
     complete = (
@@ -1533,6 +1705,8 @@ def build_token_snapshot(
         if truncated
         else "bounded_bootstrap_window_after_truncation"
         if bootstrap["active"]
+        else "incremental_catchup_pending"
+        if incremental_catchup["active"]
         else "complete_from_genesis"
         if complete
         else "window_or_incremental_reconstruction"
@@ -1544,12 +1718,14 @@ def build_token_snapshot(
         "previous_latest_block": previous_tip,
         "basis_from_block": basis_from_block,
         "scan_from_block": from_block,
-        "scan_to_block": tip,
+        "scan_to_block": scan_tip,
+        "target_latest_block": tip,
         "log_count": len(logs),
         "log_error_count": len(errors),
         "log_errors": errors[:3],
         "truncated": truncated,
         "bounded_bootstrap": bootstrap,
+        "incremental_catchup": incremental_catchup,
         "holder_baseline_status": holder_baseline_status,
         "complete_holder_reconstruction": complete,
         "coverage_note": coverage_note,
@@ -1574,17 +1750,22 @@ def build_token_snapshot(
                 "address": token,
                 "decimals": decimals,
                 "basis_from_block": basis_from_block,
-                "latest_block": tip,
+                "latest_block": checkpoint_tip,
                 "last_metrics": (
                     {}
                     if holder_baseline_status
                     == BOUNDED_BOOTSTRAP_UNRELIABLE
+                    else token_state.get("last_metrics", {})
+                    if catchup_pending
                     else metrics
                 ),
                 "balances_raw": {addr: str(value) for addr, value in balances.items() if value != 0},
                 "holder_baseline_status": holder_baseline_status,
                 "retention_flow": {
-                    "latest_block": int(retention_flow.get("latest_block") or tip),
+                    "latest_block": int(
+                        retention_flow.get("latest_block") or scan_tip
+                    ),
+                    "pending_alert_events": pending_retention_events,
                 },
             }
         )
@@ -1616,7 +1797,7 @@ def build_snapshot() -> dict[str, Any]:
         "alert_count": sum(
             1
             for item in projects
-            if item.get("signal", {}).get("level") in {"HIGH", "CRITICAL"}
+            if holder_signal_key(item)
         )
         + sum(
             len(retention_alert_events(item))
@@ -1628,7 +1809,25 @@ def build_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def holder_alert_coverage_complete(project: dict[str, Any]) -> bool:
+    if int(project.get("log_error_count") or 0) or project.get("truncated"):
+        return False
+    catchup = project.get("incremental_catchup")
+    if not isinstance(catchup, dict):
+        return False
+    if catchup.get("applicable") is False:
+        return True
+    return bool(
+        catchup.get("applicable") is True
+        and catchup.get("active") is False
+        and catchup.get("complete_selected_window") is True
+        and catchup.get("complete_requested_window") is True
+    )
+
+
 def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
+    if not holder_alert_coverage_complete(project):
+        return []
     retention = (
         project.get("retention_flow")
         if isinstance(project.get("retention_flow"), dict)
@@ -1640,11 +1839,15 @@ def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
         event
         for event in retention.get("events", []) or []
         if isinstance(event, dict)
+        and event.get("historical_catchup") is not True
+        and event.get("alert_eligible") is not False
         and str(event.get("level") or "").upper() in {"HIGH", "CRITICAL"}
     ]
 
 
 def holder_signal_key(project: dict[str, Any]) -> str:
+    if not holder_alert_coverage_complete(project):
+        return ""
     if project.get("holder_baseline_status") == BOUNDED_BOOTSTRAP_UNRELIABLE:
         return ""
     signal = project.get("signal", {})

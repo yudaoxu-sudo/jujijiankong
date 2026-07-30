@@ -4509,6 +4509,8 @@ def deadline_snapshot_from_previous(
 
 
 def build_snapshot() -> dict[str, Any]:
+    global TRACE_DEADLINE_AT
+
     previous_snapshot = read_json(LATEST_PATH, {})
     previous_by_identity = previous_opened_events(previous_snapshot)
     reuse_cache = os.environ.get("ALPHA_OPENING_REUSE_OPENED_CACHE", "0") == "1"
@@ -4528,46 +4530,129 @@ def build_snapshot() -> dict[str, Any]:
         current_identity_counts[identity] = (
             current_identity_counts.get(identity, 0) + 1
         )
-    events = []
+    previous_generated_at = str(
+        previous_snapshot.get("generated_at") or ""
+    )
+    prepared_events: list[
+        tuple[
+            dict[str, Any],
+            dict[str, Any] | None,
+            str | None,
+            bool,
+        ]
+    ] = []
     for event in current_events:
+        if event.get("opening_block") is None:
+            prepared_events.append((event, None, None, False))
+            continue
+        identity = opening_event_identity(event)
+        if (
+            current_identity_counts.get(
+                opening_event_exact_identity(event),
+                0,
+            )
+            > 1
+        ):
+            previous = None
+            metadata_conflict = "duplicate_current_identity"
+        else:
+            previous, metadata_conflict = select_previous_opened_event(
+                event,
+                previous_by_identity.get(identity, []),
+            )
+        if metadata_conflict:
+            previous = None
+            event["cache_identity_status"] = (
+                "metadata_conflict_unresolved"
+            )
+            event["cache_identity_conflict"] = metadata_conflict
+        elif previous:
+            event["cache_identity_status"] = "stable_match"
+        else:
+            event["cache_identity_status"] = "new_event"
+        use_incremental = bool(
+            reuse_cache
+            and previous
+            and previous.get("rows")
+            and not previous_opened_event_needs_full_retry(
+                previous,
+                previous_generated_at,
+            )
+        )
+        prepared_events.append(
+            (
+                event,
+                previous,
+                metadata_conflict,
+                use_incremental,
+            )
+        )
+
+    prepared_scopes: dict[
+        int,
+        dict[str, Any] | Exception,
+    ] = {}
+    scope_targets = [
+        (event, previous)
+        for event, previous, _metadata_conflict, use_incremental
+        in prepared_events
+        if event.get("opening_block") is not None
+        and not use_incremental
+    ]
+    overall_deadline = TRACE_DEADLINE_AT
+    scope_seconds: float | None = None
+    if overall_deadline is not None and scope_targets:
+        try:
+            scope_fraction = float(
+                os.environ.get(
+                    "ALPHA_OPENING_SCOPE_BUDGET_FRACTION",
+                    "0.65",
+                )
+            )
+        except ValueError:
+            scope_fraction = 0.65
+        scope_fraction = min(0.9, max(0.1, scope_fraction))
+        total_remaining = max(
+            0.0,
+            overall_deadline - time.monotonic(),
+        )
+        scope_seconds = max(
+            1.0,
+            total_remaining
+            * scope_fraction
+            / len(scope_targets),
+        )
+    for event, previous in scope_targets:
+        if overall_deadline is not None and scope_seconds is not None:
+            TRACE_DEADLINE_AT = min(
+                overall_deadline,
+                time.monotonic() + scope_seconds,
+            )
+            event["opening_scope_budget_seconds"] = round(
+                scope_seconds,
+                3,
+            )
+        try:
+            prepared_scopes[id(event)] = prepare_opening_scope(
+                event,
+                previous,
+            )
+        except Exception as exc:
+            prepared_scopes[id(event)] = exc
+        finally:
+            TRACE_DEADLINE_AT = overall_deadline
+
+    events = []
+    for (
+        event,
+        previous,
+        metadata_conflict,
+        use_incremental,
+    ) in prepared_events:
         if event.get("opening_block") is None:
             event.update({"status": "waiting", "rows": [], "analysis": analyze_waiting(event)})
         else:
-            identity = opening_event_identity(event)
-            if (
-                current_identity_counts.get(
-                    opening_event_exact_identity(event),
-                    0,
-                )
-                > 1
-            ):
-                previous = None
-                metadata_conflict = "duplicate_current_identity"
-            else:
-                previous, metadata_conflict = select_previous_opened_event(
-                    event,
-                    previous_by_identity.get(identity, []),
-                )
-            if metadata_conflict:
-                previous = None
-                event["cache_identity_status"] = "metadata_conflict_unresolved"
-                event["cache_identity_conflict"] = metadata_conflict
-            elif previous:
-                event["cache_identity_status"] = "stable_match"
-            else:
-                event["cache_identity_status"] = "new_event"
-            previous_generated_at = str(
-                previous_snapshot.get("generated_at") or ""
-            )
-            if (
-                reuse_cache
-                and previous
-                and previous.get("rows")
-                and not previous_opened_event_needs_full_retry(
-                    previous,
-                    previous_generated_at,
-                )
-            ):
+            if use_incremental:
                 event.update(
                     incremental_opened_event(
                         event,
@@ -4577,7 +4662,16 @@ def build_snapshot() -> dict[str, Any]:
                 )
             else:
                 try:
-                    event.update(build_opened_event(event, previous))
+                    prepared_scope = prepared_scopes[id(event)]
+                    if isinstance(prepared_scope, Exception):
+                        raise prepared_scope
+                    event.update(
+                        build_opened_event(
+                            event,
+                            previous,
+                            prepared_scope,
+                        )
+                    )
                     if (
                         metadata_conflict
                         and metadata_conflict
@@ -4671,6 +4765,17 @@ def build_snapshot() -> dict[str, Any]:
                                 "analysis": analysis,
                             }
                         )
+                except Exception as exc:
+                    event.update(
+                        partial_opening_coverage_event(
+                            event,
+                            previous,
+                        )
+                    )
+                    event["error"] = "opening_scope_error"
+                    event["refresh_error"] = (
+                        f"opening_scope_{type(exc).__name__}"
+                    )
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))
@@ -4850,9 +4955,9 @@ def partial_opening_coverage_event(
     }
 
 
-def build_opened_event(
+def prepare_opening_scope(
     event: dict[str, Any],
-    previous: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None,
 ) -> dict[str, Any]:
     latest = int(event["latest_block"])
     bootstrap_max_age = max(
@@ -4870,19 +4975,6 @@ def build_opened_event(
         and "seconds_until_start" in event
         and -bootstrap_max_age <= seconds_until <= 0
     )
-    event["opening_liquidity_coverage_complete"] = True
-    try:
-        event["liquidity_flow"] = scan_key_liquidity_flows(
-            event,
-            latest,
-        )
-    except OpeningLogCoverageTruncated:
-        event["opening_liquidity_coverage_complete"] = False
-        event["liquidity_flow"] = {
-            "summary": "池/做市日志超过有界预算，覆盖不完整",
-            "risk": "unknown_incomplete_coverage",
-            "rows": 0,
-        }
     previous_rows = [
         row
         for row in (previous or {}).get("rows", [])
@@ -4891,36 +4983,76 @@ def build_opened_event(
     ]
     if previous_rows:
         event.update(cached_opening_scope_evidence(previous))
+        return {
+            "rows": copy.deepcopy(previous_rows),
+            "selected_hashes": [],
+            "transfer_logs": int_from((previous or {}).get("transfer_logs")),
+            "relevant_tx_count": int_from(
+                (previous or {}).get("relevant_tx_count"),
+                len(previous_rows),
+            ),
+        }
+
+    logs = opening_transfer_logs(event, latest)
+    event.setdefault("opening_cohort_coverage_complete", True)
+    event.setdefault(
+        "opening_recent_tail_coverage_complete",
+        True,
+    )
+    event.setdefault("opening_log_coverage_complete", True)
+    event.setdefault("opening_log_coverage_status", "full")
+    max_txs = capped_event_int_setting(
+        event,
+        "opening_max_txs",
+        "ALPHA_OPENING_MAX_TXS",
+        25,
+    )
+    cohort_logs, scope_evidence = (
+        opening_buyer_scope_from_transfer_logs(event, logs)
+    )
+    event.update(scope_evidence)
+    selected_hashes = selected_tx_hashes(cohort_logs, max_txs)
+    return {
+        "rows": [],
+        "selected_hashes": selected_hashes,
+        "transfer_logs": len(logs),
+        "relevant_tx_count": 0,
+    }
+
+
+def build_opened_event(
+    event: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    prepared_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    latest = int(event["latest_block"])
+    scope = (
+        prepared_scope
+        if prepared_scope is not None
+        else prepare_opening_scope(event, previous)
+    )
+    previous_rows = [
+        row
+        for row in scope.get("rows", [])
+        if isinstance(row, dict)
+    ]
+    deadline_exceeded = False
+    trace_error = False
+    if previous_rows:
         rows = copy.deepcopy(previous_rows)
-        transfer_logs = int_from((previous or {}).get("transfer_logs"))
-        relevant_tx_count = int_from(
-            (previous or {}).get("relevant_tx_count"),
-            len(rows),
-        )
     else:
-        logs = opening_transfer_logs(event, latest)
-        event.setdefault("opening_cohort_coverage_complete", True)
-        event.setdefault(
-            "opening_recent_tail_coverage_complete",
-            True,
-        )
-        event.setdefault("opening_log_coverage_complete", True)
-        event.setdefault("opening_log_coverage_status", "full")
-        max_txs = capped_event_int_setting(
-            event,
-            "opening_max_txs",
-            "ALPHA_OPENING_MAX_TXS",
-            25,
-        )
-        cohort_logs, scope_evidence = (
-            opening_buyer_scope_from_transfer_logs(event, logs)
-        )
-        event.update(scope_evidence)
-        selected_hashes = selected_tx_hashes(cohort_logs, max_txs)
-        rows = [
-            summarize_tx(event, tx_hash)
-            for tx_hash in selected_hashes
+        selected_hashes = [
+            str(value)
+            for value in scope.get("selected_hashes", [])
+            if value
         ]
+        rows = []
+        for tx_hash in selected_hashes:
+            try:
+                rows.append(summarize_tx(event, tx_hash))
+            except OpeningTraceDeadlineExceeded:
+                deadline_exceeded = True
+                break
         verified_buyers = {
             norm(row.get("buyer"))
             for row in rows
@@ -4934,13 +5066,18 @@ def build_opened_event(
         scope_addresses.update(verified_buyers)
         event["opening_buyer_scope_addresses"] = sorted(scope_addresses)
         event["opening_buyer_scope_address_count"] = len(scope_addresses)
-        event["opening_receipt_selected_tx_count"] = len(selected_hashes)
+        event["opening_receipt_selected_tx_count"] = len(rows)
         event["opening_receipt_classification_complete"] = (
-            len(selected_hashes)
+            not deadline_exceeded
+            and len(rows)
             == int(event.get("opening_cohort_unique_tx_count") or 0)
         )
-        transfer_logs = len(logs)
-        relevant_tx_count = len(rows)
+    transfer_logs = int_from(scope.get("transfer_logs"))
+    relevant_tx_count = (
+        int_from(scope.get("relevant_tx_count"), len(rows))
+        if previous_rows
+        else len(rows)
+    )
     trace_buyers = capped_event_int_setting(
         event,
         "opening_trace_buyers",
@@ -4952,8 +5089,6 @@ def build_opened_event(
         for item in (previous or {}).get("rows", [])
         if isinstance(item, dict) and item.get("buyer_trace")
     }
-    deadline_exceeded = False
-    trace_error = False
     for row in selected_buyer_trace_rows(rows, trace_buyers):
         previous_trace = previous_traces.get(norm(row.get("tx")))
         try:
@@ -4980,6 +5115,27 @@ def build_opened_event(
                 previous_trace,
                 exc,
             )
+    event["opening_liquidity_coverage_complete"] = True
+    try:
+        event["liquidity_flow"] = scan_key_liquidity_flows(
+            event,
+            latest,
+        )
+    except OpeningLogCoverageTruncated:
+        event["opening_liquidity_coverage_complete"] = False
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志超过有界预算，覆盖不完整",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+        }
+    except OpeningTraceDeadlineExceeded:
+        deadline_exceeded = True
+        event["opening_liquidity_coverage_complete"] = False
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志刷新超出本轮预算",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+        }
     try:
         analysis = analyze_opened(
             event,
@@ -5003,7 +5159,11 @@ def build_opened_event(
         )
     )
     refresh_at = now_iso()
-    incomplete = opened_event_traces_incomplete(rows)
+    incomplete = bool(
+        deadline_exceeded
+        or event.get("opening_receipt_classification_complete") is False
+        or opened_event_traces_incomplete(rows)
+    )
     partial_since = (
         str((previous or {}).get("partial_since") or refresh_at)
         if incomplete
@@ -5795,18 +5955,11 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
         analysis = event.get("analysis", {})
         rank = telegram_event_rank(event)[0]
         marker = "🔴" if rank == 0 else "🟠" if rank <= 2 else "🟡"
-        pool_id = str(event.get("pool_id") or "")
-        pool_label = (
-            pool_id
-            if len(pool_id) <= 16
-            else pool_id[:8] + "…" + pool_id[-6:]
-        )
         lines.extend(
             [
                 (
                     f"{marker} {event.get('symbol')} "
                     f"{event.get('priority')}"
-                    f"{f'｜池 {pool_label}' if pool_label else ''}"
                     f"｜{analysis.get('trade_signal', '观察')}"
                 ),
                 f"关键：{telegram_event_evidence(event)}",

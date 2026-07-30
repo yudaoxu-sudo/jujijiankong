@@ -348,6 +348,61 @@ def output_row_coverage_issue(
     elif output_name == "holder":
         if int(row.get("log_error_count") or 0) or row.get("truncated"):
             return "holder scan incomplete"
+        catchup = row.get("incremental_catchup")
+        if not isinstance(catchup, dict):
+            return "holder incremental catch-up metadata missing"
+        if catchup.get("applicable") is False:
+            pass
+        elif catchup.get("applicable") is not True:
+            return "holder incremental catch-up metadata invalid"
+        elif (
+            not isinstance(catchup.get("active"), bool)
+            or not isinstance(
+                catchup.get("complete_selected_window"),
+                bool,
+            )
+            or not isinstance(
+                catchup.get("complete_requested_window"),
+                bool,
+            )
+        ):
+            return "holder incremental catch-up metadata invalid"
+        else:
+            try:
+                requested_to = int(catchup["requested_to_block"])
+                selected_to = int(catchup["selected_to_block"])
+                target_latest = int(row["target_latest_block"])
+                scan_to = int(row["scan_to_block"])
+            except (KeyError, TypeError, ValueError):
+                return "holder incremental catch-up metadata invalid"
+            if (
+                min(requested_to, selected_to, target_latest, scan_to)
+                < 0
+                or requested_to != target_latest
+                or selected_to != scan_to
+                or catchup.get("active")
+                is not (selected_to < requested_to)
+                or catchup.get("complete_requested_window")
+                is not (
+                    catchup.get("complete_selected_window") is True
+                    and selected_to == requested_to
+                )
+            ):
+                return "holder incremental catch-up metadata invalid"
+        if catchup.get("applicable") is True and (
+            catchup.get("complete_selected_window") is not True
+        ):
+            return "holder incremental catch-up selected window incomplete"
+        if catchup.get("applicable") is True and (
+            catchup.get("active") is True
+        ):
+            if catchup.get("complete_requested_window") is True:
+                return "holder incremental catch-up metadata invalid"
+            return "holder incremental catch-up pending"
+        if catchup.get("applicable") is True and (
+            catchup.get("complete_requested_window") is not True
+        ):
+            return "holder incremental catch-up metadata invalid"
         if (
             row.get("holder_baseline_status")
             == "bounded_bootstrap_unreliable"

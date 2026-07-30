@@ -3317,6 +3317,9 @@ holder_project = {
     'address': token,
     'complete_holder_reconstruction': False,
     'log_count': 3,
+    'log_error_count': 0,
+    'truncated': False,
+    'incremental_catchup': {'applicable': False},
     'metrics': {
         'effective_top10_pct': '60',
         'effective_top10_delta_pct': '-2',
