@@ -201,6 +201,23 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         self.assertEqual(pools[0]["start_time_utc8"], "2026-07-27 18:00")
         self.assertIn("lp_position", parsed["watchlist_proposal"]["required_checks"])
 
+    def test_spaced_alpha_launch_announcement_is_monitor_priority(self) -> None:
+        from scripts.ingest_alpha_signal import parse_signal
+
+        parsed = parse_signal(
+            "binancezh: 币安 Alpha 将在 7 月 30 日成为首个上线 Grvt（GRVT）的平台！"
+        )
+        compact = parse_signal("币安 Alpha 今日上线GVRT")
+        prose = parse_signal("Binance Alpha listing change from July 20 to July 30")
+
+        self.assertEqual(parsed["symbol"], "GRVT")
+        self.assertEqual(parsed["priority"], "P1_MONITOR")
+        self.assertEqual(parsed["facts"]["venues"], ["Binance Alpha"])
+        self.assertTrue(parsed["facts"]["alpha_launch_signal"])
+        self.assertEqual(compact["symbol"], "GVRT")
+        self.assertEqual(compact["priority"], "P1_MONITOR")
+        self.assertEqual(prose["symbol"], "")
+
     def test_explicit_pool_candidate_keeps_pool_checks(self) -> None:
         from scripts.ingest_alpha_signal import parse_signal
 
@@ -231,6 +248,442 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
 
 
 class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
+    def test_signal_candidate_loader_excludes_context_only_artifacts(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        parsed = {
+            "generated_at": "2026-07-30T01:00:00+00:00",
+            "symbol": "SAFE",
+            "title": "BN Alpha pool opening time",
+            "priority": "P0_DEEP_REVIEW",
+            "times": ["2026-07-30 20:00"],
+            "txs": ["0x" + "1" * 64],
+            "pool_ids": ["0x" + "2" * 64],
+            "watchlist_proposal": {
+                "contracts": [{"chain": "bsc", "address": "0x" + "3" * 40}]
+            },
+            "chain_enrichment": [{"status": "ok"}],
+            "source_policy": {
+                "authority": "social_discovery",
+                "context_only": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "safe.json").write_text(
+                json.dumps(parsed),
+                encoding="utf-8",
+            )
+            private = json.loads(json.dumps(parsed))
+            private["source_policy"] = {
+                "authority": "context_only",
+                "context_only": True,
+            }
+            (root / "private.json").write_text(
+                json.dumps(private),
+                encoding="utf-8",
+            )
+            for name, policy in (
+                ("missing.json", {"authority": "social_discovery"}),
+                (
+                    "string_false.json",
+                    {
+                        "authority": "social_discovery",
+                        "context_only": "false",
+                    },
+                ),
+                (
+                    "authority_conflict.json",
+                    {
+                        "authority": "context_only",
+                        "context_only": False,
+                    },
+                ),
+            ):
+                malformed = json.loads(json.dumps(parsed))
+                malformed["source_policy"] = policy
+                (root / name).write_text(
+                    json.dumps(malformed),
+                    encoding="utf-8",
+                )
+
+            projects = catalog.load_signal_candidate_projects(root)
+
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(
+            projects[0]["_candidate_provenance"],
+            "single_signal_artifact",
+        )
+        self.assertEqual(projects[0]["symbol"], "SAFE")
+
+    def test_conflicting_signal_opening_times_fail_closed(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        contract = "0x" + "1" * 40
+        quote = "0x55d398326f99059ff775485246999027b3197955"
+        tx_hash = "0x" + "2" * 64
+        pool_id = "0x" + "3" * 64
+        base = {
+            "_candidate_provenance": "single_signal_artifact",
+            "project_key": "signal_artifact:first",
+            "symbol": "TIME",
+            "titles": ["BN Alpha pool opening time"],
+            "updated_at": "2026-07-30T01:00:00+00:00",
+            "last_priority": "P0_DEEP_REVIEW",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "addresses": [],
+            "txs": [tx_hash],
+            "times": ["2026-07-30 20:00"],
+            "pool_ids": [pool_id],
+            "facts": {},
+            "sources": [{"authority": "social_discovery", "context_only": False}],
+            "chain_enrichment": [
+                {
+                    "status": "ok",
+                    "chain": "bsc",
+                    "tx_hash": tx_hash,
+                    "pool_id": pool_id,
+                    "token0": {"address": contract, "symbol": "TIME"},
+                    "token1": {"address": quote, "symbol": "USDT"},
+                    "raw_fields": {},
+                }
+            ],
+        }
+        conflicting = json.loads(json.dumps(base))
+        conflicting["project_key"] = "signal_artifact:second"
+        conflicting["updated_at"] = "2026-07-30T02:00:00+00:00"
+        conflicting["times"] = ["2026-07-30 21:00"]
+
+        ready, pending = catalog.verified_registry_candidates(
+            {"projects": [base, conflicting]},
+            current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+            retention_days=30,
+        )
+
+        self.assertEqual(ready, [])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(
+            pending[0]["reasons"],
+            ["conflicting_single_signal_opening_times"],
+        )
+        self.assertEqual(
+            pending[0]["conflicting_opening_times_utc"],
+            [
+                "2026-07-30T12:00:00+00:00",
+                "2026-07-30T13:00:00+00:00",
+            ],
+        )
+
+    def test_official_and_signal_opening_time_conflict_fails_closed(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        contract = "0x" + "1" * 40
+        signal = {
+            "symbol": "CLASH",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "known_times": [
+                {"time": "2026-07-30 21:00", "reason": "verified_prelaunch_pool"}
+            ],
+            "facts": {
+                "source": "telegram_signal_receipt_verified",
+                "listing_time_utc": "2026-07-30T13:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 21:00",
+            },
+        }
+        official_time = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        response = {
+            "code": "000000",
+            "success": True,
+            "data": [
+                {
+                    "alphaId": "ALPHA_CLASH",
+                    "symbol": "CLASH",
+                    "name": "Clash",
+                    "chainId": "56",
+                    "contractAddress": contract,
+                    "listingTime": int(official_time.timestamp() * 1000),
+                }
+            ],
+        }
+        with mock.patch.object(
+            catalog,
+            "verified_registry_candidates",
+            return_value=([signal], []),
+        ):
+            payload, selected = catalog.build_runtime_watchlist(
+                {"items": []},
+                response,
+                current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+                lookback_hours=72,
+                lookahead_hours=48,
+            )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(payload["registry_selected_count"], 0)
+        self.assertEqual(payload["registry_pending_count"], 1)
+        self.assertEqual(
+            payload["registry_pending"][0]["reasons"],
+            ["official_signal_opening_time_conflict"],
+        )
+        self.assertEqual(
+            payload["items"][0]["known_times"],
+            [{"time": "2026-07-30 20:00", "reason": "binance_alpha_listing_time"}],
+        )
+
+    def test_receipt_verified_registry_candidate_enters_runtime_watchlist(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        contract = "0x46f2564e0fa8248d15125e7e54173cfbdef91be7"
+        quote = "0x55d398326f99059ff775485246999027b3197955"
+        tx_hash = "0x" + "1" * 64
+        pool_id = "0x" + "2" * 64
+        registry = {
+            "projects": [
+                {
+                    "_candidate_provenance": "single_signal_artifact",
+                    "project_key": f"contract:{contract}",
+                    "symbol": "GRVT",
+                    "titles": ["[BN Alpha 新Hook] 设置池子开盘时间"],
+                    "updated_at": "2026-07-29T15:15:02+00:00",
+                    "last_priority": "P0_DEEP_REVIEW",
+                    "contracts": [
+                        {"chain": "bsc", "address": contract}
+                    ],
+                    "addresses": [
+                        {
+                            "chain": "bsc",
+                            "address": "0x" + "3" * 40,
+                            "label_hint": "pool_hook_or_operator",
+                        }
+                    ],
+                    "txs": [tx_hash],
+                    "times": ["2026-07-30 20:00"],
+                    "pool_ids": [pool_id],
+                    "facts": {"venues": ["Binance Alpha"]},
+                    "sources": [
+                        {
+                            "authority": "social_discovery",
+                            "context_only": False,
+                        }
+                    ],
+                    "chain_enrichment": [
+                        {
+                            "status": "ok",
+                            "chain": "bsc",
+                            "tx_hash": tx_hash,
+                            "block": 112774138,
+                            "pool_id": pool_id,
+                            "token0": {
+                                "address": contract,
+                                "symbol": "GRVT",
+                            },
+                            "token1": {
+                                "address": quote,
+                                "symbol": "USDT",
+                            },
+                            "raw_fields": {"hook": "0x" + "3" * 40},
+                        }
+                    ],
+                }
+            ]
+        }
+        second = json.loads(json.dumps(registry["projects"][0]))
+        second["project_key"] = "signal_artifact:second"
+        second_tx = "0x" + "5" * 64
+        second_pool = "0x" + "6" * 64
+        second["txs"] = [second_tx]
+        second["pool_ids"] = [second_pool]
+        second["chain_enrichment"][0]["tx_hash"] = second_tx
+        second["chain_enrichment"][0]["pool_id"] = second_pool
+        registry["projects"].append(second)
+        response = {
+            "code": "000000",
+            "success": True,
+            "data": [
+                {
+                    "alphaId": "ALPHA_OLD",
+                    "symbol": "OLD",
+                    "chainId": "56",
+                    "contractAddress": "0x" + "4" * 40,
+                    "listingTime": 1700000000000,
+                }
+            ],
+        }
+
+        payload, selected = catalog.build_runtime_watchlist(
+            {"items": []},
+            response,
+            current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+            lookback_hours=72,
+            lookahead_hours=48,
+            project_registry=registry,
+        )
+
+        self.assertEqual(selected, [])
+        self.assertEqual(payload["registry_selected_count"], 1)
+        self.assertEqual(payload["registry_pending_count"], 0)
+        item = payload["items"][0]
+        self.assertEqual(item["symbol"], "GRVT")
+        self.assertEqual(item["contracts"][0]["address"], contract)
+        self.assertEqual(
+            {row["pool_id"] for row in item["pool_ids"]},
+            {pool_id, second_pool},
+        )
+        self.assertEqual(item["pool_ids"][0]["start_time_utc8"], "2026-07-30 20:00")
+        self.assertEqual(
+            item["facts"]["opening_anchor_status"],
+            "verified_prelaunch_pool",
+        )
+
+    def test_unverified_or_context_only_registry_candidate_stays_pending(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        base = {
+            "project_key": "symbol:WAIT",
+            "symbol": "WAIT",
+            "titles": ["Binance Alpha will list WAIT"],
+            "updated_at": "2026-07-30T01:00:00+00:00",
+            "last_priority": "P1_MONITOR",
+            "contracts": [],
+            "txs": [],
+            "times": [],
+            "pool_ids": [],
+            "facts": {"venues": ["Binance Alpha"]},
+            "chain_enrichment": [],
+            "sources": [{"authority": "social_discovery", "context_only": False}],
+        }
+        context_only = {
+            **base,
+            "project_key": "symbol:PRIVATE",
+            "symbol": "PRIVATE",
+            "sources": [
+                {"authority": "social_discovery", "context_only": False},
+                {"authority": "context_only", "context_only": True},
+            ],
+        }
+
+        ready, pending = catalog.verified_registry_candidates(
+            {"projects": [base, context_only]},
+            current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+            retention_days=30,
+        )
+
+        self.assertEqual(ready, [])
+        by_symbol = {row["symbol"]: row["reasons"] for row in pending}
+        self.assertIn("unproven_time_pool_binding", by_symbol["WAIT"])
+        self.assertIn("missing_receipt_verified_alpha_pool", by_symbol["WAIT"])
+        self.assertIn("missing_exact_opening_time", by_symbol["WAIT"])
+        self.assertNotIn("PRIVATE", by_symbol)
+
+    def test_aggregated_registry_evidence_cannot_claim_time_pool_binding(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        contract = "0x" + "1" * 40
+        quote = "0x55d398326f99059ff775485246999027b3197955"
+        tx_hash = "0x" + "2" * 64
+        pool_id = "0x" + "3" * 64
+        project = {
+            "project_key": f"contract:{contract}",
+            "symbol": "BIND",
+            "titles": ["BN Alpha pool opening time"],
+            "updated_at": "2026-07-30T01:00:00+00:00",
+            "last_priority": "P0_DEEP_REVIEW",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "addresses": [],
+            "txs": [tx_hash],
+            "times": ["2026-07-30 20:00"],
+            "pool_ids": [pool_id],
+            "facts": {"venues": ["Binance Alpha"]},
+            "sources": [{"authority": "social_discovery", "context_only": False}],
+            "chain_enrichment": [
+                {
+                    "status": "ok",
+                    "chain": "bsc",
+                    "tx_hash": tx_hash,
+                    "pool_id": pool_id,
+                    "token0": {"address": contract, "symbol": "BIND"},
+                    "token1": {"address": quote, "symbol": "USDT"},
+                    "raw_fields": {},
+                }
+            ],
+        }
+
+        ready, pending = catalog.verified_registry_candidates(
+            {"projects": [project]},
+            current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+            retention_days=30,
+        )
+
+        self.assertEqual(ready, [])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["reasons"], ["unproven_time_pool_binding"])
+
+    def test_static_identity_does_not_hide_verified_lifecycle_target(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        contract = "0x" + "1" * 40
+        candidate = {
+            "symbol": "COVER",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "facts": {
+                "listing_time_utc": "2026-07-30T12:00:00+00:00",
+                "listing_time_utc8": "2026-07-30 20:00",
+            },
+        }
+        response = {
+            "code": "000000",
+            "success": True,
+            "data": [
+                {
+                    "alphaId": "ALPHA_OLD",
+                    "symbol": "OLD",
+                    "chainId": "56",
+                    "contractAddress": "0x" + "4" * 40,
+                    "listingTime": 1700000000000,
+                }
+            ],
+        }
+        with mock.patch.object(
+            catalog,
+            "verified_registry_candidates",
+            return_value=([candidate], []),
+        ):
+            payload, _ = catalog.build_runtime_watchlist(
+                {"items": [candidate]},
+                response,
+                current=datetime(2026, 7, 30, 4, 0, tzinfo=timezone.utc),
+                lookback_hours=72,
+                lookahead_hours=48,
+            )
+
+        self.assertEqual(payload["registry_selected_count"], 1)
+        self.assertEqual(payload["registry_selected"][0]["symbol"], "COVER")
+
+    def test_verified_signal_target_survives_bounded_artifact_window(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        candidate = {
+            "symbol": "KEEP",
+            "chain": "bsc",
+            "contracts": [{"chain": "bsc", "address": "0x" + "1" * 40}],
+            "facts": {
+                "source": "telegram_signal_receipt_verified",
+                "listing_time_utc": "2026-07-30T12:00:00+00:00",
+            },
+        }
+
+        retained = catalog.retained_signal_candidates(
+            {"items": [candidate]},
+            current=datetime(2026, 7, 31, 4, 0, tzinfo=timezone.utc),
+            retention_days=30,
+        )
+        expired = catalog.retained_signal_candidates(
+            {"items": [candidate]},
+            current=datetime(2026, 9, 1, 4, 0, tzinfo=timezone.utc),
+            retention_days=30,
+        )
+
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(
+            retained[0]["facts"]["signal_candidate_cohort_source"],
+            "retained_previous_runtime",
+        )
+        self.assertEqual(expired, [])
+
     def test_aeon_enters_runtime_watchlist_from_official_catalog(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
         response = {
@@ -431,6 +884,8 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in payload["items"]], ["NEWER"])
         self.assertEqual(payload["catalog_eligible_count"], 2)
         self.assertEqual(payload["catalog_dropped_count"], 1)
+        self.assertEqual(payload["catalog_unsupported_count"], 1)
+        self.assertEqual(payload["catalog_unsupported"][0]["symbol"], "BASEONLY")
 
     def test_catalog_merge_deduplicates_contract_identity(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -834,6 +1289,88 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             issues = alpha_coverage_issues(root)
 
         self.assertEqual(issues[0]["kind"], "alpha_catalog_budget_exceeded")
+
+    def test_health_reports_recent_unsupported_chain_item(self) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "selected": [],
+                        "unsupported_count": 1,
+                        "unsupported": [
+                            {"symbol": "BASEONLY", "chain": "base"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            issues = alpha_coverage_issues(root)
+
+        self.assertEqual(issues[0]["kind"], "alpha_unsupported_chain")
+        self.assertIn("BASEONLY@base", issues[0]["detail"])
+
+    def test_health_reports_unready_launch_candidate(self) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "selected": [],
+                        "registry_pending": [
+                            {
+                                "symbol": "GRVT",
+                                "project_key": "symbol:GRVT",
+                                "reasons": [
+                                    "missing_exact_opening_time",
+                                    "missing_receipt_verified_alpha_pool",
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            issues = alpha_coverage_issues(root)
+
+        self.assertEqual(issues[0]["kind"], "alpha_launch_candidate_gap")
+        self.assertEqual(issues[0]["name"], "GRVT")
+        self.assertIn("missing_exact_opening_time", issues[0]["detail"])
+
+    def test_prelaunch_health_requires_successful_delivery_receipt(self) -> None:
+        from scripts.runtime_health_watch import prelaunch_delivery_issue
+
+        rows = [
+            {"alert_key": "GRVT|contract|2026-07-30T12:00:00+00:00|T_MINUS_24H"},
+            {"alert_key": "GRVT|contract|2026-07-30T12:00:00+00:00|T_MINUS_1H"},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertIn("receipt missing", prelaunch_delivery_issue(root, rows))
+            seen_path = root / "output" / "alpha_prelaunch_watch" / "seen_alerts.json"
+            seen_path.parent.mkdir(parents=True)
+            seen_path.write_text(
+                json.dumps({"keys": [rows[0]["alert_key"]]}),
+                encoding="utf-8",
+            )
+            self.assertIn("receipt missing", prelaunch_delivery_issue(root, rows))
+            seen_path.write_text(
+                json.dumps({"keys": [row["alert_key"] for row in rows]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(prelaunch_delivery_issue(root, rows), "")
 
     def test_health_warns_on_partial_opening_buyer_trace_coverage(self) -> None:
         from scripts.runtime_health_watch import (

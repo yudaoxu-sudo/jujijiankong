@@ -28,6 +28,18 @@ PAREN_SYMBOL_RE = re.compile(r"[\(（]\s*([A-Z][A-Z0-9]{1,15})\s*[\)）]")
 TOKEN_NAME_RE = re.compile(r"token\s*name\s*[:：]\s*([A-Za-z0-9_-]{1,32})", re.I)
 SYMBOL_FIELD_RE = re.compile(r"(?:symbol|代币符号)\s*[:：]\s*([A-Za-z0-9]{1,16})", re.I)
 PAIR_RE = re.compile(r"\b([A-Z0-9]{1,16})\s*/\s*(USDT|USDC|BNB|ETH)\b")
+LAUNCH_SYMBOL_RE = re.compile(
+    r"(?:上线|开盘|首发|(?i:listing|listed|tge))\s*"
+    r"(?:代币|(?i:token|project))?\s*[:：\-]?\s*\$?([A-Z][A-Z0-9]{1,15})\b",
+)
+ALPHA_VENUE_RE = re.compile(
+    r"(?:币安\s*Alpha|Binance\s*Alpha|BN\s*Alpha)",
+    re.I,
+)
+LAUNCH_CONTEXT_RE = re.compile(
+    r"(?:上线|开盘|首发|listing|listed|trading\s+opens?|TGE|新\s*Hook)",
+    re.I,
+)
 BLOCK_RE = re.compile(r"(?:区块|block)\s*[:： ]\s*(\d{5,})", re.I)
 POOL_ID_RE = re.compile(r"(?:PoolId|Pool ID|pool id|池子)\s*[:： ]\s*([0-9A-Za-zx_.-]{4,})", re.I)
 CHINESE_DATETIME_RE = re.compile(
@@ -143,6 +155,9 @@ def parse_signal(text: str, source_path: Path | None = None) -> dict[str, Any]:
         times=times,
         links_by_type=links_by_type,
     )
+    if primary_symbol and ALPHA_VENUE_RE.search(text) and LAUNCH_CONTEXT_RE.search(text):
+        facts["alpha_launch_signal"] = True
+        priority = promote_priority(priority, "P1_MONITOR")
 
     parsed = {
         "generated_at": now_iso(),
@@ -230,6 +245,8 @@ def extract_symbols(text: str) -> list[str]:
         symbols.append(token.upper())
     for left, _ in PAIR_RE.findall(text.upper()):
         symbols.append(left.upper())
+    for token in LAUNCH_SYMBOL_RE.findall(text):
+        symbols.append(token.upper())
     banned = {"USDT", "USDC", "BNB", "ETH", "USD", "UTC", "LP", "POOL", "TOKEN"}
     return unique([item for item in symbols if item not in banned])
 
@@ -318,7 +335,7 @@ def extract_facts(text: str) -> dict[str, Any]:
         match = pattern.search(text)
         if match:
             facts[key] = match.group(1).replace(",", "")
-    if "币安Alpha" in text or "Binance Alpha" in text or "binance alpha" in text.lower():
+    if ALPHA_VENUE_RE.search(text):
         facts.setdefault("venues", []).append("Binance Alpha")
     for venue in ["Gate", "MEXC", "KuCoin", "HTX", "OKX", "Bitget"]:
         if venue.lower() in text.lower():
@@ -550,6 +567,16 @@ def score_priority(
     return "P3_BACKLOG"
 
 
+def promote_priority(current: str, target: str) -> str:
+    ranks = {
+        "P0_DEEP_REVIEW": 0,
+        "P1_MONITOR": 1,
+        "P2_PAPER_TRADE": 2,
+        "P3_BACKLOG": 3,
+    }
+    return current if ranks.get(current, 99) <= ranks.get(target, 99) else target
+
+
 def numeric_fact(value: Any) -> float:
     try:
         return float(str(value or "0").replace(",", ""))
@@ -773,6 +800,14 @@ def main() -> int:
     for path in files:
         text = path.read_text(encoding="utf-8")
         parsed = parse_signal(text, path)
+        parsed.setdefault(
+            "source_policy",
+            {
+                "evidence_layer": "manual",
+                "authority": "manual_discovery",
+                "context_only": False,
+            },
+        )
         if args.registry:
             if parsed.get("source_policy", {}).get("context_only") is True:
                 parsed["project_registry"] = {"status": "context_only_archived", "added": []}

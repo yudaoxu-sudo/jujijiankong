@@ -13,6 +13,15 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_WATCHLIST_PATH = ROOT / "config" / "current_alpha_watchlist.json"
+PROJECT_REGISTRY_PATH = ROOT / "output" / "project_registry" / "project_registry.json"
+TELEGRAM_USER_SIGNAL_DIR = ROOT / "output" / "telegram_user_signals"
+TELEGRAM_BOT_SIGNAL_DIR = ROOT / "output" / "telegram_signals"
+MANUAL_SIGNAL_DIR = ROOT / "output" / "signals"
+SIGNAL_CANDIDATE_DIRS = (
+    TELEGRAM_USER_SIGNAL_DIR,
+    TELEGRAM_BOT_SIGNAL_DIR,
+    MANUAL_SIGNAL_DIR,
+)
 OUT_DIR = ROOT / "output" / "binance_alpha_catalog_watch"
 CURRENT_WATCHLIST_PATH = OUT_DIR / "current_watchlist.json"
 LATEST_PATH = OUT_DIR / "latest.json"
@@ -31,6 +40,13 @@ SUPPORTED_CHAINS = {"bsc"}
 DEFAULT_MAX_SELECTED = 8
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_SCHEMA_MIN_RATIO = 0.5
+REGISTRY_PENDING_MAX_AGE_DAYS = 7
+MAX_SIGNAL_CANDIDATE_FILES = 400
+GENERIC_SYMBOLS = {"", "UNKNOWN", "LP", "POOL", "TOKEN", "V3", "V4", "BN", "BSC", "ALPHA"}
+TIME_CONFLICT_REASONS = {
+    "conflicting_single_signal_opening_times",
+    "official_signal_opening_time_conflict",
+}
 
 
 def now_utc() -> datetime:
@@ -144,6 +160,566 @@ def parse_iso_time(value: Any) -> datetime | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def parse_utc8_time(value: Any) -> datetime | None:
+    text = str(value or "").replace("UTC+8", "").strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return (
+                datetime.strptime(text, fmt)
+                .replace(tzinfo=UTC8)
+                .astimezone(timezone.utc)
+            )
+        except ValueError:
+            continue
+    return None
+
+
+def monitored_priority(value: Any) -> bool:
+    return str(value or "").startswith(("P0", "P1"))
+
+
+def project_is_alpha_candidate(project: dict[str, Any]) -> bool:
+    facts = project.get("facts") if isinstance(project.get("facts"), dict) else {}
+    venues = facts.get("venues") if isinstance(facts.get("venues"), list) else []
+    if any(str(venue).strip().lower() == "binance alpha" for venue in venues):
+        return True
+    titles = " ".join(str(title) for title in project.get("titles", []))
+    normalized = titles.lower().replace(" ", "")
+    return "币安alpha" in normalized or "binancealpha" in normalized or "bnalpha" in normalized
+
+
+def signal_candidate_project(
+    parsed: dict[str, Any],
+    *,
+    artifact_name: str,
+    updated_at: str,
+) -> dict[str, Any] | None:
+    policy = parsed.get("source_policy")
+    proposal = parsed.get("watchlist_proposal")
+    enrichment = parsed.get("chain_enrichment")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("context_only") is not False
+        or not str(policy.get("authority") or "").strip()
+        or policy.get("authority") == "context_only"
+        or not isinstance(proposal, dict)
+        or not isinstance(enrichment, list)
+        or not enrichment
+    ):
+        return None
+
+    contracts = [
+        row for row in proposal.get("contracts", []) if isinstance(row, dict)
+    ]
+    times = [
+        str(value)
+        for value in parsed.get("times", [])
+        if str(value or "").strip()
+    ]
+    if not times:
+        times = [
+            str(row.get("time"))
+            for row in proposal.get("known_times", [])
+            if isinstance(row, dict) and str(row.get("time") or "").strip()
+        ]
+    txs = [
+        str(value)
+        for value in parsed.get("txs", [])
+        if str(value or "").strip()
+    ]
+    if not txs:
+        txs = [
+            str(row.get("tx"))
+            for row in proposal.get("known_txs", [])
+            if isinstance(row, dict) and str(row.get("tx") or "").strip()
+        ]
+    pool_ids = [
+        str(value)
+        for value in parsed.get("pool_ids", [])
+        if str(value or "").strip()
+    ]
+    if not pool_ids:
+        pool_ids = [
+            str(row.get("pool_id"))
+            for row in proposal.get("pool_ids", [])
+            if isinstance(row, dict) and str(row.get("pool_id") or "").strip()
+        ]
+    return {
+        "_candidate_provenance": "single_signal_artifact",
+        "project_key": f"signal_artifact:{artifact_name}",
+        "symbol": str(parsed.get("symbol") or proposal.get("symbol") or "").upper(),
+        "titles": [str(parsed.get("title") or proposal.get("name") or "")],
+        "updated_at": str(parsed.get("generated_at") or updated_at),
+        "last_priority": str(parsed.get("priority") or proposal.get("priority") or ""),
+        "contracts": contracts,
+        "addresses": [
+            row for row in parsed.get("addresses", []) if isinstance(row, dict)
+        ],
+        "txs": unique_list(txs),
+        "times": unique_list(times),
+        "pool_ids": unique_list(pool_ids),
+        "facts": parsed.get("facts") if isinstance(parsed.get("facts"), dict) else {},
+        "sources": [policy],
+        "chain_enrichment": [
+            row for row in enrichment if isinstance(row, dict)
+        ],
+    }
+
+
+def load_signal_candidate_projects(
+    path: Path = TELEGRAM_USER_SIGNAL_DIR,
+    *,
+    max_files: int = MAX_SIGNAL_CANDIDATE_FILES,
+) -> list[dict[str, Any]]:
+    if max_files < 1:
+        raise ValueError("signal candidate max_files must be positive")
+    try:
+        files = [
+            item
+            for item in path.iterdir()
+            if item.is_file()
+            and item.suffix == ".json"
+            and item.name != "state.json"
+        ]
+    except OSError:
+        return []
+
+    def modified(item: Path) -> float:
+        try:
+            return item.stat().st_mtime
+        except OSError:
+            return 0
+
+    projects: list[dict[str, Any]] = []
+    for artifact in sorted(files, key=modified, reverse=True)[:max_files]:
+        parsed = read_json(artifact, {})
+        if not isinstance(parsed, dict):
+            continue
+        mtime = datetime.fromtimestamp(
+            modified(artifact), timezone.utc
+        ).replace(microsecond=0).isoformat()
+        project = signal_candidate_project(
+            parsed,
+            artifact_name=artifact.name,
+            updated_at=mtime,
+        )
+        if project is not None:
+            projects.append(project)
+    return projects
+
+
+def load_all_signal_candidate_projects(
+    paths: tuple[Path, ...] = SIGNAL_CANDIDATE_DIRS,
+) -> list[dict[str, Any]]:
+    return [
+        project
+        for path in paths
+        for project in load_signal_candidate_projects(path)
+    ]
+
+
+def registry_candidate_summary(
+    project: dict[str, Any],
+    *,
+    reasons: list[str],
+    opening: datetime | None,
+    identities: set[tuple[str, str]],
+) -> dict[str, Any]:
+    return {
+        "symbol": str(project.get("symbol") or "UNKNOWN").upper(),
+        "project_key": str(project.get("project_key") or ""),
+        "priority": str(project.get("last_priority") or ""),
+        "updated_at": str(project.get("updated_at") or ""),
+        "opening_time_utc": opening.isoformat() if opening else "",
+        "opening_time_utc8": (
+            opening.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+            if opening
+            else ""
+        ),
+        "reasons": reasons,
+        "identities": [
+            f"{chain}:{contract}"
+            for chain, contract in sorted(identities)
+        ],
+    }
+
+
+def verified_registry_candidates(
+    registry: dict[str, Any],
+    *,
+    current: datetime,
+    retention_days: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    cutoff = current - timedelta(days=retention_days)
+    ready: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for project in registry.get("projects", []):
+        if not isinstance(project, dict) or not project_is_alpha_candidate(project):
+            continue
+        if not monitored_priority(project.get("last_priority")):
+            continue
+        updated = parse_iso_time(project.get("updated_at"))
+        times = unique_list(
+            [
+                parsed.isoformat()
+                for parsed in (
+                    parse_utc8_time(value) for value in project.get("times", [])
+                )
+                if parsed is not None
+            ]
+        )
+        openings = [parse_iso_time(value) for value in times]
+        openings = [value for value in openings if value is not None]
+        opening = openings[0] if len(openings) == 1 else None
+        if updated is not None and updated < cutoff and (
+            opening is None or opening < cutoff
+        ):
+            continue
+
+        reasons: list[str] = []
+        symbol = str(project.get("symbol") or "").upper()
+        if symbol in GENERIC_SYMBOLS:
+            reasons.append("missing_project_symbol")
+        sources = [
+            row for row in project.get("sources", []) if isinstance(row, dict)
+        ]
+        if any(row.get("context_only") is True for row in sources):
+            continue
+        if project.get("_candidate_provenance") != "single_signal_artifact":
+            reasons.append("unproven_time_pool_binding")
+        if not openings:
+            reasons.append("missing_exact_opening_time")
+        elif len(openings) > 1:
+            reasons.append("ambiguous_opening_time")
+
+        project_contracts = {
+            (
+                str(row.get("chain") or "").lower(),
+                normalize_address(row.get("address")),
+            )
+            for row in project.get("contracts", [])
+            if isinstance(row, dict)
+            and normalize_address(row.get("address"))
+        }
+        project_txs = {
+            str(value or "").lower() for value in project.get("txs", [])
+        }
+        project_pools = {
+            str(value or "").lower() for value in project.get("pool_ids", [])
+        }
+        verified: list[dict[str, Any]] = []
+        observed_chains: set[str] = set()
+        for row in project.get("chain_enrichment", []):
+            if not isinstance(row, dict) or row.get("status") != "ok":
+                continue
+            chain = str(row.get("chain") or "").lower()
+            if chain:
+                observed_chains.add(chain)
+            tx_hash = str(row.get("tx_hash") or "").lower()
+            pool_id = str(row.get("pool_id") or "").lower()
+            if (
+                chain not in SUPPORTED_CHAINS
+                or tx_hash not in project_txs
+                or pool_id not in project_pools
+            ):
+                continue
+            token_rows = [
+                token
+                for token in (row.get("token0"), row.get("token1"))
+                if isinstance(token, dict)
+            ]
+            quote_address = USDT_BY_CHAIN.get(chain, "")
+            quote = next(
+                (
+                    token
+                    for token in token_rows
+                    if normalize_address(token.get("address")) == quote_address
+                ),
+                None,
+            )
+            token = next(
+                (
+                    token
+                    for token in token_rows
+                    if str(token.get("symbol") or "").upper() == symbol
+                    and normalize_address(token.get("address")) != quote_address
+                ),
+                None,
+            )
+            contract = normalize_address((token or {}).get("address"))
+            if (
+                quote is None
+                or token is None
+                or (chain, contract) not in project_contracts
+            ):
+                continue
+            verified.append(
+                {
+                    "chain": chain,
+                    "contract": contract,
+                    "pool_id": pool_id,
+                    "tx_hash": tx_hash,
+                    "block": row.get("block"),
+                    "hook": normalize_address((row.get("raw_fields") or {}).get("hook")),
+                }
+            )
+        if not verified:
+            reasons.append("missing_receipt_verified_alpha_pool")
+            unsupported_chains = sorted(observed_chains - SUPPORTED_CHAINS)
+            if unsupported_chains:
+                reasons.append(
+                    "unsupported_chain:" + ",".join(unsupported_chains)
+                )
+        identities = {
+            (row["chain"], row["contract"]) for row in verified
+        }
+        if len(identities) > 1:
+            reasons.append("ambiguous_contract_identity")
+
+        if reasons:
+            pending_cutoff = current - timedelta(
+                days=REGISTRY_PENDING_MAX_AGE_DAYS
+            )
+            if updated is not None and updated < pending_cutoff and (
+                opening is None or opening < current
+            ):
+                continue
+            pending.append(
+                registry_candidate_summary(
+                    project,
+                    reasons=reasons,
+                    opening=opening,
+                    identities=identities,
+                )
+            )
+            continue
+
+        chain, contract = next(iter(identities))
+        start_utc8 = opening.astimezone(UTC8).strftime("%Y-%m-%d %H:%M")
+        pool_rows = []
+        seen_pools: set[str] = set()
+        for row in verified:
+            if row["pool_id"] in seen_pools:
+                continue
+            seen_pools.add(row["pool_id"])
+            pool = {
+                "chain": chain,
+                "pool_id": row["pool_id"],
+                "start_time_utc8": start_utc8,
+                "source": "telegram_signal_receipt_verified",
+                "opening_anchor_status": "verified_prelaunch_pool",
+                "quote_address": USDT_BY_CHAIN[chain],
+            }
+            if row["hook"]:
+                pool["hook"] = row["hook"]
+            pool_rows.append(pool)
+        watch_addresses = []
+        for address_row in project.get("addresses", []):
+            if not isinstance(address_row, dict):
+                continue
+            address = normalize_address(address_row.get("address"))
+            label = str(address_row.get("label_hint") or "")
+            if not address or address == contract or not any(
+                marker in label for marker in ("hook", "operator")
+            ):
+                continue
+            watch_addresses.append(
+                {
+                    "chain": chain,
+                    "address": address,
+                    "label": label,
+                    "role": "pool_hook_or_operator",
+                    "level": "HIGH",
+                    "watch_quote": True,
+                }
+            )
+        item = {
+            "symbol": symbol,
+            "name": str(project.get("titles", [symbol])[-1] or symbol),
+            "priority": str(project.get("last_priority") or "P1_MONITOR"),
+            "chain": chain,
+            "active_monitoring": True,
+            "contracts": [
+                {
+                    "chain": chain,
+                    "address": contract,
+                    "confidence": "telegram_signal_receipt_verified",
+                }
+            ],
+            "catalysts": ["Binance Alpha verified prelaunch pool"],
+            "known_times": [
+                {"time": start_utc8, "reason": "verified_prelaunch_pool"}
+            ],
+            "pool_ids": pool_rows,
+            "known_blocks": [
+                {
+                    "chain": chain,
+                    "block": int(row["block"]),
+                    "reason": "verified_prelaunch_pool",
+                }
+                for row in verified
+                if str(row.get("block") or "").isdigit()
+            ],
+            "known_txs": [
+                {
+                    "chain": chain,
+                    "tx": row["tx_hash"],
+                    "reason": "verified_prelaunch_pool",
+                }
+                for row in verified
+            ],
+            "watch_addresses": watch_addresses,
+            "opening_max_age_hours": max(72, retention_days * 24),
+            "opening_liquidity_max_age_seconds": max(
+                72 * 3600, retention_days * 86400
+            ),
+            "opening_max_logs": 5000,
+            "opening_trace_buyers": 8,
+            "opening_max_txs": 24,
+            "opening_classify_out_txs": 8,
+            "opening_next_hop_recipients": 8,
+            "opening_next_hop_classify_txs": 6,
+            "project_operator_probe": "owner",
+            "project_lookback_blocks": 250000,
+            "required_checks": [
+                "opening_block",
+                "block_transaction_order",
+                "internal_transactions",
+                "holder_distribution",
+                "project_operator_attribution",
+                "sniper_cohort_exit",
+            ],
+            "facts": {
+                "source": "telegram_signal_receipt_verified",
+                "project_key": str(project.get("project_key") or ""),
+                "registry_updated_at": str(project.get("updated_at") or ""),
+                "listing_time_utc": opening.isoformat(),
+                "listing_time_utc8": start_utc8,
+                "opening_anchor_status": "verified_prelaunch_pool",
+            },
+        }
+        ready.append(item)
+    ready, conflict_rows = reject_candidate_time_conflicts(ready)
+    pending.extend(conflict_rows)
+    ready.sort(key=lambda item: item_listing_time(item) or cutoff, reverse=True)
+    pending.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    return ready, pending
+
+
+def reject_candidate_time_conflicts(
+    ready: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    by_identity: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in ready:
+        identities = item_contracts(item)
+        if len(identities) == 1:
+            by_identity.setdefault(next(iter(identities)), []).append(item)
+    conflicted = {
+        identity
+        for identity, items in by_identity.items()
+        if len(
+            {
+                value.isoformat()
+                for value in (item_listing_time(item) for item in items)
+                if value is not None
+            }
+        )
+        > 1
+    }
+    if not conflicted:
+        return ready, []
+    safe = [
+        item for item in ready if not (item_contracts(item) & conflicted)
+    ]
+    pending = []
+    for chain, contract in sorted(conflicted):
+        items = by_identity[(chain, contract)]
+        times = sorted(
+            {
+                value.isoformat()
+                for value in (item_listing_time(item) for item in items)
+                if value is not None
+            }
+        )
+        pending.append(
+            {
+                "symbol": str(items[0].get("symbol") or "UNKNOWN").upper(),
+                "project_key": f"identity:{chain}:{contract}",
+                "priority": "P0_DEEP_REVIEW",
+                "updated_at": max(
+                    str((item.get("facts") or {}).get("registry_updated_at") or "")
+                    for item in items
+                ),
+                "opening_time_utc": "",
+                "opening_time_utc8": "",
+                "reasons": ["conflicting_single_signal_opening_times"],
+                "conflicting_opening_times_utc": times,
+                "identities": [f"{chain}:{contract}"],
+            }
+        )
+    return safe, pending
+
+
+def reject_official_signal_time_conflicts(
+    official: list[dict[str, Any]],
+    signals: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    official_by_identity = {
+        identity: item
+        for item in official
+        for identity in item_contracts(item)
+    }
+    conflicted: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+    for signal in signals:
+        signal_time = item_listing_time(signal)
+        if signal_time is None:
+            continue
+        for identity in item_contracts(signal):
+            official_item = official_by_identity.get(identity)
+            official_time = item_listing_time(official_item or {})
+            if official_time is not None and official_time != signal_time:
+                conflicted[identity] = (official_item, signal)
+    if not conflicted:
+        return signals, []
+    conflicted_identities = set(conflicted)
+    safe = [
+        item
+        for item in signals
+        if not (item_contracts(item) & conflicted_identities)
+    ]
+    pending = []
+    for (chain, contract), (official_item, signal) in sorted(conflicted.items()):
+        official_time = item_listing_time(official_item)
+        signal_time = item_listing_time(signal)
+        pending.append(
+            {
+                "symbol": str(signal.get("symbol") or "UNKNOWN").upper(),
+                "project_key": f"identity:{chain}:{contract}",
+                "priority": "P0_DEEP_REVIEW",
+                "updated_at": str(
+                    (signal.get("facts") or {}).get("registry_updated_at") or ""
+                ),
+                "opening_time_utc": "",
+                "opening_time_utc8": "",
+                "reasons": ["official_signal_opening_time_conflict"],
+                "conflicting_opening_times_utc": sorted(
+                    {
+                        value.isoformat()
+                        for value in (official_time, signal_time)
+                        if value is not None
+                    }
+                ),
+                "identities": [f"{chain}:{contract}"],
+            }
+        )
+    return safe, pending
 
 
 def valid_catalog_response(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -415,6 +991,45 @@ def eligible_catalog_items(
     return selected
 
 
+def unsupported_catalog_items(
+    rows: list[dict[str, Any]],
+    *,
+    current: datetime,
+    lookback_hours: int,
+    lookahead_hours: int,
+) -> list[dict[str, Any]]:
+    lower = current - timedelta(hours=max(1, lookback_hours))
+    upper = current + timedelta(hours=max(0, lookahead_hours))
+    unsupported: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("cexOffDisplay") is True:
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        alpha_id = str(row.get("alphaId") or "").strip()
+        listing = listing_datetime(row)
+        chain = normalize_chain(row)
+        if (
+            not symbol
+            or not alpha_id
+            or listing is None
+            or listing < lower
+            or listing > upper
+            or chain in SUPPORTED_CHAINS
+        ):
+            continue
+        unsupported.append(
+            {
+                "symbol": symbol,
+                "alpha_id": alpha_id,
+                "chain": chain or str(row.get("chainName") or row.get("chainId") or "unknown"),
+                "listing_time_utc": listing.isoformat(),
+                "listing_time_utc8": listing.astimezone(UTC8).strftime("%Y-%m-%d %H:%M"),
+            }
+        )
+    unsupported.sort(key=lambda row: str(row["listing_time_utc"]), reverse=True)
+    return unsupported
+
+
 def selected_catalog_items(
     rows: list[dict[str, Any]],
     *,
@@ -496,6 +1111,43 @@ def retained_catalog_items(
     return retained, expired_count
 
 
+def retained_signal_candidates(
+    previous_runtime_watchlist: dict[str, Any],
+    *,
+    current: datetime,
+    retention_days: int,
+) -> list[dict[str, Any]]:
+    cutoff = current - timedelta(days=retention_days)
+    retained: list[dict[str, Any]] = []
+    for raw_item in previous_runtime_watchlist.get("items", []):
+        if not isinstance(raw_item, dict):
+            continue
+        facts = raw_item.get("facts") if isinstance(raw_item.get("facts"), dict) else {}
+        listing = item_listing_time(raw_item)
+        if (
+            facts.get("source") != "telegram_signal_receipt_verified"
+            or listing is None
+            or listing < cutoff
+            or not item_contracts(raw_item)
+        ):
+            continue
+        item = copy.deepcopy(raw_item)
+        item["active_monitoring"] = True
+        item["opening_max_age_hours"] = max(
+            int(item.get("opening_max_age_hours") or 0),
+            retention_days * 24,
+        )
+        item["opening_liquidity_max_age_seconds"] = max(
+            int(item.get("opening_liquidity_max_age_seconds") or 0),
+            retention_days * 86400,
+        )
+        item.setdefault("facts", {})[
+            "signal_candidate_cohort_source"
+        ] = "retained_previous_runtime"
+        retained.append(item)
+    return retained
+
+
 def deduplicate_catalog_cohort(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
         listing = item_listing_time(item) or datetime.min.replace(tzinfo=timezone.utc)
@@ -566,6 +1218,7 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
         "pool_ids",
         "known_blocks",
         "known_txs",
+        "watch_addresses",
         "required_checks",
     ):
         merged[key] = unique_list(list(merged.get(key, [])) + list(candidate.get(key, [])))
@@ -605,6 +1258,17 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
     return merged
 
 
+def merge_candidate_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for candidate in items:
+        index = matching_item_index(merged, candidate)
+        if index is None:
+            merged.append(candidate)
+        else:
+            merged[index] = merge_item(merged[index], candidate)
+    return merged
+
+
 def build_runtime_watchlist(
     static_watchlist: dict[str, Any],
     response: dict[str, Any],
@@ -615,11 +1279,18 @@ def build_runtime_watchlist(
     max_selected: int = DEFAULT_MAX_SELECTED,
     previous_runtime_watchlist: dict[str, Any] | None = None,
     retention_days: int = DEFAULT_RETENTION_DAYS,
+    project_registry: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if max_selected < 1:
         raise ValueError("catalog max_selected must be positive")
     rows = valid_catalog_response(response)
     validate_static_watchlist(static_watchlist)
+    unsupported = unsupported_catalog_items(
+        rows,
+        current=current,
+        lookback_hours=lookback_hours,
+        lookahead_hours=lookahead_hours,
+    )
     monitor_hours = retention_days * 24
     current_eligible = eligible_catalog_items(
         rows,
@@ -636,6 +1307,28 @@ def build_runtime_watchlist(
     cohort = deduplicate_catalog_cohort(current_eligible + retained)
     selected = cohort[:max_selected]
     dropped = cohort[max_selected:]
+    registry_selected, registry_pending = verified_registry_candidates(
+        project_registry or {"projects": []},
+        current=current,
+        retention_days=retention_days,
+    )
+    registry_selected.extend(
+        retained_signal_candidates(
+            previous_runtime_watchlist or {},
+            current=current,
+            retention_days=retention_days,
+        )
+    )
+    registry_selected, retained_conflicts = reject_candidate_time_conflicts(
+        registry_selected
+    )
+    registry_pending.extend(retained_conflicts)
+    registry_selected, official_conflicts = reject_official_signal_time_conflicts(
+        selected,
+        registry_selected,
+    )
+    registry_pending.extend(official_conflicts)
+    registry_selected = merge_candidate_items(registry_selected)
     retained_eligible_count = sum(
         1
         for item in cohort
@@ -654,15 +1347,46 @@ def build_runtime_watchlist(
         for item in static_watchlist.get("items", [])
         if isinstance(item, dict)
     ]
-    for candidate in selected:
+    registry_lifecycle_targets = registry_selected
+    for candidate in selected + registry_selected:
         index = matching_item_index(items, candidate)
         if index is None:
             items.append(candidate)
         else:
             items[index] = merge_item(items[index], candidate)
+    covered_identities = {
+        f"{chain}:{contract}"
+        for item in items
+        for chain, contract in item_contracts(item)
+    }
+    covered_symbol_openings = {
+        (
+            str(item.get("symbol") or "").upper(),
+            (item_listing_time(item) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+        )
+        for item in selected + registry_selected
+        if item_listing_time(item) is not None
+    }
+    registry_pending = [
+        row
+        for row in registry_pending
+        if TIME_CONFLICT_REASONS
+        & set(str(value) for value in row.get("reasons", []))
+        or (
+            not (
+                set(str(value) for value in row.get("identities", []))
+                & covered_identities
+            )
+            and (
+                str(row.get("symbol") or "").upper(),
+                str(row.get("opening_time_utc") or ""),
+            )
+            not in covered_symbol_openings
+        )
+    ]
     payload = {
         "generated_at": now_iso(current),
-        "runtime_source": "curated_plus_binance_alpha_public_catalog",
+        "runtime_source": "curated_plus_binance_alpha_public_catalog_and_verified_signals",
         "catalog_retention_days": retention_days,
         "catalog_current_eligible_count": len(current_eligible),
         "catalog_retained_eligible_count": retained_eligible_count,
@@ -672,6 +1396,19 @@ def build_runtime_watchlist(
         "catalog_selected_count": len(selected),
         "catalog_dropped_count": len(dropped),
         "catalog_dropped": [catalog_summary_row(item) for item in dropped],
+        "catalog_unsupported_count": len(unsupported),
+        "catalog_unsupported": unsupported,
+        "registry_candidate_count": len(registry_lifecycle_targets) + len(registry_pending),
+        "registry_selected_count": len(registry_lifecycle_targets),
+        "registry_pending_count": len(registry_pending),
+        "registry_selected": [
+            {
+                **catalog_summary_row(item),
+                "source": "telegram_signal_receipt_verified",
+            }
+            for item in registry_lifecycle_targets
+        ],
+        "registry_pending": registry_pending,
         "items": items,
     }
     return payload, selected
@@ -718,6 +1455,21 @@ def public_summary(
         "selected_count": len(selected),
         "dropped_count": int(runtime_watchlist.get("catalog_dropped_count") or 0),
         "dropped": list(runtime_watchlist.get("catalog_dropped") or []),
+        "unsupported_count": int(
+            runtime_watchlist.get("catalog_unsupported_count") or 0
+        ),
+        "unsupported": list(runtime_watchlist.get("catalog_unsupported") or []),
+        "registry_candidate_count": int(
+            runtime_watchlist.get("registry_candidate_count") or 0
+        ),
+        "registry_selected_count": int(
+            runtime_watchlist.get("registry_selected_count") or 0
+        ),
+        "registry_pending_count": int(
+            runtime_watchlist.get("registry_pending_count") or 0
+        ),
+        "registry_selected": list(runtime_watchlist.get("registry_selected") or []),
+        "registry_pending": list(runtime_watchlist.get("registry_pending") or []),
         "runtime_watchlist_item_count": len(runtime_watchlist.get("items", [])),
         "selected": [catalog_summary_row(item) for item in selected],
     }
@@ -763,6 +1515,16 @@ def main() -> int:
         if retention_days < 1:
             raise ValueError("catalog retention_days must be positive")
         static_watchlist = read_static_watchlist()
+        project_registry = read_json(PROJECT_REGISTRY_PATH, {"projects": []})
+        registry_projects = (
+            project_registry.get("projects", [])
+            if isinstance(project_registry, dict)
+            and isinstance(project_registry.get("projects"), list)
+            else []
+        )
+        project_registry = {
+            "projects": registry_projects + load_all_signal_candidate_projects()
+        }
         previous_runtime_watchlist = read_json(CURRENT_WATCHLIST_PATH, {})
         previous_summary = read_json(LATEST_PATH, {})
         response = fetch_catalog(timeout)
@@ -781,6 +1543,7 @@ def main() -> int:
             max_selected=max_selected,
             previous_runtime_watchlist=previous_runtime_watchlist,
             retention_days=retention_days,
+            project_registry=project_registry,
         )
         runtime_watchlist["catalog_supported_schema_count"] = supported_schema_count
         summary = public_summary(

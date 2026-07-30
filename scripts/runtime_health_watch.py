@@ -433,6 +433,30 @@ def effective_runtime_watchlist_path(root: Path) -> Path:
     return generated
 
 
+def prelaunch_delivery_issue(
+    root: Path,
+    matching_rows: list[dict[str, Any]],
+) -> str:
+    alert_keys = {
+        str(row.get("alert_key") or "")
+        for row in matching_rows
+        if str(row.get("alert_key") or "")
+    }
+    if not alert_keys:
+        return "prelaunch event has no delivery identity"
+    seen = read_json(
+        root / "output" / "alpha_prelaunch_watch" / "seen_alerts.json",
+        {},
+    )
+    seen_keys = {
+        str(value or "")
+        for value in (seen.get("keys") or [])
+    }
+    if alert_keys <= seen_keys:
+        return ""
+    return "prelaunch Telegram delivery receipt missing"
+
+
 def alpha_coverage_evaluation(
     root: Path,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -498,11 +522,57 @@ def alpha_coverage_evaluation(
                 f"alpha_catalog_budget_exceeded:{dropped_count}:{dropped_signature}",
             )
         )
+    unsupported_count = int(catalog.get("unsupported_count") or 0)
+    if unsupported_count:
+        unsupported_rows = [
+            row for row in catalog.get("unsupported", []) if isinstance(row, dict)
+        ]
+        labels = ",".join(
+            f"{row.get('symbol')}@{row.get('chain')}"
+            for row in unsupported_rows[:8]
+        )
+        issues.append(
+            issue(
+                "alpha_unsupported_chain",
+                "binance_alpha_catalog",
+                f"{unsupported_count} recent Alpha item(s) need an unsupported-chain monitor: {labels}",
+                f"alpha_unsupported_chain:{unsupported_count}:{labels}",
+            )
+        )
+    pending_registry = [
+        row
+        for row in catalog.get("registry_pending", [])
+        if isinstance(row, dict)
+    ]
+    for row in pending_registry:
+        symbol = str(row.get("symbol") or "UNKNOWN").upper()
+        reasons = ",".join(str(value) for value in row.get("reasons", []))
+        project_key = str(row.get("project_key") or symbol)
+        issues.append(
+            issue(
+                "alpha_launch_candidate_gap",
+                symbol,
+                f"{symbol} launch candidate is not monitor-ready: {reasons or 'unknown gap'}",
+                f"alpha_launch_candidate_gap:{project_key}:{reasons}",
+            )
+        )
     selected = [
         row
-        for row in catalog.get("selected", [])
+        for row in (
+            list(catalog.get("selected", []))
+            + list(catalog.get("registry_selected", []))
+        )
         if isinstance(row, dict) and row.get("symbol")
     ]
+    selected_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in selected:
+        identity = (
+            str(row.get("chain") or "").lower(),
+            str(row.get("contract") or "").lower(),
+        )
+        if identity[0] and identity[1]:
+            selected_by_identity[identity] = row
+    selected = list(selected_by_identity.values())
     if not selected:
         return issues, warnings
     runtime_contracts = runtime_watchlist_contracts(
@@ -528,7 +598,7 @@ def alpha_coverage_evaluation(
                 issue(
                     "alpha_coverage_gap",
                     symbol,
-                    f"{symbol} is in the official recent Alpha catalog but missing from the runtime watchlist",
+                    f"{symbol} is an active Alpha lifecycle target but missing from the runtime watchlist",
                     f"alpha_coverage_gap:{identity_label}:runtime_watchlist",
                 )
             )
@@ -587,6 +657,17 @@ def alpha_coverage_evaluation(
                         f"alpha_coverage_warning:{identity_label}:{output_name}:{warning_detail}",
                     )
                 )
+            if output_name == "prelaunch":
+                delivery_detail = prelaunch_delivery_issue(root, matching)
+                if delivery_detail:
+                    issues.append(
+                        issue(
+                            "alpha_coverage_gap",
+                            symbol,
+                            f"{symbol} prelaunch: {delivery_detail}",
+                            f"alpha_coverage_gap:{identity_label}:prelaunch:delivery_receipt",
+                        )
+                    )
     return issues, warnings
 
 

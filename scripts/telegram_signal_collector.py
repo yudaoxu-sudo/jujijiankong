@@ -703,6 +703,11 @@ def process_update(
     signal_path = save_signal(update, message, text)
     parsed = parse_signal(text, signal_path)
     parsed = maybe_enrich_chain(parsed)
+    parsed["source_policy"] = {
+        "evidence_layer": "social",
+        "authority": "social_discovery",
+        "context_only": False,
+    }
     parsed["project_registry"] = merge_signal(
         parsed,
         {
