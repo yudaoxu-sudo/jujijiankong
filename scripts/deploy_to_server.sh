@@ -23,3 +23,16 @@ rsync -az \
   --exclude 'reports/' \
   -e "${ssh_cmd[*]}" \
   ./ "$server"
+
+remote_target="${server%%:*}"
+remote_dir="${server#*:}"
+printf -v remote_dir_quoted '%q' "$remote_dir"
+
+if ! "${ssh_cmd[@]}" "$remote_target" \
+  "cd $remote_dir_quoted && bash scripts/install_server_cron.sh" \
+  >/dev/null 2>&1; then
+  printf '%s\n' 'remote cron installation failed' >&2
+  exit 1
+fi
+
+printf '%s\n' 'deploy=pass cron_install=pass'

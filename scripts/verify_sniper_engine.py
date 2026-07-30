@@ -3021,6 +3021,14 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
     except Exception as exc:
         deploy_msg = str(exc)
     checks.append(("deploy script preserves server runtime state", deploy_ok, deploy_msg))
+    deploy_cron_ok = "bash scripts/install_server_cron.sh" in deploy_text if deploy_ok else False
+    checks.append(
+        (
+            "deploy script installs server cron",
+            deploy_cron_ok,
+            "cron installer invoked after sync" if deploy_cron_ok else "cron installer invocation missing",
+        )
+    )
 
     compile_cmd = [
         sys.executable,
