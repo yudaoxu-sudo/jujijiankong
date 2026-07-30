@@ -8,12 +8,14 @@ import json
 import os
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS = 48
+DEFAULT_INTRADAY_CORE_HOURS = 72
 
 CRITICAL_OUTPUTS = (
     ("binance_alpha_catalog", "output/binance_alpha_catalog_watch/latest.json"),
@@ -306,6 +308,9 @@ def output_row_coverage_issue(
         coverage = row.get("transfer_coverage") or {}
         if coverage.get("state") != "requested_window_complete" or coverage.get("complete") is not True:
             return f"intraday transfer coverage={coverage.get('state', 'missing')}"
+        analysis = row.get("analysis") or {}
+        if analysis.get("scan_limited"):
+            return "intraday receipt coverage limited"
     elif output_name == "price":
         analysis = row.get("analysis") or {}
         if analysis.get("direction") == "数据缺口":
@@ -323,9 +328,16 @@ def output_row_coverage_warning(
 ) -> str:
     if output_name == "intraday" and row.get("status") == "scanned":
         analysis = row.get("analysis") or {}
+        warnings: list[str] = []
         if analysis.get("scan_limited"):
-            return "intraday receipt scan limited; complete transfer evidence only"
-        return ""
+            warnings.append(
+                "intraday receipt scan limited; complete transfer evidence only"
+            )
+        if analysis.get("cex_gas_priming_scan_limited"):
+            warnings.append(
+                "intraday CEX gas-priming scan time-limited; transfer risk retained"
+            )
+        return "; ".join(warnings)
     if output_name == "opening" and row.get("status") == "opened":
         traces = [
             item.get("buyer_trace") or {}
@@ -401,6 +413,67 @@ def matching_rows_coverage_warning(
     return ""
 
 
+def retention_flow_required(
+    listing: datetime | None,
+    current: datetime,
+) -> bool:
+    return bool(
+        listing is not None
+        and current >= listing
+        and current - listing
+        > timedelta(hours=DEFAULT_INTRADAY_CORE_HOURS)
+    )
+
+
+def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
+    flow = (
+        row.get("retention_flow")
+        if isinstance(row.get("retention_flow"), dict)
+        else {}
+    )
+    if flow.get("status") != "active":
+        return f"retention flow status={flow.get('status', 'missing')}"
+    if flow.get("complete") is not True:
+        return "retention flow coverage incomplete"
+    if int(flow.get("log_error_count") or 0):
+        return "retention flow log scan has errors"
+    if flow.get("truncated") or flow.get("events_truncated"):
+        return "retention flow output truncated"
+    if (
+        flow.get("continuous") is not True
+        and flow.get("late_discovery_bootstrap") is not True
+    ):
+        return "retention flow block checkpoint gap"
+    scan_from = int(flow.get("scan_from_block") or 0)
+    scan_to = int(flow.get("scan_to_block") or 0)
+    previous = int(flow.get("previous_latest_block") or 0)
+    latest = int(flow.get("latest_block") or 0)
+    if scan_from > scan_to:
+        return "retention flow scan window invalid"
+    if previous > 0 and scan_from != previous + 1:
+        return "retention flow scan does not continue previous checkpoint"
+    if latest != scan_to:
+        return "retention flow checkpoint did not reach scan tip"
+    return ""
+
+
+def retention_flow_coverage_warning(row: dict[str, Any]) -> str:
+    flow = (
+        row.get("retention_flow")
+        if isinstance(row.get("retention_flow"), dict)
+        else {}
+    )
+    if (
+        flow.get("status") == "active"
+        and flow.get("late_discovery_bootstrap")
+    ):
+        return (
+            "retention flow begins at late-discovery first observation; "
+            "earlier history was outside monitored scope"
+        )
+    return ""
+
+
 def runtime_watchlist_contracts(path: Path) -> set[tuple[str, str]]:
     payload = read_json(path, {})
     rows: set[tuple[str, str]] = set()
@@ -457,8 +530,98 @@ def prelaunch_delivery_issue(
     return "prelaunch Telegram delivery receipt missing"
 
 
+def alpha_required_outputs(
+    chain: str,
+    listing: datetime | None,
+    current: datetime,
+) -> list[str]:
+    required = ["project", "holder"]
+    if chain != "bsc":
+        required.append("price")
+        return required
+    required.append("opening")
+    if listing is None:
+        required.extend(["intraday", "price"])
+        return required
+    if listing > current:
+        lookahead = timedelta(
+            hours=float(
+                os.environ.get(
+                    "ALPHA_PRELAUNCH_LOOKAHEAD_HOURS",
+                    str(DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS),
+                )
+            )
+        )
+        if listing - current <= lookahead:
+            required.append("prelaunch")
+        return required
+    required.append("price")
+    intraday_core = timedelta(
+        hours=float(
+            os.environ.get(
+                "ALPHA_INTRADAY_CORE_HOURS",
+                str(DEFAULT_INTRADAY_CORE_HOURS),
+            )
+        )
+    )
+    if current - listing <= intraday_core:
+        required.append("intraday")
+    return required
+
+
+def historical_prelaunch_delivery_issue(
+    root: Path,
+    row: dict[str, Any],
+    current: datetime,
+) -> str:
+    listing = parse_time(row.get("listing_time_utc"))
+    if listing is None or current < listing:
+        return ""
+    first_seen = parse_time(row.get("lifecycle_first_seen_at"))
+    if first_seen is None:
+        return "prelaunch lifecycle first-seen timestamp missing"
+    live_window = timedelta(minutes=30)
+    if first_seen > listing + live_window:
+        return ""
+    symbol = str(row.get("symbol") or "UNKNOWN").upper()
+    contract = str(row.get("contract") or "").lower()
+    listing_key = listing.replace(second=0, microsecond=0).isoformat()
+    key_prefix = f"{symbol}|{contract}|{listing_key}|"
+    cycle_sla = timedelta(
+        minutes=max(
+            0,
+            float(
+                os.environ.get(
+                    "ALPHA_PRELAUNCH_DELIVERY_SLA_MINUTES",
+                    "10",
+                )
+            )
+        ),
+    )
+    allowed_phases = ("T_MINUS_",)
+    if first_seen >= listing:
+        allowed_phases = ("LIVE_WINDOW",)
+    elif first_seen > listing - cycle_sla:
+        allowed_phases = ("T_MINUS_", "LIVE_WINDOW")
+    seen = read_json(
+        root / "output" / "alpha_prelaunch_watch" / "seen_alerts.json",
+        {},
+    )
+    if any(
+        any(
+            str(value or "").startswith(key_prefix + phase)
+            for phase in allowed_phases
+        )
+        for value in (seen.get("keys") or [])
+    ):
+        return ""
+    return "historical prelaunch Telegram delivery receipt missing"
+
+
 def alpha_coverage_evaluation(
     root: Path,
+    *,
+    current: datetime | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     attempt = read_json(
         root / "output" / "binance_alpha_catalog_watch" / "status.json",
@@ -578,7 +741,9 @@ def alpha_coverage_evaluation(
     runtime_contracts = runtime_watchlist_contracts(
         effective_runtime_watchlist_path(root)
     )
-    current = parse_time(catalog.get("generated_at")) or datetime.now(timezone.utc)
+    current = (
+        current or datetime.now(timezone.utc)
+    ).astimezone(timezone.utc)
     output_paths = {
         "project": root / "output" / "alpha_project_watch" / "latest.json",
         "prelaunch": root / "output" / "alpha_prelaunch_watch" / "latest.json",
@@ -603,16 +768,12 @@ def alpha_coverage_evaluation(
                 )
             )
             continue
-        required_outputs = ["project", "holder"]
         listing = parse_time(row.get("listing_time_utc"))
-        if chain == "bsc":
-            required_outputs.append("opening")
-            if listing is not None and listing > current:
-                required_outputs.append("prelaunch")
-            else:
-                required_outputs.extend(["intraday", "price"])
-        else:
-            required_outputs.append("price")
+        required_outputs = alpha_required_outputs(
+            chain,
+            listing,
+            current,
+        )
         for output_name in required_outputs:
             candidates = snapshot_rows(output_paths[output_name])
             matching = [
@@ -659,6 +820,47 @@ def alpha_coverage_evaluation(
                         f"alpha_coverage_warning:{identity_label}:{output_name}:{warning_detail}",
                     )
                 )
+            if (
+                output_name == "holder"
+                and retention_flow_required(listing, current)
+            ):
+                retention_details = [
+                    detail
+                    for detail in (
+                        retention_flow_coverage_issue(candidate)
+                        for candidate in matching
+                    )
+                    if detail
+                ]
+                if retention_details:
+                    detail = retention_details[0]
+                    issues.append(
+                        issue(
+                            "alpha_coverage_gap",
+                            symbol,
+                            f"{symbol} retention_flow: {detail}",
+                            f"alpha_coverage_gap:{identity_label}:retention_flow:{detail}",
+                        )
+                    )
+                else:
+                    retention_warnings = [
+                        detail
+                        for detail in (
+                            retention_flow_coverage_warning(candidate)
+                            for candidate in matching
+                        )
+                        if detail
+                    ]
+                    if retention_warnings:
+                        detail = retention_warnings[0]
+                        warnings.append(
+                            issue(
+                                "alpha_coverage_warning",
+                                symbol,
+                                f"{symbol} retention_flow: {detail}",
+                                f"alpha_coverage_warning:{identity_label}:retention_flow:{detail}",
+                            )
+                        )
             if output_name == "prelaunch":
                 delivery_detail = prelaunch_delivery_issue(root, matching)
                 if delivery_detail:
@@ -670,16 +872,38 @@ def alpha_coverage_evaluation(
                             f"alpha_coverage_gap:{identity_label}:prelaunch:delivery_receipt",
                         )
                     )
+        historical_delivery_detail = historical_prelaunch_delivery_issue(
+            root,
+            row,
+            current,
+        )
+        if historical_delivery_detail:
+            issues.append(
+                issue(
+                    "alpha_coverage_gap",
+                    symbol,
+                    f"{symbol} prelaunch: {historical_delivery_detail}",
+                    f"alpha_coverage_gap:{identity_label}:prelaunch:historical_delivery_receipt",
+                )
+            )
     return issues, warnings
 
 
-def alpha_coverage_issues(root: Path) -> list[dict[str, str]]:
-    issues, _ = alpha_coverage_evaluation(root)
+def alpha_coverage_issues(
+    root: Path,
+    *,
+    current: datetime | None = None,
+) -> list[dict[str, str]]:
+    issues, _ = alpha_coverage_evaluation(root, current=current)
     return issues
 
 
-def alpha_coverage_warnings(root: Path) -> list[dict[str, str]]:
-    _, warnings = alpha_coverage_evaluation(root)
+def alpha_coverage_warnings(
+    root: Path,
+    *,
+    current: datetime | None = None,
+) -> list[dict[str, str]]:
+    _, warnings = alpha_coverage_evaluation(root, current=current)
     return warnings
 
 

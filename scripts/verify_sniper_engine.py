@@ -594,6 +594,48 @@ def main(argv: list[str] | None = None) -> int:
     for path in required_files:
         checks.append((f"file exists: {path.relative_to(ROOT)}", path.exists(), ""))
 
+    lifecycle_sources = {
+        "holder": (
+            ROOT / "scripts" / "alpha_holder_concentration_watch.py"
+        ).read_text(encoding="utf-8"),
+        "health": (
+            ROOT / "scripts" / "runtime_health_watch.py"
+        ).read_text(encoding="utf-8"),
+        "intraday": (
+            ROOT / "scripts" / "alpha_intraday_flow_watch.py"
+        ).read_text(encoding="utf-8"),
+    }
+    lifecycle_tokens = {
+        "holder": (
+            "build_retention_flow",
+            "opening_buyer_outflow_transfer_risk",
+            "project_or_mm_outflow_transfer_risk",
+            "cex_inflow_transfer_risk",
+            "receipt_quote_recovery",
+        ),
+        "health": (
+            "retention_flow_coverage_issue",
+            "historical_prelaunch_delivery_issue",
+        ),
+        "intraday": (
+            "DEFAULT_WATCHER_BUDGET_SECONDS = 420",
+            "atomic_write_json(LATEST_PATH, snapshot)",
+        ),
+    }
+    lifecycle_missing = [
+        f"{source}:{token}"
+        for source, tokens in lifecycle_tokens.items()
+        for token in tokens
+        if token not in lifecycle_sources[source]
+    ]
+    checks.append(
+        (
+            "Alpha lifecycle covers prelaunch, core receipts, and 30-day retention flow",
+            not lifecycle_missing,
+            ",".join(lifecycle_missing),
+        )
+    )
+
     daily_reports = sorted((ROOT / "reports").glob("*_alpha_sniper_daily.md"))
     checks.append(("daily alpha report exists", bool(daily_reports), daily_reports[-1].name if daily_reports else ""))
 
@@ -2641,7 +2683,12 @@ for relative_path in [
     assert 'read_telegram_send_receipt(response)' in source, relative_path
     assert 'record_telegram_send_receipt(' in source, relative_path
     assert 'text=text' in source, relative_path
-    send_block = source.split('def maybe_send_telegram', 1)[1].split('\\ndef ', 1)[0]
+    send_function = (
+        'def send_telegram_batch'
+        if relative_path == 'scripts/alpha_holder_concentration_watch.py'
+        else 'def maybe_send_telegram'
+    )
+    send_block = source.split(send_function, 1)[1].split('\\ndef ', 1)[0]
     receipt_index = send_block.index('receipt = read_telegram_send_receipt(response)')
     seen_index = send_block.rindex('write_json(SEEN_PATH')
     record_call = 'record_telegram_send_receipt(' if 'record_telegram_send_receipt(' in send_block else 'record_push('
@@ -2997,8 +3044,12 @@ assert transfer_fetch_calls == [(100, 200)], transfer_fetch_calls
 assert scanned_once['analysis']['cex_withdrawal_cluster']['coverage_state'] == 'requested_window_complete', scanned_once
 real_build_events = module.build_events
 real_scan_event = module.scan_event
-module.build_events = lambda: [event]
-module.scan_event = lambda event_arg: dict(scanned_once)
+module.build_events = (
+    lambda watcher_deadline=None, event_specs=None: [event]
+)
+module.scan_event = (
+    lambda event_arg, watcher_deadline=None: dict(scanned_once)
+)
 collected_forward_scans = []
 collected_snapshot = module.build_snapshot(collected_forward_scans)
 module.build_events = real_build_events
@@ -3753,7 +3804,10 @@ real_internal_receipt_transfers = module.opening.receipt_transfers_from_receipt
 real_internal_gas_priming = module.cex_gas_priming_transfers
 gas_target_calls = []
 module.opening.quick_rpc_call = lambda chain, method, params, timeout: {'blockNumber': '0x64', 'transactionIndex': '0x1', 'status': '0x1'}
-module.cex_gas_priming_transfers = lambda event, targets, block: gas_target_calls.append(set(targets)) or []
+module.cex_gas_priming_transfers = (
+    lambda event, targets, block, deadline=None:
+    (gas_target_calls.append(set(targets)) or [], False)
+)
 module.opening.receipt_transfers_from_receipt = lambda receipt, token, quote: [
     {'token': event['token']['address'], 'from': deposit, 'to': hot, 'amount': module.Decimal('300000')}
 ]
@@ -4396,10 +4450,11 @@ def fake_quick_rpc(chain, method, params, timeout):
         }
     return real_quick_rpc(chain, method, params, timeout)
 module.opening.quick_rpc_call = fake_quick_rpc
-gas_rows = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
-gas_rows_cached = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
+gas_rows, gas_limited = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
+gas_rows_cached, gas_cached_limited = module.cex_gas_priming_transfers(event, {'0x' + '1' * 40}, 150)
 module.opening.quick_rpc_call = real_quick_rpc
 assert len(gas_rows) == 1 and gas_rows[0]['amount_bnb'] == module.Decimal('0.002'), gas_rows
+assert gas_limited is False and gas_cached_limited is False, (gas_limited, gas_cached_limited)
 assert gas_rows_cached == gas_rows and gas_block_rpc_calls == [hex(149)], (gas_rows_cached, gas_block_rpc_calls)
 gas_analysis = module.analyze_rows(
     event,

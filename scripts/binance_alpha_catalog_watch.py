@@ -39,6 +39,7 @@ USDT_BY_CHAIN = {
 SUPPORTED_CHAINS = {"bsc"}
 DEFAULT_MAX_SELECTED = 8
 DEFAULT_RETENTION_DAYS = 30
+DEFAULT_INTRADAY_MAX_AGE_HOURS = 72
 DEFAULT_SCHEMA_MIN_RATIO = 0.5
 REGISTRY_PENDING_MAX_AGE_DAYS = 7
 MAX_SIGNAL_CANDIDATE_FILES = 400
@@ -577,6 +578,7 @@ def verified_registry_candidates(
             ],
             "watch_addresses": watch_addresses,
             "opening_max_age_hours": max(72, retention_days * 24),
+            "intraday_max_age_hours": DEFAULT_INTRADAY_MAX_AGE_HOURS,
             "opening_liquidity_max_age_seconds": max(
                 72 * 3600, retention_days * 86400
             ),
@@ -600,6 +602,11 @@ def verified_registry_candidates(
                 "source": "telegram_signal_receipt_verified",
                 "project_key": str(project.get("project_key") or ""),
                 "registry_updated_at": str(project.get("updated_at") or ""),
+                "lifecycle_first_seen_at": str(
+                    project.get("created_at")
+                    or project.get("updated_at")
+                    or now_iso(current)
+                ),
                 "listing_time_utc": opening.isoformat(),
                 "listing_time_utc8": start_utc8,
                 "opening_anchor_status": "verified_prelaunch_pool",
@@ -792,6 +799,7 @@ def catalog_watchlist_item(
     chain: str,
     contract: str,
     opening_max_age_hours: int,
+    first_seen_at: datetime,
 ) -> dict[str, Any]:
     symbol = str(row.get("symbol") or "").strip().upper()
     name = str(row.get("name") or symbol).strip() or symbol
@@ -832,6 +840,7 @@ def catalog_watchlist_item(
         "known_txs": [],
         "watch_addresses": [],
         "opening_max_age_hours": opening_max_age_hours,
+        "intraday_max_age_hours": DEFAULT_INTRADAY_MAX_AGE_HOURS,
         "opening_liquidity_max_age_seconds": opening_max_age_hours * 3600,
         "opening_max_logs": 5000,
         "opening_trace_buyers": 8,
@@ -852,6 +861,7 @@ def catalog_watchlist_item(
         "facts": {
             "source": "binance_alpha_public_catalog",
             "alpha_id": alpha_id,
+            "lifecycle_first_seen_at": now_iso(first_seen_at),
             "listing_time_utc": listing.isoformat(),
             "listing_time_utc8": start_utc8,
             "opening_anchor_status": "catalog_listing_candidate",
@@ -1035,6 +1045,7 @@ def eligible_catalog_items(
                     chain=chain,
                     contract=contract,
                     opening_max_age_hours=max(72, lookback_hours, monitor_hours),
+                    first_seen_at=current,
                 ),
             )
         )
@@ -1165,6 +1176,13 @@ def retained_catalog_items(
             int(item.get("opening_max_age_hours") or 0),
             retention_days * 24,
         )
+        item["intraday_max_age_hours"] = min(
+            int(
+                item.get("intraday_max_age_hours")
+                or DEFAULT_INTRADAY_MAX_AGE_HOURS
+            ),
+            DEFAULT_INTRADAY_MAX_AGE_HOURS,
+        )
         item["opening_liquidity_max_age_seconds"] = max(
             int(item.get("opening_liquidity_max_age_seconds") or 0),
             retention_days * 86400,
@@ -1202,6 +1220,13 @@ def retained_signal_candidates(
             int(item.get("opening_max_age_hours") or 0),
             retention_days * 24,
         )
+        item["intraday_max_age_hours"] = min(
+            int(
+                item.get("intraday_max_age_hours")
+                or DEFAULT_INTRADAY_MAX_AGE_HOURS
+            ),
+            DEFAULT_INTRADAY_MAX_AGE_HOURS,
+        )
         item["opening_liquidity_max_age_seconds"] = max(
             int(item.get("opening_liquidity_max_age_seconds") or 0),
             retention_days * 86400,
@@ -1231,14 +1256,58 @@ def deduplicate_catalog_cohort(items: list[dict[str, Any]]) -> list[dict[str, An
         contracts = item_contracts(item)
         alpha_id = str((item.get("facts") or {}).get("alpha_id") or "")
         if not contracts or contracts & seen_contracts:
+            preserve_earliest_lifecycle_first_seen(selected, item)
             continue
         if alpha_id and alpha_id in seen_alpha_ids:
+            preserve_earliest_lifecycle_first_seen(selected, item)
             continue
         seen_contracts.update(contracts)
         if alpha_id:
             seen_alpha_ids.add(alpha_id)
         selected.append(item)
     return selected
+
+
+def preserve_earliest_lifecycle_first_seen(
+    selected: list[dict[str, Any]],
+    duplicate: dict[str, Any],
+) -> None:
+    duplicate_contracts = item_contracts(duplicate)
+    duplicate_facts = (
+        duplicate.get("facts")
+        if isinstance(duplicate.get("facts"), dict)
+        else {}
+    )
+    duplicate_alpha_id = str(duplicate_facts.get("alpha_id") or "")
+    duplicate_first_seen = parse_iso_time(
+        duplicate_facts.get("lifecycle_first_seen_at")
+    )
+    if duplicate_first_seen is None:
+        return
+    for item in selected:
+        facts = (
+            item.get("facts")
+            if isinstance(item.get("facts"), dict)
+            else {}
+        )
+        same_identity = bool(item_contracts(item) & duplicate_contracts)
+        same_alpha_id = bool(
+            duplicate_alpha_id
+            and duplicate_alpha_id == str(facts.get("alpha_id") or "")
+        )
+        if not same_identity and not same_alpha_id:
+            continue
+        existing_first_seen = parse_iso_time(
+            facts.get("lifecycle_first_seen_at")
+        )
+        if (
+            existing_first_seen is None
+            or duplicate_first_seen < existing_first_seen
+        ):
+            facts["lifecycle_first_seen_at"] = now_iso(
+                duplicate_first_seen
+            )
+        return
 
 
 def catalog_summary_row(item: dict[str, Any]) -> dict[str, Any]:
@@ -1255,6 +1324,10 @@ def catalog_summary_row(item: dict[str, Any]) -> dict[str, Any]:
         "contract": normalize_address(contract.get("address")),
         "listing_time_utc": facts.get("listing_time_utc", ""),
         "listing_time_utc8": facts.get("listing_time_utc8", ""),
+        "lifecycle_first_seen_at": facts.get(
+            "lifecycle_first_seen_at",
+            "",
+        ),
         "alpha_id": facts.get("alpha_id", ""),
         "cohort_source": facts.get("catalog_cohort_source", ""),
     }
@@ -1301,6 +1374,26 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
         merged["facts"] = {**merged.get("facts", {}), **candidate.get("facts", {})}
     else:
         merged["facts"] = {**candidate.get("facts", {}), **merged.get("facts", {})}
+    first_seen_values = [
+        parsed
+        for parsed in (
+            parse_iso_time(
+                (existing.get("facts") or {}).get(
+                    "lifecycle_first_seen_at"
+                )
+            ),
+            parse_iso_time(
+                (candidate.get("facts") or {}).get(
+                    "lifecycle_first_seen_at"
+                )
+            ),
+        )
+        if parsed is not None
+    ]
+    if first_seen_values:
+        merged["facts"]["lifecycle_first_seen_at"] = now_iso(
+            min(first_seen_values)
+        )
     if not merged.get("name"):
         merged["name"] = candidate.get("name")
     if str(merged.get("chain") or "").lower() in {"", "unknown"}:
@@ -1310,6 +1403,19 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
     merged["opening_max_age_hours"] = max(
         int(merged.get("opening_max_age_hours") or 0),
         int(candidate.get("opening_max_age_hours") or 0),
+    )
+    intraday_ages = [
+        int(value)
+        for value in (
+            merged.get("intraday_max_age_hours"),
+            candidate.get("intraday_max_age_hours"),
+        )
+        if str(value or "").isdigit() and int(value) > 0
+    ]
+    merged["intraday_max_age_hours"] = (
+        min(intraday_ages)
+        if intraday_ages
+        else DEFAULT_INTRADAY_MAX_AGE_HOURS
     )
     for key in (
         "opening_trace_buyers",

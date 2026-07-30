@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -38,6 +39,8 @@ CEX_MICRO_GAS_CANDIDATE_HISTORY_PATH = OUT_DIR / "cex_micro_gas_candidate_histor
 CEX_MICRO_GAS_CANDIDATE_HISTORY_MAX = 200
 CEX_MICRO_GAS_ACQUISITION_MAX_WINDOWS = 5
 CEX_MICRO_GAS_ACQUISITION_MAX_SECONDS = 4
+DEFAULT_INTRADAY_MAX_AGE_HOURS = 72
+DEFAULT_WATCHER_BUDGET_SECONDS = 420
 WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS = max(
     1,
     min(int(os.environ.get("ALPHA_INTRADAY_WITHDRAWAL_TIME_RPC_TIMEOUT_SECONDS", "2")), 3),
@@ -54,6 +57,40 @@ BLOCK_TX_CACHE: dict[tuple[str, int], list[dict[str, Any]]] = {}
 BLOCK_TIME_CACHE: dict[tuple[str, int, str], str | None] = {}
 WITHDRAWAL_FORWARD_DEX_CLASSES = {"dex_router", "dex_vault", "pool", "pool_manager", "v4_pool_manager"}
 RECEIPT_UNSET = object()
+
+
+class WatcherBudgetExceeded(BaseException):
+    pass
+
+
+def watcher_budget_seconds() -> int:
+    configured = int(
+        os.environ.get(
+            "ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS",
+            str(DEFAULT_WATCHER_BUDGET_SECONDS),
+        )
+    )
+    return min(
+        DEFAULT_WATCHER_BUDGET_SECONDS,
+        max(1, configured),
+    )
+
+
+def run_with_watcher_alarm(callback: Any, seconds: float) -> Any:
+    if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+        return callback()
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def raise_budget_exceeded(_signum: int, _frame: Any) -> None:
+        raise WatcherBudgetExceeded()
+
+    signal.signal(signal.SIGALRM, raise_budget_exceeded)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return callback()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def now_utc() -> datetime:
@@ -673,11 +710,40 @@ def parse_utc8(value: str) -> datetime | None:
     return opening.parse_utc8(value)
 
 
-def build_events() -> list[dict[str, Any]]:
+def budget_exhausted(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def incomplete_intraday_event(
+    event: dict[str, Any],
+    reason: str = "watcher_total_budget_exhausted",
+) -> dict[str, Any]:
+    return {
+        **{
+            key: value
+            for key, value in event.items()
+            if not key.startswith("_")
+        },
+        "status": "budget_exhausted",
+        "error": reason,
+        "transfer_coverage": {
+            "state": "watcher_total_budget_exhausted",
+            "complete": False,
+        },
+        "analysis": {
+            "direction": "数据缺口",
+            "trade_signal": "盘中扫描总预算耗尽",
+            "spot_action": "等待下一轮补齐",
+            "scan_limited": True,
+        },
+    }
+
+
+def build_event_specs() -> list[dict[str, Any]]:
     config = read_json(CONFIG_PATH, {"items": []})
-    latest_cache: dict[str, int] = {}
     review_symbol = os.environ.get("ALPHA_INTRADAY_REVIEW_SYMBOL", "").upper()
-    events = []
+    current = now_utc()
+    specs = []
     for item in config.get("items", []):
         symbol = str(item.get("symbol") or item.get("name") or "UNKNOWN").upper()
         if review_symbol and symbol != review_symbol:
@@ -697,68 +763,151 @@ def build_events() -> list[dict[str, Any]]:
         if not contracts:
             continue
         token_address = norm(contracts[0]["address"])
-        watch_addresses = opening.enriched_watch_addresses(
-            item,
-            CHAIN,
-            token_address,
-        )
         for pool in opening.opening_pool_rows(item):
             if str(pool.get("chain", CHAIN)).lower() != CHAIN:
                 continue
             start = parse_utc8(str(pool.get("start_time_utc8") or ""))
             if not start:
                 continue
-            seconds_since = int((now_utc() - start).total_seconds())
+            seconds_since = int((current - start).total_seconds())
             if seconds_since < 0:
                 continue
             max_age = int(
                 item.get("intraday_max_age_hours")
-                or item.get("opening_max_age_hours")
-                or os.environ.get("ALPHA_INTRADAY_MAX_AGE_HOURS", "72")
+                or os.environ.get(
+                    "ALPHA_INTRADAY_MAX_AGE_HOURS",
+                    str(DEFAULT_INTRADAY_MAX_AGE_HOURS),
+                )
             ) * 3600
             if seconds_since > max_age and not review_symbol:
                 continue
-            latest = latest_cache.setdefault(CHAIN, opening.latest_block_number(CHAIN))
-            opening_block = opening.first_block_at_or_after(CHAIN, int(start.timestamp()), latest)
-            if opening_block is None:
-                continue
             quote_address = norm(pool.get("quote_address") or opening.USDT)
-            events.append(
+            specs.append(
                 {
+                    "item": item,
+                    "pool": pool,
+                    "start": start,
                     "symbol": symbol,
                     "priority": priority,
-                    "chain": CHAIN,
-                    "opening_block": opening_block,
-                    "latest_block": latest,
-                    "start_time_utc8": pool.get("start_time_utc8", ""),
-                    "token": opening.token_meta(CHAIN, token_address, symbol),
-                    "quote": opening.token_meta(CHAIN, quote_address, opening.QUOTE_TOKENS.get(quote_address, "QUOTE")),
-                    "market_context": item.get("market_context", {}),
-                    "watch_addresses": watch_addresses,
-                    "known_contracts": item.get("known_contracts", []),
-                    "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
-                    "cex_addresses": item.get("cex_addresses", []),
-                    "cex_hot_wallet_addresses": item.get("cex_hot_wallet_addresses", []),
-                    "exchange_addresses": item.get("exchange_addresses", []),
-                    "known_cex_addresses": item.get("known_cex_addresses", []),
-                    "exchange_aggregator_addresses": item.get("exchange_aggregator_addresses", []),
-                    "exchange_aggregator_suspect_addresses": item.get("exchange_aggregator_suspect_addresses", []),
-                    "exchange_rebalance_addresses": item.get("exchange_rebalance_addresses", []),
-                    "mm_or_project_suspect_addresses": item.get("mm_or_project_suspect_addresses", []),
-                    "project_rebalance_addresses": item.get("project_rebalance_addresses", []),
-                    "project_treasury_addresses": item.get("project_treasury_addresses", []),
-                    "bridge_addresses": item.get("bridge_addresses", []),
-                    "bridge_contracts": item.get("bridge_contracts", []),
-                    "known_bridge_addresses": item.get("known_bridge_addresses", []),
-                    "neutral_contracts": item.get("neutral_contracts", []),
-                    "lp_locker_addresses": item.get("lp_locker_addresses", []),
-                    "locker_addresses": item.get("locker_addresses", []),
-                    "staking_addresses": item.get("staking_addresses", []),
-                    "hook": pool.get("hook", ""),
-                    "operator": pool.get("operator", ""),
+                    "age_seconds": seconds_since,
+                    "token_address": token_address,
+                    "quote_address": quote_address,
                 }
             )
             break
+    priority_order = {
+        "P0_DEEP_REVIEW": 0,
+        "P1_MONITOR": 1,
+        "P2_PAPER_TRADE": 2,
+    }
+    return sorted(
+        specs,
+        key=lambda spec: (
+            int(spec.get("age_seconds") or 0),
+            priority_order.get(str(spec.get("priority") or ""), 3),
+            str(spec.get("symbol") or ""),
+        ),
+    )
+
+
+def event_stub(spec: dict[str, Any]) -> dict[str, Any]:
+    pool = spec["pool"]
+    return {
+        "symbol": spec["symbol"],
+        "priority": spec["priority"],
+        "monitoring_tier": "core_receipt",
+        "chain": CHAIN,
+        "start_time_utc8": pool.get("start_time_utc8", ""),
+        "token": {
+            "address": spec["token_address"],
+            "symbol": spec["symbol"],
+        },
+        "quote": {"address": spec["quote_address"]},
+    }
+
+
+def build_events(
+    watcher_deadline: float | None = None,
+    event_specs: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    latest_cache: dict[str, int] = {}
+    events = []
+    for spec in event_specs if event_specs is not None else build_event_specs():
+        item = spec["item"]
+        pool = spec["pool"]
+        start = spec["start"]
+        symbol = spec["symbol"]
+        priority = spec["priority"]
+        token_address = spec["token_address"]
+        quote_address = spec["quote_address"]
+        stub = event_stub(spec)
+        if budget_exhausted(watcher_deadline):
+            stub["_budget_exhausted"] = True
+            events.append(stub)
+            continue
+        watch_addresses = opening.enriched_watch_addresses(
+            item,
+            CHAIN,
+            token_address,
+        )
+        latest = latest_cache.setdefault(
+            CHAIN,
+            opening.latest_block_number(CHAIN),
+        )
+        if budget_exhausted(watcher_deadline):
+            stub["_budget_exhausted"] = True
+            events.append(stub)
+            continue
+        opening_block = opening.first_block_at_or_after(
+            CHAIN,
+            int(start.timestamp()),
+            latest,
+        )
+        if opening_block is None:
+            continue
+        events.append(
+            {
+                "symbol": symbol,
+                "priority": priority,
+                "monitoring_tier": "core_receipt",
+                "chain": CHAIN,
+                "opening_block": opening_block,
+                "latest_block": latest,
+                "start_time_utc8": pool.get("start_time_utc8", ""),
+                "token": opening.token_meta(CHAIN, token_address, symbol),
+                "quote": opening.token_meta(
+                    CHAIN,
+                    quote_address,
+                    opening.QUOTE_TOKENS.get(
+                        quote_address,
+                        "QUOTE",
+                    ),
+                ),
+                "market_context": item.get("market_context", {}),
+                "watch_addresses": watch_addresses,
+                "known_contracts": item.get("known_contracts", []),
+                "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
+                "cex_addresses": item.get("cex_addresses", []),
+                "cex_hot_wallet_addresses": item.get("cex_hot_wallet_addresses", []),
+                "exchange_addresses": item.get("exchange_addresses", []),
+                "known_cex_addresses": item.get("known_cex_addresses", []),
+                "exchange_aggregator_addresses": item.get("exchange_aggregator_addresses", []),
+                "exchange_aggregator_suspect_addresses": item.get("exchange_aggregator_suspect_addresses", []),
+                "exchange_rebalance_addresses": item.get("exchange_rebalance_addresses", []),
+                "mm_or_project_suspect_addresses": item.get("mm_or_project_suspect_addresses", []),
+                "project_rebalance_addresses": item.get("project_rebalance_addresses", []),
+                "project_treasury_addresses": item.get("project_treasury_addresses", []),
+                "bridge_addresses": item.get("bridge_addresses", []),
+                "bridge_contracts": item.get("bridge_contracts", []),
+                "known_bridge_addresses": item.get("known_bridge_addresses", []),
+                "neutral_contracts": item.get("neutral_contracts", []),
+                "lp_locker_addresses": item.get("lp_locker_addresses", []),
+                "locker_addresses": item.get("locker_addresses", []),
+                "staking_addresses": item.get("staking_addresses", []),
+                "hook": pool.get("hook", ""),
+                "operator": pool.get("operator", ""),
+            }
+        )
     return events
 
 
@@ -1493,6 +1642,7 @@ def summarize_flow_tx(
     tx_hash: str,
     runtime_cex_candidates: dict[str, dict[str, Any]] | None = None,
     receipt: Any = RECEIPT_UNSET,
+    scan_deadline: float | None = None,
 ) -> dict[str, Any] | None:
     if receipt is RECEIPT_UNSET:
         receipt = opening.quick_rpc_call(
@@ -1538,6 +1688,7 @@ def summarize_flow_tx(
     )
     gas_rows: list[dict[str, Any]] = []
     gas_bnb = Decimal(0)
+    gas_scan_limited = False
     gas_targets = {
         address
         for row in cex_path_rows
@@ -1545,10 +1696,27 @@ def summarize_flow_tx(
         if opening.is_address(address)
     }
     if (cex_significant or cex_internal_significant) and gas_targets:
-        gas_rows = cex_gas_priming_transfers(
+        gas_budget_seconds = max(
+            0,
+            int(
+                os.environ.get(
+                    "ALPHA_INTRADAY_GAS_PRIMING_MAX_SECONDS",
+                    "4",
+                )
+            ),
+        )
+        gas_deadline = (
+            time.monotonic() + gas_budget_seconds
+            if gas_budget_seconds
+            else time.monotonic()
+        )
+        if scan_deadline is not None:
+            gas_deadline = min(gas_deadline, scan_deadline)
+        gas_rows, gas_scan_limited = cex_gas_priming_transfers(
             event,
             gas_targets,
             opening.hex_to_int(receipt.get("blockNumber")) or 0,
+            deadline=gas_deadline,
         )
         gas_bnb = sum((row["amount_bnb"] for row in gas_rows), Decimal(0))
     if spent < min_quote and got_quote < min_quote and not cex_significant and not cex_internal_significant:
@@ -1596,6 +1764,7 @@ def summarize_flow_tx(
         "cex_gas_priming_count": len(gas_rows),
         "cex_gas_priming_bnb": opening.decimal_str(gas_bnb),
         "cex_gas_priming_sources": ",".join(sorted({row["source_class"] for row in gas_rows})),
+        "cex_gas_priming_scan_limited": gas_scan_limited,
     }
 
 
@@ -1812,13 +1981,18 @@ def configured_cex_inflow_aggregate_rows(
     return rows
 
 
-def cex_gas_priming_transfers(event: dict[str, Any], targets: set[str], deposit_block: int) -> list[dict[str, Any]]:
+def cex_gas_priming_transfers(
+    event: dict[str, Any],
+    targets: set[str],
+    deposit_block: int,
+    deadline: float | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
     targets = {norm(value) for value in targets if opening.is_address(value)}
     if not targets or deposit_block <= 0 or os.environ.get("ALPHA_INTRADAY_CEX_GAS_PRIMING", "1") != "1":
-        return []
+        return [], False
     lookback = int(os.environ.get("ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS", "1200"))
     if lookback <= 0:
-        return []
+        return [], False
     min_bnb = Decimal(os.environ.get("ALPHA_INTRADAY_GAS_PRIMING_MIN_BNB", "0.001"))
     max_hits = int(os.environ.get("ALPHA_INTRADAY_GAS_PRIMING_MAX_HITS", "20"))
     timeout = int(os.environ.get("ALPHA_INTRADAY_RPC_TIMEOUT", "6"))
@@ -1826,7 +2000,14 @@ def cex_gas_priming_transfers(event: dict[str, Any], targets: set[str], deposit_
     rows: list[dict[str, Any]] = []
     from_block = max(0, deposit_block - lookback)
     for block_number in range(deposit_block - 1, from_block - 1, -1):
-        for tx in block_transactions(event["chain"], block_number, timeout):
+        rpc_timeout = (
+            acquisition_rpc_timeout(event["chain"], deadline, timeout)
+            if deadline is not None
+            else float(timeout)
+        )
+        if rpc_timeout is None:
+            return rows, True
+        for tx in block_transactions(event["chain"], block_number, rpc_timeout):
             to_addr = norm(tx.get("to"))
             if to_addr not in targets or to_addr in found_targets:
                 continue
@@ -1848,12 +2029,14 @@ def cex_gas_priming_transfers(event: dict[str, Any], targets: set[str], deposit_
                 }
             )
             found_targets.add(to_addr)
-            if len(rows) >= max_hits or found_targets == targets:
-                return rows
-    return rows
+            if found_targets == targets:
+                return rows, False
+            if len(rows) >= max_hits:
+                return rows, True
+    return rows, False
 
 
-def block_transactions(chain: str, block_number: int, timeout: int) -> list[dict[str, Any]]:
+def block_transactions(chain: str, block_number: int, timeout: float) -> list[dict[str, Any]]:
     key = (chain, block_number)
     if key not in BLOCK_TX_CACHE:
         block = opening.quick_rpc_call(chain, "eth_getBlockByNumber", [hex(block_number), True], timeout) or {}
@@ -2684,6 +2867,7 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
     cex_internal_path_roles: set[str] = set()
     cex_gas_priming_bnb = Decimal(0)
     cex_gas_priming_count = 0
+    cex_gas_priming_scan_limited = False
     verified_controller_sell = Decimal(0)
     candidate_related_sell = Decimal(0)
     functional_sell = Decimal(0)
@@ -2724,6 +2908,10 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
                 cex_internal_path_roles.add(path_role)
         cex_gas_priming_bnb += decimal_from(row.get("cex_gas_priming_bnb"))
         cex_gas_priming_count += int(row.get("cex_gas_priming_count") or 0)
+        cex_gas_priming_scan_limited = (
+            cex_gas_priming_scan_limited
+            or bool(row.get("cex_gas_priming_scan_limited"))
+        )
     net_buy = sum((value for value in address_net.values() if value > 0), Decimal(0))
     net_sell = sum((-value for value in address_net.values() if value < 0), Decimal(0))
     total_buy = sum(address_buy.values(), Decimal(0))
@@ -2820,12 +3008,18 @@ def analyze_rows(event: dict[str, Any], rows: list[dict[str, Any]], from_block: 
         "cex_internal_aggregation_measure": "gross_transfer_turnover_may_repeat_economic_tokens",
         "cex_gas_priming_bnb": opening.decimal_str(cex_gas_priming_bnb),
         "cex_gas_priming_count": cex_gas_priming_count,
+        "cex_gas_priming_scan_limited": cex_gas_priming_scan_limited,
         "top_net_buyers": [{"address": a, "quote": opening.decimal_str(v)} for a, v in top_net_buyers],
         "top_net_sellers": [{"address": a, "quote": opening.decimal_str(v)} for a, v in top_net_sellers],
     }
 
 
-def scan_event(event: dict[str, Any]) -> dict[str, Any]:
+def scan_event(
+    event: dict[str, Any],
+    watcher_deadline: float | None = None,
+) -> dict[str, Any]:
+    if budget_exhausted(watcher_deadline):
+        return incomplete_intraday_event(event)
     latest = int(event["latest_block"])
     forced_from = os.environ.get("ALPHA_INTRADAY_FROM_BLOCK")
     forced_to = os.environ.get("ALPHA_INTRADAY_TO_BLOCK")
@@ -2837,7 +3031,11 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
         from_block = max(int(event["opening_block"]), latest - window)
         to_block = latest
     tx_hashes, logs, txs = aggregate_candidate_txs(event, from_block, to_block)
+    if budget_exhausted(watcher_deadline):
+        return incomplete_intraday_event(event)
     raw_transfer_rows, transfer_coverage = token_transfer_logs_with_coverage(event, from_block, to_block)
+    if budget_exhausted(watcher_deadline):
+        return incomplete_intraday_event(event)
     transfer_rows, deduplication = deduplicate_transfer_logs(raw_transfer_rows)
     transfer_coverage = {**transfer_coverage, **deduplication}
     if deduplication["conflicting_duplicate_log_count"] or deduplication["missing_log_identity_count"]:
@@ -2880,6 +3078,12 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
     deadline_reached = False
     timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"))
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
+    if watcher_deadline is not None:
+        deadline = (
+            min(deadline, watcher_deadline)
+            if deadline is not None
+            else watcher_deadline
+        )
     for tx_hash in tx_hashes:
         if deadline is not None and time.monotonic() >= deadline:
             deadline_reached = True
@@ -2907,6 +3111,7 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
                 tx_hash,
                 runtime_candidates,
                 receipt=receipt,
+                scan_deadline=deadline,
             )
             receipt_success_count += 1
         except Exception:
@@ -3028,10 +3233,25 @@ def scan_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_snapshot(forward_scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_snapshot(
+    forward_scans: list[dict[str, Any]] | None = None,
+    *,
+    event_specs: list[dict[str, Any]] | None = None,
+    budget_seconds: int | None = None,
+) -> dict[str, Any]:
+    budget_seconds = budget_seconds or watcher_budget_seconds()
+    watcher_deadline = time.monotonic() + budget_seconds
     events = []
-    for event in build_events():
-        scanned = scan_event(event)
+    for event in build_events(watcher_deadline, event_specs):
+        if event.get("_budget_exhausted") or budget_exhausted(
+            watcher_deadline
+        ):
+            scanned = incomplete_intraday_event(event)
+        else:
+            scanned = scan_event(
+                event,
+                watcher_deadline=watcher_deadline,
+            )
         forward_scan = scanned.pop("_withdrawal_forward_scan", None)
         if forward_scans is not None and forward_scan:
             forward_scans.append(forward_scan)
@@ -3043,7 +3263,31 @@ def build_snapshot(forward_scans: list[dict[str, Any]] | None = None) -> dict[st
         "generated_at": now_iso(),
         "event_count": len(events),
         "alert_count": len(keys),
+        "watcher_budget_seconds": budget_seconds,
+        "budget_exhausted_count": sum(
+            event.get("status") == "budget_exhausted"
+            for event in events
+        ),
         "new_alert_count": len(new_keys),
+        "events": events,
+    }
+
+
+def budget_exhausted_snapshot(
+    event_specs: list[dict[str, Any]],
+    budget_seconds: int,
+) -> dict[str, Any]:
+    events = [
+        incomplete_intraday_event(event_stub(spec))
+        for spec in event_specs
+    ]
+    return {
+        "generated_at": now_iso(),
+        "event_count": len(events),
+        "alert_count": 0,
+        "watcher_budget_seconds": budget_seconds,
+        "budget_exhausted_count": len(events),
+        "new_alert_count": 0,
         "events": events,
     }
 
@@ -3508,9 +3752,25 @@ def render(snapshot: dict[str, Any]) -> str:
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     forward_scans: list[dict[str, Any]] = []
-    snapshot = build_snapshot(forward_scans)
+    event_specs = build_event_specs()
+    budget_seconds = watcher_budget_seconds()
+    try:
+        snapshot = run_with_watcher_alarm(
+            lambda: build_snapshot(
+                forward_scans,
+                event_specs=event_specs,
+                budget_seconds=budget_seconds,
+            ),
+            budget_seconds,
+        )
+    except WatcherBudgetExceeded:
+        forward_scans = []
+        snapshot = budget_exhausted_snapshot(
+            event_specs,
+            budget_seconds,
+        )
+    atomic_write_json(LATEST_PATH, snapshot)
     record_cex_micro_gas_candidate_history(snapshot)
-    write_json(LATEST_PATH, snapshot)
     record_withdrawal_candidate_history(snapshot, forward_scans)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
     maybe_send_telegram(snapshot)

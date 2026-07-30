@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -558,6 +558,10 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             item["facts"]["opening_anchor_status"],
             "verified_prelaunch_pool",
         )
+        self.assertEqual(
+            item["facts"]["lifecycle_first_seen_at"],
+            "2026-07-29T15:15:02+00:00",
+        )
         self.assertEqual(item["project_lookback_blocks"], 50000)
 
     def test_unverified_or_context_only_registry_candidate_stays_pending(self) -> None:
@@ -711,6 +715,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             "retained_previous_runtime",
         )
         self.assertEqual(retained[0]["project_lookback_blocks"], 50000)
+        self.assertEqual(retained[0]["intraday_max_age_hours"], 72)
         self.assertEqual(expired, [])
 
     def test_aeon_enters_runtime_watchlist_from_official_catalog(self) -> None:
@@ -759,11 +764,19 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             item["pool_ids"][0]["opening_anchor_status"],
             "catalog_listing_candidate",
         )
+        self.assertEqual(item["intraday_max_age_hours"], 72)
+        self.assertEqual(
+            item["facts"]["lifecycle_first_seen_at"],
+            current.isoformat(),
+        )
         self.assertGreaterEqual(item["opening_max_age_hours"], 72)
         self.assertEqual(item["opening_max_logs"], 5000)
         self.assertEqual(item["opening_trace_buyers"], 8)
         self.assertEqual(item["opening_max_txs"], 24)
-        self.assertGreaterEqual(item["opening_liquidity_max_age_seconds"], 72 * 3600)
+        self.assertGreaterEqual(
+            item["opening_liquidity_max_age_seconds"],
+            72 * 3600,
+        )
         self.assertEqual(item["opening_classify_out_txs"], 8)
         self.assertEqual(item["opening_next_hop_recipients"], 8)
         self.assertEqual(item["opening_next_hop_classify_txs"], 6)
@@ -773,6 +786,33 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
         self.assertEqual(
             item["facts"]["opening_anchor_status"],
             "catalog_listing_candidate",
+        )
+
+    def test_catalog_merge_preserves_earliest_lifecycle_first_seen(self) -> None:
+        catalog = importlib.import_module(
+            "scripts.binance_alpha_catalog_watch"
+        )
+        contract = "0x" + "1" * 40
+        existing = {
+            "symbol": "KEEP",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "facts": {
+                "lifecycle_first_seen_at": "2026-07-29T01:00:00+00:00"
+            },
+        }
+        candidate = {
+            "symbol": "KEEP",
+            "contracts": [{"chain": "bsc", "address": contract}],
+            "facts": {
+                "lifecycle_first_seen_at": "2026-07-30T01:00:00+00:00"
+            },
+        }
+
+        merged = catalog.merge_item(existing, candidate)
+
+        self.assertEqual(
+            merged["facts"]["lifecycle_first_seen_at"],
+            "2026-07-29T01:00:00+00:00",
         )
 
     def test_catalog_rejects_invalid_and_hidden_rows(self) -> None:
@@ -1158,12 +1198,18 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertLess(text.index(restore), text.index(guard))
 
     def test_server_cycle_intraday_budget_covers_dynamic_watchlist(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
         text = (ROOT / "scripts" / "server_run_once.sh").read_text(encoding="utf-8")
 
         self.assertIn(
             'run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" '
             "python3 scripts/alpha_intraday_flow_watch.py",
             text,
+        )
+        self.assertLess(
+            intraday.DEFAULT_WATCHER_BUDGET_SECONDS,
+            480,
         )
 
     def test_server_cycle_runs_fast_signals_before_opening_trace(self) -> None:
@@ -1185,6 +1231,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn('ALPHA_INTRADAY_WINDOW_BLOCKS", "360"', text)
         self.assertIn('ALPHA_INTRADAY_MAX_RECEIPTS", "300"', text)
         self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"', text)
+        self.assertIn("ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS", text)
+        self.assertNotIn(
+            'or item.get("opening_max_age_hours")',
+            text,
+        )
 
     def test_pre_watch_signal_reply_omits_stale_runtime_context(self) -> None:
         import scripts.telegram_signal_collector as collector
@@ -4590,6 +4641,279 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertEqual(detail, "intraday transfer coverage=partial_rpc_error")
 
+    def test_cex_gas_priming_scan_stops_at_deadline(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        target = "0x" + "7" * 40
+        with (
+            mock.patch.object(
+                intraday.time,
+                "monotonic",
+                return_value=10.0,
+            ),
+            mock.patch.object(
+                intraday,
+                "block_transactions",
+            ) as block_transactions,
+        ):
+            rows, limited = intraday.cex_gas_priming_transfers(
+                {"chain": "bsc"},
+                {target},
+                100,
+                deadline=9.0,
+            )
+
+        self.assertEqual(rows, [])
+        self.assertTrue(limited)
+        block_transactions.assert_not_called()
+
+    def test_cex_gas_priming_budget_covers_multi_endpoint_retry(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        target = "0x" + "7" * 40
+        observed_timeouts: list[float] = []
+
+        def fetch_block(
+            chain: str,
+            block_number: int,
+            timeout: float,
+        ) -> list[dict[str, object]]:
+            observed_timeouts.append(timeout)
+            return []
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_INTRADAY_GAS_LOOKBACK_BLOCKS": "2"},
+            ),
+            mock.patch.object(
+                intraday.time,
+                "monotonic",
+                side_effect=[10.0, 15.0],
+            ),
+            mock.patch.object(
+                intraday.opening,
+                "rpc_urls",
+                return_value=["rpc-1", "rpc-2"],
+            ),
+            mock.patch.object(
+                intraday,
+                "block_transactions",
+                side_effect=fetch_block,
+            ),
+        ):
+            rows, limited = intraday.cex_gas_priming_transfers(
+                {"chain": "bsc"},
+                {target},
+                100,
+                deadline=14.0,
+            )
+
+        self.assertEqual(rows, [])
+        self.assertTrue(limited)
+        self.assertEqual(observed_timeouts, [2.0])
+
+    def test_limited_gas_scan_keeps_positive_cex_evidence(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+        from scripts.runtime_health_watch import output_row_coverage_warning
+
+        analysis = intraday.analyze_rows(
+            {"quote": {"symbol": "USDT"}},
+            [
+                {
+                    "cex_token_deposit": "300000",
+                    "cex_quote_estimate": "15000",
+                    "cex_deposit_count": 1,
+                    "cex_gas_priming_count": 1,
+                    "cex_gas_priming_bnb": "0.002",
+                    "cex_gas_priming_scan_limited": True,
+                }
+            ],
+            100,
+            200,
+            1,
+            1,
+        )
+
+        self.assertEqual(analysis["cex_token_deposit"], "300000")
+        self.assertEqual(analysis["cex_gas_priming_count"], 1)
+        self.assertTrue(analysis["cex_gas_priming_scan_limited"])
+        self.assertIn(
+            "gas-priming scan time-limited",
+            output_row_coverage_warning(
+                "intraday",
+                {
+                    "status": "scanned",
+                    "analysis": analysis,
+                },
+            ),
+        )
+
+    def test_intraday_watcher_budget_emits_explicit_incomplete_rows(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        events = [
+            {
+                "symbol": symbol,
+                "chain": "bsc",
+                "token": {"address": "0x" + digit * 40},
+            }
+            for symbol, digit in (("ONE", "1"), ("TWO", "2"))
+        ]
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS": "420"},
+            ),
+            mock.patch.object(
+                intraday.time,
+                "monotonic",
+                side_effect=[0.0, 421.0, 421.0],
+            ),
+            mock.patch.object(
+                intraday,
+                "build_events",
+                return_value=events,
+            ),
+            mock.patch.object(intraday, "scan_event") as scan_event,
+        ):
+            snapshot = intraday.build_snapshot()
+
+        self.assertEqual(snapshot["budget_exhausted_count"], 2)
+        self.assertEqual(
+            [row["status"] for row in snapshot["events"]],
+            ["budget_exhausted", "budget_exhausted"],
+        )
+        scan_event.assert_not_called()
+
+    def test_intraday_watcher_budget_is_hard_capped(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        with mock.patch.dict(
+            os.environ,
+            {"ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS": "600"},
+        ):
+            self.assertEqual(
+                intraday.watcher_budget_seconds(),
+                intraday.DEFAULT_WATCHER_BUDGET_SECONDS,
+            )
+
+    def test_intraday_hard_alarm_interrupts_slow_rpc_shape(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        started = time.monotonic()
+
+        def slow_rpc_shape() -> None:
+            try:
+                time.sleep(1)
+            except Exception:
+                self.fail("watcher alarm must not be swallowed by RPC fallback")
+
+        with self.assertRaises(intraday.WatcherBudgetExceeded):
+            intraday.run_with_watcher_alarm(slow_rpc_shape, 0.05)
+
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_intraday_main_writes_incomplete_rows_after_hard_alarm(self) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+
+        spec = {
+            "item": {},
+            "pool": {"start_time_utc8": "2026-07-30 20:00"},
+            "start": datetime(
+                2026,
+                7,
+                30,
+                12,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            "symbol": "BUDGET",
+            "priority": "P1_MONITOR",
+            "token_address": "0x" + "1" * 40,
+            "quote_address": "0x" + "2" * 40,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir) / "intraday"
+            latest_path = out_dir / "latest.json"
+            report_path = out_dir / "latest.md"
+            history_saw_latest: list[bool] = []
+            with (
+                mock.patch.object(intraday, "OUT_DIR", out_dir),
+                mock.patch.object(
+                    intraday,
+                    "LATEST_PATH",
+                    latest_path,
+                ),
+                mock.patch.object(
+                    intraday,
+                    "REPORT_PATH",
+                    report_path,
+                ),
+                mock.patch.object(
+                    intraday,
+                    "build_event_specs",
+                    return_value=[spec],
+                ),
+                mock.patch.object(
+                    intraday,
+                    "run_with_watcher_alarm",
+                    side_effect=intraday.WatcherBudgetExceeded(),
+                ),
+                mock.patch.object(
+                    intraday,
+                    "atomic_write_json",
+                    wraps=intraday.atomic_write_json,
+                ) as atomic_latest_write,
+                mock.patch.object(
+                    intraday,
+                    "record_cex_micro_gas_candidate_history",
+                    side_effect=lambda _snapshot: history_saw_latest.append(
+                        latest_path.exists()
+                    ),
+                ),
+                mock.patch.object(
+                    intraday,
+                    "record_withdrawal_candidate_history",
+                ),
+                mock.patch.object(
+                    intraday,
+                    "maybe_send_telegram",
+                ),
+            ):
+                self.assertEqual(intraday.main(), 0)
+
+            payload = json.loads(
+                latest_path.read_text(encoding="utf-8")
+            )
+            atomic_latest_write.assert_called_once_with(latest_path, mock.ANY)
+
+        self.assertEqual(history_saw_latest, [True])
+        self.assertEqual(payload["budget_exhausted_count"], 1)
+        self.assertEqual(
+            payload["events"][0]["status"],
+            "budget_exhausted",
+        )
+
+    def test_health_warns_when_cex_gas_scan_is_time_limited(self) -> None:
+        from scripts.runtime_health_watch import output_row_coverage_warning
+
+        detail = output_row_coverage_warning(
+            "intraday",
+            {
+                "status": "scanned",
+                "analysis": {
+                    "scan_limited": False,
+                    "cex_gas_priming_scan_limited": True,
+                },
+            },
+        )
+
+        self.assertEqual(
+            detail,
+            "intraday CEX gas-priming scan time-limited; transfer risk retained",
+        )
+
     def test_limited_intraday_receipts_are_report_only(self) -> None:
         import scripts.alpha_intraday_flow_watch as intraday
         from scripts.runtime_health_watch import (
@@ -4609,7 +4933,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             },
         }
         self.assertEqual(intraday.event_alert_keys({"symbol": "AEON", **row}), [])
-        self.assertEqual(output_row_coverage_issue("intraday", row), "")
+        self.assertEqual(
+            output_row_coverage_issue("intraday", row),
+            "intraday receipt coverage limited",
+        )
         self.assertEqual(
             output_row_coverage_warning("intraday", row),
             "intraday receipt scan limited; complete transfer evidence only",
@@ -5234,6 +5561,640 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(result["coverage_note"], "log_coverage_truncated")
         self.assertEqual(result["metrics"], before["tokens"][key]["last_metrics"])
 
+    def test_holder_retention_flow_covers_sniper_project_and_cex_transfers(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        buyer = "0x" + "2" * 40
+        controller = "0x" + "3" * 40
+        cex = "0x" + "4" * 40
+        recipient = "0x" + "5" * 40
+        fixed_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        item = {
+            "symbol": "TAIL",
+            "contracts": [{"chain": "bsc", "address": token}],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": (
+                        fixed_now - timedelta(days=4)
+                    )
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+            "cex_deposit_addresses": [cex],
+        }
+
+        def raw_log(
+            sender: str,
+            receiver: str,
+            tx_hash: str,
+            index: int,
+        ) -> dict[str, object]:
+            return {
+                "blockNumber": hex(100 + index),
+                "logIndex": hex(index),
+                "transactionHash": tx_hash,
+                "topics": [
+                    holder.TRANSFER_TOPIC,
+                    holder.topic_address(sender),
+                    holder.topic_address(receiver),
+                ],
+                "data": hex(10**18),
+            }
+
+        logs = [
+            raw_log(buyer, recipient, "0x" + "a" * 64, 1),
+            raw_log(controller, recipient, "0x" + "b" * 64, 2),
+            raw_log(recipient, cex, "0x" + "c" * 64, 3),
+        ]
+        context = {
+            "opening": {
+                "events": [
+                    {
+                        "symbol": "TAIL",
+                        "chain": "bsc",
+                        "token": {"address": token},
+                        "rows": [
+                            {
+                                "buyer": buyer,
+                                "token_bought": "100",
+                                "buyer_trace": {},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "project": {
+                "projects": [
+                    {
+                        "symbol": "TAIL",
+                        "contracts": [
+                            {
+                                "chain": "bsc",
+                                "address": token,
+                                "watch_addresses": [
+                                    {
+                                        "address": controller,
+                                        "role": "token_controller",
+                                        "identity_status": "verified",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        with mock.patch.object(holder, "now_utc", return_value=fixed_now):
+            flow = holder.build_retention_flow(
+                item=item,
+                symbol="TAIL",
+                chain="bsc",
+                token=token,
+                logs=logs,
+                errors=[],
+                truncated=False,
+                decimals=18,
+                supply_raw=10**21,
+                scan_from_block=100,
+                scan_to_block=103,
+                previous_latest_block=99,
+                holder_previous_latest_block=99,
+                context=context,
+            )
+
+        self.assertEqual(flow["status"], "active")
+        self.assertTrue(flow["complete"])
+        self.assertEqual(flow["latest_block"], 103)
+        self.assertEqual(
+            {event["type"] for event in flow["events"]},
+            {
+                "opening_buyer_outflow_transfer_risk",
+                "project_or_mm_outflow_transfer_risk",
+                "cex_inflow_transfer_risk",
+            },
+        )
+        self.assertTrue(
+            all(
+                event["evidence_level"] == "transfer_only"
+                for event in flow["events"]
+            )
+        )
+
+    def test_holder_retention_realized_sell_requires_cached_receipt_evidence(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        buyer = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        tx_hash = "0x" + "d" * 64
+        fixed_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        item = {
+            "symbol": "TAIL",
+            "contracts": [{"chain": "bsc", "address": token}],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": (
+                        fixed_now - timedelta(days=4)
+                    )
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+        log = {
+            "blockNumber": hex(101),
+            "logIndex": hex(7),
+            "transactionHash": tx_hash,
+            "topics": [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(buyer),
+                holder.topic_address(pool),
+            ],
+            "data": hex(2 * 10**18),
+        }
+        context = {
+            "opening": {
+                "events": [
+                    {
+                        "symbol": "TAIL",
+                        "chain": "bsc",
+                        "token": {"address": token},
+                        "rows": [
+                            {
+                                "buyer": buyer,
+                                "token_bought": "100",
+                                "buyer_trace": {
+                                    "confirmed_sell_evidence": [
+                                        {
+                                            "tx": tx_hash,
+                                            "log_index": 7,
+                                            "route": "direct",
+                                            "recipient": buyer,
+                                            "quote_received": "500",
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            "project": {"projects": []},
+        }
+        with mock.patch.object(holder, "now_utc", return_value=fixed_now):
+            flow = holder.build_retention_flow(
+                item=item,
+                symbol="TAIL",
+                chain="bsc",
+                token=token,
+                logs=[log],
+                errors=[],
+                truncated=False,
+                decimals=18,
+                supply_raw=10**24,
+                scan_from_block=100,
+                scan_to_block=101,
+                previous_latest_block=99,
+                holder_previous_latest_block=99,
+                context=context,
+            )
+
+        self.assertEqual(flow["events"][0]["type"], "realized_sell")
+        self.assertEqual(
+            flow["events"][0]["evidence_level"],
+            "receipt_quote_recovery",
+        )
+        self.assertEqual(
+            flow["events"][0]["receipt_evidence"][0]["quote_received"],
+            "500",
+        )
+
+    def test_holder_retention_cex_threshold_uses_cycle_aggregate(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        cex = "0x" + "4" * 40
+        supply_raw = 10**21
+
+        def raw_log(index: int) -> dict[str, object]:
+            return {
+                "blockNumber": hex(100 + index),
+                "logIndex": hex(index),
+                "transactionHash": "0x" + f"{index:x}" * 64,
+                "topics": [
+                    holder.TRANSFER_TOPIC,
+                    holder.topic_address("0x" + f"{index + 5:x}" * 40),
+                    holder.topic_address(cex),
+                ],
+                "data": hex(3 * 10**17),
+            }
+
+        events, matched_count = holder.retention_transfer_events(
+            [raw_log(1), raw_log(2)],
+            18,
+            supply_raw,
+            {},
+            {
+                cex: {
+                    "kind": "cex",
+                    "role": "cex_deposit",
+                    "source": "fixture",
+                }
+            },
+            {},
+        )
+
+        self.assertEqual(matched_count, 2)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["transfer_count"], 2)
+        self.assertEqual(events[0]["amount"], "0.6")
+        self.assertEqual(events[0]["summary_scope"], "risk_type_scan_window")
+        self.assertEqual(len(events[0]["samples"]), 2)
+
+    def test_holder_retention_active_bootstrap_is_scoped_by_first_seen(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        from scripts.runtime_health_watch import (
+            retention_flow_coverage_issue,
+        )
+
+        fixed_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        opening = fixed_now - timedelta(days=4)
+        base_item = {
+            "symbol": "TAIL",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "1" * 40}
+            ],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": opening
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+
+        def build(
+            item: dict[str, object],
+            *,
+            holder_previous_latest_block: int = 0,
+        ) -> dict[str, object]:
+            with mock.patch.object(holder, "now_utc", return_value=fixed_now):
+                return holder.build_retention_flow(
+                    item=item,
+                    symbol="TAIL",
+                    chain="bsc",
+                    token="0x" + "1" * 40,
+                    logs=[],
+                    errors=[],
+                    truncated=False,
+                    decimals=18,
+                    supply_raw=10**21,
+                    scan_from_block=100,
+                    scan_to_block=110,
+                    previous_latest_block=0,
+                    holder_previous_latest_block=holder_previous_latest_block,
+                    context={
+                        "opening": {"events": []},
+                        "project": {"projects": []},
+                    },
+                )
+
+        early = {
+            **base_item,
+            "facts": {
+                "lifecycle_first_seen_at": (
+                    opening - timedelta(hours=1)
+                ).isoformat()
+            },
+        }
+        early_flow = build(early)
+        self.assertFalse(early_flow["complete"])
+        self.assertEqual(
+            early_flow["coverage_scope"],
+            "historical_backfill_required",
+        )
+        self.assertIn(
+            "incomplete",
+            retention_flow_coverage_issue(
+                {"retention_flow": early_flow}
+            ),
+        )
+
+        late = {
+            **base_item,
+            "facts": {
+                "lifecycle_first_seen_at": (
+                    opening + timedelta(hours=80)
+                ).isoformat()
+            },
+        }
+        late_flow = build(late)
+        self.assertTrue(late_flow["complete"])
+        self.assertTrue(late_flow["late_discovery_bootstrap"])
+        self.assertEqual(
+            late_flow["coverage_scope"],
+            "first_success_bounded_baseline",
+        )
+        self.assertEqual(
+            retention_flow_coverage_issue(
+                {"retention_flow": late_flow}
+            ),
+            "",
+        )
+
+        late_with_existing_holder_state = build(
+            late,
+            holder_previous_latest_block=99,
+        )
+        self.assertFalse(late_with_existing_holder_state["complete"])
+        self.assertFalse(
+            late_with_existing_holder_state["late_discovery_bootstrap"]
+        )
+        self.assertEqual(
+            late_with_existing_holder_state["coverage_scope"],
+            "historical_backfill_required",
+        )
+        self.assertIn(
+            "incomplete",
+            retention_flow_coverage_issue(
+                {"retention_flow": late_with_existing_holder_state}
+            ),
+        )
+
+    def test_holder_retention_checkpoint_gap_fails_closed(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        fixed_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        item = {
+            "symbol": "TAIL",
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "1" * 40}
+            ],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": (
+                        fixed_now - timedelta(days=4)
+                    )
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+        with mock.patch.object(holder, "now_utc", return_value=fixed_now):
+            flow = holder.build_retention_flow(
+                item=item,
+                symbol="TAIL",
+                chain="bsc",
+                token="0x" + "1" * 40,
+                logs=[],
+                errors=[],
+                truncated=False,
+                decimals=18,
+                supply_raw=10**24,
+                scan_from_block=102,
+                scan_to_block=110,
+                previous_latest_block=100,
+                holder_previous_latest_block=100,
+                context={
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+
+        self.assertFalse(flow["continuous"])
+        self.assertFalse(flow["complete"])
+        self.assertEqual(flow["latest_block"], 100)
+
+    def test_retention_flow_health_requires_continuous_complete_checkpoint(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import (
+            retention_flow_coverage_issue,
+            retention_flow_required,
+        )
+
+        current = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        self.assertFalse(
+            retention_flow_required(
+                current - timedelta(hours=71),
+                current,
+            )
+        )
+        self.assertTrue(
+            retention_flow_required(
+                current - timedelta(hours=73),
+                current,
+            )
+        )
+        row = {
+            "retention_flow": {
+                "status": "active",
+                "complete": True,
+                "scan_from_block": 101,
+                "scan_to_block": 120,
+                "previous_latest_block": 100,
+                "latest_block": 120,
+                "log_error_count": 0,
+                "truncated": False,
+                "events_truncated": False,
+                "continuous": True,
+            }
+        }
+        self.assertEqual(retention_flow_coverage_issue(row), "")
+        row["retention_flow"]["scan_from_block"] = 102
+        self.assertIn(
+            "continue previous checkpoint",
+            retention_flow_coverage_issue(row),
+        )
+
+    def test_holder_retention_flow_generates_deduped_telegram_signal(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        project = {
+            "symbol": "TAIL",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": "0x" + "1" * 40,
+            "metrics": {},
+            "signal": {"level": "INFO", "direction": "flat"},
+            "retention_flow": {
+                "status": "active",
+                "events": [
+                    {
+                        "type": "cex_inflow_transfer_risk",
+                        "level": "HIGH",
+                        "evidence_level": "transfer_only",
+                        "amount": "1000",
+                        "from": "0x" + "2" * 40,
+                        "to": "0x" + "3" * 40,
+                        "tx": "0x" + "a" * 64,
+                        "log_index": 7,
+                    }
+                ],
+            },
+        }
+        snapshot = {
+            "alert_count": 1,
+            "projects": [project],
+        }
+        keys = holder.alert_keys(snapshot)
+        self.assertEqual(len(keys), 1)
+        self.assertIn("cex_inflow_transfer_risk", keys[0])
+        text = holder.telegram_text(snapshot)
+        self.assertIn("30天流向", text)
+        self.assertIn("CEX 入金风险", text)
+        self.assertIn("transfer_only", text)
+
+    def test_holder_telegram_batches_mark_only_rendered_signal_keys(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        projects = []
+        event_types = [
+            "cex_inflow_transfer_risk",
+            "opening_buyer_outflow_transfer_risk",
+            "project_or_mm_outflow_transfer_risk",
+        ]
+        for index, event_type in enumerate(event_types, start=1):
+            projects.append(
+                {
+                    "symbol": f"TAIL{index}",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": "0x" + f"{index:x}" * 40,
+                    "metrics": {},
+                    "signal": {"level": "INFO", "direction": "flat"},
+                    "retention_flow": {
+                        "status": "active",
+                        "events": [
+                            {
+                                "type": event_type,
+                                "level": "HIGH",
+                                "evidence_level": "transfer_only",
+                                "amount": str(index * 1000),
+                                "transfer_count": index,
+                                "sample_from": "0x" + "a" * 40,
+                                "sample_to": "0x" + "b" * 40,
+                                "sample_tx": "0x" + f"{index:x}" * 64,
+                                "sample_log_index": index,
+                            }
+                        ],
+                    },
+                }
+            )
+        snapshot = {
+            "alert_count": len(projects),
+            "projects": projects,
+        }
+        rendered_batches: list[tuple[str, list[str]]] = []
+
+        def fake_send(
+            text: str,
+            batch_keys: list[str],
+            **kwargs: object,
+        ) -> None:
+            rendered_batches.append((text, list(batch_keys)))
+            seen = kwargs["seen"]
+            assert isinstance(seen, set)
+            seen.update(batch_keys)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_HOLDER_TELEGRAM": "1",
+                    "TELEGRAM_BOT_TOKEN": "fixture",
+                    "TELEGRAM_CHAT_ID": "fixture",
+                },
+            ),
+            mock.patch.object(holder, "read_json", return_value=[]),
+            mock.patch.object(
+                holder,
+                "send_telegram_batch",
+                side_effect=fake_send,
+            ),
+        ):
+            self.assertTrue(holder.maybe_send_telegram(snapshot))
+
+        rendered_keys = {
+            key
+            for _, batch_keys in rendered_batches
+            for key in batch_keys
+        }
+        self.assertEqual(rendered_keys, set(holder.alert_keys(snapshot)))
+        self.assertEqual(len(rendered_batches), 3)
+        self.assertTrue(
+            all("样本" in text for text, _ in rendered_batches)
+        )
+
+    def test_holder_checkpoint_commits_only_after_signal_delivery(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = {
+            "generated_at": "2026-07-30T12:00:00+00:00",
+            "project_count": 0,
+            "alert_count": 1,
+            "projects": [],
+            "_next_state": {"tokens": {"checkpoint": {"latest_block": 120}}},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir)
+            state_path = out_dir / "state.json"
+            with (
+                mock.patch.object(holder, "OUT_DIR", out_dir),
+                mock.patch.object(holder, "LATEST_PATH", out_dir / "latest.json"),
+                mock.patch.object(holder, "REPORT_PATH", out_dir / "latest.md"),
+                mock.patch.object(holder, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "build_snapshot",
+                    return_value=dict(payload),
+                ),
+                mock.patch.object(
+                    holder,
+                    "maybe_send_telegram",
+                    return_value=False,
+                ),
+            ):
+                self.assertEqual(holder.main(), 1)
+            self.assertFalse(state_path.exists())
+
+            with (
+                mock.patch.object(holder, "OUT_DIR", out_dir),
+                mock.patch.object(holder, "LATEST_PATH", out_dir / "latest.json"),
+                mock.patch.object(holder, "REPORT_PATH", out_dir / "latest.md"),
+                mock.patch.object(holder, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "build_snapshot",
+                    return_value=dict(payload),
+                ),
+                mock.patch.object(
+                    holder,
+                    "maybe_send_telegram",
+                    return_value=True,
+                ),
+            ):
+                self.assertEqual(holder.main(), 0)
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                payload["_next_state"],
+            )
+
     def test_health_matches_the_target_project_contract_only(self) -> None:
         from scripts.runtime_health_watch import (
             output_row_coverage_issue,
@@ -5286,7 +6247,320 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             ),
         )
 
-    def test_future_catalog_item_requires_prelaunch_contract_coverage(self) -> None:
+    def test_alpha_lifecycle_outputs_follow_the_health_wall_clock(self) -> None:
+        from scripts.runtime_health_watch import alpha_required_outputs
+
+        current = datetime(
+            2026,
+            7,
+            30,
+            6,
+            0,
+            tzinfo=timezone.utc,
+        )
+        self.assertNotIn(
+            "prelaunch",
+            alpha_required_outputs(
+                "bsc",
+                current + timedelta(hours=49),
+                current,
+            ),
+        )
+        self.assertIn(
+            "prelaunch",
+            alpha_required_outputs(
+                "bsc",
+                current + timedelta(hours=47),
+                current,
+            ),
+        )
+        opened = alpha_required_outputs(
+            "bsc",
+            current - timedelta(seconds=1),
+            current,
+        )
+        self.assertIn("intraday", opened)
+        self.assertIn("price", opened)
+        retained = alpha_required_outputs(
+            "bsc",
+            current - timedelta(hours=73),
+            current,
+        )
+        self.assertNotIn("intraday", retained)
+        self.assertIn("price", retained)
+
+    def test_post_open_health_retains_prelaunch_delivery_audit(self) -> None:
+        from scripts.runtime_health_watch import (
+            historical_prelaunch_delivery_issue,
+        )
+
+        contract = "0x" + "2" * 40
+        listing = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        row = {
+            "symbol": "GRVT",
+            "contract": contract,
+            "listing_time_utc": listing.isoformat(),
+            "lifecycle_first_seen_at": (
+                listing - timedelta(hours=30)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertIn(
+                "historical",
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=1),
+                ),
+            )
+            seen_path = (
+                root
+                / "output"
+                / "alpha_prelaunch_watch"
+                / "seen_alerts.json"
+            )
+            seen_path.parent.mkdir(parents=True)
+            seen_path.write_text(
+                json.dumps(
+                    {
+                        "keys": [
+                            (
+                                f"GRVT|{contract}|{listing.isoformat()}"
+                                "|T_MINUS_24H"
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=1),
+                ),
+                "",
+            )
+
+    def test_late_discovery_accepts_live_window_delivery(self) -> None:
+        from scripts.runtime_health_watch import (
+            historical_prelaunch_delivery_issue,
+        )
+
+        contract = "0x" + "3" * 40
+        listing = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        row = {
+            "symbol": "LATE",
+            "contract": contract,
+            "listing_time_utc": listing.isoformat(),
+            "lifecycle_first_seen_at": (
+                listing - timedelta(seconds=5)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            seen_path = (
+                root
+                / "output"
+                / "alpha_prelaunch_watch"
+                / "seen_alerts.json"
+            )
+            seen_path.parent.mkdir(parents=True)
+            seen_path.write_text(
+                json.dumps(
+                    {
+                        "keys": [
+                            (
+                                f"LATE|{contract}|{listing.isoformat()}"
+                                "|LIVE_WINDOW"
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=1),
+                ),
+                "",
+            )
+
+    def test_post_open_discovery_requires_live_window_delivery(self) -> None:
+        from scripts.runtime_health_watch import (
+            historical_prelaunch_delivery_issue,
+        )
+
+        contract = "0x" + "4" * 40
+        listing = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        row = {
+            "symbol": "POSTOPEN",
+            "contract": contract,
+            "listing_time_utc": listing.isoformat(),
+            "lifecycle_first_seen_at": (
+                listing + timedelta(minutes=5)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertIn(
+                "historical",
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=6),
+                ),
+            )
+            seen_path = (
+                root
+                / "output"
+                / "alpha_prelaunch_watch"
+                / "seen_alerts.json"
+            )
+            seen_path.parent.mkdir(parents=True)
+            seen_path.write_text(
+                json.dumps(
+                    {
+                        "keys": [
+                            (
+                                f"POSTOPEN|{contract}|{listing.isoformat()}"
+                                "|LIVE_WINDOW"
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=6),
+                ),
+                "",
+            )
+
+            wrong_contract = dict(row)
+            wrong_contract["contract"] = "0x" + "5" * 40
+            self.assertIn(
+                "historical",
+                historical_prelaunch_delivery_issue(
+                    root,
+                    wrong_contract,
+                    listing + timedelta(minutes=6),
+                ),
+            )
+
+    def test_discovery_after_live_window_has_no_prelaunch_obligation(self) -> None:
+        from scripts.runtime_health_watch import (
+            historical_prelaunch_delivery_issue,
+        )
+
+        listing = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        row = {
+            "symbol": "TOO_LATE",
+            "contract": "0x" + "6" * 40,
+            "listing_time_utc": listing.isoformat(),
+            "lifecycle_first_seen_at": (
+                listing + timedelta(minutes=31)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(
+                historical_prelaunch_delivery_issue(
+                    Path(temp_dir),
+                    row,
+                    listing + timedelta(minutes=32),
+                ),
+                "",
+            )
+
+    def test_early_discovery_does_not_accept_live_window_only(self) -> None:
+        from scripts.runtime_health_watch import (
+            historical_prelaunch_delivery_issue,
+        )
+
+        contract = "0x" + "7" * 40
+        listing = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        row = {
+            "symbol": "EARLY",
+            "contract": contract,
+            "listing_time_utc": listing.isoformat(),
+            "lifecycle_first_seen_at": (
+                listing - timedelta(minutes=11)
+            ).isoformat(),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            seen_path = (
+                root
+                / "output"
+                / "alpha_prelaunch_watch"
+                / "seen_alerts.json"
+            )
+            seen_path.parent.mkdir(parents=True)
+            seen_path.write_text(
+                json.dumps(
+                    {
+                        "keys": [
+                            (
+                                f"EARLY|{contract}|{listing.isoformat()}"
+                                "|LIVE_WINDOW"
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "historical",
+                historical_prelaunch_delivery_issue(
+                    root,
+                    row,
+                    listing + timedelta(minutes=1),
+                ),
+            )
+
+    def test_catalog_item_beyond_48h_does_not_require_prelaunch_output(self) -> None:
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         contract = "0x" + "2" * 40
@@ -5383,13 +6657,163 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
             write("output/alpha_prelaunch_watch/latest.json", {"events": []})
 
-            issues = alpha_coverage_issues(root)
+            issues = alpha_coverage_issues(
+                root,
+                current=datetime(
+                    2026,
+                    7,
+                    30,
+                    6,
+                    0,
+                    tzinfo=timezone.utc,
+                ),
+            )
 
-        self.assertTrue(issues)
-        self.assertTrue(
-            all("prelaunch" in row["detail"] for row in issues),
-            issues,
-        )
+        self.assertEqual(issues, [])
+
+    def test_post_72h_catalog_item_requires_retention_flow_health(self) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        contract = "0x" + "8" * 40
+        current = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        listing = current - timedelta(days=4)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def write(relative: str, payload: dict[str, object]) -> None:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            write(
+                "output/binance_alpha_catalog_watch/latest.json",
+                {
+                    "status": "pass",
+                    "selected": [
+                        {
+                            "symbol": "TAIL",
+                            "chain": "bsc",
+                            "contract": contract,
+                            "listing_time_utc": listing.isoformat(),
+                            "lifecycle_first_seen_at": (
+                                listing + timedelta(hours=1)
+                            ).isoformat(),
+                        }
+                    ],
+                },
+            )
+            write(
+                "output/binance_alpha_catalog_watch/current_watchlist.json",
+                {
+                    "items": [
+                        {
+                            "symbol": "TAIL",
+                            "contracts": [
+                                {"chain": "bsc", "address": contract}
+                            ],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_project_watch/latest.json",
+                {
+                    "projects": [
+                        {
+                            "symbol": "TAIL",
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": contract,
+                                    "log_error_count": 0,
+                                    "operator_attribution_state": "owner_renounced",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_opening_block_watch/latest.json",
+                {
+                    "events": [
+                        {
+                            "symbol": "TAIL",
+                            "chain": "bsc",
+                            "token": {"address": contract},
+                            "status": "opened",
+                            "rows": [],
+                        }
+                    ]
+                },
+            )
+            write(
+                "output/alpha_price_momentum_watch/latest.json",
+                {
+                    "events": [
+                        {
+                            "symbol": "TAIL",
+                            "chain": "bsc",
+                            "contract": contract,
+                            "analysis": {"direction": "观察"},
+                        }
+                    ]
+                },
+            )
+            holder_path = (
+                "output/alpha_holder_concentration_watch/latest.json"
+            )
+            write(
+                holder_path,
+                {
+                    "projects": [
+                        {
+                            "symbol": "TAIL",
+                            "chain": "bsc",
+                            "address": contract,
+                            "log_error_count": 0,
+                            "truncated": False,
+                        }
+                    ]
+                },
+            )
+            issues = alpha_coverage_issues(root, current=current)
+            self.assertTrue(
+                any("retention flow status=missing" in row["detail"] for row in issues),
+                issues,
+            )
+
+            write(
+                holder_path,
+                {
+                    "projects": [
+                        {
+                            "symbol": "TAIL",
+                            "chain": "bsc",
+                            "address": contract,
+                            "log_error_count": 0,
+                            "truncated": False,
+                            "retention_flow": {
+                                "status": "active",
+                                "complete": True,
+                                "scan_from_block": 101,
+                                "scan_to_block": 120,
+                                "previous_latest_block": 100,
+                                "latest_block": 120,
+                                "log_error_count": 0,
+                                "truncated": False,
+                                "events_truncated": False,
+                                "continuous": True,
+                                "bounded_bootstrap": False,
+                            },
+                        }
+                    ]
+                },
+            )
+            self.assertEqual(
+                alpha_coverage_issues(root, current=current),
+                [],
+            )
 
 
 if __name__ == "__main__":

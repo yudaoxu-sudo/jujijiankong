@@ -12,7 +12,7 @@
 | 上线前 | 开盘时间进入 48 小时窗口 | 推送分阶段提醒，准备开盘块、首批买家、bribe 和承接检查 | prelaunch event 与 `seen_alerts` 发送回执 |
 | 开盘 | 到达开盘窗口 | 跟踪 pool、交易顺序、首批买家和项目/做市地址 | opening 输出匹配同一 chain+contract |
 | 上线后 | 开盘完成 | 持续跟踪价格、holder、盘中流向、狙击手退出、项目/做市出货 | project/opening/intraday/price/holder 输出均匹配身份 |
-| 持续观察 | 超出开盘窗口仍在保留期 | 继续出货、承接和地址迁移监控 | runtime retention 与健康检查 |
+| 持续观察 | 超出 72 小时盘中核心窗口仍在 30 天保留期 | 复用 holder 连续增量日志，跟踪首批狙击地址转出、项目/做市地址外流、CEX 入金和价格 | retention flow checkpoint 与健康检查 |
 
 ## 安全门禁
 
@@ -25,10 +25,19 @@
 - 官方 Alpha `listingTime` 与同合约 signal 开盘时间冲突时保留官方基础监控并阻断 signal 增强；项目 TGE/空投释放时间单独记录，不能替代 Alpha 开盘时间。
 - `context_only` 来源不进入候选、canonical registry、watchlist、prediction、交易动作或二次 Telegram 推送。
 - 同 ticker 以 `chain+contract` 区分，禁止仅按 symbol 合并。
+- 每个 lifecycle target 持久化 `lifecycle_first_seen_at`；若项目在开盘至少 10 分钟前被发现，开盘后仍核验至少一条历史预上线 Telegram 送达回执；SLA 内及开盘后 30 分钟内发现的项目可由同身份 `LIVE_WINDOW` 回执补证。
 
 ## 健康与验收
 
 - official catalog、receipt-verified signal target 和已有 static identity 使用同一覆盖门禁。
-- 任一 active lifecycle target 缺 runtime、prelaunch、opening、project、intraday、price 或 holder 证据时，runtime health 必须报错。
+- 任一 active lifecycle target 始终需要 runtime、project、holder；BSC 项目始终需要 opening。
+- 距开盘 48 小时内需要 prelaunch；开盘后需要 price；开盘后 72 小时核心窗口内额外需要完整 receipt intraday。
+- 72 小时至 30 天由 holder 本轮已读取的 Transfer logs 生成 `retention_flow`，不得增加重复全量 RPC；区块必须从上一 checkpoint 连续推进，RPC error、截断、事件截断或 block gap 均阻断健康和 checkpoint。
+- 长尾 Transfer 命中先推送转移风险；只有同交易 direct quote-recovery 收据证据存在时才升级为已实现卖出。
+- 未知地址向 CEX 的单笔转账先按本轮扫描窗口聚合，合计达到流通量 5 bps 才提醒；已知狙击手、项目或做市来源的命中不受该阈值抑制。推送展示风险类型合计笔数、合计数量和有限样本路径。
+- 长尾快照先原子落盘，Telegram 新信号送达后才原子提交 holder/retention checkpoint；发送失败保留旧 checkpoint，下一轮重试。
+- 首次发现时间已晚于 72 小时核心窗口且没有既有 holder checkpoint 的项目，只能以首次成功的有限扫描建立长尾基线并生成明确 warning；`lifecycle_first_seen_at` 仅用于证明允许晚发现基线，更早历史明确留在监控范围外。在核心窗口内已知或已有 holder checkpoint 却缺少 retention checkpoint 的项目要求历史回填，健康保持 fail-closed。
+- intraday 的 transfer 或 receipt 覆盖不完整均阻断健康；CEX gas 辅助回溯受限会保留已确认转账风险并生成覆盖 warning。
+- intraday 单轮总预算硬封顶 420 秒，并由进程级绝对截止中断慢 RPC；预算耗尽的对象写入显式 incomplete 行，由 runtime health 报错，服务器 480 秒外层限制仍留有落盘余量。
 - 上线前提醒只有 alert key 出现在 `alpha_prelaunch_watch/seen_alerts.json` 后才视为送达。
 - 完成改动需通过定向回归、全量 verifier、正常服务器 cycle、远端 runtime health 和 continuity acceptance。
