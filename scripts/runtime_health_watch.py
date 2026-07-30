@@ -603,14 +603,16 @@ def alpha_coverage_evaluation(
                 )
             )
             continue
-        required_outputs = ["project", "price", "holder"]
+        required_outputs = ["project", "holder"]
         listing = parse_time(row.get("listing_time_utc"))
         if chain == "bsc":
             required_outputs.append("opening")
             if listing is not None and listing > current:
                 required_outputs.append("prelaunch")
             else:
-                required_outputs.append("intraday")
+                required_outputs.extend(["intraday", "price"])
+        else:
+            required_outputs.append("price")
         for output_name in required_outputs:
             candidates = snapshot_rows(output_paths[output_name])
             matching = [

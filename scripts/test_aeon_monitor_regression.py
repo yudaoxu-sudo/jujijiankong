@@ -248,6 +248,33 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
 
 
 class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
+    def test_verified_pool_replaces_same_window_catalog_placeholder(self) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        placeholder = {
+            "chain": "bsc",
+            "pool_id": "",
+            "start_time_utc8": "2026-07-30 20:00",
+            "source": "binance_alpha_public_catalog",
+        }
+        verified = {
+            "chain": "bsc",
+            "pool_id": "0x" + "1" * 64,
+            "start_time_utc8": "2026-07-30 20:00",
+            "source": "telegram_signal_receipt_verified",
+        }
+
+        merged = catalog.merge_pool_rows([placeholder], [verified])
+        times = catalog.merge_known_time_rows(
+            [{"time": "2026-07-30 20:00", "reason": "catalog"}],
+            [{"time": "2026-07-30 20:00", "reason": "verified_pool"}],
+        )
+
+        self.assertEqual(merged, [verified])
+        self.assertEqual(
+            times,
+            [{"time": "2026-07-30 20:00", "reason": "verified_pool"}],
+        )
+
     def test_signal_candidate_loader_excludes_context_only_artifacts(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
         parsed = {
@@ -531,6 +558,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             item["facts"]["opening_anchor_status"],
             "verified_prelaunch_pool",
         )
+        self.assertEqual(item["project_lookback_blocks"], 50000)
 
     def test_unverified_or_context_only_registry_candidate_stays_pending(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
@@ -682,6 +710,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             retained[0]["facts"]["signal_candidate_cohort_source"],
             "retained_previous_runtime",
         )
+        self.assertEqual(retained[0]["project_lookback_blocks"], 50000)
         self.assertEqual(expired, [])
 
     def test_aeon_enters_runtime_watchlist_from_official_catalog(self) -> None:

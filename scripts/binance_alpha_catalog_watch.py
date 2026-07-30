@@ -587,7 +587,7 @@ def verified_registry_candidates(
             "opening_next_hop_recipients": 8,
             "opening_next_hop_classify_txs": 6,
             "project_operator_probe": "owner",
-            "project_lookback_blocks": 250000,
+            "project_lookback_blocks": 50000,
             "required_checks": [
                 "opening_block",
                 "block_transaction_order",
@@ -907,6 +907,71 @@ def merge_contract_rows(
     return merged
 
 
+def merge_pool_rows(
+    existing_rows: list[Any],
+    candidate_rows: list[Any],
+) -> list[Any]:
+    keyed: dict[tuple[str, str], dict[str, Any]] = {}
+    unkeyed: list[Any] = []
+    for value in existing_rows + candidate_rows:
+        if not isinstance(value, dict):
+            if value not in unkeyed:
+                unkeyed.append(copy.deepcopy(value))
+            continue
+        chain = str(value.get("chain") or "").lower()
+        pool_id = str(value.get("pool_id") or "").lower()
+        if not pool_id:
+            if value not in unkeyed:
+                unkeyed.append(copy.deepcopy(value))
+            continue
+        identity = (chain, pool_id)
+        keyed[identity] = {
+            **keyed.get(identity, {}),
+            **copy.deepcopy(value),
+        }
+    verified_windows = {
+        (
+            str(row.get("chain") or "").lower(),
+            str(row.get("start_time_utc8") or ""),
+        )
+        for row in keyed.values()
+    }
+    unkeyed = [
+        value
+        for value in unkeyed
+        if not isinstance(value, dict)
+        or (
+            str(value.get("chain") or "").lower(),
+            str(value.get("start_time_utc8") or ""),
+        )
+        not in verified_windows
+    ]
+    return unkeyed + list(keyed.values())
+
+
+def merge_known_time_rows(
+    existing_rows: list[Any],
+    candidate_rows: list[Any],
+) -> list[Any]:
+    keyed: dict[str, dict[str, Any]] = {}
+    unkeyed: list[Any] = []
+    for value in existing_rows + candidate_rows:
+        if not isinstance(value, dict):
+            if value not in unkeyed:
+                unkeyed.append(copy.deepcopy(value))
+            continue
+        known_time = str(value.get("time") or "").strip()
+        if not known_time:
+            if value not in unkeyed:
+                unkeyed.append(copy.deepcopy(value))
+            continue
+        keyed[known_time] = {
+            **keyed.get(known_time, {}),
+            **copy.deepcopy(value),
+        }
+    return unkeyed + list(keyed.values())
+
+
 def item_contracts(item: dict[str, Any]) -> set[tuple[str, str]]:
     return {
         (
@@ -1141,6 +1206,10 @@ def retained_signal_candidates(
             int(item.get("opening_liquidity_max_age_seconds") or 0),
             retention_days * 86400,
         )
+        item["project_lookback_blocks"] = min(
+            int(item.get("project_lookback_blocks") or 50000),
+            50000,
+        )
         item.setdefault("facts", {})[
             "signal_candidate_cohort_source"
         ] = "retained_previous_runtime"
@@ -1214,14 +1283,20 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
         )
     for key in (
         "catalysts",
-        "known_times",
-        "pool_ids",
         "known_blocks",
         "known_txs",
         "watch_addresses",
         "required_checks",
     ):
         merged[key] = unique_list(list(merged.get(key, [])) + list(candidate.get(key, [])))
+    merged["pool_ids"] = merge_pool_rows(
+        list(merged.get("pool_ids", [])),
+        list(candidate.get("pool_ids", [])),
+    )
+    merged["known_times"] = merge_known_time_rows(
+        list(merged.get("known_times", [])),
+        list(candidate.get("known_times", [])),
+    )
     if contract_migration:
         merged["facts"] = {**merged.get("facts", {}), **candidate.get("facts", {})}
     else:
