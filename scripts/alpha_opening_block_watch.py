@@ -478,6 +478,54 @@ def get_logs_quick(
     return rows
 
 
+def snapshot_cached_get_logs(
+    event: dict[str, Any],
+    query: dict[str, Any],
+    chunk_blocks: int,
+    max_logs: int,
+    timeout: int,
+    enforce_trace_deadline: bool = False,
+) -> list[dict[str, Any]]:
+    cache = event.get("_opening_snapshot_log_cache")
+    cache_key = (
+        str(event.get("chain") or ""),
+        json.dumps(
+            query,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        chunk_blocks,
+        max_logs,
+        timeout,
+        enforce_trace_deadline,
+    )
+    if isinstance(cache, dict) and cache_key in cache:
+        ensure_trace_deadline()
+        return copy.deepcopy(cache[cache_key])
+    if enforce_trace_deadline:
+        rows = get_logs_quick(
+            str(event.get("chain") or ""),
+            query,
+            chunk_blocks,
+            max_logs,
+            timeout,
+            True,
+        )
+    else:
+        rows = get_logs_quick(
+            str(event.get("chain") or ""),
+            query,
+            chunk_blocks,
+            max_logs,
+            timeout,
+        )
+    if isinstance(cache, dict):
+        cache[cache_key] = copy.deepcopy(rows)
+        return copy.deepcopy(rows)
+    return rows
+
+
 def quick_rpc_call(chain: str, method: str, params: list[Any], timeout: int) -> Any:
     try:
         return rpc_call(
@@ -540,8 +588,9 @@ def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]
 
 def liquidity_watch_scope_hash(
     watch: dict[str, dict[str, str]],
+    event: dict[str, Any] | None = None,
 ) -> str:
-    payload = [
+    watch_rows = [
         {
             "address": address,
             "role": str(meta.get("role") or ""),
@@ -550,8 +599,22 @@ def liquidity_watch_scope_hash(
         for address, meta in sorted(watch.items())
         if is_address(address)
     ]
-    if not payload:
+    if not watch_rows:
         return ""
+    event = event or {}
+    position_ids = sorted(
+        {
+            int(value)
+            for value in (event.get("lp_position_ids") or [])
+            if str(value).isdigit()
+        }
+    )
+    payload = {
+        "schema": "opening_liquidity_watch_scope.v2",
+        "watch": watch_rows,
+        "pool_id": norm(event.get("pool_id")),
+        "lp_position_ids": position_ids,
+    }
     return hashlib.sha256(
         json.dumps(
             payload,
@@ -570,7 +633,10 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         10800,
     )
     watch = liquidity_watch_addresses(event)
-    watch_scope_hash = liquidity_watch_scope_hash(watch)
+    watch_scope_hash = liquidity_watch_scope_hash(
+        watch,
+        event,
+    )
     if not watch or not event.get("opening_block"):
         return {
             "summary": "未配置池子/做市地址",
@@ -617,9 +683,15 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
     historical_backfill = not previous_verified
     if historical_backfill:
         from_block = opening_block
-        to_block = min(latest, opening_block + trace_blocks)
+        to_block = min(
+            latest,
+            opening_block + trace_blocks - 1,
+        )
     else:
-        from_block = max(opening_block, latest - trace_blocks)
+        from_block = max(
+            opening_block,
+            latest - trace_blocks + 1,
+        )
         to_block = latest
     token = event["token"]
     quote = event["quote"]
@@ -654,7 +726,13 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
                 "toBlock": hex(to_block),
                 "topics": topics,
             }
-            logs = get_logs_quick(event["chain"], query, chunk_blocks, max_logs, timeout)
+            logs = snapshot_cached_get_logs(
+                event,
+                query,
+                chunk_blocks,
+                max_logs,
+                timeout,
+            )
             for log in logs:
                 row = transfer_log(log, decimals)
                 if row["from"] == row["to"]:
@@ -666,6 +744,9 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         from_block,
         to_block,
         watch,
+    )
+    liquidity_event_coverage_complete = (
+        liquidity_events.get("coverage_complete") is not False
     )
     quote_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_QUOTE_ALERT", "10000"))
     token_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_TOKEN_ALERT", "100000"))
@@ -680,6 +761,8 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         risk = "project_quote_out"
     elif totals["token_in"] >= token_threshold:
         risk = "pool_token_in"
+    if not liquidity_event_coverage_complete and risk == "none":
+        risk = "unknown_incomplete_coverage"
     return {
         "summary": liquidity_combined_text(
             liquidity_flow_text(totals, token["symbol"], quote["symbol"]),
@@ -696,11 +779,27 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "quote_in": decimal_str(totals["quote_in"]),
         "quote_out": decimal_str(totals["quote_out"]),
         "liquidity_events": liquidity_events.get("events", []),
-        "coverage_complete": True,
+        "liquidity_event_coverage_complete": (
+            liquidity_event_coverage_complete
+        ),
+        "liquidity_event_coverage_status": str(
+            liquidity_events.get("coverage_status")
+            or (
+                "complete"
+                if liquidity_event_coverage_complete
+                else "unknown_incomplete_coverage"
+            )
+        ),
+        "coverage_complete": liquidity_event_coverage_complete,
         "coverage_status": (
             "complete_historical_opening_window"
             if historical_backfill
             else "complete_recent_window"
+        )
+        if liquidity_event_coverage_complete
+        else str(
+            liquidity_events.get("coverage_status")
+            or "unknown_incomplete_coverage"
         ),
         "watch_scope_hash": watch_scope_hash,
     }
@@ -795,7 +894,7 @@ def liquidity_event_matches(
     if role == "lp_position_manager":
         position_ids = {
             hex(int(value))
-            for value in event.get("lp_position_ids", [])
+            for value in (event.get("lp_position_ids") or [])
             if str(value).isdigit()
         }
         topic_values: set[str] = set()
@@ -811,13 +910,61 @@ def liquidity_event_matches(
 
 
 def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, watch: dict[str, dict[str, str]]) -> dict[str, Any]:
+    pool_id = norm(event.get("pool_id"))
+    has_pool_id = (
+        re.fullmatch(r"0x[a-f0-9]{64}", pool_id)
+        is not None
+    )
+    has_position_ids = any(
+        str(value).isdigit()
+        for value in (event.get("lp_position_ids") or [])
+    )
     addresses = {
         address: meta
         for address, meta in watch.items()
-        if meta.get("role") in {"lp_position_manager", "pool_manager", "pool", "v4_pool_manager"}
+        if (
+            meta.get("role") == "pool"
+            or (
+                meta.get("role") == "lp_position_manager"
+                and has_position_ids
+            )
+            or (
+                meta.get("role")
+                in {"pool_manager", "v4_pool_manager"}
+                and has_pool_id
+            )
+        )
     }
     if not addresses:
-        return {"summary": "未发现 LP 增减事件", "risk": "none", "rows": 0, "events": []}
+        manager_roles = {
+            str(meta.get("role") or "")
+            for meta in watch.values()
+            if str(meta.get("role") or "")
+            in {
+                "lp_position_manager",
+                "pool_manager",
+                "v4_pool_manager",
+            }
+        }
+        if manager_roles:
+            return {
+                "summary": "LP 管理器缺少可归因 pool/position 标识",
+                "risk": "unknown_incomplete_coverage",
+                "rows": 0,
+                "events": [],
+                "coverage_complete": False,
+                "coverage_status": (
+                    "unattributable_liquidity_manager_scope"
+                ),
+            }
+        return {
+            "summary": "未发现 LP 增减事件",
+            "risk": "none",
+            "rows": 0,
+            "events": [],
+            "coverage_complete": True,
+            "coverage_status": "no_manager_scope_required",
+        }
     display_limit = max(
         1,
         int(os.environ.get("ALPHA_OPENING_LIQUIDITY_EVENT_MAX_LOGS", "20")),
@@ -838,8 +985,8 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
             "toBlock": hex(latest),
             "topics": [sorted(LIQUIDITY_EVENT_TOPICS)],
         }
-        for log in get_logs_quick(
-            event["chain"],
+        for log in snapshot_cached_get_logs(
+            event,
             query,
             chunk_blocks,
             query_max_logs,
@@ -877,6 +1024,8 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
         "risk": risk,
         "rows": matched_count,
         "events": rows[-10:],
+        "coverage_complete": True,
+        "coverage_status": "complete",
     }
 
 
@@ -907,8 +1056,8 @@ def bounded_recent_transfer_logs(
             "topics": [TRANSFER_TOPIC],
         }
         try:
-            rows = get_logs_quick(
-                event["chain"],
+            rows = snapshot_cached_get_logs(
+                event,
                 query,
                 chunk_blocks,
                 max_logs,
@@ -945,8 +1094,8 @@ def bounded_bootstrap_opening_transfer_logs(
         "topics": [TRANSFER_TOPIC],
     }
     try:
-        opening_rows = get_logs_quick(
-            event["chain"],
+        opening_rows = snapshot_cached_get_logs(
+            event,
             opening_query,
             chunk_blocks,
             max_logs,
@@ -1107,8 +1256,8 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
             "toBlock": hex(to_block),
             "topics": [TRANSFER_TOPIC],
         }
-        for row in get_logs_quick(
-            event["chain"],
+        for row in snapshot_cached_get_logs(
+            event,
             query,
             chunk_blocks,
             remaining,
@@ -4654,6 +4803,9 @@ def build_snapshot() -> dict[str, Any]:
         current_events = build_events()
     except OpeningTraceDeadlineExceeded:
         return deadline_snapshot_from_previous(previous_snapshot)
+    snapshot_log_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for event in current_events:
+        event["_opening_snapshot_log_cache"] = snapshot_log_cache
     current_identity_counts: dict[
         tuple[str, str, int, str, str, str],
         int,
@@ -4948,6 +5100,7 @@ def build_snapshot() -> dict[str, Any]:
                     event["refresh_error"] = (
                         f"opening_scope_{type(exc).__name__}"
                     )
+        event.pop("_opening_snapshot_log_cache", None)
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))

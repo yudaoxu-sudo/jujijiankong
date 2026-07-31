@@ -2592,6 +2592,14 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS",
             heavy,
         )
+        self.assertIn(
+            "ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-360",
+            heavy,
+        )
+        self.assertIn(
+            "ALPHA_INTRADAY_POST_OPENING_WATCHER_BUDGET_SECONDS:-330",
+            heavy,
+        )
 
     def test_opening_telegram_keeps_pool_identity_in_archived_detail(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -2771,6 +2779,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "watch_quote": "false",
             }
         }
+        event = {
+            "seconds_until_start": -20000,
+            "opening_block": 100,
+            "opening_liquidity_coverage_complete": True,
+            "opening_liquidity_coverage_status": (
+                "complete_recent_window"
+            ),
+        }
+        event["opening_liquidity_watch_scope_hash"] = (
+            opening.liquidity_watch_scope_hash(watch, event)
+        )
         with (
             mock.patch.dict(os.environ, {}, clear=True),
             mock.patch.object(
@@ -2780,17 +2799,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             ),
         ):
             result = opening.scan_key_liquidity_flows(
-                {
-                    "seconds_until_start": -20000,
-                    "opening_block": 100,
-                    "opening_liquidity_coverage_complete": True,
-                    "opening_liquidity_coverage_status": (
-                        "complete_recent_window"
-                    ),
-                    "opening_liquidity_watch_scope_hash": (
-                        opening.liquidity_watch_scope_hash(watch)
-                    ),
-                },
+                event,
                 10000,
             )
 
@@ -2801,7 +2810,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertEqual(
             result["watch_scope_hash"],
-            opening.liquidity_watch_scope_hash(watch),
+            opening.liquidity_watch_scope_hash(watch, event),
         )
 
     def test_legacy_liquidity_boolean_without_status_is_backfilled(
@@ -2879,7 +2888,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "complete_historical_opening_window",
         )
         self.assertEqual(queries[0]["fromBlock"], hex(100))
-        self.assertEqual(queries[0]["toBlock"], hex(5100))
+        self.assertEqual(queries[0]["toBlock"], hex(5099))
         self.assertEqual(
             result["watch_scope_hash"],
             opening.liquidity_watch_scope_hash(
@@ -2888,9 +2897,97 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                         "role": "pool",
                         "watch_quote": "false",
                     }
-                }
+                },
+                event,
             ),
         )
+
+    def test_verified_liquidity_refresh_uses_exact_block_window(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        watch = {
+            "0x" + "3" * 40: {
+                "role": "pool",
+                "watch_quote": "false",
+            }
+        }
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _chain: str,
+            query: dict[str, object],
+            _chunk_blocks: int,
+            _max_logs: int,
+            _timeout: int,
+        ) -> list[dict[str, object]]:
+            queries.append(query)
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "opening_liquidity_coverage_complete": True,
+            "opening_liquidity_coverage_status": (
+                "complete_recent_window"
+            ),
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        event["opening_liquidity_watch_scope_hash"] = (
+            opening.liquidity_watch_scope_hash(watch, event)
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "5000",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value=watch,
+            ),
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                opening,
+                "scan_liquidity_events",
+                return_value={
+                    "summary": "未发现 LP 增减事件",
+                    "risk": "none",
+                    "rows": 0,
+                    "events": [],
+                },
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(
+                event,
+                10000,
+            )
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(
+            result["coverage_status"],
+            "complete_recent_window",
+        )
+        self.assertEqual(queries[0]["fromBlock"], hex(5001))
+        self.assertEqual(queries[0]["toBlock"], hex(10000))
 
     def test_opening_liquidity_truncation_keeps_stable_status(
         self,
@@ -3032,6 +3129,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
     ) -> None:
         import scripts.alpha_opening_block_watch as opening
 
+        initial_deadline = opening.TRACE_DEADLINE_AT
+        self.addCleanup(
+            setattr,
+            opening,
+            "TRACE_DEADLINE_AT",
+            initial_deadline,
+        )
         events = [
             {
                 "symbol": symbol,
@@ -3107,6 +3211,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             snapshot = opening.build_snapshot()
 
         self.assertEqual(snapshot["event_count"], 2)
+        self.assertTrue(
+            all(
+                "_opening_snapshot_log_cache" not in event
+                for event in snapshot["events"]
+            )
+        )
         self.assertEqual(observed_deadlines, [50.0, 100.0])
         self.assertEqual(opening.TRACE_DEADLINE_AT, 100.0)
         self.assertEqual(
@@ -3280,7 +3390,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertIn('ALPHA_INTRADAY_WINDOW_BLOCKS", "360"', text)
         self.assertIn('ALPHA_INTRADAY_MAX_RECEIPTS", "300"', text)
-        self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"', text)
+        self.assertIn('ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "120"', text)
         self.assertIn("ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS", text)
         self.assertNotIn(
             'or item.get("opening_max_age_hours")',
@@ -4528,6 +4638,293 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(result["risk"], "lp_remove")
         self.assertEqual(len(result["events"]), 1)
         self.assertEqual(result["events"][0]["label"], "second")
+
+    def test_liquidity_event_scan_skips_unmatchable_managers(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        explicit_pool = "0x" + "1" * 40
+        position_manager = "0x" + "2" * 40
+        pool_manager = "0x" + "3" * 40
+        event = {
+            "chain": "bsc",
+            "pool_id": "not-a-bytes32-pool-id",
+            "lp_position_ids": [],
+        }
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            return_value=[],
+        ) as fetch:
+            result = opening.scan_liquidity_events(
+                event,
+                100,
+                200,
+                {
+                    explicit_pool: {
+                        "role": "pool",
+                        "label": "pool",
+                    },
+                    position_manager: {
+                        "role": "lp_position_manager",
+                        "label": "position-manager",
+                    },
+                    pool_manager: {
+                        "role": "pool_manager",
+                        "label": "pool-manager",
+                    },
+                },
+            )
+
+        self.assertEqual(result["rows"], 0)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(
+            fetch.call_args.args[1]["address"],
+            explicit_pool,
+        )
+        self.assertTrue(result["coverage_complete"])
+
+    def test_liquidity_manager_scope_without_identity_fails_closed(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        watch = {
+            "0x" + "3" * 40: {
+                "role": "pool_manager",
+                "label": "pool-manager",
+                "watch_quote": "false",
+            }
+        }
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "pool_id": "not-a-bytes32-pool-id",
+            "lp_position_ids": [],
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value=watch,
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                return_value=[],
+            ) as fetch,
+        ):
+            result = opening.scan_key_liquidity_flows(
+                event,
+                200,
+            )
+
+        self.assertEqual(fetch.call_count, 1)
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(
+            result["coverage_status"],
+            "unattributable_liquidity_manager_scope",
+        )
+        self.assertEqual(
+            result["risk"],
+            "unknown_incomplete_coverage",
+        )
+
+    def test_liquidity_scope_hash_includes_pool_and_positions(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        watch = {
+            "0x" + "3" * 40: {
+                "role": "pool_manager",
+                "watch_quote": "false",
+            }
+        }
+        base = opening.liquidity_watch_scope_hash(
+            watch,
+            {"pool_id": "", "lp_position_ids": []},
+        )
+        with_pool = opening.liquidity_watch_scope_hash(
+            watch,
+            {
+                "pool_id": "0x" + "a" * 64,
+                "lp_position_ids": [],
+            },
+        )
+        with_position = opening.liquidity_watch_scope_hash(
+            watch,
+            {"pool_id": "", "lp_position_ids": [7]},
+        )
+
+        self.assertNotEqual(base, with_pool)
+        self.assertNotEqual(base, with_position)
+
+    def test_snapshot_log_cache_is_success_only_and_returns_copies(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        query = {
+            "address": "0x" + "1" * 40,
+            "fromBlock": "0x64",
+            "toBlock": "0xc8",
+            "topics": [opening.TRANSFER_TOPIC],
+        }
+        shared_cache: dict[object, object] = {}
+        first_event = {
+            "chain": "bsc",
+            "_opening_snapshot_log_cache": shared_cache,
+        }
+        second_event = {
+            "chain": "bsc",
+            "_opening_snapshot_log_cache": shared_cache,
+        }
+        source_rows = [{"transactionHash": "0x" + "2" * 64}]
+        with mock.patch.object(
+            opening,
+            "get_logs_quick",
+            return_value=source_rows,
+        ) as fetch:
+            first = opening.snapshot_cached_get_logs(
+                first_event,
+                query,
+                5000,
+                5000,
+                3,
+            )
+            first.append({"transactionHash": "mutated"})
+            second = opening.snapshot_cached_get_logs(
+                second_event,
+                query,
+                5000,
+                5000,
+                3,
+            )
+
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(second, source_rows)
+        with mock.patch.object(
+            opening,
+            "ensure_trace_deadline",
+            side_effect=opening.OpeningTraceDeadlineExceeded(),
+        ):
+            with self.assertRaises(
+                opening.OpeningTraceDeadlineExceeded
+            ):
+                opening.snapshot_cached_get_logs(
+                    second_event,
+                    query,
+                    5000,
+                    5000,
+                    3,
+                )
+
+        failed_cache: dict[object, object] = {}
+        failed_event = {
+            "chain": "bsc",
+            "_opening_snapshot_log_cache": failed_cache,
+        }
+        with mock.patch.object(
+            opening,
+            "get_logs_quick",
+            side_effect=[
+                opening.OpeningTraceDeadlineExceeded(),
+                [],
+            ],
+        ) as fetch:
+            with self.assertRaises(
+                opening.OpeningTraceDeadlineExceeded
+            ):
+                opening.snapshot_cached_get_logs(
+                    failed_event,
+                    query,
+                    5000,
+                    5000,
+                    3,
+                )
+            recovered = opening.snapshot_cached_get_logs(
+                failed_event,
+                query,
+                5000,
+                5000,
+                3,
+            )
+
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(recovered, [])
+        self.assertEqual(len(failed_cache), 1)
+
+    def test_snapshot_log_cache_shares_raw_manager_logs_only(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        manager = "0x" + "1" * 40
+        first_pool = "0x" + "a" * 64
+        second_pool = "0x" + "b" * 64
+        shared_cache: dict[object, object] = {}
+        watch = {
+            manager: {
+                "role": "pool_manager",
+                "label": "manager",
+            }
+        }
+        raw_log = {
+            "address": manager,
+            "blockNumber": "0x64",
+            "transactionHash": "0x" + "2" * 64,
+            "topics": [
+                opening.DECREASE_LIQUIDITY_TOPIC,
+                second_pool,
+            ],
+            "data": "0x" + "0" * 192,
+        }
+        first_event = {
+            "chain": "bsc",
+            "pool_id": first_pool,
+            "_opening_snapshot_log_cache": shared_cache,
+        }
+        second_event = {
+            "chain": "bsc",
+            "pool_id": second_pool,
+            "_opening_snapshot_log_cache": shared_cache,
+        }
+        with mock.patch.object(
+            opening,
+            "get_logs_quick",
+            return_value=[raw_log],
+        ) as fetch:
+            first = opening.scan_liquidity_events(
+                first_event,
+                100,
+                200,
+                watch,
+            )
+            second = opening.scan_liquidity_events(
+                second_event,
+                100,
+                200,
+                watch,
+            )
+
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(first["rows"], 0)
+        self.assertEqual(first["risk"], "none")
+        self.assertEqual(second["rows"], 1)
+        self.assertEqual(second["risk"], "lp_remove")
 
     def test_opening_owner_probe_rejects_owner_zero_conflict(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -10078,6 +10475,140 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertTrue(metadata["query_scope_complete"])
         self.assertEqual(metadata["query_count"], 2)
+
+    def test_targeted_retention_batches_dense_opening_scope(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        actors = {
+            "0x" + f"{index:040x}": {
+                "kinds": {"opening_cohort_recipient"},
+                "roles": {"opening_cohort_recipient"},
+                "sources": {"opening"},
+            }
+            for index in range(1, 515)
+        }
+        cex_addresses = {
+            "0x" + f"{index:040x}": {
+                "kind": "cex",
+                "role": "cex_deposit",
+                "source": "fixture",
+            }
+            for index in range(1001, 1003)
+        }
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(
+                holder,
+                "rpc_call",
+                return_value=[],
+            ) as fetch,
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_transfer_logs(
+                    "bsc",
+                    "0x" + "f" * 40,
+                    101,
+                    110,
+                    actors,
+                    cex_addresses,
+                )
+            )
+
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(fetch.call_count, 6)
+        self.assertEqual(metadata["topic_batch_size"], 128)
+        self.assertEqual(metadata["scope_batch_count"], 6)
+        self.assertEqual(metadata["query_count"], 6)
+        self.assertEqual(metadata["expected_query_count"], 6)
+        self.assertTrue(metadata["query_scope_complete"])
+
+    def test_holder_rpc_budget_is_bounded_and_forwarded(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        initial_deadline = holder.HOLDER_DEADLINE_AT
+        self.addCleanup(
+            setattr,
+            holder,
+            "HOLDER_DEADLINE_AT",
+            initial_deadline,
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_WATCHER_BUDGET_SECONDS": "999"},
+            ),
+            mock.patch.object(
+                holder.time,
+                "monotonic",
+                return_value=100.0,
+            ),
+        ):
+            holder.configure_holder_deadline()
+
+        self.assertEqual(holder.HOLDER_DEADLINE_AT, 320.0)
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value="0x1",
+        ) as rpc:
+            result = holder.holder_rpc_call(
+                "bsc",
+                "eth_blockNumber",
+                [],
+            )
+
+        self.assertEqual(result, "0x1")
+        rpc.assert_called_once_with(
+            "bsc",
+            "eth_blockNumber",
+            [],
+            deadline=320.0,
+        )
+
+    def test_holder_snapshot_restores_outer_deadline(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        initial_deadline = holder.HOLDER_DEADLINE_AT
+        self.addCleanup(
+            setattr,
+            holder,
+            "HOLDER_DEADLINE_AT",
+            initial_deadline,
+        )
+        holder.HOLDER_DEADLINE_AT = 50.0
+
+        def configure() -> None:
+            holder.HOLDER_DEADLINE_AT = 100.0
+
+        observed: list[float | None] = []
+        with (
+            mock.patch.object(
+                holder,
+                "configure_holder_deadline",
+                side_effect=configure,
+            ),
+            mock.patch.object(
+                holder,
+                "build_snapshot_within_deadline",
+                side_effect=lambda: observed.append(
+                    holder.HOLDER_DEADLINE_AT
+                )
+                or {},
+            ),
+        ):
+            result = holder.build_snapshot()
+
+        self.assertEqual(result, {})
+        self.assertEqual(observed, [100.0])
+        self.assertEqual(holder.HOLDER_DEADLINE_AT, 50.0)
 
     def test_targeted_retention_logs_reject_cross_scope_rows(
         self,

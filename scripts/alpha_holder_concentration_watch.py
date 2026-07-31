@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, getcontext
@@ -93,6 +94,9 @@ CEX_ADDRESS_KEYS = (
     "known_cex_addresses",
 )
 CEX_ROLES = {"cex", "cex_deposit", "cex_hot_wallet", "exchange"}
+HOLDER_DEADLINE_AT: float | None = None
+DEFAULT_HOLDER_BUDGET_SECONDS = 210
+MAX_HOLDER_BUDGET_SECONDS = 220
 
 
 def now_utc() -> datetime:
@@ -105,6 +109,40 @@ def now_iso() -> str:
 
 def today_utc() -> str:
     return now_utc().strftime("%Y-%m-%d")
+
+
+def configure_holder_deadline() -> None:
+    global HOLDER_DEADLINE_AT
+
+    try:
+        configured = int(
+            os.environ.get(
+                "ALPHA_HOLDER_WATCHER_BUDGET_SECONDS",
+                str(DEFAULT_HOLDER_BUDGET_SECONDS),
+            )
+        )
+    except ValueError:
+        configured = DEFAULT_HOLDER_BUDGET_SECONDS
+    seconds = min(
+        MAX_HOLDER_BUDGET_SECONDS,
+        max(1, configured),
+    )
+    HOLDER_DEADLINE_AT = time.monotonic() + seconds
+
+
+def holder_rpc_call(
+    chain: str,
+    method: str,
+    params: list[Any],
+) -> Any:
+    if HOLDER_DEADLINE_AT is None:
+        return rpc_call(chain, method, params)
+    return rpc_call(
+        chain,
+        method,
+        params,
+        deadline=HOLDER_DEADLINE_AT,
+    )
 
 
 def parse_iso(value: Any) -> datetime | None:
@@ -377,11 +415,18 @@ def address_from_topic(topic: str) -> str:
 
 
 def latest_block(chain: str) -> int:
-    return int(rpc_call(chain, "eth_blockNumber", []), 16)
+    return int(
+        holder_rpc_call(chain, "eth_blockNumber", []),
+        16,
+    )
 
 
 def call_uint(chain: str, contract: str, data: str) -> int:
-    raw = rpc_call(chain, "eth_call", [{"to": contract, "data": data}, "latest"])
+    raw = holder_rpc_call(
+        chain,
+        "eth_call",
+        [{"to": contract, "data": data}, "latest"],
+    )
     return int(raw or "0x0", 16)
 
 
@@ -404,7 +449,14 @@ def get_code(chain: str, address: str, cache: dict[str, str]) -> str:
     address = norm(address)
     if address not in cache:
         try:
-            cache[address] = str(rpc_call(chain, "eth_getCode", [address, "latest"]) or "0x")
+            cache[address] = str(
+                holder_rpc_call(
+                    chain,
+                    "eth_getCode",
+                    [address, "latest"],
+                )
+                or "0x"
+            )
         except Exception:
             cache[address] = "0x"
     return cache[address]
@@ -433,7 +485,11 @@ def transfer_logs(chain: str, token: str, from_block: int, to_block: int) -> tup
             "topics": [TRANSFER_TOPIC],
         }
         try:
-            result = rpc_call(chain, "eth_getLogs", [query])
+            result = holder_rpc_call(
+                chain,
+                "eth_getLogs",
+                [query],
+            )
         except Exception:
             return [], [f"eth_getLogs coverage failed for {start}-{end}"], False
         if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
@@ -1063,7 +1119,7 @@ def targeted_retention_transfer_logs(
         int(
             os.environ.get(
                 "ALPHA_RETENTION_TOPIC_BATCH_SIZE",
-                "16",
+                "128",
             )
         ),
     )
@@ -1171,7 +1227,11 @@ def targeted_retention_transfer_logs(
             }
             metadata["query_count"] += 1
             try:
-                result = rpc_call(chain, "eth_getLogs", [query])
+                result = holder_rpc_call(
+                    chain,
+                    "eth_getLogs",
+                    [query],
+                )
             except Exception:
                 return (
                     [],
@@ -2874,7 +2934,7 @@ def build_token_snapshot(
     return payload
 
 
-def build_snapshot() -> dict[str, Any]:
+def build_snapshot_within_deadline() -> dict[str, Any]:
     config = read_json(CONFIG_PATH, {"items": []})
     state = read_json(STATE_PATH, {"tokens": {}})
     market_context = latest_market_context()
@@ -2909,6 +2969,17 @@ def build_snapshot() -> dict[str, Any]:
         "_next_state": state,
     }
     return snapshot
+
+
+def build_snapshot() -> dict[str, Any]:
+    global HOLDER_DEADLINE_AT
+
+    previous_deadline = HOLDER_DEADLINE_AT
+    configure_holder_deadline()
+    try:
+        return build_snapshot_within_deadline()
+    finally:
+        HOLDER_DEADLINE_AT = previous_deadline
 
 
 def holder_alert_coverage_complete(project: dict[str, Any]) -> bool:
@@ -3462,7 +3533,7 @@ def render(snapshot: dict[str, Any]) -> str:
             lines.extend(
                 [
                     "",
-                    "### 72小时后增量流向",
+                    "### 开盘至30天增量流向",
                     "",
                     (
                         f"- coverage: complete={retention.get('complete')} "

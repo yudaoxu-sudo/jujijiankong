@@ -3643,7 +3643,7 @@ def scan_event(
             "deadline_reached": False,
         },
     }
-    timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "90"))
+    timeout_seconds = int(os.environ.get("ALPHA_INTRADAY_SCAN_TIMEOUT_SECONDS", "120"))
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     if watcher_deadline is not None:
         deadline = (

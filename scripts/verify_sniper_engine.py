@@ -451,7 +451,9 @@ def prepare_offline_environment() -> Path:
     for var in ("TMPDIR", "TEMP", "TMP"):
         os.environ[var] = str(scratch_dir)
     tempfile.tempdir = str(scratch_dir)
-    os.environ["PYTHONPYCACHEPREFIX"] = str(offline_root / "pycache")
+    pycache_root = offline_root / "pycache"
+    os.environ["PYTHONPYCACHEPREFIX"] = str(pycache_root)
+    sys.pycache_prefix = str(pycache_root)
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     os.environ["PYTHONPATH"] = str(guard_dir) + (
         os.pathsep + existing_pythonpath if existing_pythonpath else ""
