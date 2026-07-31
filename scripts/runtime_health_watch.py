@@ -352,7 +352,20 @@ def output_row_coverage_issue(
         if not isinstance(catchup, dict):
             return "holder incremental catch-up metadata missing"
         if catchup.get("applicable") is False:
-            pass
+            try:
+                target_latest = int(row.get("target_latest_block") or 0)
+                scan_to = int(row.get("scan_to_block") or 0)
+            except (TypeError, ValueError):
+                return "holder incremental catch-up metadata invalid"
+            if target_latest > scan_to and (
+                row.get("holder_baseline_status")
+                != "bounded_bootstrap_unreliable"
+                or row.get("holder_scan_status")
+                != "skipped_unreliable_baseline"
+                or catchup.get("reason")
+                != "holder_baseline_unavailable_retention_only"
+            ):
+                return "holder incremental catch-up metadata invalid"
         elif catchup.get("applicable") is not True:
             return "holder incremental catch-up metadata invalid"
         elif (
@@ -406,8 +419,21 @@ def output_row_coverage_issue(
         if (
             row.get("holder_baseline_status")
             == "bounded_bootstrap_unreliable"
-            and str((row.get("signal") or {}).get("level") or "").upper()
-            in {"HIGH", "CRITICAL"}
+            and (
+                row.get("complete_holder_reconstruction") is True
+                or any(
+                    key in (row.get("metrics") or {})
+                    for key in (
+                        "raw_top10_delta_pct",
+                        "effective_top10_delta_pct",
+                        "raw_top10_infra_delta_pct",
+                    )
+                )
+                or str(
+                    (row.get("signal") or {}).get("level") or ""
+                ).upper()
+                in {"HIGH", "CRITICAL"}
+            )
         ):
             return "holder emitted directional risk from an unreliable baseline"
     return ""
@@ -477,7 +503,7 @@ def output_row_coverage_warning(
     ):
         return (
             "holder concentration baseline unavailable after bounded "
-            "bootstrap; receipt-backed retention flow remains active"
+            "bootstrap; indexed retention flow remains active"
         )
     if output_name != "project":
         return ""
@@ -612,24 +638,150 @@ def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
     )
     if flow.get("status") != "active":
         return f"retention flow status={flow.get('status', 'missing')}"
+    coverage_mode = str(flow.get("coverage_mode") or "")
+    if coverage_mode not in {
+        "full_transfer_stream",
+        "targeted_indexed_topics",
+    }:
+        return "retention flow coverage mode invalid"
+    if (
+        row.get("holder_baseline_status")
+        == "bounded_bootstrap_unreliable"
+        and coverage_mode != "targeted_indexed_topics"
+    ):
+        return (
+            "retention flow must use indexed topics when holder "
+            "baseline is unavailable"
+        )
     if flow.get("complete") is not True:
         return "retention flow coverage incomplete"
     if int(flow.get("log_error_count") or 0):
         return "retention flow log scan has errors"
     if flow.get("truncated") or flow.get("events_truncated"):
         return "retention flow output truncated"
+    if coverage_mode == "targeted_indexed_topics":
+        if flow.get("query_scope_complete") is not True:
+            return "retention flow indexed query scope incomplete"
+        if flow.get("opening_scope_complete") is not True:
+            return "retention flow opening actor scope incomplete"
+        scope_hash = str(flow.get("scope_hash") or "")
+        if (
+            len(scope_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in scope_hash.lower()
+            )
+        ):
+            return "retention flow scope hash invalid"
+        try:
+            scope_count = int(flow.get("scope_kind_count") or 0)
+            scope_batch_count = int(
+                flow.get("scope_batch_count") or 0
+            )
+            query_count = int(flow.get("query_count") or 0)
+            query_chunk_count = int(
+                flow.get("query_chunk_count") or 0
+            )
+            expected_query_count = int(
+                flow.get("expected_query_count") or 0
+            )
+            actor_count = int(flow.get("opening_buyer_count") or 0)
+            actor_count += int(
+                flow.get("opening_cohort_recipient_count") or 0
+            )
+            actor_count += int(
+                flow.get("verified_project_address_count") or 0
+            )
+            cex_count = int(flow.get("cex_address_count") or 0)
+            opening_actor_count = int(
+                flow.get("opening_actor_count") or 0
+            )
+            scope_state_schema_version = int(
+                flow.get("scope_state_schema_version") or 0
+            )
+        except (TypeError, ValueError):
+            return "retention flow indexed query metadata invalid"
+        if scope_count <= 0 or actor_count + cex_count <= 0:
+            return "retention flow indexed query scope empty"
+        if (
+            scope_batch_count <= 0
+            or query_chunk_count <= 0
+            or expected_query_count
+            != scope_batch_count * query_chunk_count
+            or query_count != expected_query_count
+        ):
+            return "retention flow indexed query count invalid"
+        opening_scope_hash = str(
+            flow.get("opening_actor_scope_hash") or ""
+        )
+        if (
+            scope_state_schema_version != 1
+            or opening_actor_count < 0
+            or len(opening_scope_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in opening_scope_hash.lower()
+            )
+        ):
+            return "retention flow opening scope state invalid"
+        catchup = flow.get("incremental_catchup")
+        if not isinstance(catchup, dict):
+            return "retention flow catch-up metadata missing"
+        try:
+            requested_to = int(catchup["requested_to_block"])
+            selected_to = int(catchup["selected_to_block"])
+            target_latest = int(flow["target_latest_block"])
+            scan_to = int(flow["scan_to_block"])
+        except (KeyError, TypeError, ValueError):
+            return "retention flow catch-up metadata invalid"
+        if (
+            catchup.get("applicable") is not True
+            or not isinstance(catchup.get("active"), bool)
+            or flow.get("selected_window_complete") is not True
+            or catchup.get("complete_selected_window") is not True
+            or catchup.get("complete_requested_window") is not True
+            or catchup.get("active") is not False
+            or requested_to != target_latest
+            or selected_to != scan_to
+            or selected_to != requested_to
+        ):
+            return "retention flow catch-up metadata invalid"
+        previous_scope_hash = str(
+            flow.get("previous_scope_hash") or ""
+        )
+        if flow.get("scope_rebaseline") is True:
+            if previous_scope_hash == scope_hash:
+                return "retention flow scope rebaseline metadata invalid"
+        elif previous_scope_hash != scope_hash:
+            return "retention flow scope continuity hash mismatch"
     if (
         flow.get("continuous") is not True
         and flow.get("late_discovery_bootstrap") is not True
+        and flow.get("scope_rebaseline") is not True
     ):
         return "retention flow block checkpoint gap"
-    scan_from = int(flow.get("scan_from_block") or 0)
-    scan_to = int(flow.get("scan_to_block") or 0)
-    previous = int(flow.get("previous_latest_block") or 0)
-    latest = int(flow.get("latest_block") or 0)
+    try:
+        scan_from = int(flow.get("scan_from_block") or 0)
+        scan_to = int(flow.get("scan_to_block") or 0)
+        previous = int(flow.get("previous_latest_block") or 0)
+        latest = int(flow.get("latest_block") or 0)
+        scope_coverage_from = int(
+            flow.get("scope_coverage_from_block") or 0
+        )
+    except (TypeError, ValueError):
+        return "retention flow block metadata invalid"
     if scan_from > scan_to:
         return "retention flow scan window invalid"
-    if previous > 0 and scan_from != previous + 1:
+    if (
+        flow.get("scope_rebaseline") is True
+        and scan_from != scope_coverage_from
+    ):
+        return "retention flow scope rebaseline start invalid"
+    if (
+        previous > 0
+        and flow.get("scope_rebaseline") is not True
+        and scan_from != previous + 1
+    ):
         return "retention flow scan does not continue previous checkpoint"
     if latest != scan_to:
         return "retention flow checkpoint did not reach scan tip"
@@ -642,6 +794,15 @@ def retention_flow_coverage_warning(row: dict[str, Any]) -> str:
         if isinstance(row.get("retention_flow"), dict)
         else {}
     )
+    if (
+        flow.get("status") == "active"
+        and flow.get("scope_rebaseline")
+    ):
+        return (
+            "retention indexed scope was baselined from its declared "
+            "coverage block; earlier scope history remains outside "
+            "verified monitoring"
+        )
     if (
         flow.get("status") == "active"
         and flow.get("late_discovery_bootstrap")

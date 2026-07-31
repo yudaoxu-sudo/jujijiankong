@@ -50,6 +50,7 @@ SUPPORTED_CHAINS = {"bsc"}
 DEFAULT_MAX_SELECTED = 64
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_INTRADAY_MAX_AGE_HOURS = 72
+DEFAULT_OPENING_MAX_LOGS = 30000
 DEFAULT_SCHEMA_MIN_RATIO = 0.5
 REGISTRY_PENDING_MAX_AGE_DAYS = 7
 MAX_SIGNAL_CANDIDATE_FILES = 400
@@ -613,7 +614,7 @@ def verified_registry_candidates(
             "opening_liquidity_max_age_seconds": max(
                 72 * 3600, retention_days * 86400
             ),
-            "opening_max_logs": 5000,
+            "opening_max_logs": DEFAULT_OPENING_MAX_LOGS,
             "opening_trace_buyers": 8,
             "opening_max_txs": 24,
             "opening_classify_out_txs": 8,
@@ -881,7 +882,7 @@ def catalog_watchlist_item(
         "opening_max_age_hours": opening_max_age_hours,
         "intraday_max_age_hours": DEFAULT_INTRADAY_MAX_AGE_HOURS,
         "opening_liquidity_max_age_seconds": opening_max_age_hours * 3600,
-        "opening_max_logs": 5000,
+        "opening_max_logs": DEFAULT_OPENING_MAX_LOGS,
         "opening_trace_buyers": 8,
         "opening_max_txs": 24,
         "opening_classify_out_txs": 8,

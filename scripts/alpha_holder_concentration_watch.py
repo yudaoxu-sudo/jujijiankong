@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -70,6 +72,7 @@ RETENTION_FLOW_START_HOURS = 72
 RETENTION_FLOW_DAYS = 30
 RETENTION_CEX_MIN_SUPPLY_BPS = 5
 BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
+RETENTION_SCOPE_STATE_SCHEMA_VERSION = 1
 RETENTION_PROJECT_ROLES = {
     "contract_owner",
     "deployer",
@@ -711,9 +714,15 @@ def opening_retention_scope(
     symbol: str,
     chain: str,
     token: str,
-) -> tuple[dict[str, dict[str, set[str]]], dict[str, list[dict[str, Any]]]]:
+) -> tuple[
+    dict[str, dict[str, set[str]]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, Any],
+]:
     actors: dict[str, dict[str, set[str]]] = {}
     evidence_by_tx: dict[str, list[dict[str, Any]]] = {}
+    matching_event_count = 0
+    complete_event_count = 0
     for event in payload.get("events", []):
         event_token = norm((event.get("token") or {}).get("address"))
         if (
@@ -722,6 +731,19 @@ def opening_retention_scope(
             or event_token != norm(token)
         ):
             continue
+        matching_event_count += 1
+        if event.get("opening_buyer_scope_complete") is True:
+            complete_event_count += 1
+            for address in (
+                event.get("opening_buyer_scope_addresses") or []
+            ):
+                add_retention_actor(
+                    actors,
+                    norm(address),
+                    kind="opening_cohort_recipient",
+                    role="opening_cohort_recipient",
+                    source="opening_scope",
+                )
         for row in event.get("rows", []):
             if not isinstance(row, dict) or decimal_from(row.get("token_bought")) <= 0:
                 continue
@@ -760,7 +782,18 @@ def opening_retention_scope(
                         "recipient": buyer,
                     }
                 )
-    return actors, evidence_by_tx
+    return (
+        actors,
+        evidence_by_tx,
+        {
+            "matching_event_count": matching_event_count,
+            "complete_event_count": complete_event_count,
+            "complete": bool(
+                matching_event_count > 0
+                and complete_event_count == matching_event_count
+            ),
+        },
+    )
 
 
 def project_retention_scope(
@@ -817,6 +850,569 @@ def merge_retention_actors(
     return merged
 
 
+def serialize_retention_actors(
+    actors: dict[str, dict[str, set[str]]],
+) -> dict[str, dict[str, list[str]]]:
+    return {
+        address: {
+            "kinds": sorted(actor.get("kinds", set())),
+            "roles": sorted(actor.get("roles", set())),
+            "sources": sorted(actor.get("sources", set())),
+        }
+        for address, actor in sorted(actors.items())
+        if is_address(address)
+    }
+
+
+def deserialize_retention_actors(
+    payload: Any,
+) -> dict[str, dict[str, set[str]]]:
+    actors: dict[str, dict[str, set[str]]] = {}
+    if not isinstance(payload, dict):
+        return actors
+    for address, actor in payload.items():
+        if not is_address(address) or not isinstance(actor, dict):
+            continue
+        for kind in actor.get("kinds", []) or []:
+            for role in actor.get("roles", []) or [kind]:
+                for source in actor.get("sources", []) or ["state"]:
+                    add_retention_actor(
+                        actors,
+                        address,
+                        kind=str(kind),
+                        role=str(role),
+                        source=str(source),
+                    )
+    return actors
+
+
+def opening_only_retention_actors(
+    actors: dict[str, dict[str, set[str]]],
+) -> dict[str, dict[str, set[str]]]:
+    opening_kinds = {
+        "opening_buyer",
+        "opening_cohort_recipient",
+    }
+    filtered: dict[str, dict[str, set[str]]] = {}
+    for address, actor in actors.items():
+        kinds = actor.get("kinds", set()) & opening_kinds
+        if not kinds:
+            continue
+        for kind in kinds:
+            for role in actor.get("roles", set()) or {kind}:
+                for source in actor.get("sources", set()) or {
+                    "opening_state"
+                }:
+                    add_retention_actor(
+                        filtered,
+                        address,
+                        kind=kind,
+                        role=role,
+                        source=source,
+                    )
+    return filtered
+
+
+def opening_actor_scope_hash(
+    actors: dict[str, dict[str, set[str]]],
+) -> str:
+    payload = serialize_retention_actors(
+        opening_only_retention_actors(actors)
+    )
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def retention_scope_hash(
+    actors: dict[str, dict[str, set[str]]],
+    cex_addresses: dict[str, dict[str, str]],
+) -> str:
+    payload = {
+        "actors": serialize_retention_actors(actors),
+        "cex_addresses": sorted(
+            address
+            for address in cex_addresses
+            if is_address(address)
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def retention_evidence_scope(
+    item: dict[str, Any],
+    symbol: str,
+    chain: str,
+    token: str,
+    context: dict[str, Any],
+    persisted_actors: dict[str, dict[str, set[str]]] | None = None,
+    persisted_opening_scope_complete: bool = False,
+) -> tuple[
+    dict[str, dict[str, set[str]]],
+    dict[str, dict[str, str]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, Any],
+]:
+    (
+        opening_actors,
+        evidence_by_tx,
+        opening_metadata,
+    ) = opening_retention_scope(
+        context.get("opening") or {},
+        symbol,
+        chain,
+        token,
+    )
+    project_actors = project_retention_scope(
+        context.get("project") or {},
+        symbol,
+        chain,
+        token,
+    )
+    persisted_opening_actors = opening_only_retention_actors(
+        persisted_actors or {}
+    )
+    actors = merge_retention_actors(
+        persisted_opening_actors,
+        opening_actors,
+        project_actors,
+    )
+    cex_addresses = configured_cex_addresses(item, chain)
+    for address, label in global_address_labels(chain).items():
+        role = str(label.get("class") or "").lower()
+        if role in CEX_ROLES:
+            cex_addresses.setdefault(
+                address,
+                {
+                    "kind": "cex",
+                    "role": role,
+                    "source": "global_address_label",
+                },
+            )
+    persisted_opening_count = sum(
+        1
+        for actor in persisted_opening_actors.values()
+        if actor.get("kinds", set())
+        & {"opening_buyer", "opening_cohort_recipient"}
+    )
+    opening_scope_complete = (
+        bool(opening_metadata.get("complete"))
+        if int(opening_metadata.get("matching_event_count") or 0)
+        > 0
+        else bool(persisted_opening_scope_complete)
+    )
+    opening_scope_actors = opening_only_retention_actors(actors)
+    return (
+        actors,
+        cex_addresses,
+        evidence_by_tx,
+        {
+            **opening_metadata,
+            "opening_scope_complete": opening_scope_complete,
+            "persisted_opening_actor_count": persisted_opening_count,
+            "opening_actor_count": len(opening_scope_actors),
+            "opening_actor_scope_hash": (
+                opening_actor_scope_hash(opening_scope_actors)
+            ),
+            "scope_state_schema_version": (
+                RETENTION_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": retention_scope_hash(
+                actors,
+                cex_addresses,
+            ),
+        },
+    )
+
+
+def targeted_retention_transfer_logs(
+    chain: str,
+    token: str,
+    from_block: int,
+    to_block: int,
+    actors: dict[str, dict[str, set[str]]],
+    cex_addresses: dict[str, dict[str, str]],
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    bool,
+    dict[str, Any],
+]:
+    actor_addresses = sorted(
+        address for address in actors if is_address(address)
+    )
+    cex_address_rows = sorted(
+        address
+        for address in cex_addresses
+        if is_address(address)
+    )
+    topic_batch_size = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_TOPIC_BATCH_SIZE",
+                "16",
+            )
+        ),
+    )
+    scopes: list[tuple[str, set[str], list[Any]]] = []
+    for start in range(
+        0,
+        len(actor_addresses),
+        topic_batch_size,
+    ):
+        address_batch = set(
+            actor_addresses[start : start + topic_batch_size]
+        )
+        topics = [topic_address(address) for address in address_batch]
+        scopes.append(
+            (
+                "tracked_actor_outgoing",
+                address_batch,
+                [
+                    TRANSFER_TOPIC,
+                    topics[0] if len(topics) == 1 else sorted(topics),
+                ],
+            )
+        )
+    for start in range(
+        0,
+        len(cex_address_rows),
+        topic_batch_size,
+    ):
+        address_batch = set(
+            cex_address_rows[start : start + topic_batch_size]
+        )
+        topics = [topic_address(address) for address in address_batch]
+        scopes.append(
+            (
+                "cex_incoming",
+                address_batch,
+                [
+                    TRANSFER_TOPIC,
+                    None,
+                    topics[0] if len(topics) == 1 else sorted(topics),
+                ],
+            )
+        )
+    metadata = {
+        "coverage_mode": "targeted_indexed_topics",
+        "query_scope_complete": False,
+        "query_count": 0,
+        "tracked_actor_count": len(actor_addresses),
+        "cex_address_count": len(cex_address_rows),
+        "scope_kind_count": int(bool(actor_addresses))
+        + int(bool(cex_address_rows)),
+        "scope_batch_count": len(scopes),
+        "topic_batch_size": topic_batch_size,
+    }
+    if from_block > to_block:
+        return [], ["retention indexed log scan window invalid"], False, metadata
+    if not scopes:
+        return [], ["retention indexed log scope is empty"], False, metadata
+
+    chunk_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LOG_CHUNK_BLOCKS",
+                "8000",
+            )
+        ),
+    )
+    query_chunk_count = (
+        (to_block - from_block + 1 + chunk_blocks - 1)
+        // chunk_blocks
+    )
+    metadata["query_chunk_count"] = query_chunk_count
+    metadata["expected_query_count"] = (
+        len(scopes) * query_chunk_count
+    )
+    max_logs = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_MAX_LOGS_PER_TOKEN",
+                "20000",
+            )
+        ),
+    )
+    provider_row_limit = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_PROVIDER_MAX_ROWS_PER_QUERY",
+                "10000",
+            )
+        ),
+    )
+    metadata["provider_row_limit"] = provider_row_limit
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    for start in range(from_block, to_block + 1, chunk_blocks):
+        end = min(to_block, start + chunk_blocks - 1)
+        for scope_name, address_batch, topics in scopes:
+            query = {
+                "address": token,
+                "fromBlock": hex(start),
+                "toBlock": hex(end),
+                "topics": topics,
+            }
+            metadata["query_count"] += 1
+            try:
+                result = rpc_call(chain, "eth_getLogs", [query])
+            except Exception:
+                return (
+                    [],
+                    [
+                        (
+                            "retention indexed eth_getLogs coverage "
+                            f"failed for {start}-{end}"
+                        )
+                    ],
+                    False,
+                    metadata,
+                )
+            if (
+                not isinstance(result, list)
+                or any(not isinstance(row, dict) for row in result)
+            ):
+                return (
+                    [],
+                    [
+                        (
+                            "retention indexed eth_getLogs response "
+                            f"invalid for {start}-{end}"
+                        )
+                    ],
+                    False,
+                    metadata,
+                )
+            if len(result) >= provider_row_limit:
+                return [], [], True, metadata
+            for row in result:
+                try:
+                    row_address = norm(row["address"])
+                    topics_row = row["topics"]
+                    if (
+                        row_address != norm(token)
+                        or not is_address(row_address)
+                        or not isinstance(topics_row, list)
+                        or len(topics_row) != 3
+                        or norm(topics_row[0]) != TRANSFER_TOPIC
+                    ):
+                        raise ValueError
+                    if "removed" in row and (
+                        type(row["removed"]) is not bool
+                        or row["removed"] is True
+                    ):
+                        raise ValueError
+                    for topic in topics_row[1:3]:
+                        topic_text = norm(str(topic))
+                        if (
+                            len(topic_text) != 66
+                            or not topic_text.startswith("0x")
+                            or any(
+                                character not in "0123456789abcdef"
+                                for character in topic_text[2:]
+                            )
+                        ):
+                            raise ValueError
+                    tx_hash = norm(row["transactionHash"])
+                    if (
+                        len(tx_hash) != 66
+                        or not tx_hash.startswith("0x")
+                        or any(
+                            character not in "0123456789abcdef"
+                            for character in tx_hash[2:]
+                        )
+                    ):
+                        raise ValueError
+                    block_text = row.get("blockNumber")
+                    log_index_text = row.get("logIndex")
+                    if (
+                        not isinstance(block_text, str)
+                        or re.fullmatch(
+                            r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)",
+                            block_text,
+                        )
+                        is None
+                        or not isinstance(log_index_text, str)
+                        or re.fullmatch(
+                            r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)",
+                            log_index_text,
+                        )
+                        is None
+                    ):
+                        raise ValueError
+                    row_block = int(block_text, 16)
+                    if row_block < start or row_block > end:
+                        raise ValueError
+                    row_log_index = int(log_index_text, 16)
+                    from_address = address_from_topic(
+                        str(topics_row[1])
+                    )
+                    to_address = address_from_topic(
+                        str(topics_row[2])
+                    )
+                    if (
+                        scope_name == "tracked_actor_outgoing"
+                        and from_address not in address_batch
+                    ) or (
+                        scope_name == "cex_incoming"
+                        and to_address not in address_batch
+                    ):
+                        raise ValueError
+                    data_text = norm(str(row.get("data") or ""))
+                    if (
+                        not data_text.startswith("0x")
+                        or len(data_text) != 66
+                        or any(
+                            character not in "0123456789abcdef"
+                            for character in data_text[2:]
+                        )
+                    ):
+                        raise ValueError
+                    int(data_text, 16)
+                    identity = (
+                        tx_hash,
+                        row_log_index,
+                    )
+                except (KeyError, TypeError, ValueError):
+                    return (
+                        [],
+                        ["retention indexed eth_getLogs row identity invalid"],
+                        False,
+                        metadata,
+                    )
+                previous = seen.get(identity)
+                if previous is None:
+                    seen[identity] = row
+                elif previous != row:
+                    return (
+                        [],
+                        [
+                            (
+                                "retention indexed eth_getLogs duplicate "
+                                "identity conflict"
+                            )
+                        ],
+                        False,
+                        metadata,
+                    )
+                if len(seen) >= max_logs:
+                    return [], [], True, metadata
+    rows = sorted(
+        seen.values(),
+        key=lambda row: (block_number(row), log_index(row)),
+    )
+    metadata["query_scope_complete"] = bool(
+        metadata["query_count"]
+        == metadata["expected_query_count"]
+    )
+    return rows, [], False, metadata
+
+
+def bounded_targeted_retention_logs(
+    chain: str,
+    token: str,
+    from_block: int,
+    requested_to_block: int,
+    actors: dict[str, dict[str, set[str]]],
+    cex_addresses: dict[str, dict[str, str]],
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    bool,
+    int,
+    dict[str, Any],
+]:
+    max_window = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_CATCHUP_MAX_BLOCKS",
+                "100000",
+            )
+        ),
+    )
+    min_window = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_CATCHUP_MIN_BLOCKS",
+                "16",
+            )
+        ),
+    )
+    max_attempts = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_CATCHUP_MAX_ATTEMPTS",
+                "14",
+            )
+        ),
+    )
+    selected_to = min(
+        requested_to_block,
+        from_block + max_window - 1,
+    )
+    attempts = 0
+    logs: list[dict[str, Any]] = []
+    errors: list[str] = []
+    truncated = True
+    metadata: dict[str, Any] = {}
+    while attempts < max_attempts:
+        attempts += 1
+        logs, errors, truncated, metadata = (
+            targeted_retention_transfer_logs(
+                chain,
+                token,
+                from_block,
+                selected_to,
+                actors,
+                cex_addresses,
+            )
+        )
+        if errors or not truncated:
+            break
+        current_span = selected_to - from_block + 1
+        if current_span <= min_window:
+            break
+        next_span = max(min_window, current_span // 2)
+        if next_span >= current_span:
+            break
+        selected_to = from_block + next_span - 1
+    complete_selected = not errors and not truncated
+    metadata.update(
+        {
+            "applicable": True,
+            "active": selected_to < requested_to_block,
+            "requested_to_block": requested_to_block,
+            "selected_to_block": selected_to,
+            "attempt_count": attempts,
+            "complete_selected_window": complete_selected,
+            "complete_requested_window": bool(
+                complete_selected
+                and selected_to == requested_to_block
+            ),
+        }
+    )
+    return logs, errors, truncated, selected_to, metadata
+
+
 def retention_transfer_events(
     logs: list[dict[str, Any]],
     decimals: int,
@@ -824,8 +1420,9 @@ def retention_transfer_events(
     actors: dict[str, dict[str, set[str]]],
     cex_addresses: dict[str, dict[str, str]],
     evidence_by_tx: dict[str, list[dict[str, Any]]],
+    alert_from_block: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    grouped: dict[str, dict[str, Any]] = {}
+    grouped: dict[tuple[str, bool], dict[str, Any]] = {}
     matched_transfer_count = 0
     for row in logs:
         topics = row.get("topics") or []
@@ -880,18 +1477,30 @@ def retention_transfer_events(
             evidence_level = "transfer_only"
             direction = "destination_unresolved"
             level = "HIGH"
+        elif "opening_cohort_recipient" in source_kinds:
+            risk_type = (
+                "opening_cohort_recipient_outflow_transfer_risk"
+            )
+            evidence_level = "opening_recipient_transfer_only"
+            direction = "destination_unresolved"
+            level = "HIGH"
         else:
             risk_type = "project_or_mm_outflow_transfer_risk"
             evidence_level = "transfer_only"
             direction = "destination_unresolved"
             level = "HIGH"
+        event_block = block_number(row)
+        historical_catchup = bool(
+            alert_from_block is not None
+            and event_block < alert_from_block
+        )
         matched_transfer_count += 1
         event = {
             "type": risk_type,
             "level": level,
             "evidence_level": evidence_level,
             "direction": direction,
-            "block": block_number(row),
+            "block": event_block,
             "tx": tx_hash,
             "log_index": log_index(row),
             "from": from_addr,
@@ -907,9 +1516,11 @@ def retention_transfer_events(
             "destination_class": destination_class,
             "destination_source": str((to_cex or {}).get("source") or ""),
             "receipt_evidence": receipt_evidence,
+            "historical_catchup": historical_catchup,
+            "alert_eligible": not historical_catchup,
         }
         group = grouped.setdefault(
-            risk_type,
+            (risk_type, historical_catchup),
             {
                 **event,
                 "transfer_count": 0,
@@ -997,33 +1608,45 @@ def build_retention_flow(
     previous_latest_block: int,
     holder_previous_latest_block: int,
     context: dict[str, Any],
+    coverage_mode: str = "full_transfer_stream",
+    coverage_metadata: dict[str, Any] | None = None,
+    alert_from_block: int | None = None,
+    scope_actors: dict[str, dict[str, set[str]]] | None = None,
+    scope_cex_addresses: dict[str, dict[str, str]] | None = None,
+    scope_evidence_by_tx: dict[
+        str,
+        list[dict[str, Any]],
+    ] | None = None,
+    scope_metadata: dict[str, Any] | None = None,
+    scope_rebaseline: bool = False,
+    previous_scope_hash: str = "",
+    scope_coverage_from_block: int = 0,
+    target_scan_to_block: int | None = None,
 ) -> dict[str, Any]:
     window = retention_window(item, chain)
-    opening_actors, evidence_by_tx = opening_retention_scope(
-        context.get("opening") or {},
-        symbol,
-        chain,
-        token,
-    )
-    project_actors = project_retention_scope(
-        context.get("project") or {},
-        symbol,
-        chain,
-        token,
-    )
-    actors = merge_retention_actors(opening_actors, project_actors)
-    cex_addresses = configured_cex_addresses(item, chain)
-    for address, label in global_address_labels(chain).items():
-        role = str(label.get("class") or "").lower()
-        if role in CEX_ROLES:
-            cex_addresses.setdefault(
-                address,
-                {
-                    "kind": "cex",
-                    "role": role,
-                    "source": "global_address_label",
-                },
-            )
+    if (
+        scope_actors is None
+        or scope_cex_addresses is None
+        or scope_evidence_by_tx is None
+        or scope_metadata is None
+    ):
+        (
+            actors,
+            cex_addresses,
+            evidence_by_tx,
+            resolved_scope_metadata,
+        ) = retention_evidence_scope(
+            item,
+            symbol,
+            chain,
+            token,
+            context,
+        )
+    else:
+        actors = scope_actors
+        cex_addresses = scope_cex_addresses
+        evidence_by_tx = scope_evidence_by_tx
+        resolved_scope_metadata = scope_metadata
     events, event_count = retention_transfer_events(
         logs,
         decimals,
@@ -1031,7 +1654,9 @@ def build_retention_flow(
         actors,
         cex_addresses,
         evidence_by_tx,
+        alert_from_block=alert_from_block,
     )
+    coverage_metadata = coverage_metadata or {}
     bounded_bootstrap = previous_latest_block <= 0
     active = window["status"] == "active"
     facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
@@ -1054,34 +1679,120 @@ def build_retention_flow(
         continuous
         or (bounded_bootstrap and not active)
         or late_discovery_bootstrap
+        or scope_rebaseline
     )
+    targeted_query_scope_complete = True
+    if coverage_mode == "targeted_indexed_topics":
+        try:
+            query_count = int(
+                coverage_metadata.get("query_count") or 0
+            )
+            scope_batch_count = int(
+                coverage_metadata.get("scope_batch_count") or 0
+            )
+            query_chunk_count = int(
+                coverage_metadata.get("query_chunk_count") or 0
+            )
+            expected_query_count = int(
+                coverage_metadata.get("expected_query_count")
+                or 0
+            )
+        except (TypeError, ValueError):
+            targeted_query_scope_complete = False
+        else:
+            targeted_query_scope_complete = bool(
+                coverage_metadata.get("query_scope_complete") is True
+                and scope_batch_count > 0
+                and query_chunk_count > 0
+                and expected_query_count
+                == scope_batch_count * query_chunk_count
+                and query_count == expected_query_count
+                and len(actors) + len(cex_addresses) > 0
+            )
     scan_complete = (
         not errors
         and not truncated
         and scan_from_block <= scan_to_block
         and continuity_ready
+        and targeted_query_scope_complete
+        and (
+            not active
+            or coverage_mode != "targeted_indexed_topics"
+            or resolved_scope_metadata.get(
+                "opening_scope_complete"
+            )
+            is True
+        )
     )
     latest = scan_to_block if scan_complete else previous_latest_block
+    target_scan_to = (
+        int(target_scan_to_block)
+        if target_scan_to_block is not None
+        else scan_to_block
+    )
     complete = (
-        scan_complete and latest == scan_to_block
+        scan_complete and latest == target_scan_to
         if active
         else True
     )
     return {
         **window,
         "complete": complete,
+        "selected_window_complete": scan_complete,
         "scan_from_block": scan_from_block,
         "scan_to_block": scan_to_block,
+        "target_latest_block": target_scan_to,
         "previous_latest_block": previous_latest_block,
         "holder_previous_latest_block": holder_previous_latest_block,
         "latest_block": latest,
         "log_error_count": len(errors),
         "truncated": truncated,
+        "coverage_mode": coverage_mode,
+        "query_scope_complete": (
+            coverage_metadata.get("query_scope_complete")
+            if coverage_mode == "targeted_indexed_topics"
+            else True
+        ),
+        "query_count": int(
+            coverage_metadata.get("query_count") or 0
+        ),
+        "scope_kind_count": int(
+            coverage_metadata.get("scope_kind_count") or 0
+        ),
+        "scope_batch_count": int(
+            coverage_metadata.get("scope_batch_count") or 0
+        ),
+        "query_chunk_count": int(
+            coverage_metadata.get("query_chunk_count") or 0
+        ),
+        "expected_query_count": int(
+            coverage_metadata.get("expected_query_count") or 0
+        ),
+        "incremental_catchup": {
+            key: coverage_metadata.get(key)
+            for key in (
+                "applicable",
+                "active",
+                "requested_to_block",
+                "selected_to_block",
+                "attempt_count",
+                "complete_selected_window",
+                "complete_requested_window",
+            )
+            if key in coverage_metadata
+        },
+        "alert_from_block": (
+            int(alert_from_block)
+            if alert_from_block is not None
+            else scan_from_block
+        ),
         "continuous": continuous,
         "bounded_bootstrap": bounded_bootstrap,
         "late_discovery_bootstrap": late_discovery_bootstrap,
         "coverage_scope": (
-            "first_success_bounded_baseline"
+            "scope_rebaseline"
+            if scope_rebaseline
+            else "first_success_bounded_baseline"
             if late_discovery_bootstrap
             else "continuous_checkpoint"
             if continuous
@@ -1092,10 +1803,43 @@ def build_retention_flow(
         "opening_buyer_count": sum(
             1 for actor in actors.values() if "opening_buyer" in actor.get("kinds", set())
         ),
+        "opening_cohort_recipient_count": sum(
+            1
+            for actor in actors.values()
+            if "opening_cohort_recipient"
+            in actor.get("kinds", set())
+        ),
         "verified_project_address_count": sum(
             1 for actor in actors.values() if "verified_project" in actor.get("kinds", set())
         ),
         "cex_address_count": len(cex_addresses),
+        "opening_scope_complete": bool(
+            resolved_scope_metadata.get("opening_scope_complete")
+        ),
+        "opening_actor_count": int(
+            resolved_scope_metadata.get("opening_actor_count") or 0
+        ),
+        "opening_actor_scope_hash": str(
+            resolved_scope_metadata.get(
+                "opening_actor_scope_hash"
+            )
+            or ""
+        ),
+        "scope_state_schema_version": int(
+            resolved_scope_metadata.get(
+                "scope_state_schema_version"
+            )
+            or 0
+        ),
+        "scope_hash": str(
+            resolved_scope_metadata.get("scope_hash") or ""
+        ),
+        "previous_scope_hash": previous_scope_hash,
+        "scope_rebaseline": scope_rebaseline,
+        "scope_coverage_from_block": int(
+            scope_coverage_from_block
+            or scan_from_block
+        ),
         "event_count": event_count,
         "event_group_count": len(events),
         "events_truncated": False,
@@ -1490,7 +2234,40 @@ def build_token_snapshot(
         else {}
     )
     retention_previous_tip = int(retention_state.get("latest_block") or 0)
-    if previous_tip and previous_tip < tip:
+    retention_was_catching_up = (
+        retention_state.get("catchup_active") is True
+    )
+    holder_scan_skipped = (
+        holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE
+    )
+    if holder_scan_skipped:
+        from_block = previous_tip + 1 if previous_tip < tip else previous_tip
+        balances = {
+            addr: int(value)
+            for addr, value in token_state.get(
+                "balances_raw",
+                {},
+            ).items()
+        }
+        basis_from_block = int(
+            token_state.get("basis_from_block")
+            or max(0, previous_tip - lookback)
+        )
+        logs: list[dict[str, Any]] = []
+        errors: list[str] = []
+        truncated = False
+        scan_tip = previous_tip
+        incremental_catchup = {
+            "applicable": False,
+            "active": False,
+            "reason": "holder_baseline_unavailable_retention_only",
+            "requested_to_block": tip,
+            "selected_to_block": previous_tip,
+            "attempt_count": 0,
+            "complete_selected_window": True,
+            "complete_requested_window": False,
+        }
+    elif previous_tip and previous_tip < tip:
         from_block = previous_tip + 1
         balances = {addr: int(value) for addr, value in token_state.get("balances_raw", {}).items()}
         basis_from_block = int(token_state.get("basis_from_block") or max(0, tip - lookback))
@@ -1610,25 +2387,206 @@ def build_token_snapshot(
         else:
             signal = classify_signal(metrics, comparison_metrics)
     config_item = config_item_for_contract(config, symbol, chain, token)
+    resolved_retention_context = retention_context or {
+        "opening": read_json(
+            OPENING_CONTEXT_PATH,
+            {"events": []},
+        ),
+        "project": read_json(
+            PROJECT_CONTEXT_PATH,
+            {"projects": []},
+        ),
+    }
+    retention_logs = logs
+    retention_errors = errors
+    retention_truncated = truncated
+    retention_scan_from = from_block
+    retention_scan_to = scan_tip
+    retention_target_scan_to = scan_tip
+    retention_coverage_mode = "full_transfer_stream"
+    retention_coverage_metadata: dict[str, Any] = {}
+    retention_alert_from_block: int | None = None
+    persisted_retention_actors = deserialize_retention_actors(
+        retention_state.get("actor_scope")
+    )
+    persisted_opening_actors = opening_only_retention_actors(
+        persisted_retention_actors
+    )
+    persisted_opening_scope_complete = bool(
+        retention_state.get("opening_scope_complete") is True
+        and int(
+            retention_state.get("scope_state_schema_version")
+            or 0
+        )
+        == RETENTION_SCOPE_STATE_SCHEMA_VERSION
+        and int(retention_state.get("opening_actor_count") or 0)
+        == len(persisted_opening_actors)
+        and str(
+            retention_state.get("opening_actor_scope_hash")
+            or ""
+        )
+        == opening_actor_scope_hash(persisted_opening_actors)
+    )
+    (
+        retention_actors,
+        retention_cex_addresses,
+        retention_evidence_by_tx,
+        retention_scope_metadata,
+    ) = retention_evidence_scope(
+        config_item,
+        symbol,
+        chain,
+        token,
+        resolved_retention_context,
+        persisted_actors=persisted_retention_actors,
+        persisted_opening_scope_complete=(
+            persisted_opening_scope_complete
+        ),
+    )
+    previous_retention_scope_hash = str(
+        retention_state.get("scope_hash") or ""
+    )
+    current_retention_scope_hash = str(
+        retention_scope_metadata.get("scope_hash") or ""
+    )
+    retention_scope_rebaseline = False
+    retention_scope_coverage_from = int(
+        retention_state.get("scope_coverage_from_block") or 0
+    )
+    if (
+        holder_scan_skipped
+        and retention_window(config_item, chain).get("status")
+        == "active"
+    ):
+        retention_bootstrap_blocks = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_BOOTSTRAP_BLOCKS",
+                    "2400",
+                )
+            ),
+        )
+        retention_live_tail_blocks = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIVE_TAIL_BLOCKS",
+                    "1200",
+                )
+            ),
+        )
+        retention_scan_from = (
+            retention_previous_tip + 1
+            if retention_previous_tip > 0
+            else max(0, tip - retention_bootstrap_blocks + 1)
+        )
+        retention_scope_rebaseline = bool(
+            retention_previous_tip <= 0
+            or not previous_retention_scope_hash
+            or previous_retention_scope_hash
+            != current_retention_scope_hash
+        )
+        if retention_scope_rebaseline:
+            retention_scope_coverage_from = (
+                retention_scope_coverage_from
+                or max(
+                    0,
+                    tip - retention_bootstrap_blocks + 1,
+                )
+            )
+            retention_scan_from = retention_scope_coverage_from
+        elif retention_scope_coverage_from <= 0:
+            retention_scope_coverage_from = retention_scan_from
+        retention_scan_to = tip
+        retention_target_scan_to = tip
+        if (
+            retention_scope_metadata.get(
+                "opening_scope_complete"
+            )
+            is not True
+        ):
+            retention_logs = []
+            retention_errors = [
+                "retention opening actor scope incomplete"
+            ]
+            retention_truncated = False
+            retention_coverage_metadata = {
+                "coverage_mode": "targeted_indexed_topics",
+                "query_scope_complete": False,
+                "query_count": 0,
+                "tracked_actor_count": len(retention_actors),
+                "cex_address_count": len(
+                    retention_cex_addresses
+                ),
+                "scope_kind_count": 0,
+                "scope_batch_count": 0,
+                "applicable": True,
+                "active": False,
+                "requested_to_block": tip,
+                "selected_to_block": tip,
+                "attempt_count": 0,
+                "complete_selected_window": False,
+                "complete_requested_window": False,
+            }
+        else:
+            (
+                retention_logs,
+                retention_errors,
+                retention_truncated,
+                retention_scan_to,
+                retention_coverage_metadata,
+            ) = bounded_targeted_retention_logs(
+                chain,
+                token,
+                retention_scan_from,
+                tip,
+                retention_actors,
+                retention_cex_addresses,
+            )
+        retention_coverage_mode = "targeted_indexed_topics"
+        retention_alert_from_block = (
+            tip + 1
+            if (
+                retention_scope_rebaseline
+                or retention_was_catching_up
+                or retention_coverage_metadata.get("active")
+                is True
+            )
+            else max(
+                retention_scan_from,
+                tip - retention_live_tail_blocks + 1,
+            )
+        )
     retention_flow = build_retention_flow(
         item=config_item,
         symbol=symbol,
         chain=chain,
         token=token,
-        logs=logs,
-        errors=errors,
-        truncated=truncated,
+        logs=retention_logs,
+        errors=retention_errors,
+        truncated=retention_truncated,
         decimals=decimals,
         supply_raw=supply_raw,
-        scan_from_block=from_block,
-        scan_to_block=scan_tip,
+        scan_from_block=retention_scan_from,
+        scan_to_block=retention_scan_to,
         previous_latest_block=retention_previous_tip,
         holder_previous_latest_block=previous_tip,
-        context=retention_context
-        or {
-            "opening": read_json(OPENING_CONTEXT_PATH, {"events": []}),
-            "project": read_json(PROJECT_CONTEXT_PATH, {"projects": []}),
-        },
+        context=resolved_retention_context,
+        coverage_mode=retention_coverage_mode,
+        coverage_metadata=retention_coverage_metadata,
+        alert_from_block=retention_alert_from_block,
+        scope_actors=retention_actors,
+        scope_cex_addresses=retention_cex_addresses,
+        scope_evidence_by_tx=retention_evidence_by_tx,
+        scope_metadata=retention_scope_metadata,
+        scope_rebaseline=retention_scope_rebaseline,
+        previous_scope_hash=previous_retention_scope_hash,
+        scope_coverage_from_block=retention_scope_coverage_from,
+        target_scan_to_block=retention_target_scan_to,
+    )
+    retention_flow["previous_catchup_active"] = (
+        retention_was_catching_up
     )
     catchup_pending = bool(
         not coverage_failed
@@ -1673,6 +2631,34 @@ def build_token_snapshot(
     retention_flow["pending_alert_event_count"] = len(
         pending_retention_events
     )
+    previous_historical_retention = [
+        event
+        for event in retention_state.get("historical_events", [])
+        if isinstance(event, dict)
+    ]
+    current_historical_retention = [
+        event
+        for event in retention_flow.get("events", [])
+        if isinstance(event, dict)
+        and (
+            event.get("historical_catchup") is True
+            or event.get("alert_eligible") is False
+        )
+    ]
+    historical_retention_events = merge_retention_events(
+        previous_historical_retention,
+        current_historical_retention,
+    )[-100:]
+    retention_flow["events"] = merge_retention_events(
+        historical_retention_events,
+        [
+            event
+            for event in retention_flow.get("events", [])
+            if isinstance(event, dict)
+            and event.get("historical_catchup") is not True
+            and event.get("alert_eligible") is not False
+        ],
+    )
     if catchup_pending:
         signal = {
             "direction": "catchup_pending",
@@ -1683,14 +2669,42 @@ def build_token_snapshot(
             ),
             "level": "INFO",
         }
-    checkpoint_can_advance = (
-        not coverage_failed
-        and (
-            retention_flow.get("status") != "active"
-            or retention_flow.get("complete") is True
+    holder_checkpoint_can_advance = not coverage_failed
+    retention_checkpoint_can_advance = (
+        retention_flow.get("selected_window_complete") is True
+    )
+    current_opening_scope_complete = bool(
+        int(
+            retention_scope_metadata.get(
+                "matching_event_count"
+            )
+            or 0
+        )
+        > 0
+        and retention_scope_metadata.get(
+            "opening_scope_complete"
+        )
+        is True
+    )
+    scope_state_can_advance = current_opening_scope_complete
+    scope_state_valid_for_write = bool(
+        scope_state_can_advance
+        or (
+            int(
+                retention_scope_metadata.get(
+                    "matching_event_count"
+                )
+                or 0
+            )
+            == 0
+            and persisted_opening_scope_complete
         )
     )
-    checkpoint_tip = scan_tip if checkpoint_can_advance else previous_tip
+    checkpoint_tip = (
+        scan_tip
+        if holder_checkpoint_can_advance
+        else previous_tip
+    )
     negative_count = sum(1 for value in balances.values() if value < 0)
     positive_count = sum(1 for value in balances.values() if value > 0)
     complete = (
@@ -1699,7 +2713,9 @@ def build_token_snapshot(
         and negative_count == 0
     )
     coverage_note = (
-        "log_coverage_failed"
+        "holder_baseline_unavailable_retention_only"
+        if holder_scan_skipped
+        else "log_coverage_failed"
         if errors
         else "log_coverage_truncated"
         if truncated
@@ -1726,6 +2742,11 @@ def build_token_snapshot(
         "truncated": truncated,
         "bounded_bootstrap": bootstrap,
         "incremental_catchup": incremental_catchup,
+        "holder_scan_status": (
+            "skipped_unreliable_baseline"
+            if holder_scan_skipped
+            else "scanned"
+        ),
         "holder_baseline_status": holder_baseline_status,
         "complete_holder_reconstruction": complete,
         "coverage_note": coverage_note,
@@ -1742,8 +2763,17 @@ def build_token_snapshot(
         "top10_effective": effective_rows,
         "full_holder_source": full_holder_source_status(chain, token),
     }
-    if checkpoint_can_advance:
-        state.setdefault("tokens", {}).setdefault(key, {}).update(
+    token_state_next = (
+        state.setdefault("tokens", {}).setdefault(key, {})
+        if (
+            holder_checkpoint_can_advance
+            or retention_checkpoint_can_advance
+            or scope_state_can_advance
+        )
+        else token_state
+    )
+    if holder_checkpoint_can_advance:
+        token_state_next.update(
             {
                 "symbol": symbol,
                 "chain": chain,
@@ -1761,14 +2791,86 @@ def build_token_snapshot(
                 ),
                 "balances_raw": {addr: str(value) for addr, value in balances.items() if value != 0},
                 "holder_baseline_status": holder_baseline_status,
-                "retention_flow": {
-                    "latest_block": int(
-                        retention_flow.get("latest_block") or scan_tip
-                    ),
-                    "pending_alert_events": pending_retention_events,
-                },
             }
         )
+    if retention_checkpoint_can_advance:
+        token_state_next.update(
+            {
+                "symbol": symbol,
+                "chain": chain,
+                "address": token,
+            }
+        )
+        next_retention_state = dict(
+            token_state_next.get("retention_flow")
+            if isinstance(
+                token_state_next.get("retention_flow"),
+                dict,
+            )
+            else {}
+        )
+        next_retention_state.update(
+            {
+                "latest_block": int(
+                    retention_flow.get("latest_block")
+                    or retention_scan_to
+                ),
+                "pending_alert_events": pending_retention_events,
+                "historical_events": historical_retention_events,
+                "scope_coverage_from_block": int(
+                    retention_flow.get(
+                        "scope_coverage_from_block"
+                    )
+                    or retention_scan_from
+                ),
+                "catchup_active": (
+                    (
+                        retention_flow.get(
+                            "incremental_catchup"
+                        )
+                        or {}
+                    ).get("active")
+                    is True
+                ),
+            }
+        )
+        if scope_state_valid_for_write:
+            next_retention_state["scope_hash"] = (
+                current_retention_scope_hash
+            )
+        token_state_next["retention_flow"] = next_retention_state
+    if scope_state_valid_for_write:
+        next_retention_state = dict(
+            token_state_next.get("retention_flow")
+            if isinstance(
+                token_state_next.get("retention_flow"),
+                dict,
+            )
+            else {}
+        )
+        opening_scope_actors = opening_only_retention_actors(
+            retention_actors
+        )
+        next_retention_state.update(
+            {
+                "actor_scope": serialize_retention_actors(
+                    opening_scope_actors
+                ),
+                "opening_scope_complete": True,
+                "opening_actor_count": len(
+                    opening_scope_actors
+                ),
+                "opening_actor_scope_hash": (
+                    opening_actor_scope_hash(
+                        opening_scope_actors
+                    )
+                ),
+                "scope_state_schema_version": (
+                    RETENTION_SCOPE_STATE_SCHEMA_VERSION
+                ),
+            }
+        )
+        token_state_next["retention_flow"] = next_retention_state
     return payload
 
 
@@ -1825,16 +2927,135 @@ def holder_alert_coverage_complete(project: dict[str, Any]) -> bool:
     )
 
 
-def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
-    if not holder_alert_coverage_complete(project):
-        return []
+def retention_alert_coverage_complete(
+    project: dict[str, Any],
+) -> bool:
     retention = (
         project.get("retention_flow")
         if isinstance(project.get("retention_flow"), dict)
         else {}
     )
-    if retention.get("status") != "active":
+    base_complete = bool(
+        retention.get("status") == "active"
+        and retention.get("complete") is True
+        and not int(retention.get("log_error_count") or 0)
+        and not retention.get("truncated")
+        and not retention.get("events_truncated")
+    )
+    if not base_complete:
+        return False
+    if retention.get("coverage_mode") != "targeted_indexed_topics":
+        if (
+            project.get("holder_baseline_status")
+            == BOUNDED_BOOTSTRAP_UNRELIABLE
+        ):
+            return False
+        return holder_alert_coverage_complete(project)
+    scope_hash = str(retention.get("scope_hash") or "")
+    previous_scope_hash = str(
+        retention.get("previous_scope_hash") or ""
+    )
+    catchup = (
+        retention.get("incremental_catchup")
+        if isinstance(
+            retention.get("incremental_catchup"),
+            dict,
+        )
+        else {}
+    )
+    try:
+        query_count = int(retention.get("query_count") or 0)
+        scope_batch_count = int(
+            retention.get("scope_batch_count") or 0
+        )
+        scope_kind_count = int(
+            retention.get("scope_kind_count") or 0
+        )
+        query_chunk_count = int(
+            retention.get("query_chunk_count") or 0
+        )
+        expected_query_count = int(
+            retention.get("expected_query_count") or 0
+        )
+        actor_count = int(
+            retention.get("opening_buyer_count") or 0
+        )
+        actor_count += int(
+            retention.get("opening_cohort_recipient_count")
+            or 0
+        )
+        actor_count += int(
+            retention.get("verified_project_address_count")
+            or 0
+        )
+        cex_count = int(
+            retention.get("cex_address_count") or 0
+        )
+        opening_actor_count = int(
+            retention.get("opening_actor_count") or 0
+        )
+        scan_from = int(retention.get("scan_from_block") or 0)
+        scan_to = int(retention.get("scan_to_block") or 0)
+        previous_latest = int(
+            retention.get("previous_latest_block") or 0
+        )
+        latest = int(retention.get("latest_block") or 0)
+        target_latest = int(
+            retention.get("target_latest_block") or 0
+        )
+        requested_to = int(catchup["requested_to_block"])
+        selected_to = int(catchup["selected_to_block"])
+    except (TypeError, ValueError):
+        return False
+    except KeyError:
+        return False
+    opening_scope_hash = str(
+        retention.get("opening_actor_scope_hash") or ""
+    )
+    return bool(
+        retention.get("opening_scope_complete") is True
+        and retention.get("selected_window_complete") is True
+        and len(scope_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in scope_hash.lower()
+        )
+        and previous_scope_hash == scope_hash
+        and retention.get("scope_rebaseline") is not True
+        and retention.get("previous_catchup_active") is not True
+        and retention.get("query_scope_complete") is True
+        and retention.get("continuous") is True
+        and query_chunk_count > 0
+        and scope_kind_count > 0
+        and actor_count + cex_count > 0
+        and scope_batch_count > 0
+        and expected_query_count
+        == scope_batch_count * query_chunk_count
+        and query_count == expected_query_count
+        and retention.get("scope_state_schema_version")
+        == RETENTION_SCOPE_STATE_SCHEMA_VERSION
+        and opening_actor_count >= 0
+        and len(opening_scope_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in opening_scope_hash.lower()
+        )
+        and catchup.get("applicable") is True
+        and catchup.get("active") is False
+        and catchup.get("complete_selected_window") is True
+        and catchup.get("complete_requested_window") is True
+        and requested_to == target_latest
+        and selected_to == scan_to == requested_to
+        and scan_from == previous_latest + 1
+        and scan_from <= scan_to
+        and latest == scan_to == target_latest
+    )
+
+
+def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
+    if not retention_alert_coverage_complete(project):
         return []
+    retention = project["retention_flow"]
     return [
         event
         for event in retention.get("events", []) or []
@@ -1934,6 +3155,9 @@ def retention_telegram_text(
         "realized_sell": "收据确认卖出",
         "cex_inflow_transfer_risk": "CEX 入金风险",
         "opening_buyer_outflow_transfer_risk": "首批狙击地址转出",
+        "opening_cohort_recipient_outflow_transfer_risk": (
+            "开盘接收地址转出"
+        ),
         "project_or_mm_outflow_transfer_risk": "项目/做市地址外流",
     }
     lines = [
@@ -2087,6 +3311,9 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
                 "realized_sell": "收据确认卖出",
                 "cex_inflow_transfer_risk": "CEX 入金风险",
                 "opening_buyer_outflow_transfer_risk": "首批狙击地址转出",
+                "opening_cohort_recipient_outflow_transfer_risk": (
+                    "开盘接收地址转出"
+                ),
                 "project_or_mm_outflow_transfer_risk": "项目/做市地址外流",
             }
             lines.extend(

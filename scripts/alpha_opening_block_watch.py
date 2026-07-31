@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -124,7 +125,14 @@ OPENING_COVERAGE_EVIDENCE_FIELDS = (
     "opening_log_coverage_status",
     "opening_log_covered_to_block",
     "opening_liquidity_coverage_complete",
+    "opening_liquidity_coverage_status",
+    "opening_liquidity_watch_scope_hash",
 )
+VERIFIED_LIQUIDITY_COVERAGE_STATUSES = {
+    "complete_historical_opening_window",
+    "complete_recent_window",
+    "carried_verified_old_opening",
+}
 OWNER_SELECTORS = {
     "owner": "0x8da5cb5b",
     "getOwner": "0x893d20e8",
@@ -511,6 +519,30 @@ def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]
     return rows
 
 
+def liquidity_watch_scope_hash(
+    watch: dict[str, dict[str, str]],
+) -> str:
+    payload = [
+        {
+            "address": address,
+            "role": str(meta.get("role") or ""),
+            "watch_quote": str(meta.get("watch_quote") or ""),
+        }
+        for address, meta in sorted(watch.items())
+        if is_address(address)
+    ]
+    if not payload:
+        return ""
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, Any]:
     max_age_seconds = event_int_setting(
         event,
@@ -518,18 +550,58 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "ALPHA_OPENING_LIQUIDITY_MAX_AGE_SECONDS",
         10800,
     )
+    watch = liquidity_watch_addresses(event)
+    watch_scope_hash = liquidity_watch_scope_hash(watch)
+    if not watch or not event.get("opening_block"):
+        return {
+            "summary": "未配置池子/做市地址",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+            "coverage_complete": False,
+            "coverage_status": "empty_watch_scope_unverified",
+            "watch_scope_hash": watch_scope_hash,
+        }
+    previous_verified = bool(
+        event.get("opening_liquidity_coverage_complete") is True
+        and str(
+            event.get("opening_liquidity_coverage_status") or ""
+        )
+        in VERIFIED_LIQUIDITY_COVERAGE_STATUSES
+        and str(
+            event.get("opening_liquidity_watch_scope_hash") or ""
+        )
+        == watch_scope_hash
+    )
     if (
         os.environ.get("ALPHA_OPENING_FORCE_LIQUIDITY_FLOW", "0") != "1"
         and int(event.get("seconds_until_start") or 0) < -max_age_seconds
+        and previous_verified
     ):
-        return {"summary": "已超过开盘池/做市短扫窗口", "risk": "skipped_old_opening", "rows": 0}
-    watch = liquidity_watch_addresses(event)
-    if not watch or not event.get("opening_block"):
-        return {"summary": "未配置池子/做市地址", "risk": "none", "rows": 0}
-    from_block = max(
-        int(event["opening_block"]),
-        latest - int(os.environ.get("ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS", "5000")),
+        return {
+            "summary": "已超过开盘池/做市短扫窗口",
+            "risk": "skipped_old_opening",
+            "rows": 0,
+            "coverage_complete": True,
+            "coverage_status": "carried_verified_old_opening",
+            "watch_scope_hash": watch_scope_hash,
+        }
+    trace_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS",
+                "5000",
+            )
+        ),
     )
+    opening_block = int(event["opening_block"])
+    historical_backfill = not previous_verified
+    if historical_backfill:
+        from_block = opening_block
+        to_block = min(latest, opening_block + trace_blocks)
+    else:
+        from_block = max(opening_block, latest - trace_blocks)
+        to_block = latest
     token = event["token"]
     quote = event["quote"]
     totals = {
@@ -560,7 +632,7 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
             query = {
                 "address": asset_address,
                 "fromBlock": hex(from_block),
-                "toBlock": hex(latest),
+                "toBlock": hex(to_block),
                 "topics": topics,
             }
             logs = get_logs_quick(event["chain"], query, chunk_blocks, max_logs, timeout)
@@ -570,7 +642,12 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
                     continue
                 totals[key] += row["amount"]
                 totals["rows"] += 1
-    liquidity_events = scan_liquidity_events(event, from_block, latest, watch)
+    liquidity_events = scan_liquidity_events(
+        event,
+        from_block,
+        to_block,
+        watch,
+    )
     quote_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_QUOTE_ALERT", "10000"))
     token_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_TOKEN_ALERT", "100000"))
     risk = "none"
@@ -591,7 +668,7 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         ),
         "risk": risk,
         "from_block": from_block,
-        "to_block": latest,
+        "to_block": to_block,
         "watch_address_count": len(watch),
         "rows": int(totals["rows"]),
         "liquidity_event_rows": int(liquidity_events.get("rows") or 0),
@@ -600,6 +677,13 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "quote_in": decimal_str(totals["quote_in"]),
         "quote_out": decimal_str(totals["quote_out"]),
         "liquidity_events": liquidity_events.get("events", []),
+        "coverage_complete": True,
+        "coverage_status": (
+            "complete_historical_opening_window"
+            if historical_backfill
+            else "complete_recent_window"
+        ),
+        "watch_scope_hash": watch_scope_hash,
     }
 
 
@@ -966,7 +1050,7 @@ def opening_transfer_logs(event: dict[str, Any], latest: int) -> list[dict[str, 
         event,
         "opening_max_logs",
         "ALPHA_OPENING_MAX_LOGS",
-        5000,
+        30000,
     )
     opening_block = int(event["opening_block"])
     opening_range = (opening_block, min(latest, opening_block + scan_blocks))
@@ -4288,19 +4372,41 @@ def incremental_opened_event(
     deadline_exceeded = False
     trace_error = False
     try:
-        event["liquidity_flow"] = scan_key_liquidity_flows(event, latest)
+        liquidity_flow = scan_key_liquidity_flows(event, latest)
+        event["liquidity_flow"] = liquidity_flow
+        event["opening_liquidity_coverage_complete"] = (
+            liquidity_flow.get("coverage_complete") is True
+        )
+        event["opening_liquidity_coverage_status"] = str(
+            liquidity_flow.get("coverage_status")
+            or "unknown_incomplete_coverage"
+        )
+        event["opening_liquidity_watch_scope_hash"] = str(
+            liquidity_flow.get("watch_scope_hash") or ""
+        )
+    except OpeningLogCoverageTruncated:
+        event["opening_liquidity_coverage_complete"] = False
+        event["opening_liquidity_coverage_status"] = (
+            "log_coverage_truncated"
+        )
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志超过有界预算，覆盖不完整",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+            "coverage_complete": False,
+            "coverage_status": "log_coverage_truncated",
+        }
     except OpeningTraceDeadlineExceeded:
         deadline_exceeded = True
-        event["liquidity_flow"] = copy.deepcopy(
-            previous.get(
-                "liquidity_flow",
-                {
-                    "summary": "开盘流动性增量刷新超出预算",
-                    "risk": "none",
-                    "rows": 0,
-                },
-            )
-        )
+        event["opening_liquidity_coverage_complete"] = False
+        event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        event["liquidity_flow"] = {
+            "summary": "开盘流动性增量刷新超出预算",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+            "coverage_complete": False,
+            "coverage_status": "deadline_exceeded",
+        }
     trace_buyers = capped_event_int_setting(
         event,
         "opening_trace_buyers",
@@ -4374,6 +4480,16 @@ def incremental_opened_event(
     return {
         "status": "opened",
         **cached_opening_scope_evidence(previous),
+        "opening_liquidity_coverage_complete": (
+            event.get("opening_liquidity_coverage_complete") is True
+        ),
+        "opening_liquidity_coverage_status": str(
+            event.get("opening_liquidity_coverage_status")
+            or "unknown_incomplete_coverage"
+        ),
+        "opening_liquidity_watch_scope_hash": str(
+            event.get("opening_liquidity_watch_scope_hash") or ""
+        ),
         "refresh_status": refresh_status,
         "immutable_opening_generated_at": str(
             previous.get("immutable_opening_generated_at")
@@ -5038,6 +5154,45 @@ def build_opened_event(
     ]
     deadline_exceeded = False
     trace_error = False
+    try:
+        liquidity_flow = scan_key_liquidity_flows(
+            event,
+            latest,
+        )
+        event["liquidity_flow"] = liquidity_flow
+        event["opening_liquidity_coverage_complete"] = (
+            liquidity_flow.get("coverage_complete") is True
+        )
+        event["opening_liquidity_coverage_status"] = str(
+            liquidity_flow.get("coverage_status")
+            or "unknown_incomplete_coverage"
+        )
+        event["opening_liquidity_watch_scope_hash"] = str(
+            liquidity_flow.get("watch_scope_hash") or ""
+        )
+    except OpeningLogCoverageTruncated:
+        event["opening_liquidity_coverage_complete"] = False
+        event["opening_liquidity_coverage_status"] = (
+            "log_coverage_truncated"
+        )
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志超过有界预算，覆盖不完整",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+            "coverage_complete": False,
+            "coverage_status": "log_coverage_truncated",
+        }
+    except OpeningTraceDeadlineExceeded:
+        deadline_exceeded = True
+        event["opening_liquidity_coverage_complete"] = False
+        event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        event["liquidity_flow"] = {
+            "summary": "池/做市日志刷新超出本轮预算",
+            "risk": "unknown_incomplete_coverage",
+            "rows": 0,
+            "coverage_complete": False,
+            "coverage_status": "deadline_exceeded",
+        }
     if previous_rows:
         rows = copy.deepcopy(previous_rows)
     else:
@@ -5115,27 +5270,6 @@ def build_opened_event(
                 previous_trace,
                 exc,
             )
-    event["opening_liquidity_coverage_complete"] = True
-    try:
-        event["liquidity_flow"] = scan_key_liquidity_flows(
-            event,
-            latest,
-        )
-    except OpeningLogCoverageTruncated:
-        event["opening_liquidity_coverage_complete"] = False
-        event["liquidity_flow"] = {
-            "summary": "池/做市日志超过有界预算，覆盖不完整",
-            "risk": "unknown_incomplete_coverage",
-            "rows": 0,
-        }
-    except OpeningTraceDeadlineExceeded:
-        deadline_exceeded = True
-        event["opening_liquidity_coverage_complete"] = False
-        event["liquidity_flow"] = {
-            "summary": "池/做市日志刷新超出本轮预算",
-            "risk": "unknown_incomplete_coverage",
-            "rows": 0,
-        }
     try:
         analysis = analyze_opened(
             event,

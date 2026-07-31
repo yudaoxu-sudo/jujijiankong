@@ -1060,6 +1060,7 @@ class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
             item["event_distributions"][0]["share_of_total"],
             "1%",
         )
+        self.assertEqual(item["opening_max_logs"], 30000)
         self.assertEqual(item["project_lookback_blocks"], 50000)
 
     def test_lower_grade_research_conflict_keeps_verified_value_and_blocks(
@@ -2068,7 +2069,7 @@ BSC: {contract}
             current.isoformat(),
         )
         self.assertGreaterEqual(item["opening_max_age_hours"], 72)
-        self.assertEqual(item["opening_max_logs"], 5000)
+        self.assertEqual(item["opening_max_logs"], 30000)
         self.assertEqual(item["opening_trace_buyers"], 8)
         self.assertEqual(item["opening_max_txs"], 24)
         self.assertGreaterEqual(
@@ -2685,7 +2686,346 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(event["opening_cohort_coverage_complete"])
         self.assertTrue(event["opening_buyer_scope_complete"])
         self.assertFalse(event["opening_liquidity_coverage_complete"])
+        self.assertEqual(
+            event["opening_liquidity_coverage_status"],
+            "deadline_exceeded",
+        )
+        self.assertEqual(
+            event["liquidity_flow"]["coverage_status"],
+            "deadline_exceeded",
+        )
         self.assertEqual(result["refresh_status"], "partial_opening_coverage")
+
+    def test_old_opening_without_watch_scope_stays_unverified(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 10000,
+            "seconds_until_start": -20000,
+            "token": {"address": "0x" + "1" * 40},
+            "opening_cohort_coverage_complete": True,
+            "opening_recent_tail_coverage_complete": True,
+            "opening_log_required_windows_complete": True,
+            "opening_buyer_scope_complete": True,
+            "opening_buyer_scope_addresses": [],
+            "opening_buyer_scope_address_count": 0,
+            "opening_cohort_unique_tx_count": 0,
+            "opening_liquidity_coverage_complete": True,
+            "opening_liquidity_coverage_status": (
+                "complete_recent_window"
+            ),
+            "opening_liquidity_watch_scope_hash": "a" * 64,
+        }
+        prepared = {
+            "rows": [],
+            "selected_hashes": [],
+            "transfer_logs": 0,
+            "relevant_tx_count": 0,
+        }
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "analyze_opened",
+                return_value={
+                    "trade_signal": "观察",
+                    "spot_action": "等待",
+                    "direction": "neutral",
+                },
+            ),
+        ):
+            result = opening.build_opened_event(
+                event,
+                prepared_scope=prepared,
+            )
+
+        self.assertFalse(event["opening_liquidity_coverage_complete"])
+        self.assertEqual(
+            event["opening_liquidity_coverage_status"],
+            "empty_watch_scope_unverified",
+        )
+        self.assertEqual(
+            event["liquidity_flow"]["coverage_status"],
+            "empty_watch_scope_unverified",
+        )
+        self.assertEqual(result["refresh_status"], "partial_opening_coverage")
+
+    def test_old_opening_skip_can_carry_verified_liquidity(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        watch = {
+            "0x" + "3" * 40: {
+                "role": "pool",
+                "watch_quote": "false",
+            }
+        }
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value=watch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(
+                {
+                    "seconds_until_start": -20000,
+                    "opening_block": 100,
+                    "opening_liquidity_coverage_complete": True,
+                    "opening_liquidity_coverage_status": (
+                        "complete_recent_window"
+                    ),
+                    "opening_liquidity_watch_scope_hash": (
+                        opening.liquidity_watch_scope_hash(watch)
+                    ),
+                },
+                10000,
+            )
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(
+            result["coverage_status"],
+            "carried_verified_old_opening",
+        )
+        self.assertEqual(
+            result["watch_scope_hash"],
+            opening.liquidity_watch_scope_hash(watch),
+        )
+
+    def test_legacy_liquidity_boolean_without_status_is_backfilled(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _chain: str,
+            query: dict[str, object],
+            _chunk_blocks: int,
+            _max_logs: int,
+            _timeout: int,
+        ) -> list[dict[str, object]]:
+            queries.append(query)
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -20000,
+            "opening_liquidity_coverage_complete": True,
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "5000",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value={
+                    "0x" + "3" * 40: {
+                        "role": "pool",
+                        "watch_quote": "false",
+                    }
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "get_logs_quick",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                opening,
+                "scan_liquidity_events",
+                return_value={
+                    "summary": "未发现 LP 增减事件",
+                    "risk": "none",
+                    "rows": 0,
+                    "events": [],
+                },
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 10000)
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(
+            result["coverage_status"],
+            "complete_historical_opening_window",
+        )
+        self.assertEqual(queries[0]["fromBlock"], hex(100))
+        self.assertEqual(queries[0]["toBlock"], hex(5100))
+        self.assertEqual(
+            result["watch_scope_hash"],
+            opening.liquidity_watch_scope_hash(
+                {
+                    "0x" + "3" * 40: {
+                        "role": "pool",
+                        "watch_quote": "false",
+                    }
+                }
+            ),
+        )
+
+    def test_opening_liquidity_truncation_keeps_stable_status(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "token": {"address": "0x" + "1" * 40},
+            "opening_cohort_coverage_complete": True,
+            "opening_recent_tail_coverage_complete": True,
+            "opening_log_required_windows_complete": True,
+            "opening_buyer_scope_complete": True,
+            "opening_buyer_scope_addresses": [],
+            "opening_buyer_scope_address_count": 0,
+            "opening_cohort_unique_tx_count": 0,
+        }
+        prepared = {
+            "rows": [],
+            "selected_hashes": [],
+            "transfer_logs": 0,
+            "relevant_tx_count": 0,
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                side_effect=opening.OpeningLogCoverageTruncated(),
+            ),
+            mock.patch.object(
+                opening,
+                "analyze_opened",
+                return_value={
+                    "trade_signal": "观察",
+                    "spot_action": "等待",
+                    "direction": "neutral",
+                },
+            ),
+        ):
+            result = opening.build_opened_event(
+                event,
+                prepared_scope=prepared,
+            )
+
+        self.assertFalse(event["opening_liquidity_coverage_complete"])
+        self.assertEqual(
+            event["opening_liquidity_coverage_status"],
+            "log_coverage_truncated",
+        )
+        self.assertEqual(
+            event["liquidity_flow"]["coverage_status"],
+            "log_coverage_truncated",
+        )
+        self.assertEqual(result["refresh_status"], "partial_opening_coverage")
+
+    def test_opening_liquidity_scan_precedes_receipt_deep_trace(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        calls: list[str] = []
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "token": {"address": "0x" + "1" * 40},
+            "opening_cohort_coverage_complete": True,
+            "opening_recent_tail_coverage_complete": True,
+            "opening_log_required_windows_complete": True,
+            "opening_buyer_scope_complete": True,
+            "opening_buyer_scope_addresses": [],
+            "opening_buyer_scope_address_count": 0,
+            "opening_cohort_unique_tx_count": 1,
+        }
+        prepared = {
+            "rows": [],
+            "selected_hashes": ["0x" + "2" * 64],
+            "transfer_logs": 1,
+            "relevant_tx_count": 0,
+        }
+
+        def scan(
+            _event: dict[str, object],
+            _latest: int,
+        ) -> dict[str, object]:
+            calls.append("liquidity")
+            return {
+                "risk": "none",
+                "rows": 0,
+                "coverage_complete": True,
+                "coverage_status": "complete_historical_opening_window",
+            }
+
+        def summarize(
+            _event: dict[str, object],
+            tx_hash: str,
+        ) -> dict[str, object]:
+            calls.append("receipt")
+            return {
+                "tx": tx_hash,
+                "buyer": "",
+                "token_bought": "0",
+            }
+
+        with (
+            mock.patch.object(
+                opening,
+                "scan_key_liquidity_flows",
+                side_effect=scan,
+            ),
+            mock.patch.object(
+                opening,
+                "summarize_tx",
+                side_effect=summarize,
+            ),
+            mock.patch.object(
+                opening,
+                "analyze_opened",
+                return_value={
+                    "trade_signal": "观察",
+                    "spot_action": "等待",
+                    "direction": "neutral",
+                },
+            ),
+        ):
+            opening.build_opened_event(
+                event,
+                prepared_scope=prepared,
+            )
+
+        self.assertEqual(calls[:2], ["liquidity", "receipt"])
 
     def test_opening_receipt_deadline_keeps_prefetched_transfer_scope(
         self,
@@ -2721,7 +3061,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={"risk": "none", "rows": 0},
+                return_value={
+                    "risk": "none",
+                    "rows": 0,
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -4882,7 +5227,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={"summary": "fresh", "risk": "none", "rows": 0},
+                return_value={
+                    "summary": "fresh",
+                    "risk": "none",
+                    "rows": 0,
+                    "coverage_complete": True,
+                    "coverage_status": "complete_recent_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -5892,7 +6243,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -5984,7 +6338,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -6072,7 +6429,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -6096,7 +6456,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -6334,7 +6697,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -6812,7 +7178,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={},
+                return_value={
+                    "coverage_complete": True,
+                    "coverage_status": "complete_historical_opening_window",
+                },
             ),
             mock.patch.object(
                 opening,
@@ -7156,6 +7525,35 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(rows, [])
         self.assertEqual(calls, [(100, 1000, 1000)])
+
+    def test_opening_transfer_default_budget_covers_dense_cohort(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        rows = [
+            {
+                "transactionHash": "0x" + f"{index:064x}",
+                "logIndex": hex(index),
+            }
+            for index in range(5001)
+        ]
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "token": {"address": "0x" + "1" * 40},
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "quick_rpc_call",
+                return_value=rows,
+            ) as fetch,
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
+            result = opening.opening_transfer_logs(event, 200)
+
+        self.assertEqual(len(result), 5001)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertTrue(event["opening_cohort_coverage_complete"])
 
     def test_opening_transfer_budget_cannot_hide_a_second_range(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -9335,6 +9733,1202 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(evidence["complete_selected_window"])
         self.assertFalse(evidence["complete_requested_window"])
 
+    def test_targeted_retention_logs_use_indexed_topics_and_dedupe(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        actor = "0x" + "2" * 40
+        cex = "0x" + "3" * 40
+        row = {
+            "address": token,
+            "blockNumber": hex(105),
+            "logIndex": hex(7),
+            "transactionHash": "0x" + "a" * 64,
+            "topics": [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(actor),
+                holder.topic_address(cex),
+            ],
+            "data": "0x" + hex(10**18)[2:].rjust(64, "0"),
+        }
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _chain: str,
+            method: str,
+            params: list[object],
+        ) -> list[dict[str, object]]:
+            self.assertEqual(method, "eth_getLogs")
+            query = params[0]
+            assert isinstance(query, dict)
+            queries.append(query)
+            return [dict(row)]
+
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            side_effect=fetch,
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_transfer_logs(
+                    "bsc",
+                    token,
+                    101,
+                    110,
+                    {
+                        actor: {
+                            "kinds": {"opening_buyer"},
+                            "roles": {"opening_buyer"},
+                            "sources": {"opening"},
+                        }
+                    },
+                    {
+                        cex: {
+                            "kind": "cex",
+                            "role": "cex_deposit",
+                            "source": "fixture",
+                        }
+                    },
+                )
+            )
+
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(logs, [row])
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(
+            queries[0]["topics"],
+            [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(actor),
+            ],
+        )
+        self.assertEqual(
+            queries[1]["topics"],
+            [
+                holder.TRANSFER_TOPIC,
+                None,
+                holder.topic_address(cex),
+            ],
+        )
+        self.assertTrue(metadata["query_scope_complete"])
+        self.assertEqual(metadata["query_count"], 2)
+
+    def test_targeted_retention_logs_reject_cross_scope_rows(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        actor = "0x" + "2" * 40
+        wrong_sender = "0x" + "3" * 40
+        row = {
+            "address": token,
+            "blockNumber": hex(105),
+            "logIndex": hex(1),
+            "transactionHash": "0x" + "a" * 64,
+            "topics": [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(wrong_sender),
+                holder.topic_address("0x" + "4" * 40),
+            ],
+            "data": "0x" + hex(10**18)[2:].rjust(64, "0"),
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[row],
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_transfer_logs(
+                    "bsc",
+                    token,
+                    101,
+                    110,
+                    {
+                        actor: {
+                            "kinds": {"opening_buyer"},
+                            "roles": {"opening_buyer"},
+                            "sources": {"opening"},
+                        }
+                    },
+                    {},
+                )
+            )
+
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+        self.assertFalse(metadata["query_scope_complete"])
+
+    def test_targeted_retention_logs_reject_malformed_rpc_identity(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        actor = "0x" + "2" * 40
+        base_row = {
+            "address": token,
+            "blockNumber": hex(105),
+            "logIndex": hex(1),
+            "transactionHash": "0x" + "a" * 64,
+            "topics": [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(actor),
+                holder.topic_address("0x" + "4" * 40),
+            ],
+            "data": "0x" + hex(10**18)[2:].rjust(64, "0"),
+        }
+        malformed_rows = {
+            "removed_null": {**base_row, "removed": None},
+            "removed_string": {**base_row, "removed": "false"},
+            "removed_numeric": {**base_row, "removed": 0},
+            "missing_log_index": {
+                key: value
+                for key, value in base_row.items()
+                if key != "logIndex"
+            },
+            "noncanonical_log_index": {
+                **base_row,
+                "logIndex": "0x01",
+            },
+            "missing_block_number": {
+                key: value
+                for key, value in base_row.items()
+                if key != "blockNumber"
+            },
+        }
+
+        for label, malformed in malformed_rows.items():
+            with (
+                self.subTest(label=label),
+                mock.patch.object(
+                    holder,
+                    "rpc_call",
+                    return_value=[malformed],
+                ),
+            ):
+                logs, errors, truncated, metadata = (
+                    holder.targeted_retention_transfer_logs(
+                        "bsc",
+                        token,
+                        101,
+                        110,
+                        {
+                            actor: {
+                                "kinds": {"opening_buyer"},
+                                "roles": {"opening_buyer"},
+                                "sources": {"opening"},
+                            }
+                        },
+                        {},
+                    )
+                )
+
+            self.assertEqual(logs, [])
+            self.assertTrue(errors)
+            self.assertFalse(truncated)
+            self.assertFalse(metadata["query_scope_complete"])
+
+    def test_bounded_targeted_retention_advances_complete_prefix(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            _token: str,
+            from_block: int,
+            to_block: int,
+            _actors: dict[str, object],
+            _cex: dict[str, object],
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            dict[str, object],
+        ]:
+            calls.append((from_block, to_block))
+            truncated = to_block - from_block + 1 > 100
+            return (
+                [],
+                [],
+                truncated,
+                {
+                    "query_scope_complete": not truncated,
+                    "query_count": 1,
+                    "scope_kind_count": 1,
+                    "scope_batch_count": 1,
+                },
+            )
+
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_transfer_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_CATCHUP_MAX_BLOCKS": "400",
+                    "ALPHA_RETENTION_CATCHUP_MIN_BLOCKS": "16",
+                    "ALPHA_RETENTION_CATCHUP_MAX_ATTEMPTS": "7",
+                },
+            ),
+        ):
+            (
+                logs,
+                errors,
+                truncated,
+                selected_to,
+                metadata,
+            ) = holder.bounded_targeted_retention_logs(
+                "bsc",
+                "0x" + "1" * 40,
+                101,
+                500,
+                {},
+                {"0x" + "2" * 40: {}},
+            )
+
+        self.assertEqual(
+            calls,
+            [(101, 500), (101, 300), (101, 200)],
+        )
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(selected_to, 200)
+        self.assertTrue(metadata["active"])
+        self.assertTrue(metadata["complete_selected_window"])
+        self.assertFalse(metadata["complete_requested_window"])
+
+    def test_retention_events_split_historical_catchup_from_live_tail(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        actor = "0x" + "2" * 40
+        recipient = "0x" + "3" * 40
+
+        def row(block: int, index: int) -> dict[str, object]:
+            return {
+                "blockNumber": hex(block),
+                "logIndex": hex(index),
+                "transactionHash": "0x" + f"{index:x}" * 64,
+                "topics": [
+                    holder.TRANSFER_TOPIC,
+                    holder.topic_address(actor),
+                    holder.topic_address(recipient),
+                ],
+                "data": hex(10**18),
+            }
+
+        events, matched = holder.retention_transfer_events(
+            [row(100, 1), row(200, 2)],
+            18,
+            10**24,
+            {
+                actor: {
+                    "kinds": {"opening_buyer"},
+                    "roles": {"opening_buyer"},
+                    "sources": {"opening"},
+                }
+            },
+            {},
+            {},
+            alert_from_block=150,
+        )
+
+        self.assertEqual(matched, 2)
+        self.assertEqual(len(events), 2)
+        self.assertTrue(events[0]["historical_catchup"])
+        self.assertFalse(events[0]["alert_eligible"])
+        self.assertFalse(events[1]["historical_catchup"])
+        self.assertTrue(events[1]["alert_eligible"])
+
+    def test_opening_retention_scope_keeps_complete_recipient_superset(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "1" * 40
+        verified_buyer = "0x" + "2" * 40
+        cohort_recipient = "0x" + "3" * 40
+        actors, evidence, metadata = (
+            holder.opening_retention_scope(
+                {
+                    "events": [
+                        {
+                            "symbol": "TEST",
+                            "chain": "bsc",
+                            "token": {"address": token},
+                            "opening_buyer_scope_complete": True,
+                            "opening_buyer_scope_addresses": [
+                                verified_buyer,
+                                cohort_recipient,
+                            ],
+                            "rows": [
+                                {
+                                    "buyer": verified_buyer,
+                                    "token_bought": "100",
+                                    "buyer_trace": {},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "TEST",
+                "bsc",
+                token,
+            )
+        )
+
+        self.assertEqual(evidence, {})
+        self.assertTrue(metadata["complete"])
+        self.assertIn(
+            "opening_buyer",
+            actors[verified_buyer]["kinds"],
+        )
+        self.assertIn(
+            "opening_cohort_recipient",
+            actors[cohort_recipient]["kinds"],
+        )
+        events, _ = holder.retention_transfer_events(
+            [
+                {
+                    "blockNumber": hex(200),
+                    "logIndex": hex(1),
+                    "transactionHash": "0x" + "a" * 64,
+                    "topics": [
+                        holder.TRANSFER_TOPIC,
+                        holder.topic_address(cohort_recipient),
+                        holder.topic_address("0x" + "4" * 40),
+                    ],
+                    "data": hex(10**18),
+                }
+            ],
+            18,
+            10**24,
+            actors,
+            {},
+            evidence,
+        )
+        self.assertEqual(
+            events[0]["type"],
+            "opening_cohort_recipient_outflow_transfer_risk",
+        )
+        self.assertEqual(
+            events[0]["evidence_level"],
+            "opening_recipient_transfer_only",
+        )
+        persisted_project = {
+            "0x" + "5" * 40: {
+                "kinds": {"verified_project"},
+                "roles": {"market_maker"},
+                "sources": {"project"},
+            }
+        }
+        resolved_actors, _, _, current_incomplete = (
+            holder.retention_evidence_scope(
+                {"watch_addresses": []},
+                "TEST",
+                "bsc",
+                token,
+                {
+                    "opening": {
+                        "events": [
+                            {
+                                "symbol": "TEST",
+                                "chain": "bsc",
+                                "token": {"address": token},
+                                "opening_buyer_scope_complete": False,
+                                "rows": [],
+                            }
+                        ]
+                    },
+                    "project": {"projects": []},
+                },
+                persisted_actors=persisted_project,
+                persisted_opening_scope_complete=True,
+            )
+        )
+        self.assertFalse(
+            current_incomplete["opening_scope_complete"]
+        )
+        self.assertNotIn(
+            "0x" + "5" * 40,
+            resolved_actors,
+        )
+
+    def test_unreliable_holder_uses_targeted_retention_only(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            retention_flow_coverage_issue,
+        )
+
+        token = "0x" + "7" * 40
+        key = f"bsc:{token}"
+        fixed_now = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        opening = fixed_now - timedelta(days=4)
+        config_item = {
+            "symbol": "TEST",
+            "name": "TEST",
+            "priority": "P1_MONITOR",
+            "active_monitoring": True,
+            "contracts": [
+                {"chain": "bsc", "address": token},
+            ],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": opening
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+        state = {
+            "tokens": {
+                key: {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": token,
+                    "decimals": 18,
+                    "basis_from_block": 1,
+                    "latest_block": 100,
+                    "last_metrics": {},
+                    "balances_raw": {},
+                    "holder_baseline_status": (
+                        holder.BOUNDED_BOOTSTRAP_UNRELIABLE
+                    ),
+                    "retention_flow": {
+                        "latest_block": 100,
+                    },
+                }
+            }
+        }
+        targeted_metadata = {
+            "coverage_mode": "targeted_indexed_topics",
+            "query_scope_complete": True,
+            "query_count": 2,
+            "tracked_actor_count": 1,
+            "cex_address_count": 1,
+            "scope_kind_count": 2,
+            "scope_batch_count": 2,
+            "query_chunk_count": 1,
+            "expected_query_count": 2,
+            "applicable": True,
+            "active": False,
+            "requested_to_block": 500,
+            "selected_to_block": 500,
+            "attempt_count": 1,
+            "complete_selected_window": True,
+            "complete_requested_window": True,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_FINALITY_BLOCKS": "0"},
+            ),
+            mock.patch.object(holder, "now_utc", return_value=fixed_now),
+            mock.patch.object(
+                holder,
+                "latest_block",
+                side_effect=[500, 510],
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_incremental_transfer_logs",
+            ) as full_scan,
+            mock.patch.object(
+                holder,
+                "retention_evidence_scope",
+                return_value=(
+                    {
+                        "0x" + "2" * 40: {
+                            "kinds": {"opening_buyer"},
+                            "roles": {"opening_buyer"},
+                            "sources": {"opening"},
+                        }
+                    },
+                    {
+                        "0x" + "3" * 40: {
+                            "kind": "cex",
+                            "role": "cex_deposit",
+                            "source": "fixture",
+                        }
+                    },
+                    {},
+                    {
+                        "matching_event_count": 1,
+                        "opening_scope_complete": True,
+                        "opening_actor_count": 1,
+                        "opening_actor_scope_hash": "b" * 64,
+                        "scope_state_schema_version": 1,
+                        "scope_hash": "a" * 64,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_targeted_retention_logs",
+                side_effect=[
+                    (
+                        [],
+                        [],
+                        False,
+                        500,
+                        targeted_metadata,
+                    ),
+                    (
+                        [],
+                        [],
+                        False,
+                        510,
+                        {
+                            **targeted_metadata,
+                            "requested_to_block": 510,
+                            "selected_to_block": 510,
+                        },
+                    ),
+                ],
+            ) as targeted_scan,
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+        ):
+            result = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                {
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+            second = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                {
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+
+        full_scan.assert_not_called()
+        self.assertEqual(targeted_scan.call_count, 2)
+        self.assertEqual(
+            result["holder_scan_status"],
+            "skipped_unreliable_baseline",
+        )
+        self.assertFalse(
+            result["incremental_catchup"]["applicable"]
+        )
+        self.assertEqual(result["latest_block"], 100)
+        self.assertEqual(
+            result["retention_flow"]["latest_block"],
+            500,
+        )
+        self.assertTrue(result["retention_flow"]["complete"])
+        self.assertEqual(
+            result["retention_flow"]["coverage_mode"],
+            "targeted_indexed_topics",
+        )
+        self.assertEqual(state["tokens"][key]["latest_block"], 100)
+        self.assertEqual(
+            state["tokens"][key]["retention_flow"]["latest_block"],
+            510,
+        )
+        self.assertTrue(result["retention_flow"]["scope_rebaseline"])
+        self.assertFalse(second["retention_flow"]["scope_rebaseline"])
+        self.assertEqual(
+            second["retention_flow"]["previous_scope_hash"],
+            "a" * 64,
+        )
+        self.assertEqual(
+            state["tokens"][key]["retention_flow"]["scope_hash"],
+            "a" * 64,
+        )
+        self.assertTrue(
+            state["tokens"][key]["retention_flow"][
+                "opening_scope_complete"
+            ]
+        )
+        event = {
+            "type": "cex_inflow_transfer_risk",
+            "level": "HIGH",
+            "sample_tx": "0x" + "b" * 64,
+            "sample_log_index": 1,
+            "historical_catchup": False,
+            "alert_eligible": True,
+        }
+        self.assertEqual(
+            holder.retention_alert_events(
+                {
+                    **result,
+                    "retention_flow": {
+                        **result["retention_flow"],
+                        "events": [event],
+                    },
+                }
+            ),
+            [],
+        )
+        self.assertEqual(
+            holder.retention_alert_events(
+                {
+                    **second,
+                    "retention_flow": {
+                        **second["retention_flow"],
+                        "events": [event],
+                    },
+                }
+            ),
+            [event],
+        )
+        self.assertEqual(output_row_coverage_issue("holder", result), "")
+        self.assertEqual(retention_flow_coverage_issue(result), "")
+
+    def test_holder_baseline_checkpoint_is_independent_of_retention(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "6" * 40
+        key = f"bsc:{token}"
+        state: dict[str, object] = {"tokens": {}}
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_FINALITY_BLOCKS": "0"},
+            ),
+            mock.patch.object(holder, "latest_block", return_value=1000),
+            mock.patch.object(
+                holder,
+                "transfer_logs",
+                return_value=([], [], True),
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_bootstrap_transfer_logs",
+                return_value=(
+                    [],
+                    [],
+                    False,
+                    900,
+                    {
+                        "active": True,
+                        "requested_from_block": 0,
+                        "selected_from_block": 900,
+                        "attempt_count": 1,
+                        "complete_selected_window": True,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                holder,
+                "token_decimals",
+                return_value=18,
+            ),
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "build_retention_flow",
+                return_value={
+                    "status": "active",
+                    "complete": False,
+                    "selected_window_complete": False,
+                    "events": [],
+                },
+            ),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+        ):
+            result = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": []},
+                state,
+            )
+
+        self.assertEqual(
+            result["holder_baseline_status"],
+            holder.BOUNDED_BOOTSTRAP_UNRELIABLE,
+        )
+        self.assertEqual(state["tokens"][key]["latest_block"], 1000)
+        self.assertEqual(
+            state["tokens"][key]["holder_baseline_status"],
+            holder.BOUNDED_BOOTSTRAP_UNRELIABLE,
+        )
+        self.assertNotIn(
+            "retention_flow",
+            state["tokens"][key],
+        )
+
+    def test_opening_scope_persists_before_retention_window(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "6" * 40
+        cohort = "0x" + "7" * 40
+        key = f"bsc:{token}"
+        fixed_now = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        opening = fixed_now - timedelta(days=1)
+        config_item = {
+            "symbol": "TEST",
+            "name": "TEST",
+            "priority": "P1_MONITOR",
+            "active_monitoring": True,
+            "contracts": [
+                {"chain": "bsc", "address": token},
+            ],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": opening
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+        state = {
+            "tokens": {
+                key: {
+                    "latest_block": 100,
+                    "basis_from_block": 1,
+                    "decimals": 18,
+                    "last_metrics": {},
+                    "balances_raw": {},
+                    "holder_baseline_status": (
+                        holder.BOUNDED_BOOTSTRAP_UNRELIABLE
+                    ),
+                }
+            }
+        }
+        opening_context = {
+            "opening": {
+                "events": [
+                    {
+                        "symbol": "TEST",
+                        "chain": "bsc",
+                        "token": {"address": token},
+                        "opening_buyer_scope_complete": True,
+                        "opening_buyer_scope_addresses": [cohort],
+                        "rows": [],
+                    }
+                ]
+            },
+            "project": {"projects": []},
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_FINALITY_BLOCKS": "0"},
+            ),
+            mock.patch.object(holder, "now_utc", return_value=fixed_now),
+            mock.patch.object(holder, "latest_block", return_value=500),
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+        ):
+            holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                opening_context,
+            )
+
+        saved_scope = state["tokens"][key]["retention_flow"]
+        self.assertTrue(saved_scope["opening_scope_complete"])
+        self.assertEqual(saved_scope["opening_actor_count"], 1)
+        self.assertIn(cohort, saved_scope["actor_scope"])
+        self.assertNotIn("latest_block", saved_scope)
+
+        catchup_metadata = {
+            "coverage_mode": "targeted_indexed_topics",
+            "query_scope_complete": True,
+            "query_count": 3,
+            "scope_kind_count": 2,
+            "scope_batch_count": 3,
+            "query_chunk_count": 1,
+            "expected_query_count": 3,
+            "applicable": True,
+            "active": False,
+            "requested_to_block": 600,
+            "selected_to_block": 600,
+            "attempt_count": 1,
+            "complete_selected_window": True,
+            "complete_requested_window": True,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_FINALITY_BLOCKS": "0"},
+            ),
+            mock.patch.object(
+                holder,
+                "now_utc",
+                return_value=fixed_now + timedelta(days=3),
+            ),
+            mock.patch.object(holder, "latest_block", return_value=600),
+            mock.patch.object(
+                holder,
+                "bounded_targeted_retention_logs",
+                return_value=(
+                    [],
+                    [],
+                    False,
+                    600,
+                    catchup_metadata,
+                ),
+            ),
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+        ):
+            active = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                {
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+
+        self.assertTrue(active["retention_flow"]["complete"])
+        self.assertTrue(
+            active["retention_flow"]["scope_rebaseline"]
+        )
+        self.assertEqual(
+            state["tokens"][key]["retention_flow"]["latest_block"],
+            600,
+        )
+
+    def test_incomplete_scope_query_does_not_commit_rebaseline(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = "0x" + "6" * 40
+        opening_actor = "0x" + "7" * 40
+        project_actor = "0x" + "8" * 40
+        key = f"bsc:{token}"
+        fixed_now = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        opening = fixed_now - timedelta(days=4)
+        persisted_actors = {
+            opening_actor: {
+                "kinds": {"opening_buyer"},
+                "roles": {"opening_buyer"},
+                "sources": {"opening"},
+            }
+        }
+        current_actors = {
+            **persisted_actors,
+            project_actor: {
+                "kinds": {"verified_project"},
+                "roles": {"market_maker"},
+                "sources": {"project"},
+            },
+        }
+        old_scope_hash = "a" * 64
+        new_scope_hash = "b" * 64
+        state = {
+            "tokens": {
+                key: {
+                    "latest_block": 100,
+                    "basis_from_block": 1,
+                    "decimals": 18,
+                    "last_metrics": {},
+                    "balances_raw": {},
+                    "holder_baseline_status": (
+                        holder.BOUNDED_BOOTSTRAP_UNRELIABLE
+                    ),
+                    "retention_flow": {
+                        "latest_block": 100,
+                        "scope_coverage_from_block": 50,
+                        "scope_hash": old_scope_hash,
+                        "actor_scope": (
+                            holder.serialize_retention_actors(
+                                persisted_actors
+                            )
+                        ),
+                        "opening_scope_complete": True,
+                        "opening_actor_count": 1,
+                        "opening_actor_scope_hash": (
+                            holder.opening_actor_scope_hash(
+                                persisted_actors
+                            )
+                        ),
+                        "scope_state_schema_version": 1,
+                    },
+                }
+            }
+        }
+        config_item = {
+            "symbol": "TEST",
+            "name": "TEST",
+            "priority": "P1_MONITOR",
+            "active_monitoring": True,
+            "contracts": [
+                {"chain": "bsc", "address": token},
+            ],
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": opening
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ],
+        }
+
+        def failed_scan(
+            _chain: str,
+            _token: str,
+            from_block: int,
+            requested_to_block: int,
+            _actors: dict[str, object],
+            _cex_addresses: dict[str, object],
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            return (
+                [],
+                [],
+                False,
+                from_block,
+                {
+                    "coverage_mode": "targeted_indexed_topics",
+                    "query_scope_complete": False,
+                    "query_count": 1,
+                    "scope_kind_count": 2,
+                    "scope_batch_count": 2,
+                    "query_chunk_count": 1,
+                    "expected_query_count": 2,
+                    "applicable": True,
+                    "active": True,
+                    "requested_to_block": requested_to_block,
+                    "selected_to_block": from_block,
+                    "attempt_count": 1,
+                    "complete_selected_window": False,
+                    "complete_requested_window": False,
+                },
+            )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_FINALITY_BLOCKS": "0"},
+            ),
+            mock.patch.object(holder, "now_utc", return_value=fixed_now),
+            mock.patch.object(
+                holder,
+                "latest_block",
+                side_effect=[500, 510],
+            ),
+            mock.patch.object(
+                holder,
+                "retention_evidence_scope",
+                return_value=(
+                    current_actors,
+                    {
+                        "0x" + "9" * 40: {
+                            "kind": "cex",
+                            "role": "cex_deposit",
+                            "source": "fixture",
+                        }
+                    },
+                    {},
+                    {
+                        "matching_event_count": 1,
+                        "opening_scope_complete": True,
+                        "opening_actor_count": 1,
+                        "opening_actor_scope_hash": (
+                            holder.opening_actor_scope_hash(
+                                persisted_actors
+                            )
+                        ),
+                        "scope_state_schema_version": 1,
+                        "scope_hash": new_scope_hash,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_targeted_retention_logs",
+                side_effect=failed_scan,
+            ) as targeted_scan,
+            mock.patch.object(
+                holder,
+                "token_total_supply_raw",
+                return_value=1000,
+            ),
+            mock.patch.object(holder, "top_rows", return_value=[]),
+            mock.patch.object(
+                holder,
+                "full_holder_source_status",
+                return_value={
+                    "source": "none",
+                    "status": "not_configured",
+                },
+            ),
+        ):
+            first = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                {
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+            second = holder.build_token_snapshot(
+                {
+                    "symbol": "TEST",
+                    "name": "TEST",
+                    "priority": "P1_MONITOR",
+                    "chain": "bsc",
+                    "address": token,
+                },
+                {"items": [config_item]},
+                state,
+                {
+                    "opening": {"events": []},
+                    "project": {"projects": []},
+                },
+            )
+
+        self.assertTrue(first["retention_flow"]["scope_rebaseline"])
+        self.assertTrue(second["retention_flow"]["scope_rebaseline"])
+        self.assertEqual(targeted_scan.call_count, 2)
+        self.assertEqual(
+            state["tokens"][key]["retention_flow"]["scope_hash"],
+            old_scope_hash,
+        )
+        self.assertEqual(
+            state["tokens"][key]["retention_flow"][
+                "scope_coverage_from_block"
+            ],
+            50,
+        )
+
     def test_health_blocks_holder_while_incremental_catchup_is_pending(
         self,
     ) -> None:
@@ -9449,7 +11043,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 holder,
                 "build_retention_flow",
-                return_value={"status": "inactive"},
+                return_value={
+                    "status": "inactive",
+                    "selected_window_complete": True,
+                },
             ),
             mock.patch.object(
                 holder,
@@ -9575,12 +11172,14 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             {
                 "status": "active",
                 "complete": True,
+                "selected_window_complete": True,
                 "latest_block": 200,
                 "events": [old_event],
             },
             {
                 "status": "active",
                 "complete": True,
+                "selected_window_complete": True,
                 "latest_block": 500,
                 "events": [current_event],
             },
@@ -9845,12 +11444,52 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             second["metrics"],
         )
         self.assertEqual(holder.holder_signal_key(second), "")
-        self.assertEqual(state["tokens"][key]["latest_block"], 1001)
+        self.assertEqual(state["tokens"][key]["latest_block"], 1000)
+        self.assertEqual(
+            second["holder_scan_status"],
+            "skipped_unreliable_baseline",
+        )
         self.assertEqual(state["tokens"][key]["last_metrics"], {})
         retention_project = {
             **second,
             "retention_flow": {
                 "status": "active",
+                "coverage_mode": "full_transfer_stream",
+                "complete": True,
+                "selected_window_complete": True,
+                "log_error_count": 0,
+                "truncated": False,
+                "events_truncated": False,
+                "coverage_mode": "targeted_indexed_topics",
+                "query_scope_complete": True,
+                "query_count": 1,
+                "query_chunk_count": 1,
+                "expected_query_count": 1,
+                "scope_kind_count": 1,
+                "scope_batch_count": 1,
+                "cex_address_count": 1,
+                "opening_scope_complete": True,
+                "opening_actor_count": 0,
+                "opening_actor_scope_hash": "b" * 64,
+                "scope_state_schema_version": 1,
+                "scope_hash": "a" * 64,
+                "previous_scope_hash": "a" * 64,
+                "scope_rebaseline": False,
+                "previous_catchup_active": False,
+                "scan_from_block": 1001,
+                "scan_to_block": 1001,
+                "previous_latest_block": 1000,
+                "latest_block": 1001,
+                "target_latest_block": 1001,
+                "continuous": True,
+                "incremental_catchup": {
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": 1001,
+                    "selected_to_block": 1001,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
                 "events": [
                     {
                         "type": "cex_inflow_transfer_risk",
@@ -10327,6 +11966,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         row = {
             "retention_flow": {
                 "status": "active",
+                "coverage_mode": "full_transfer_stream",
                 "complete": True,
                 "scan_from_block": 101,
                 "scan_to_block": 120,
@@ -10343,6 +11983,61 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn(
             "continue previous checkpoint",
             retention_flow_coverage_issue(row),
+        )
+
+    def test_retention_health_rejects_malformed_numeric_metadata(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import (
+            retention_flow_coverage_issue,
+        )
+
+        full_stream = {
+            "retention_flow": {
+                "status": "active",
+                "coverage_mode": "full_transfer_stream",
+                "complete": True,
+                "scan_from_block": "invalid",
+                "scan_to_block": 120,
+                "previous_latest_block": 100,
+                "latest_block": 120,
+                "log_error_count": 0,
+                "truncated": False,
+                "events_truncated": False,
+                "continuous": True,
+            }
+        }
+        targeted = {
+            "retention_flow": {
+                "status": "active",
+                "coverage_mode": "targeted_indexed_topics",
+                "complete": True,
+                "selected_window_complete": True,
+                "query_scope_complete": True,
+                "opening_scope_complete": True,
+                "scope_hash": "a" * 64,
+                "scope_kind_count": 1,
+                "scope_batch_count": 1,
+                "query_count": 1,
+                "query_chunk_count": 1,
+                "expected_query_count": 1,
+                "cex_address_count": 1,
+                "opening_actor_count": 0,
+                "opening_actor_scope_hash": "b" * 64,
+                "scope_state_schema_version": "invalid",
+                "log_error_count": 0,
+                "truncated": False,
+                "events_truncated": False,
+            }
+        }
+
+        self.assertEqual(
+            retention_flow_coverage_issue(full_stream),
+            "retention flow block metadata invalid",
+        )
+        self.assertEqual(
+            retention_flow_coverage_issue(targeted),
+            "retention flow indexed query metadata invalid",
         )
 
     def test_holder_retention_flow_generates_deduped_telegram_signal(
@@ -10362,6 +12057,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "signal": {"level": "INFO", "direction": "flat"},
             "retention_flow": {
                 "status": "active",
+                "complete": True,
+                "log_error_count": 0,
+                "truncated": False,
+                "events_truncated": False,
                 "events": [
                     {
                         "type": "cex_inflow_transfer_risk",
@@ -10415,6 +12114,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "signal": {"level": "INFO", "direction": "flat"},
                     "retention_flow": {
                         "status": "active",
+                        "complete": True,
+                        "log_error_count": 0,
+                        "truncated": False,
+                        "events_truncated": False,
                         "events": [
                             {
                                 "type": event_type,
@@ -11142,6 +12845,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                             },
                             "retention_flow": {
                                 "status": "active",
+                                "coverage_mode": "full_transfer_stream",
                                 "complete": True,
                                 "scan_from_block": 101,
                                 "scan_to_block": 120,
