@@ -625,8 +625,6 @@ def retention_flow_required(
     return bool(
         listing is not None
         and current >= listing
-        and current - listing
-        > timedelta(hours=DEFAULT_INTRADAY_CORE_HOURS)
     )
 
 

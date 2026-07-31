@@ -17,7 +17,7 @@ run_once() {
   if (( remaining <= post_seconds )); then
     return 0
   fi
-  trace_budget="${ALPHA_OPENING_SPRINT_TRACE_DEADLINE_SECONDS:-180}"
+  trace_budget="${ALPHA_OPENING_SPRINT_TRACE_DEADLINE_SECONDS:-300}"
   if (( trace_budget > remaining - post_seconds )); then
     trace_budget=$((remaining - post_seconds))
   fi

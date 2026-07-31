@@ -3027,6 +3027,96 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(calls[:2], ["liquidity", "receipt"])
 
+    def test_opening_build_budget_reallocates_unused_time(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        events = [
+            {
+                "symbol": symbol,
+                "chain": "bsc",
+                "token": {"address": "0x" + digit * 40},
+                "quote": {"address": "0x" + "9" * 40},
+                "opening_block": 100 + index,
+                "start_time_utc": f"2026-07-30T0{index}:00:00+00:00",
+                "pool_id": f"pool-{index}",
+            }
+            for index, (symbol, digit) in enumerate(
+                (("FIRST", "1"), ("SECOND", "2")),
+                start=1,
+            )
+        ]
+        observed_deadlines: list[float | None] = []
+        clock = {"now": 0.0}
+
+        def configure() -> None:
+            opening.TRACE_DEADLINE_AT = 100.0
+
+        def build_event(
+            _event: dict[str, object],
+            _previous: dict[str, object] | None,
+            _prepared_scope: dict[str, object],
+        ) -> dict[str, object]:
+            observed_deadlines.append(opening.TRACE_DEADLINE_AT)
+            if len(observed_deadlines) == 1:
+                clock["now"] = 25.0
+            return {
+                "status": "opened",
+                "rows": [],
+                "analysis": {},
+            }
+
+        with (
+            mock.patch.object(
+                opening,
+                "read_json",
+                side_effect=lambda _path, default: default,
+            ),
+            mock.patch.object(
+                opening,
+                "configure_trace_deadline",
+                side_effect=configure,
+            ),
+            mock.patch.object(
+                opening.time,
+                "monotonic",
+                side_effect=lambda: clock["now"],
+            ),
+            mock.patch.object(
+                opening,
+                "build_events",
+                return_value=events,
+            ),
+            mock.patch.object(
+                opening,
+                "prepare_opening_scope",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "build_opened_event",
+                side_effect=build_event,
+            ),
+            mock.patch.object(
+                opening,
+                "event_alert_keys",
+                return_value=[],
+            ),
+        ):
+            snapshot = opening.build_snapshot()
+
+        self.assertEqual(snapshot["event_count"], 2)
+        self.assertEqual(observed_deadlines, [50.0, 100.0])
+        self.assertEqual(opening.TRACE_DEADLINE_AT, 100.0)
+        self.assertEqual(
+            [
+                event["opening_build_budget_seconds"]
+                for event in snapshot["events"]
+            ],
+            [50.0, 75.0],
+        )
+
     def test_opening_receipt_deadline_keeps_prefetched_transfer_scope(
         self,
     ) -> None:
@@ -8857,8 +8947,147 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(result["analysis"]["cex_token_deposit"], "120000")
         self.assertTrue(intraday.event_alert_keys(result))
 
-    def test_required_opening_buyer_receipt_gap_remains_blocking(self) -> None:
+    def test_intraday_receipts_require_verified_opening_buyers_only(
+        self,
+    ) -> None:
         import scripts.alpha_intraday_flow_watch as intraday
+
+        token = "0x" + "1" * 40
+        cohort_recipient = "0x" + "2" * 40
+        verified_buyer = "0x" + "3" * 40
+        payload = {
+            "events": [
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "token": {"address": token},
+                    "opening_block": 100,
+                    "opening_buyer_scope_complete": True,
+                    "opening_buyer_scope_addresses": [
+                        cohort_recipient,
+                    ],
+                    "rows": [
+                        {
+                            "buyer": verified_buyer,
+                            "token_bought": "100",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        full_scope = intraday.opening_buyer_addresses_from_context(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+            100,
+        )
+        verified_scope = (
+            intraday.opening_buyer_addresses_from_context(
+                payload,
+                "TEST",
+                "bsc",
+                token,
+                100,
+                verified_only=True,
+            )
+        )
+
+        self.assertEqual(
+            full_scope,
+            sorted([cohort_recipient, verified_buyer]),
+        )
+        self.assertEqual(verified_scope, [verified_buyer])
+        receipt_scope = intraday.required_receipt_address_scope(
+            {
+                "opening_buyer_addresses": full_scope,
+                "opening_verified_buyer_addresses": verified_scope,
+            },
+            {},
+        )
+        self.assertNotIn(cohort_recipient, receipt_scope)
+        self.assertEqual(
+            receipt_scope[verified_buyer],
+            {"opening_buyer"},
+        )
+
+        outsider = "0x" + "4" * 40
+        incoming_tx = "0x" + "5" * 64
+        outgoing_tx = "0x" + "6" * 64
+        verified_tx = "0x" + "7" * 64
+        verified_outgoing_tx = "0x" + "8" * 64
+        required_txs, required_scope = (
+            intraday.required_receipt_transactions(
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "token": {"address": token},
+                    "opening_block": 100,
+                    "opening_buyer_addresses": full_scope,
+                    "opening_verified_buyer_addresses": verified_scope,
+                },
+                [
+                    {
+                        "from": outsider,
+                        "to": cohort_recipient,
+                        "tx": incoming_tx,
+                        "block": 101,
+                        "transaction_index": 0,
+                        "log_index": 0,
+                    },
+                    {
+                        "from": cohort_recipient,
+                        "to": outsider,
+                        "tx": outgoing_tx,
+                        "block": 102,
+                        "transaction_index": 0,
+                        "log_index": 0,
+                    },
+                    {
+                        "from": outsider,
+                        "to": verified_buyer,
+                        "tx": verified_tx,
+                        "block": 103,
+                        "transaction_index": 0,
+                        "log_index": 0,
+                    },
+                    {
+                        "from": verified_buyer,
+                        "to": outsider,
+                        "tx": verified_outgoing_tx,
+                        "block": 104,
+                        "transaction_index": 0,
+                        "log_index": 0,
+                    },
+                ],
+                {},
+            )
+        )
+        self.assertNotIn(incoming_tx, required_txs)
+        self.assertIn(outgoing_tx, required_txs)
+        self.assertIn(verified_tx, required_txs)
+        self.assertIn(verified_outgoing_tx, required_txs)
+        self.assertEqual(
+            required_scope["tx_counts_by_category"][
+                "opening_cohort_outflow"
+            ],
+            1,
+        )
+        self.assertEqual(
+            required_scope["tx_counts_by_category"][
+                "opening_buyer"
+            ],
+            2,
+        )
+
+    def test_required_opening_cohort_outflow_receipt_gap_blocks_signal(
+        self,
+    ) -> None:
+        import scripts.alpha_intraday_flow_watch as intraday
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+        )
 
         token = "0x" + "1" * 40
         buyer = "0x" + "2" * 40
@@ -8876,6 +9105,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "latest_block": 200,
             "opening_block": 100,
             "opening_buyer_addresses": [buyer],
+            "opening_verified_buyer_addresses": [],
         }
         transfer_rows = [
             {
@@ -8906,6 +9136,22 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "cex_deposit_count": 0,
             "cex_gas_priming_count": 0,
         }
+
+        def analysis_for_rows(
+            _event: dict[str, object],
+            rows: list[dict[str, object]],
+            *_args: object,
+        ) -> dict[str, object]:
+            sell_quote = "30000" if rows else "0"
+            return {
+                **quiet,
+                "direction": "大额卖出" if rows else "观察",
+                "trade_signal": (
+                    "开盘地址确认卖出" if rows else "fixture"
+                ),
+                "net_sell_quote": sell_quote,
+            }
+
         with (
             mock.patch.dict(
                 os.environ,
@@ -8949,12 +9195,16 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 intraday,
                 "summarize_flow_tx",
-                return_value={},
+                return_value={
+                    "seller": buyer,
+                    "sold_token": "100",
+                    "got_quote": "30000",
+                },
             ),
             mock.patch.object(
                 intraday,
                 "analyze_rows",
-                side_effect=lambda *args: dict(quiet),
+                side_effect=analysis_for_rows,
             ),
         ):
             with mock.patch.object(
@@ -8969,10 +9219,21 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 return_value={"status": "0x0", "logs": []},
             ):
                 complete = intraday.scan_event(event)
+            with mock.patch.object(
+                intraday.opening,
+                "quick_rpc_call",
+                return_value={"status": "0x1", "logs": []},
+            ):
+                alerted = intraday.scan_event(event)
 
         self.assertTrue(
             missing["analysis"]["scan_limited"],
             missing["analysis"]["receipt_coverage"],
+        )
+        self.assertEqual(intraday.event_alert_keys(missing), [])
+        self.assertEqual(
+            output_row_coverage_issue("intraday", missing),
+            "intraday receipt coverage limited",
         )
         self.assertEqual(
             missing["analysis"]["receipt_coverage"]["reasons"],
@@ -8981,13 +9242,15 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(
             missing["analysis"]["receipt_coverage"][
                 "required_tx_counts_by_category"
-            ]["opening_buyer"],
+            ]["opening_cohort_outflow"],
             1,
         )
         self.assertFalse(complete["analysis"]["scan_limited"])
         self.assertTrue(
             complete["analysis"]["receipt_coverage"]["complete"]
         )
+        self.assertFalse(alerted["analysis"]["scan_limited"])
+        self.assertTrue(intraday.event_alert_keys(alerted))
 
     def test_health_requires_intraday_to_import_opening_buyers(self) -> None:
         from scripts.runtime_health_watch import (
@@ -10522,7 +10785,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             state["tokens"][key],
         )
 
-    def test_opening_scope_persists_before_retention_window(
+    def test_opening_scope_persists_before_opening(
         self,
     ) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -10538,7 +10801,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             0,
             tzinfo=timezone.utc,
         )
-        opening = fixed_now - timedelta(days=1)
+        opening = fixed_now + timedelta(days=1)
         config_item = {
             "symbol": "TEST",
             "name": "TEST",
@@ -10650,7 +10913,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(
                 holder,
                 "now_utc",
-                return_value=fixed_now + timedelta(days=3),
+                return_value=fixed_now + timedelta(days=2),
             ),
             mock.patch.object(holder, "latest_block", return_value=600),
             mock.patch.object(
@@ -10702,6 +10965,44 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(
             state["tokens"][key]["retention_flow"]["latest_block"],
             600,
+        )
+
+    def test_retention_flow_is_active_during_intraday_window(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        fixed_now = datetime(
+            2026,
+            7,
+            30,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        opening = fixed_now - timedelta(hours=1)
+        item = {
+            "pool_ids": [
+                {
+                    "chain": "bsc",
+                    "start_time_utc8": opening
+                    .astimezone(timezone(timedelta(hours=8)))
+                    .strftime("%Y-%m-%d %H:%M"),
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            holder,
+            "now_utc",
+            return_value=fixed_now,
+        ):
+            window = holder.retention_window(item, "bsc")
+
+        self.assertEqual(window["status"], "active")
+        self.assertEqual(
+            window["reason"],
+            "opening_to_30d_retention",
         )
 
     def test_incomplete_scope_query_does_not_commit_rebaseline(
@@ -11953,13 +12254,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         current = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
         self.assertFalse(
             retention_flow_required(
-                current - timedelta(hours=71),
+                current + timedelta(hours=1),
                 current,
             )
         )
         self.assertTrue(
             retention_flow_required(
-                current - timedelta(hours=73),
+                current - timedelta(hours=1),
                 current,
             )
         )

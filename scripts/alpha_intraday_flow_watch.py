@@ -784,6 +784,8 @@ def opening_buyer_addresses_from_context(
     chain: str,
     token_address: str,
     opening_block: int | None = None,
+    *,
+    verified_only: bool = False,
 ) -> list[str]:
     buyers: set[str] = set()
     for event in payload.get("events", []) or []:
@@ -808,12 +810,13 @@ def opening_buyer_addresses_from_context(
             and context_opening_block != opening_block
         ):
             continue
-        for address in (
-            event.get("opening_buyer_scope_addresses") or []
-        ):
-            address = norm(address)
-            if opening.is_address(address):
-                buyers.add(address)
+        if not verified_only:
+            for address in (
+                event.get("opening_buyer_scope_addresses") or []
+            ):
+                address = norm(address)
+                if opening.is_address(address):
+                    buyers.add(address)
         for row in event.get("rows", []) or []:
             if (
                 not isinstance(row, dict)
@@ -987,6 +990,16 @@ def build_events(
                     token_address,
                     opening_block,
                 ),
+                "opening_verified_buyer_addresses": (
+                    opening_buyer_addresses_from_context(
+                        opening_context,
+                        symbol,
+                        CHAIN,
+                        token_address,
+                        opening_block,
+                        verified_only=True,
+                    )
+                ),
                 "watch_addresses": watch_addresses,
                 "known_contracts": item.get("known_contracts", []),
                 "cex_deposit_addresses": item.get("cex_deposit_addresses", []),
@@ -1126,7 +1139,9 @@ def required_receipt_address_scope(
         if opening.is_address(normalized):
             scope.setdefault(normalized, set()).add(category)
 
-    opening_buyers = event.get("opening_buyer_addresses")
+    opening_buyers = event.get(
+        "opening_verified_buyer_addresses"
+    )
     if not isinstance(opening_buyers, list):
         opening_buyers = opening_buyer_addresses_from_context(
             read_json(OPENING_CONTEXT_PATH, {"events": []}),
@@ -1136,6 +1151,7 @@ def required_receipt_address_scope(
             int(event["opening_block"])
             if str(event.get("opening_block") or "").isdigit()
             else None,
+            verified_only=True,
         )
     for address in opening_buyers:
         add(address, "opening_buyer")
@@ -1186,12 +1202,53 @@ def required_receipt_transactions(
     required_txs: list[str] = []
     tx_categories: dict[str, set[str]] = {}
     seen: set[str] = set()
+    full_opening_scope = event.get("opening_buyer_addresses")
+    if not isinstance(full_opening_scope, list):
+        full_opening_scope = opening_buyer_addresses_from_context(
+            read_json(OPENING_CONTEXT_PATH, {"events": []}),
+            str(event.get("symbol") or ""),
+            str(event.get("chain") or ""),
+            str((event.get("token") or {}).get("address") or ""),
+            int(event["opening_block"])
+            if str(event.get("opening_block") or "").isdigit()
+            else None,
+        )
+    raw_verified_opening_scope = event.get(
+        "opening_verified_buyer_addresses"
+    )
+    if not isinstance(raw_verified_opening_scope, list):
+        raw_verified_opening_scope = (
+            opening_buyer_addresses_from_context(
+                read_json(OPENING_CONTEXT_PATH, {"events": []}),
+                str(event.get("symbol") or ""),
+                str(event.get("chain") or ""),
+                str((event.get("token") or {}).get("address") or ""),
+                int(event["opening_block"])
+                if str(event.get("opening_block") or "").isdigit()
+                else None,
+                verified_only=True,
+            )
+        )
+    verified_opening_scope = {
+        norm(address)
+        for address in raw_verified_opening_scope
+        if opening.is_address(norm(address))
+    }
+    cohort_outflow_scope = {
+        norm(address)
+        for address in full_opening_scope
+        if opening.is_address(norm(address))
+    } - verified_opening_scope
     for row in sorted(transfer_rows, key=transfer_order):
         tx_hash = canonical_rpc_hash(row.get("tx"))
         if tx_hash is None:
             continue
         categories: set[str] = set()
-        for address in (norm(row.get("from")), norm(row.get("to"))):
+        from_address = norm(row.get("from"))
+        to_address = norm(row.get("to"))
+        if from_address in cohort_outflow_scope:
+            categories.add("opening_cohort_outflow")
+        for address in (from_address, to_address):
             categories.update(address_scope.get(address, set()))
             role = str(
                 opening.configured_address_class(event, address) or ""
@@ -1217,11 +1274,15 @@ def required_receipt_transactions(
         )
         for category in (
             "opening_buyer",
+            "opening_cohort_outflow",
             "project_or_mm",
             "cex_path",
             "runtime_cex_path",
         )
     }
+    category_address_counts["opening_cohort_outflow"] = len(
+        cohort_outflow_scope
+    )
     category_tx_counts = {
         category: sum(
             category in categories
@@ -1232,9 +1293,12 @@ def required_receipt_transactions(
     return required_txs, {
         "scope": (
             "all_token_transfer_transactions_touching_known_"
-            "opening_buyer_project_mm_or_cex_path_addresses"
+            "verified_opening_buyer_project_mm_or_cex_path_"
+            "addresses_plus_cohort_outgoing"
         ),
-        "address_count": len(address_scope),
+        "address_count": len(
+            set(address_scope).union(cohort_outflow_scope)
+        ),
         "address_counts_by_category": category_address_counts,
         "tx_counts_by_category": category_tx_counts,
     }

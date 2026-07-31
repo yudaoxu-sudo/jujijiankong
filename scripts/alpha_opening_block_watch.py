@@ -184,6 +184,25 @@ def ensure_trace_deadline() -> None:
         raise OpeningTraceDeadlineExceeded("opening buyer trace deadline exceeded")
 
 
+def run_with_trace_deadline(
+    deadline_at: float | None,
+    callback: Any,
+) -> Any:
+    global TRACE_DEADLINE_AT
+
+    previous = TRACE_DEADLINE_AT
+    if deadline_at is not None:
+        TRACE_DEADLINE_AT = (
+            min(previous, deadline_at)
+            if previous is not None
+            else deadline_at
+        )
+    try:
+        return callback()
+    finally:
+        TRACE_DEADLINE_AT = previous
+
+
 def bounded_trace_timeout(timeout: int) -> int:
     ensure_trace_deadline()
     remaining = trace_seconds_remaining()
@@ -4758,6 +4777,14 @@ def build_snapshot() -> dict[str, Any]:
         finally:
             TRACE_DEADLINE_AT = overall_deadline
 
+    build_target_count = sum(
+        1
+        for event, _previous, _metadata_conflict, _use_incremental
+        in prepared_events
+        if event.get("opening_block") is not None
+    )
+    remaining_build_targets = build_target_count
+
     events = []
     for (
         event,
@@ -4765,15 +4792,41 @@ def build_snapshot() -> dict[str, Any]:
         metadata_conflict,
         use_incremental,
     ) in prepared_events:
+        event_deadline_at: float | None = None
+        if (
+            event.get("opening_block") is not None
+            and overall_deadline is not None
+            and remaining_build_targets
+        ):
+            build_seconds = max(
+                1.0,
+                max(
+                    0.0,
+                    overall_deadline - time.monotonic(),
+                )
+                / remaining_build_targets,
+            )
+            remaining_build_targets -= 1
+            event_deadline_at = min(
+                overall_deadline,
+                time.monotonic() + build_seconds,
+            )
+            event["opening_build_budget_seconds"] = round(
+                build_seconds,
+                3,
+            )
         if event.get("opening_block") is None:
             event.update({"status": "waiting", "rows": [], "analysis": analyze_waiting(event)})
         else:
             if use_incremental:
                 event.update(
-                    incremental_opened_event(
-                        event,
-                        previous,
-                        previous_generated_at,
+                    run_with_trace_deadline(
+                        event_deadline_at,
+                        lambda: incremental_opened_event(
+                            event,
+                            previous,
+                            previous_generated_at,
+                        ),
                     )
                 )
             else:
@@ -4782,10 +4835,13 @@ def build_snapshot() -> dict[str, Any]:
                     if isinstance(prepared_scope, Exception):
                         raise prepared_scope
                     event.update(
-                        build_opened_event(
-                            event,
-                            previous,
-                            prepared_scope,
+                        run_with_trace_deadline(
+                            event_deadline_at,
+                            lambda: build_opened_event(
+                                event,
+                                previous,
+                                prepared_scope,
+                            ),
                         )
                     )
                     if (

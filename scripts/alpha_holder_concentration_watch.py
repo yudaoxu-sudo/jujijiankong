@@ -68,7 +68,7 @@ INFRA_CLASSES = {
 SUPPORTED_CHAINS = {"bsc", "base"}
 TELEGRAM_LIMIT = 3600
 FULL_HOLDER_SOURCE_ENV = "ALPHA_HOLDER_FULL_SOURCE"
-RETENTION_FLOW_START_HOURS = 72
+RETENTION_FLOW_START_HOURS = 0
 RETENTION_FLOW_DAYS = 30
 RETENTION_CEX_MIN_SUPPLY_BPS = 5
 BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
@@ -677,13 +677,13 @@ def retention_window(item: dict[str, Any], chain: str) -> dict[str, Any]:
     age_hours = (now_utc() - opening).total_seconds() / 3600
     if age_hours < RETENTION_FLOW_START_HOURS:
         status = "not_required"
-        reason = "before_retention_window"
+        reason = "before_opening"
     elif age_hours > RETENTION_FLOW_DAYS * 24:
         status = "not_required"
         reason = "retention_window_expired"
     else:
         status = "active"
-        reason = "post_intraday_retention"
+        reason = "opening_to_30d_retention"
     return {
         "status": status,
         "reason": reason,
