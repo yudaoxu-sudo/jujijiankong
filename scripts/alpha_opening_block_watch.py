@@ -47,6 +47,12 @@ LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+V4_SWAP_TOPIC = "0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237"
+V3_MINT_TOPIC = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde"
+V3_BURN_TOPIC = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c"
+V3_COLLECT_TOPIC = "0x70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0"
+V3_GET_POOL_SELECTOR = "0x1698ee82"
+V4_POOL_ID_TO_KEY_SELECTOR = "0x0e2d484a"
 INCREASE_LIQUIDITY_TOPIC = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f"
 DECREASE_LIQUIDITY_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4"
 COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01"
@@ -59,6 +65,9 @@ LIQUIDITY_EVENT_TOPICS = {
     COLLECT_TOPIC,
     BURN_TOPIC,
     MODIFY_LIQUIDITY_TOPIC,
+    V3_MINT_TOPIC,
+    V3_BURN_TOPIC,
+    V3_COLLECT_TOPIC,
 }
 ZERO = "0x0000000000000000000000000000000000000000"
 DEAD = "0x000000000000000000000000000000000000dead"
@@ -70,6 +79,7 @@ PANCAKE_V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf"
 PANCAKE_INFINITY_UNIVERSAL_ROUTER = "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb"
 PANCAKE_INFINITY_CL_QUOTER = "0xd0737c9762912dd34c3271197e362aa736df0926"
 PANCAKE_INFINITY_CL_POOL_MANAGER = "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b"
+PANCAKE_INFINITY_BIN_POOL_MANAGER = "0xc697d2898e0d09264376196696c51d7abbbaa4a9"
 PANCAKE_INFINITY_CL_QUOTE_EXACT_INPUT_SINGLE_SELECTOR = "0x9938b8ed"
 PANCAKE_PERMIT2 = "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768"
 PERMIT2_ALLOWANCE_SELECTOR = "0x927da105"
@@ -127,6 +137,10 @@ OPENING_COVERAGE_EVIDENCE_FIELDS = (
     "opening_liquidity_coverage_complete",
     "opening_liquidity_coverage_status",
     "opening_liquidity_watch_scope_hash",
+    "opening_liquidity_scope_complete",
+    "opening_liquidity_scope_status",
+    "opening_v3_pool_scope",
+    "opening_v4_pool_scope",
 )
 VERIFIED_LIQUIDITY_COVERAGE_STATUSES = {
     "complete_historical_opening_window",
@@ -557,8 +571,624 @@ def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
     }
 
 
-def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]]:
-    rows: dict[str, dict[str, str]] = {}
+def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any]:
+    cached = event.get("opening_v3_pool_scope") or {}
+    chain = str(event.get("chain") or "")
+    token = norm((event.get("token") or {}).get("address"))
+    event_quote = norm((event.get("quote") or {}).get("address"))
+    if not chain or not is_address(token) or not is_address(event_quote):
+        return {
+            "schema": "opening_v3_factory_matrix.v2",
+            "status": "factory_matrix_unavailable",
+            "as_of_block": latest,
+            "configuration_hash": "",
+            "expected_query_count": 0,
+            "attempted_query_count": 0,
+            "validation_error_count": 0,
+            "complete": False,
+            "pools": [],
+        }
+    labels = global_address_labels(chain)
+    factories = [
+        (address, row)
+        for address, row in sorted(labels.items())
+        if row.get("class") == "v3_factory"
+    ]
+    quotes = {
+        address
+        for address, row in labels.items()
+        if row.get("class") == "quote_token" and address != token
+    }
+    quotes.add(event_quote)
+    fee_rows = [
+        (factory, row, int(fee), quote)
+        for factory, row in factories
+        for fee in row.get("fee_tiers", [])
+        if str(fee).isdigit() and int(fee) > 0
+        for quote in sorted(quotes)
+        if is_address(quote)
+    ]
+    trace_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS",
+                "5000",
+            )
+        ),
+    )
+    configuration_payload = {
+        "schema": "opening_v3_factory_matrix_inputs.v1",
+        "validator": "code_token_pair_factory_fee_at_fixed_block.v1",
+        "chain": chain,
+        "target_token": token,
+        "opening_trace_blocks": trace_blocks,
+        "queries": [
+            {
+                "factory": factory,
+                "protocol": str(factory_row.get("protocol") or "v3"),
+                "fee": fee,
+                "quote": quote,
+            }
+            for factory, factory_row, fee, quote in fee_rows
+        ],
+    }
+    configuration_hash = hashlib.sha256(
+        json.dumps(
+            configuration_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    opening_block = int(event.get("opening_block") or 0)
+    required_as_of_block = (
+        min(latest, opening_block + trace_blocks - 1)
+        if opening_block > 0
+        else latest
+    )
+    timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
+    block_tag = hex(latest)
+    budget_seconds = int(
+        os.environ.get("ALPHA_OPENING_FACTORY_MATRIX_BUDGET_SECONDS", "45")
+    )
+    matrix_deadline = time.monotonic() + max(1, budget_seconds)
+    if TRACE_DEADLINE_AT is not None:
+        remaining = max(0.0, TRACE_DEADLINE_AT - time.monotonic())
+        try:
+            matrix_fraction = float(
+                os.environ.get(
+                    "ALPHA_OPENING_FACTORY_MATRIX_BUDGET_FRACTION",
+                    "0.25",
+                )
+            )
+        except ValueError:
+            matrix_fraction = 0.25
+        matrix_fraction = min(0.5, max(0.05, matrix_fraction))
+        matrix_deadline = min(
+            matrix_deadline,
+            time.monotonic() + remaining * matrix_fraction,
+        )
+
+    def matrix_rpc(method: str, params: list[Any]) -> Any:
+        try:
+            return rpc_call(
+                event["chain"],
+                method,
+                params,
+                timeout=bounded_trace_timeout(timeout),
+                deadline=matrix_deadline,
+            )
+        except RpcDeadlineExceeded:
+            raise OpeningTraceDeadlineExceeded(
+                "V3 factory matrix deadline exceeded"
+            ) from None
+
+    cached_as_of = int(cached.get("as_of_block") or 0)
+    if (
+        cached.get("schema") == "opening_v3_factory_matrix.v2"
+        and cached.get("configuration_hash") == configuration_hash
+        and int(cached.get("expected_query_count") or -1) == len(fee_rows)
+        and cached.get("complete") is True
+        and isinstance(cached.get("pools"), list)
+        and 0 < cached_as_of <= latest
+        and cached_as_of >= required_as_of_block
+        and strict_block_hash(cached.get("as_of_block_hash"))
+    ):
+        try:
+            canonical = matrix_rpc(
+                "eth_getBlockByNumber",
+                [hex(cached_as_of), False],
+            )
+            if (
+                isinstance(canonical, dict)
+                and strict_block_hash(canonical.get("hash"))
+                == norm(cached.get("as_of_block_hash"))
+            ):
+                return copy.deepcopy(cached)
+        except Exception:
+            pass
+    pools: dict[str, dict[str, Any]] = {}
+    errors = 0
+    attempted = 0
+    initial_block_hash = ""
+    if fee_rows:
+        try:
+            initial_block = matrix_rpc(
+                "eth_getBlockByNumber",
+                [block_tag, False],
+            )
+            if isinstance(initial_block, dict):
+                initial_block_hash = strict_block_hash(
+                    initial_block.get("hash")
+                )
+            if not initial_block_hash:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    for factory, factory_row, fee, quote in fee_rows:
+        attempted += 1
+        data = (
+            V3_GET_POOL_SELECTOR
+            + encode_address_word(token)
+            + encode_address_word(quote)
+            + encode_uint(fee)
+        )
+        try:
+            state, pool = strict_abi_address_return(
+                matrix_rpc(
+                    "eth_call",
+                    [{"to": factory, "data": data}, block_tag],
+                )
+            )
+            if state == "zero":
+                continue
+            if state != "address":
+                errors += 1
+                continue
+
+            def pool_call(selector: str) -> Any:
+                return matrix_rpc(
+                    "eth_call",
+                    [{"to": pool, "data": selector}, block_tag],
+                )
+
+            code = matrix_rpc(
+                "eth_getCode",
+                [pool, block_tag],
+            )
+            token0_state, token0 = strict_abi_address_return(
+                pool_call("0x0dfe1681")
+            )
+            token1_state, token1 = strict_abi_address_return(
+                pool_call("0xd21220a7")
+            )
+            factory_state, actual_factory = strict_abi_address_return(
+                pool_call("0xc45a0155")
+            )
+            actual_fee = strict_abi_uint_return(
+                pool_call("0xddca3f43"),
+                24,
+            )
+            if (
+                not has_runtime_bytecode(code)
+                or token0_state != "address"
+                or token1_state != "address"
+                or factory_state != "address"
+                or {token0, token1} != {token, quote}
+                or actual_factory != factory
+                or actual_fee != fee
+            ):
+                errors += 1
+                continue
+            pools[pool] = {
+                "address": pool,
+                "factory": factory,
+                "protocol": factory_row.get("protocol", "v3"),
+                "token0": token0,
+                "token1": token1,
+                "fee": fee,
+                "as_of_block": latest,
+            }
+        except OpeningTraceDeadlineExceeded:
+            errors += 1
+            break
+        except Exception:
+            errors += 1
+    as_of_block_hash = ""
+    snapshot_coherent = False
+    if fee_rows and attempted == len(fee_rows):
+        try:
+            as_of_block = matrix_rpc(
+                "eth_getBlockByNumber",
+                [block_tag, False],
+            )
+            if isinstance(as_of_block, dict):
+                as_of_block_hash = strict_block_hash(
+                    as_of_block.get("hash")
+                )
+            if (
+                not as_of_block_hash
+                or as_of_block_hash != initial_block_hash
+            ):
+                errors += 1
+            else:
+                snapshot_coherent = True
+        except Exception:
+            errors += 1
+    if not snapshot_coherent:
+        pools.clear()
+    complete = bool(fee_rows and attempted == len(fee_rows) and errors == 0)
+    return {
+        "schema": "opening_v3_factory_matrix.v2",
+        "status": (
+            "complete_tracked_factory_matrix"
+            if complete
+            else "factory_matrix_partial"
+            if fee_rows
+            else "factory_matrix_config_invalid"
+            if factories
+            else "factory_matrix_config_missing"
+        ),
+        "as_of_block": latest,
+        "as_of_block_hash": as_of_block_hash,
+        "snapshot_coherent": snapshot_coherent,
+        "required_as_of_block": required_as_of_block,
+        "configuration_hash": configuration_hash,
+        "scope": "tracked_quote_token_fee_matrix",
+        "tracked_quotes": sorted(quotes),
+        "expected_query_count": len(fee_rows),
+        "attempted_query_count": attempted,
+        "validation_error_count": errors,
+        "complete": complete,
+        "pools": list(pools.values()),
+    }
+
+
+def strict_v4_pool_key_return(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, str) or not data.startswith("0x"):
+        return None
+    raw = data[2:]
+    if (
+        len(raw) != 384
+        or re.fullmatch(r"[0-9a-fA-F]{384}", raw) is None
+    ):
+        return None
+    words = [raw[index:index + 64] for index in range(0, 384, 64)]
+    decoded_addresses: list[str] = []
+    for index, word in enumerate(words[:4]):
+        state, address = strict_abi_address_return("0x" + word)
+        if index == 2 and state == "zero":
+            decoded_addresses.append(ZERO)
+        elif state == "address":
+            decoded_addresses.append(address)
+        else:
+            return None
+    fee = strict_abi_uint_return("0x" + words[4], 24)
+    if fee is None:
+        return None
+    return {
+        "token0": decoded_addresses[0],
+        "token1": decoded_addresses[1],
+        "hook": decoded_addresses[2],
+        "pool_manager": decoded_addresses[3],
+        "fee": fee,
+        "parameters": "0x" + words[5].lower(),
+    }
+
+
+def v4_manager_type(address: Any, meta: dict[str, Any]) -> str:
+    normalized = norm(address)
+    configured = str(meta.get("v4_manager_type") or "").strip().lower()
+    protocol = str(meta.get("protocol") or "").strip().lower()
+    if normalized == PANCAKE_INFINITY_CL_POOL_MANAGER:
+        return "cl"
+    if normalized == PANCAKE_INFINITY_BIN_POOL_MANAGER:
+        return "bin"
+    if (
+        configured == "cl"
+        or protocol == "pancakeswap_infinity_cl"
+    ):
+        return "cl"
+    if (
+        configured == "bin"
+        or protocol == "pancakeswap_infinity_bin"
+    ):
+        return "bin"
+    return ""
+
+
+def supported_v4_manager_scope(
+    event: dict[str, Any],
+    latest: int,
+    watch: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    chain = str(event.get("chain") or "")
+    token = norm((event.get("token") or {}).get("address"))
+    quote = norm((event.get("quote") or {}).get("address"))
+    pool_id = norm(event.get("pool_id"))
+    explicit_candidates = [
+        (address, meta)
+        for address, meta in sorted(watch.items())
+        if meta.get("source") == "event_config"
+        and meta.get("role") in {"pool_manager", "v4_pool_manager"}
+        and is_address(address)
+    ]
+    canonical_cl_meta = watch.get(PANCAKE_INFINITY_CL_POOL_MANAGER) or {}
+    automatic_candidate = (
+        [
+            (
+                PANCAKE_INFINITY_CL_POOL_MANAGER,
+                {
+                    **canonical_cl_meta,
+                    "source": "canonical_pool_id_probe",
+                },
+            )
+        ]
+        if (
+            not explicit_candidates
+            and re.fullmatch(r"0x[a-f0-9]{64}", pool_id) is not None
+            and v4_manager_type(
+                PANCAKE_INFINITY_CL_POOL_MANAGER,
+                canonical_cl_meta,
+            )
+            == "cl"
+            and PANCAKE_INFINITY_CL_POOL_MANAGER in watch
+        )
+        else []
+    )
+    candidates = explicit_candidates or automatic_candidate
+    discovery_mode = (
+        "explicit_manager"
+        if explicit_candidates
+        else "canonical_cl_pool_id_probe"
+        if automatic_candidate
+        else "none"
+    )
+    candidate_rows = [
+        {
+            "address": address,
+            "manager_type": v4_manager_type(address, meta),
+        }
+        for address, meta in candidates
+    ]
+    configuration_payload = {
+        "schema": "opening_v4_manager_inputs.v2",
+        "chain": chain,
+        "target_token": token,
+        "quote_token": quote,
+        "pool_id": pool_id,
+        "discovery_mode": discovery_mode,
+        "managers": candidate_rows,
+    }
+    configuration_hash = hashlib.sha256(
+        json.dumps(
+            configuration_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        not candidates
+        or not chain
+        or not is_address(token)
+        or not is_address(quote)
+        or re.fullmatch(r"0x[a-f0-9]{64}", pool_id) is None
+    ):
+        pool_id_applicable = (
+            re.fullmatch(r"0x[a-f0-9]{64}", pool_id) is not None
+        )
+        applicable = bool(candidates) or pool_id_applicable
+        return {
+            "schema": "opening_v4_manager_scope.v2",
+            "status": (
+                "manager_discovery_unavailable"
+                if not candidates and pool_id_applicable
+                else "not_configured"
+                if not candidates
+                else "config_invalid"
+            ),
+            "configuration_hash": (
+                configuration_hash if candidates else ""
+            ),
+            "as_of_block": latest,
+            "expected_query_count": len(candidates),
+            "attempted_query_count": 0,
+            "validation_error_count": int(applicable),
+            "snapshot_coherent": False,
+            "applicable": applicable,
+            "complete": not applicable,
+            "pools": [],
+        }
+    trace_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS",
+                "5000",
+            )
+        ),
+    )
+    opening_block = int(event.get("opening_block") or 0)
+    required_as_of_block = (
+        min(latest, opening_block + trace_blocks - 1)
+        if opening_block > 0
+        else latest
+    )
+    cached = event.get("opening_v4_pool_scope") or {}
+    cached_as_of = int(cached.get("as_of_block") or 0)
+    timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
+    if (
+        cached.get("schema") == "opening_v4_manager_scope.v2"
+        and cached.get("configuration_hash") == configuration_hash
+        and int(cached.get("expected_query_count") or -1)
+        == len(candidates)
+        and cached.get("complete") is True
+        and isinstance(cached.get("pools"), list)
+        and 0 < cached_as_of <= latest
+        and cached_as_of >= required_as_of_block
+        and strict_block_hash(cached.get("as_of_block_hash"))
+    ):
+        try:
+            canonical = quick_rpc_call(
+                chain,
+                "eth_getBlockByNumber",
+                [hex(cached_as_of), False],
+                timeout,
+            )
+            if (
+                isinstance(canonical, dict)
+                and strict_block_hash(canonical.get("hash"))
+                == norm(cached.get("as_of_block_hash"))
+            ):
+                return copy.deepcopy(cached)
+        except Exception:
+            pass
+
+    block_tag = hex(latest)
+    errors = 0
+    unsupported_manager_count = 0
+    attempted = 0
+    initial_block_hash = ""
+    pools: list[dict[str, Any]] = []
+    try:
+        initial_block = quick_rpc_call(
+            chain,
+            "eth_getBlockByNumber",
+            [block_tag, False],
+            timeout,
+        )
+        if isinstance(initial_block, dict):
+            initial_block_hash = strict_block_hash(
+                initial_block.get("hash")
+            )
+        if not initial_block_hash:
+            errors += 1
+    except Exception:
+        errors += 1
+    for address, meta in candidates:
+        attempted += 1
+        manager_type = v4_manager_type(address, meta)
+        if manager_type != "cl":
+            errors += 1
+            unsupported_manager_count += 1
+            continue
+        try:
+            code = quick_rpc_call(
+                chain,
+                "eth_getCode",
+                [address, block_tag],
+                timeout,
+            )
+            pool_key = strict_v4_pool_key_return(
+                quick_rpc_call(
+                    chain,
+                    "eth_call",
+                    [
+                        {
+                            "to": address,
+                            "data": (
+                                V4_POOL_ID_TO_KEY_SELECTOR
+                                + pool_id[2:]
+                            ),
+                        },
+                        block_tag,
+                    ],
+                    timeout,
+                )
+            )
+            if (
+                not has_runtime_bytecode(code)
+                or pool_key is None
+                or pool_key.get("pool_manager") != address
+                or {
+                    norm(pool_key.get("token0")),
+                    norm(pool_key.get("token1")),
+                }
+                != {token, quote}
+            ):
+                errors += 1
+                continue
+            pools.append(
+                {
+                    "address": address,
+                    "label": str(meta.get("label") or "V4 PoolManager"),
+                    "role": str(meta.get("role") or "pool_manager"),
+                    "source": str(
+                        meta.get("source") or "canonical_pool_id_probe"
+                    ),
+                    "pool_id": pool_id,
+                    "as_of_block": latest,
+                    "v4_manager_type": manager_type,
+                    **pool_key,
+                }
+            )
+        except OpeningTraceDeadlineExceeded:
+            errors += 1
+            break
+        except Exception:
+            errors += 1
+    as_of_block_hash = ""
+    snapshot_coherent = False
+    if attempted == len(candidates):
+        try:
+            final_block = quick_rpc_call(
+                chain,
+                "eth_getBlockByNumber",
+                [block_tag, False],
+                timeout,
+            )
+            if isinstance(final_block, dict):
+                as_of_block_hash = strict_block_hash(
+                    final_block.get("hash")
+                )
+            if (
+                not as_of_block_hash
+                or as_of_block_hash != initial_block_hash
+            ):
+                errors += 1
+            else:
+                snapshot_coherent = True
+        except Exception:
+            errors += 1
+    if not snapshot_coherent:
+        pools.clear()
+    complete = bool(
+        attempted == len(candidates)
+        and errors == 0
+        and len(pools) == len(candidates)
+    )
+    return {
+        "schema": "opening_v4_manager_scope.v2",
+        "status": (
+            "complete"
+            if complete
+            else "unsupported_manager_abi"
+            if unsupported_manager_count
+            else "validation_incomplete"
+        ),
+        "configuration_hash": configuration_hash,
+        "as_of_block": latest,
+        "as_of_block_hash": as_of_block_hash,
+        "required_as_of_block": required_as_of_block,
+        "expected_query_count": len(candidates),
+        "attempted_query_count": attempted,
+        "validation_error_count": errors,
+        "unsupported_manager_count": unsupported_manager_count,
+        "snapshot_coherent": snapshot_coherent,
+        "applicable": True,
+        "complete": complete,
+        "pools": pools,
+    }
+
+
+def liquidity_watch_addresses(
+    event: dict[str, Any],
+    pool_scope: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
     for address, row in global_address_labels(event["chain"]).items():
         label_class = str(row.get("class") or "").strip()
         if label_class in {"lp_position_manager", "pool_manager"}:
@@ -568,6 +1198,12 @@ def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]
                     "label": str(row.get("label") or label_class),
                     "role": label_class,
                     "watch_quote": "false",
+                    "source": "global_label",
+                    **{
+                        key: row[key]
+                        for key in ("protocol", "v4_manager_type")
+                        if key in row
+                    },
                 },
             )
     for row in event.get("watch_addresses", []):
@@ -578,30 +1214,183 @@ def liquidity_watch_addresses(event: dict[str, Any]) -> dict[str, dict[str, str]
                 "label": str(row.get("label") or role),
                 "role": role,
                 "watch_quote": "true" if row.get("watch_quote") else "false",
+                "source": "event_config",
+                **{
+                    key: row[key]
+                    for key in (
+                        "factory",
+                        "protocol",
+                        "token0",
+                        "token1",
+                        "fee",
+                        "v4_manager_type",
+                    )
+                    if key in row
+                },
             }
     for key, role in (("hook", "pool_hook"), ("operator", "hook_operator")):
         address = norm(event.get(key))
         if is_address(address):
-            rows.setdefault(address, {"label": key, "role": role, "watch_quote": "false"})
+            rows.setdefault(
+                address,
+                {
+                    "label": key,
+                    "role": role,
+                    "watch_quote": "false",
+                    "source": "event_config",
+                },
+            )
+    pool_manager = norm(event.get("pool_manager"))
+    if is_address(pool_manager):
+        known_manager = rows.get(pool_manager, {})
+        rows[pool_manager] = {
+            "label": str(known_manager.get("label") or "pool_manager"),
+            "role": "pool_manager",
+            "watch_quote": "false",
+            "source": "event_config",
+            **{
+                key: known_manager[key]
+                for key in ("protocol", "v4_manager_type")
+                if key in known_manager
+            },
+        }
+    for pool in (pool_scope or {}).get("pools", []):
+        address = norm(pool.get("address"))
+        if not is_address(address):
+            continue
+        if address in rows and rows[address].get("source") == "event_config":
+            rows[address].update(
+                {
+                    key: value
+                    for key, value in pool.items()
+                    if key != "address"
+                }
+            )
+            rows[address]["v3_validation_status"] = (
+                "factory_matrix_verified"
+            )
+            continue
+        rows[address] = {
+            "label": "tracked factory V3 pool",
+            "role": "pool",
+            "watch_quote": "false",
+            "source": "tracked_factory_matrix",
+            "v3_validation_status": "factory_matrix_verified",
+            **{key: value for key, value in pool.items() if key != "address"},
+        }
     return rows
 
 
+def attributable_liquidity_watch(
+    event: dict[str, Any],
+    watch: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    pool_id = norm(event.get("pool_id"))
+    has_pool_id = re.fullmatch(r"0x[a-f0-9]{64}", pool_id) is not None
+    has_position_ids = any(
+        str(value).isdigit()
+        for value in (event.get("lp_position_ids") or [])
+    )
+    return {
+        address: meta
+        for address, meta in watch.items()
+        if (
+            meta.get("role") == "pool"
+            or (
+                meta.get("role") == "lp_position_manager"
+                and has_position_ids
+            )
+            or (
+                meta.get("role") in {"pool_manager", "v4_pool_manager"}
+                and has_pool_id
+                and meta.get("source")
+                in {"event_config", "canonical_pool_id_probe"}
+                and meta.get("v4_validation_status")
+                == "pool_key_verified"
+                and v4_manager_type(address, meta) == "cl"
+            )
+        )
+    }
+
+
+def liquidity_flow_watch(
+    event: dict[str, Any],
+    watch: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        address: meta
+        for address, meta in watch.items()
+        if meta.get("role")
+        not in {"lp_position_manager", "pool_manager", "v4_pool_manager"}
+    }
+
+
+def explicit_liquidity_scope_complete(
+    event: dict[str, Any],
+    watch: dict[str, dict[str, Any]],
+) -> bool:
+    candidates = [
+        (address, meta)
+        for address, meta in watch.items()
+        if meta.get("source") == "event_config"
+        and meta.get("role")
+        in {"pool", "pool_manager", "v4_pool_manager"}
+    ]
+    if not candidates:
+        return False
+    return all(
+        (
+            meta.get("role") == "pool"
+            and meta.get("v3_validation_status")
+            == "factory_matrix_verified"
+        )
+        or (
+            meta.get("role") in {"pool_manager", "v4_pool_manager"}
+            and meta.get("v4_validation_status")
+            == "pool_key_verified"
+            and v4_manager_type(address, meta) == "cl"
+        )
+        for address, meta in candidates
+    )
+
+
 def liquidity_watch_scope_hash(
-    watch: dict[str, dict[str, str]],
+    watch: dict[str, dict[str, Any]],
     event: dict[str, Any] | None = None,
+    lp_watch: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     watch_rows = [
         {
             "address": address,
             "role": str(meta.get("role") or ""),
             "watch_quote": str(meta.get("watch_quote") or ""),
+            "source": str(meta.get("source") or ""),
+            "v3_validation_status": str(
+                meta.get("v3_validation_status") or ""
+            ),
+            "v4_validation_status": str(
+                meta.get("v4_validation_status") or ""
+            ),
+            "v4_manager_type": v4_manager_type(address, meta),
+            "token0": norm(meta.get("token0")),
+            "token1": norm(meta.get("token1")),
         }
         for address, meta in sorted(watch.items())
         if is_address(address)
     ]
-    if not watch_rows:
-        return ""
     event = event or {}
+    lp_watch = lp_watch or attributable_liquidity_watch(event, watch)
+    lp_watch_rows = [
+        {
+            "address": address,
+            "role": str(meta.get("role") or ""),
+            "source": str(meta.get("source") or ""),
+        }
+        for address, meta in sorted(lp_watch.items())
+        if is_address(address)
+    ]
+    if not watch_rows and not lp_watch_rows:
+        return ""
     position_ids = sorted(
         {
             int(value)
@@ -610,10 +1399,62 @@ def liquidity_watch_scope_hash(
         }
     )
     payload = {
-        "schema": "opening_liquidity_watch_scope.v2",
-        "watch": watch_rows,
+        "schema": "opening_liquidity_watch_scope.v6",
+        "liquidity_event_topics": sorted(LIQUIDITY_EVENT_TOPICS),
+        "flow_topics": sorted(
+            {TRANSFER_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC}
+        ),
+        "trace_blocks": max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS",
+                    "5000",
+                )
+            ),
+        ),
+        "scan_optional_directions": (
+            os.environ.get(
+                "ALPHA_OPENING_LIQUIDITY_SCAN_OPTIONAL_DIRECTIONS",
+                "0",
+            )
+            == "1"
+        ),
+        "scan_all_quote": (
+            os.environ.get(
+                "ALPHA_OPENING_LIQUIDITY_SCAN_ALL_QUOTE",
+                "0",
+            )
+            == "1"
+        ),
+        "flow_watch": watch_rows,
+        "lp_event_watch": lp_watch_rows,
         "pool_id": norm(event.get("pool_id")),
         "lp_position_ids": position_ids,
+        "v3_pool_configuration_hash": str(
+            (event.get("opening_v3_pool_scope") or {}).get(
+                "configuration_hash"
+            )
+            or ""
+        ),
+        "v3_pool_required_as_of_block": int(
+            (event.get("opening_v3_pool_scope") or {}).get(
+                "required_as_of_block"
+            )
+            or 0
+        ),
+        "v4_pool_configuration_hash": str(
+            (event.get("opening_v4_pool_scope") or {}).get(
+                "configuration_hash"
+            )
+            or ""
+        ),
+        "v4_pool_required_as_of_block": int(
+            (event.get("opening_v4_pool_scope") or {}).get(
+                "required_as_of_block"
+            )
+            or 0
+        ),
     }
     return hashlib.sha256(
         json.dumps(
@@ -632,22 +1473,91 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "ALPHA_OPENING_LIQUIDITY_MAX_AGE_SECONDS",
         10800,
     )
-    watch = liquidity_watch_addresses(event)
-    watch_scope_hash = liquidity_watch_scope_hash(
-        watch,
-        event,
+    pool_scope = supported_v3_pool_scope(event, latest)
+    event["opening_v3_pool_scope"] = copy.deepcopy(pool_scope)
+    watch = liquidity_watch_addresses(event, pool_scope)
+    v4_scope = supported_v4_manager_scope(event, latest, watch)
+    event["opening_v4_pool_scope"] = copy.deepcopy(v4_scope)
+    for pool in v4_scope.get("pools", []):
+        address = norm(pool.get("address"))
+        if address not in watch:
+            continue
+        watch[address].update(
+            {
+                key: value
+                for key, value in pool.items()
+                if key not in {"address", "label", "role"}
+            }
+        )
+        watch[address]["v4_validation_status"] = (
+            "pool_key_verified"
+        )
+    explicit_candidates = [
+        meta
+        for meta in watch.values()
+        if meta.get("source") == "event_config"
+        and meta.get("role")
+        in {"pool", "pool_manager", "v4_pool_manager"}
+    ]
+    explicit_scope = explicit_liquidity_scope_complete(event, watch)
+    flow_watch = liquidity_flow_watch(event, watch)
+    lp_watch = attributable_liquidity_watch(event, watch)
+    matrix_complete = pool_scope.get("complete") is True
+    v4_complete = v4_scope.get("complete") is True
+    verified_pool_present = bool(
+        pool_scope.get("pools") or v4_scope.get("pools")
     )
-    if not watch or not event.get("opening_block"):
+    scope_complete = bool(
+        matrix_complete
+        and v4_complete
+        and verified_pool_present
+        and (not explicit_candidates or explicit_scope)
+    )
+    scope_status = str(
+        "explicit_liquidity_scope_unverified"
+        if explicit_candidates and not explicit_scope
+        else "v4_pool_scope_incomplete"
+        if not v4_complete
+        else "complete_explicit_and_tracked_factory_matrix"
+        if explicit_scope and matrix_complete
+        else "empty_tracked_factory_matrix"
+        if (
+            pool_scope.get("complete") is True
+            and not verified_pool_present
+        )
+        else pool_scope.get("status") or "pool_scope_incomplete"
+    )
+    watch_scope_hash = liquidity_watch_scope_hash(
+        flow_watch,
+        event,
+        lp_watch,
+    )
+    if (
+        (not flow_watch and not lp_watch)
+        or not event.get("opening_block")
+    ):
+        manager_only = bool(watch) and not flow_watch and not lp_watch
         return {
-            "summary": "未配置池子/做市地址",
+            "summary": (
+                "LP 管理器缺少可归因 pool/position 标识"
+                if manager_only
+                else "未配置池子/做市地址"
+            ),
             "risk": "unknown_incomplete_coverage",
             "rows": 0,
             "coverage_complete": False,
-            "coverage_status": "empty_watch_scope_unverified",
+            "coverage_status": (
+                "unattributable_liquidity_manager_scope"
+                if manager_only
+                else "empty_watch_scope_unverified"
+            ),
+            "scope_complete": False,
+            "scope_status": scope_status,
             "watch_scope_hash": watch_scope_hash,
         }
     previous_verified = bool(
         event.get("opening_liquidity_coverage_complete") is True
+        and scope_complete
         and str(
             event.get("opening_liquidity_coverage_status") or ""
         )
@@ -668,6 +1578,8 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
             "rows": 0,
             "coverage_complete": True,
             "coverage_status": "carried_verified_old_opening",
+            "scope_complete": True,
+            "scope_status": scope_status,
             "watch_scope_hash": watch_scope_hash,
         }
     trace_blocks = max(
@@ -698,21 +1610,49 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
     totals = {
         "token_in": Decimal(0),
         "token_out": Decimal(0),
+        "pool_token_in": Decimal(0),
+        "pool_token_out": Decimal(0),
+        "pool_token_in_quote": Decimal(0),
+        "pool_token_in_unpriced": Decimal(0),
+        "pool_token_in_unconfirmed": Decimal(0),
+        "pool_token_out_unconfirmed": Decimal(0),
         "quote_in": Decimal(0),
         "quote_out": Decimal(0),
         "rows": 0,
     }
+    pool_transfer_amounts: dict[
+        str,
+        dict[str, Decimal],
+    ] = {"in": {}, "out": {}}
+    pool_swap_amounts: dict[
+        str,
+        dict[str, Decimal],
+    ] = {"in": {}, "out": {}}
+    pool_swap_net: dict[str, Decimal] = {}
+    pool_swap_quote_net: dict[str, Decimal] = {}
+    pool_swap_quote_known: set[str] = set()
+    pool_swap_order: dict[str, tuple[int, int]] = {}
+    seen_flow_log_fingerprints: dict[tuple[str, str, int], str] = {}
+    swap_decode_errors = 0
     max_logs = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_MAX_LOGS", "5000"))
     chunk_blocks = int(os.environ.get("ALPHA_OPENING_TRACE_LOG_CHUNK_BLOCKS", "5000"))
     timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
     scan_optional = os.environ.get("ALPHA_OPENING_LIQUIDITY_SCAN_OPTIONAL_DIRECTIONS", "0") == "1"
-    for address, meta in watch.items():
+    for address, meta in flow_watch.items():
+        is_pool = meta.get("role") == "pool"
         queries = [
-            ("token_out", token["address"], int(token["decimals"]), [TRANSFER_TOPIC, address_topic(address), None]),
+            (
+                "pool_token_out_unconfirmed" if is_pool else "token_out",
+                token["address"],
+                int(token["decimals"]),
+                [TRANSFER_TOPIC, address_topic(address), None],
+            ),
         ]
-        if meta.get("watch_quote") == "true" or os.environ.get("ALPHA_OPENING_LIQUIDITY_SCAN_ALL_QUOTE", "0") == "1":
+        if is_pool:
+            queries.append(("pool_token_in_unconfirmed", token["address"], int(token["decimals"]), [TRANSFER_TOPIC, None, address_topic(address)]))
+        elif meta.get("watch_quote") == "true" or os.environ.get("ALPHA_OPENING_LIQUIDITY_SCAN_ALL_QUOTE", "0") == "1":
             queries.append(("quote_in", quote["address"], int(quote["decimals"]), [TRANSFER_TOPIC, None, address_topic(address)]))
-        if scan_optional:
+        if scan_optional and not is_pool:
             queries.extend(
                 [
                     ("token_in", token["address"], int(token["decimals"]), [TRANSFER_TOPIC, None, address_topic(address)]),
@@ -734,11 +1674,263 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
                 timeout,
             )
             for log in logs:
-                row = transfer_log(log, decimals)
+                identity = strict_rpc_log_identity(log, query)
+                amount_word = strict_abi_uint_return(
+                    log.get("data") if isinstance(log, dict) else None,
+                    256,
+                )
+                if identity is None or amount_word is None:
+                    swap_decode_errors += 1
+                    continue
+                duplicate_state = rpc_log_duplicate_state(
+                    log,
+                    query,
+                    identity,
+                    seen_flow_log_fingerprints,
+                )
+                if duplicate_state == "conflict":
+                    swap_decode_errors += 1
+                    continue
+                if duplicate_state == "duplicate":
+                    continue
+                try:
+                    row = transfer_log(log, decimals)
+                except (IndexError, TypeError, ValueError):
+                    swap_decode_errors += 1
+                    continue
                 if row["from"] == row["to"]:
                     continue
                 totals[key] += row["amount"]
                 totals["rows"] += 1
+                if key in {
+                    "pool_token_in_unconfirmed",
+                    "pool_token_out_unconfirmed",
+                }:
+                    direction = (
+                        "in"
+                        if key == "pool_token_in_unconfirmed"
+                        else "out"
+                    )
+                    transfer_key = liquidity_activity_key(
+                        address,
+                        str(row.get("tx") or ""),
+                    )
+                    pool_transfer_amounts[direction][transfer_key] = (
+                        pool_transfer_amounts[direction].get(
+                            transfer_key,
+                            Decimal(0),
+                        )
+                        + row["amount"]
+                    )
+        token0 = norm(meta.get("token0"))
+        token1 = norm(meta.get("token1"))
+        if (
+            is_pool
+            and meta.get("v3_validation_status")
+            == "factory_matrix_verified"
+            and token0 != token1
+            and all(is_address(value) for value in (token0, token1))
+            and norm(token["address"]) in {token0, token1}
+        ):
+            target_slot = 0 if token0 == norm(token["address"]) else 1
+            swap_query = {
+                "address": address,
+                "fromBlock": hex(from_block),
+                "toBlock": hex(to_block),
+                "topics": [V3_SWAP_TOPIC],
+            }
+            for log in snapshot_cached_get_logs(
+                event,
+                swap_query,
+                chunk_blocks,
+                max_logs,
+                timeout,
+            ):
+                amount_raw = strict_v3_swap_amount(
+                    log.get("data"),
+                    target_slot,
+                )
+                quote_raw = strict_v3_swap_amount(
+                    log.get("data"),
+                    1 - target_slot,
+                )
+                identity = strict_rpc_log_identity(log, swap_query)
+                if (
+                    amount_raw is None
+                    or quote_raw is None
+                    or amount_raw == 0
+                    or quote_raw == 0
+                    or (amount_raw > 0) == (quote_raw > 0)
+                    or identity is None
+                ):
+                    swap_decode_errors += 1
+                    continue
+                duplicate_state = rpc_log_duplicate_state(
+                    log,
+                    swap_query,
+                    identity,
+                    seen_flow_log_fingerprints,
+                )
+                if duplicate_state == "conflict":
+                    swap_decode_errors += 1
+                    continue
+                if duplicate_state == "duplicate":
+                    continue
+                log_order, tx_hash, _block_hash = identity
+                swap_key = liquidity_activity_key(
+                    address,
+                    tx_hash,
+                )
+                pool_swap_order[swap_key] = max(
+                    pool_swap_order.get(swap_key, log_order),
+                    log_order,
+                )
+                amount = decimal_amount(
+                    abs(amount_raw),
+                    int(token["decimals"]),
+                )
+                pool_swap_net[swap_key] = (
+                    pool_swap_net.get(swap_key, Decimal(0))
+                    + (amount if amount_raw > 0 else -amount)
+                )
+                counterasset = token1 if target_slot == 0 else token0
+                if counterasset == norm(quote.get("address")):
+                    pool_swap_quote_known.add(swap_key)
+                    quote_amount = decimal_amount(
+                        abs(quote_raw),
+                        int(quote["decimals"]),
+                    )
+                    pool_swap_quote_net[swap_key] = (
+                        pool_swap_quote_net.get(swap_key, Decimal(0))
+                        + (
+                            quote_amount
+                            if amount_raw > 0
+                            else -quote_amount
+                        )
+                    )
+                direction = "in" if amount_raw > 0 else "out"
+                pool_swap_amounts[direction][swap_key] = (
+                    pool_swap_amounts[direction].get(
+                        swap_key,
+                        Decimal(0),
+                    )
+                    + amount
+                )
+                totals["rows"] += 1
+    v4_flow_watch = {
+        address: meta
+        for address, meta in watch.items()
+        if meta.get("role") in {"pool_manager", "v4_pool_manager"}
+        and meta.get("v4_validation_status") == "pool_key_verified"
+        and v4_manager_type(address, meta) == "cl"
+    }
+    for address, meta in v4_flow_watch.items():
+        token0 = norm(meta.get("token0"))
+        token1 = norm(meta.get("token1"))
+        pool_id = norm(meta.get("pool_id") or event.get("pool_id"))
+        if (
+            token0 == token1
+            or not all(is_address(value) for value in (token0, token1))
+            or norm(token["address"]) not in {token0, token1}
+            or re.fullmatch(r"0x[a-f0-9]{64}", pool_id) is None
+        ):
+            swap_decode_errors += 1
+            continue
+        target_slot = 0 if token0 == norm(token["address"]) else 1
+        swap_query = {
+            "address": address,
+            "fromBlock": hex(from_block),
+            "toBlock": hex(to_block),
+            "topics": [V4_SWAP_TOPIC, pool_id],
+        }
+        for log in snapshot_cached_get_logs(
+            event,
+            swap_query,
+            chunk_blocks,
+            max_logs,
+            timeout,
+        ):
+            amount_raw = strict_v4_swap_amount(
+                log.get("data"),
+                target_slot,
+            )
+            quote_raw = strict_v4_swap_amount(
+                log.get("data"),
+                1 - target_slot,
+            )
+            identity = strict_rpc_log_identity(log, swap_query)
+            if (
+                amount_raw is None
+                or quote_raw is None
+                or amount_raw == 0
+                or quote_raw == 0
+                or (amount_raw > 0) == (quote_raw > 0)
+                or identity is None
+            ):
+                swap_decode_errors += 1
+                continue
+            duplicate_state = rpc_log_duplicate_state(
+                log,
+                swap_query,
+                identity,
+                seen_flow_log_fingerprints,
+            )
+            if duplicate_state == "conflict":
+                swap_decode_errors += 1
+                continue
+            if duplicate_state == "duplicate":
+                continue
+            log_order, tx_hash, _block_hash = identity
+            swap_key = liquidity_activity_key(
+                address,
+                tx_hash,
+            )
+            pool_swap_order[swap_key] = max(
+                pool_swap_order.get(swap_key, log_order),
+                log_order,
+            )
+            amount = decimal_amount(
+                abs(amount_raw),
+                int(token["decimals"]),
+            )
+            pool_swap_net[swap_key] = (
+                pool_swap_net.get(swap_key, Decimal(0))
+                + (amount if amount_raw < 0 else -amount)
+            )
+            quote_amount = decimal_amount(
+                abs(quote_raw),
+                int(quote["decimals"]),
+            )
+            pool_swap_quote_known.add(swap_key)
+            pool_swap_quote_net[swap_key] = (
+                pool_swap_quote_net.get(swap_key, Decimal(0))
+                + (quote_amount if amount_raw < 0 else -quote_amount)
+            )
+            direction = "in" if amount_raw < 0 else "out"
+            pool_swap_amounts[direction][swap_key] = (
+                pool_swap_amounts[direction].get(
+                    swap_key,
+                    Decimal(0),
+                )
+                + amount
+            )
+            totals["rows"] += 1
+    sell_swap_keys: list[str] = []
+    for swap_key, net_amount in pool_swap_net.items():
+        if net_amount > 0:
+            totals["pool_token_in"] += net_amount
+            totals["pool_token_in_quote"] += max(
+                Decimal(0),
+                pool_swap_quote_net.get(swap_key, Decimal(0)),
+            )
+            if swap_key not in pool_swap_quote_known:
+                totals["pool_token_in_unpriced"] += net_amount
+            sell_swap_keys.append(swap_key)
+        elif net_amount < 0:
+            totals["pool_token_out"] += -net_amount
+    sell_swap_keys.sort(
+        key=lambda key: pool_swap_order.get(key, (0, 0))
+    )
     liquidity_events = scan_liquidity_events(
         event,
         from_block,
@@ -748,20 +1940,72 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
     liquidity_event_coverage_complete = (
         liquidity_events.get("coverage_complete") is not False
     )
+    add_target_amounts = {
+        str(key): decimal_from(value)
+        for key, value in (
+            liquidity_events.get("add_target_amounts") or {}
+        ).items()
+    }
+    remove_target_amounts = {
+        str(key): decimal_from(value)
+        for key, value in (
+            liquidity_events.get("remove_target_amounts") or {}
+        ).items()
+    }
+    totals["pool_token_in_unconfirmed"] = sum(
+        (
+            max(
+                Decimal(0),
+                amount
+                - pool_swap_amounts["in"].get(key, Decimal(0))
+                - add_target_amounts.get(key, Decimal(0)),
+            )
+            for key, amount in pool_transfer_amounts["in"].items()
+        ),
+        Decimal(0),
+    )
+    totals["pool_token_out_unconfirmed"] = sum(
+        (
+            max(
+                Decimal(0),
+                amount
+                - pool_swap_amounts["out"].get(key, Decimal(0))
+                - remove_target_amounts.get(key, Decimal(0)),
+            )
+            for key, amount in pool_transfer_amounts["out"].items()
+        ),
+        Decimal(0),
+    )
     quote_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_QUOTE_ALERT", "10000"))
     token_threshold = Decimal(os.environ.get("ALPHA_OPENING_LIQUIDITY_TOKEN_ALERT", "100000"))
     risk = "none"
-    if liquidity_events.get("risk") in {"lp_remove", "lp_collect"}:
-        risk = str(liquidity_events.get("risk"))
-    elif totals["quote_in"] >= quote_threshold:
+    if totals["quote_in"] >= quote_threshold:
         risk = "project_quote_in"
     elif totals["token_out"] >= token_threshold:
-        risk = "pool_token_out"
+        risk = "project_token_out"
     elif totals["quote_out"] >= quote_threshold:
         risk = "project_quote_out"
-    elif totals["token_in"] >= token_threshold:
+    elif (
+        totals["pool_token_in_quote"] >= quote_threshold
+        or totals["pool_token_in_unpriced"] >= token_threshold
+    ):
         risk = "pool_token_in"
-    if not liquidity_event_coverage_complete and risk == "none":
+    elif liquidity_events.get("risk") in {
+        "lp_remove",
+        "lp_collect",
+        "lp_activity_unattributed",
+    }:
+        risk = str(liquidity_events.get("risk"))
+    flow_attribution_complete = bool(
+        swap_decode_errors == 0
+        and totals["pool_token_in_unconfirmed"] < token_threshold
+    )
+    coverage_complete = bool(
+        scope_complete
+        and liquidity_event_coverage_complete
+        and flow_attribution_complete
+    )
+    if not coverage_complete and risk == "none":
         risk = "unknown_incomplete_coverage"
     return {
         "summary": liquidity_combined_text(
@@ -771,14 +2015,34 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
         "risk": risk,
         "from_block": from_block,
         "to_block": to_block,
-        "watch_address_count": len(watch),
+        "watch_address_count": len(flow_watch) + len(v4_flow_watch),
+        "lp_watch_address_count": len(lp_watch),
         "rows": int(totals["rows"]),
         "liquidity_event_rows": int(liquidity_events.get("rows") or 0),
         "token_in": decimal_str(totals["token_in"]),
         "token_out": decimal_str(totals["token_out"]),
+        "pool_token_in": decimal_str(totals["pool_token_in"]),
+        "pool_token_in_quote": decimal_str(
+            totals["pool_token_in_quote"]
+        ),
+        "pool_token_in_unpriced": decimal_str(
+            totals["pool_token_in_unpriced"]
+        ),
+        "pool_token_out": decimal_str(totals["pool_token_out"]),
+        "pool_token_in_unconfirmed": decimal_str(
+            totals["pool_token_in_unconfirmed"]
+        ),
+        "pool_token_out_unconfirmed": decimal_str(
+            totals["pool_token_out_unconfirmed"]
+        ),
+        "pool_swap_decode_errors": swap_decode_errors,
+        "pool_swap_evidence_keys": sell_swap_keys[-10:],
         "quote_in": decimal_str(totals["quote_in"]),
         "quote_out": decimal_str(totals["quote_out"]),
         "liquidity_events": liquidity_events.get("events", []),
+        "latest_actionable_remove_key": str(
+            liquidity_events.get("latest_actionable_remove_key") or ""
+        ),
         "liquidity_event_coverage_complete": (
             liquidity_event_coverage_complete
         ),
@@ -790,15 +2054,21 @@ def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, An
                 else "unknown_incomplete_coverage"
             )
         ),
-        "coverage_complete": liquidity_event_coverage_complete,
+        "scope_complete": scope_complete,
+        "scope_status": scope_status,
+        "coverage_complete": coverage_complete,
         "coverage_status": (
             "complete_historical_opening_window"
             if historical_backfill
             else "complete_recent_window"
         )
-        if liquidity_event_coverage_complete
+        if coverage_complete
         else str(
-            liquidity_events.get("coverage_status")
+            scope_status
+            if not scope_complete
+            else "pool_swap_attribution_incomplete"
+            if not flow_attribution_complete
+            else liquidity_events.get("coverage_status")
             or "unknown_incomplete_coverage"
         ),
         "watch_scope_hash": watch_scope_hash,
@@ -809,10 +2079,43 @@ def liquidity_flow_text(totals: dict[str, Decimal | int], token_symbol: str, quo
     parts = []
     token_out = Decimal(str(totals.get("token_out") or "0"))
     token_in = Decimal(str(totals.get("token_in") or "0"))
+    pool_token_in = Decimal(str(totals.get("pool_token_in") or "0"))
+    pool_token_out = Decimal(str(totals.get("pool_token_out") or "0"))
+    pool_token_in_quote = Decimal(
+        str(totals.get("pool_token_in_quote") or "0")
+    )
+    pool_token_in_unconfirmed = Decimal(
+        str(totals.get("pool_token_in_unconfirmed") or "0")
+    )
+    pool_token_out_unconfirmed = Decimal(
+        str(totals.get("pool_token_out_unconfirmed") or "0")
+    )
     quote_in = Decimal(str(totals.get("quote_in") or "0"))
     quote_out = Decimal(str(totals.get("quote_out") or "0"))
     if token_out:
-        parts.append(f"关键池/做市地址流出 {format_amount(token_out)} {token_symbol}")
+        parts.append(f"项目/做市地址转出 {format_amount(token_out)} {token_symbol}")
+    if pool_token_in:
+        quote_text = (
+            f" / {format_amount(pool_token_in_quote)} {quote_symbol}"
+            if pool_token_in_quote
+            else ""
+        )
+        parts.append(
+            f"Swap确认卖入池 {format_amount(pool_token_in)} "
+            f"{token_symbol}{quote_text}"
+        )
+    if pool_token_out:
+        parts.append(f"Swap确认从池买出 {format_amount(pool_token_out)} {token_symbol}")
+    if pool_token_in_unconfirmed:
+        parts.append(
+            f"流入池但未由Swap归因 "
+            f"{format_amount(pool_token_in_unconfirmed)} {token_symbol}"
+        )
+    if pool_token_out_unconfirmed:
+        parts.append(
+            f"流出池但未由Swap归因 "
+            f"{format_amount(pool_token_out_unconfirmed)} {token_symbol}"
+        )
     if quote_in:
         parts.append(f"收到 {format_amount(quote_in)} {quote_symbol}")
     if token_in:
@@ -845,12 +2148,232 @@ def int_slot(data: str, index: int) -> int:
     return value
 
 
-def liquidity_event_row(log: dict[str, Any], meta: dict[str, str]) -> dict[str, Any]:
+def strict_v3_swap_amount(data: Any, target_slot: int) -> int | None:
+    return strict_signed_event_amount(
+        data,
+        target_slot,
+        word_count=5,
+        bits=256,
+    )
+
+
+def strict_v4_swap_amount(data: Any, target_slot: int) -> int | None:
+    return strict_signed_event_amount(
+        data,
+        target_slot,
+        word_count=7,
+        bits=128,
+    )
+
+
+def strict_signed_event_amount(
+    data: Any,
+    target_slot: int,
+    *,
+    word_count: int,
+    bits: int,
+) -> int | None:
+    if (
+        target_slot not in {0, 1}
+        or bits not in {128, 256}
+        or not isinstance(data, str)
+        or not data.startswith("0x")
+    ):
+        return None
+    raw = data[2:]
+    expected_length = word_count * 64
+    if (
+        len(raw) != expected_length
+        or re.fullmatch(
+            rf"[0-9a-fA-F]{{{expected_length}}}",
+            raw,
+        )
+        is None
+    ):
+        return None
+    word = int(raw[target_slot * 64:(target_slot + 1) * 64], 16)
+    if bits == 256:
+        return word - 2**256 if word >= 2**255 else word
+    low_mask = 2**bits - 1
+    low = word & low_mask
+    high = word >> bits
+    if low >= 2 ** (bits - 1):
+        if high != 2 ** (256 - bits) - 1:
+            return None
+        return low - 2**bits
+    if high != 0:
+        return None
+    return low
+
+
+def strict_log_order(log: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        block = int(str(log.get("blockNumber") or ""), 16)
+        log_index = int(str(log.get("logIndex") or ""), 16)
+    except (TypeError, ValueError):
+        return None
+    return (block, log_index) if block >= 0 and log_index >= 0 else None
+
+
+def strict_rpc_log_identity(
+    log: Any,
+    query: dict[str, Any],
+) -> tuple[tuple[int, int], str, str] | None:
+    if not isinstance(log, dict):
+        return None
+    if "removed" in log and (
+        type(log["removed"]) is not bool or log["removed"] is True
+    ):
+        return None
+    order = strict_log_order(log)
+    tx_hash = strict_block_hash(log.get("transactionHash"))
+    block_hash = strict_block_hash(log.get("blockHash"))
+    if order is None or not tx_hash or not block_hash:
+        return None
+    try:
+        from_block = int(str(query.get("fromBlock") or ""), 16)
+        to_block = int(str(query.get("toBlock") or ""), 16)
+    except (TypeError, ValueError):
+        return None
+    if not from_block <= order[0] <= to_block:
+        return None
+    expected_addresses = query.get("address")
+    if isinstance(expected_addresses, list):
+        address_set = {norm(value) for value in expected_addresses}
+    else:
+        address_set = {norm(expected_addresses)}
+    if norm(log.get("address")) not in address_set:
+        return None
+    topics = log.get("topics")
+    expected_topics = query.get("topics") or []
+    if not isinstance(topics, list) or len(topics) < len(expected_topics):
+        return None
+    if any(not isinstance(topic, str) for topic in topics):
+        return None
+    normalized_topics = [norm(topic) for topic in topics]
+    if any(
+        re.fullmatch(r"0x[a-f0-9]{64}", topic) is None
+        for topic in normalized_topics
+    ):
+        return None
+    for index, expected in enumerate(expected_topics):
+        if expected is None:
+            continue
+        allowed = expected if isinstance(expected, list) else [expected]
+        if normalized_topics[index] not in {norm(value) for value in allowed}:
+            return None
+    return order, tx_hash, block_hash
+
+
+def rpc_log_duplicate_state(
+    log: dict[str, Any],
+    query: dict[str, Any],
+    identity: tuple[tuple[int, int], str, str],
+    seen: dict[tuple[str, str, int], str],
+) -> str:
+    order, tx_hash, block_hash = identity
+    query_key = json.dumps(
+        query,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    key = (query_key, tx_hash, order[1])
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "address": norm(log.get("address")),
+                "block": order[0],
+                "block_hash": block_hash,
+                "topics": [norm(topic) for topic in log.get("topics", [])],
+                "data": norm(log.get("data")),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    previous = seen.get(key)
+    if previous is None:
+        seen[key] = fingerprint
+        return "new"
+    return "duplicate" if previous == fingerprint else "conflict"
+
+
+def liquidity_activity_key(address: Any, tx_hash: Any) -> str:
+    return f"{norm(address)}:{norm(tx_hash)}"
+
+
+def liquidity_event_target_amount(
+    event: dict[str, Any],
+    row: dict[str, Any],
+    meta: dict[str, Any],
+) -> Decimal | None:
+    token = event.get("token") or {}
+    target = norm(token.get("address"))
+    token0 = norm(meta.get("token0"))
+    token1 = norm(meta.get("token1"))
+    if not is_address(target) or target not in {token0, token1}:
+        return None
+    raw_value = row.get("amount0" if target == token0 else "amount1")
+    if not str(raw_value or "").isdigit():
+        return None
+    try:
+        decimals = int(token.get("decimals"))
+    except (TypeError, ValueError):
+        return None
+    return decimal_amount(int(str(raw_value)), decimals)
+
+
+def liquidity_event_quote_amount(
+    event: dict[str, Any],
+    row: dict[str, Any],
+    meta: dict[str, Any],
+) -> Decimal | None:
+    quote = event.get("quote") or {}
+    target = norm(quote.get("address"))
+    token0 = norm(meta.get("token0"))
+    token1 = norm(meta.get("token1"))
+    if not is_address(target) or target not in {token0, token1}:
+        return None
+    raw_value = row.get("amount0" if target == token0 else "amount1")
+    if not str(raw_value or "").isdigit():
+        return None
+    try:
+        decimals = int(quote.get("decimals"))
+    except (TypeError, ValueError):
+        return None
+    return decimal_amount(int(str(raw_value)), decimals)
+
+
+def liquidity_event_row(
+    log: dict[str, Any],
+    meta: dict[str, str],
+) -> dict[str, Any] | None:
     topics = [norm(topic) for topic in log.get("topics", [])]
     topic0 = topics[0] if topics else ""
     data = str(log.get("data") or "0x")
+    exact_words = {
+        INCREASE_LIQUIDITY_TOPIC: 3,
+        DECREASE_LIQUIDITY_TOPIC: 3,
+        COLLECT_TOPIC: 3,
+        V3_MINT_TOPIC: 4,
+        V3_BURN_TOPIC: 3,
+        V3_COLLECT_TOPIC: 3,
+        MODIFY_LIQUIDITY_TOPIC: 4,
+    }
+    word_count = strict_abi_event_word_count(data)
+    if topic0 in exact_words:
+        if word_count != exact_words[topic0]:
+            return None
+    elif topic0 == BURN_TOPIC:
+        if word_count is None or word_count < 3:
+            return None
+    else:
+        return None
     row = {
         "block": int(log.get("blockNumber") or "0x0", 16),
+        "log_index": int(log.get("logIndex") or "0x0", 16),
         "tx": log.get("transactionHash", ""),
         "address": norm(log.get("address")),
         "label": meta.get("label", ""),
@@ -873,7 +2396,26 @@ def liquidity_event_row(log: dict[str, Any], meta: dict[str, str]) -> dict[str, 
         delta = int_slot(data, 2)
         direction = "add" if delta > 0 else "remove" if delta < 0 else "neutral"
         row.update({"event": "ModifyLiquidity", "direction": direction, "liquidity_delta": str(delta)})
+    elif topic0 == V3_MINT_TOPIC:
+        row.update({"event": "V3Mint", "direction": "add", "liquidity_delta": str(uint_slot(data, 1)), "amount0": str(uint_slot(data, 2)), "amount1": str(uint_slot(data, 3))})
+    elif topic0 == V3_BURN_TOPIC:
+        row.update({"event": "V3Burn", "direction": "remove", "liquidity_delta": str(uint_slot(data, 0)), "amount0": str(uint_slot(data, 1)), "amount1": str(uint_slot(data, 2))})
+    elif topic0 == V3_COLLECT_TOPIC:
+        row.update({"event": "V3Collect", "direction": "collect", "amount0": str(uint_slot(data, 1)), "amount1": str(uint_slot(data, 2))})
     return row
+
+
+def strict_abi_event_word_count(data: Any) -> int | None:
+    if not isinstance(data, str) or not data.startswith("0x"):
+        return None
+    raw = data[2:]
+    if (
+        not raw
+        or len(raw) % 64 != 0
+        or re.fullmatch(r"[0-9a-fA-F]+", raw) is None
+    ):
+        return None
+    return len(raw) // 64
 
 
 def liquidity_event_matches(
@@ -909,32 +2451,31 @@ def liquidity_event_matches(
     return False
 
 
-def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, watch: dict[str, dict[str, str]]) -> dict[str, Any]:
-    pool_id = norm(event.get("pool_id"))
-    has_pool_id = (
-        re.fullmatch(r"0x[a-f0-9]{64}", pool_id)
-        is not None
-    )
-    has_position_ids = any(
-        str(value).isdigit()
-        for value in (event.get("lp_position_ids") or [])
-    )
-    addresses = {
-        address: meta
-        for address, meta in watch.items()
-        if (
-            meta.get("role") == "pool"
-            or (
-                meta.get("role") == "lp_position_manager"
-                and has_position_ids
-            )
-            or (
-                meta.get("role")
-                in {"pool_manager", "v4_pool_manager"}
-                and has_pool_id
-            )
+def liquidity_event_query_topics(
+    event: dict[str, Any],
+    meta: dict[str, str],
+) -> list[Any]:
+    topics: list[Any] = [sorted(LIQUIDITY_EVENT_TOPICS)]
+    role = str(meta.get("role") or "").lower()
+    if role in {"pool_manager", "v4_pool_manager"}:
+        pool_id = norm(event.get("pool_id"))
+        if re.fullmatch(r"0x[a-f0-9]{64}", pool_id):
+            topics.append(pool_id)
+    elif role == "lp_position_manager":
+        position_ids = sorted(
+            {
+                "0x" + f"{int(value):064x}"
+                for value in (event.get("lp_position_ids") or [])
+                if str(value).isdigit()
+            }
         )
-    }
+        if position_ids:
+            topics.append(position_ids)
+    return topics
+
+
+def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, watch: dict[str, dict[str, str]]) -> dict[str, Any]:
+    addresses = attributable_liquidity_watch(event, watch)
     if not addresses:
         manager_roles = {
             str(meta.get("role") or "")
@@ -977,13 +2518,35 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
     timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
     rows: list[dict[str, Any]] = []
     direction_counts = {"add": 0, "remove": 0, "collect": 0}
+    directions_by_activity: dict[str, set[str]] = {}
+    add_activity_keys: set[str] = set()
+    remove_activity_keys: set[str] = set()
+    add_target_amounts: dict[str, Decimal] = {}
+    decrease_target_amounts: dict[str, Decimal] = {}
+    collect_target_amounts: dict[str, Decimal] = {}
+    add_quote_amounts: dict[str, Decimal] = {}
+    decrease_quote_amounts: dict[str, Decimal] = {}
+    collect_quote_amounts: dict[str, Decimal] = {}
+    unattributed_remove_keys: set[str] = set()
+    activity_order: dict[str, tuple[int, int]] = {}
+    decode_errors = 0
+    seen_log_fingerprints: dict[tuple[str, str, int], str] = {}
+    token_threshold = Decimal(
+        os.environ.get(
+            "ALPHA_OPENING_LIQUIDITY_TOKEN_ALERT",
+            "100000",
+        )
+    )
+    quote_threshold = Decimal(
+        os.environ.get("ALPHA_OPENING_LIQUIDITY_QUOTE_ALERT", "10000")
+    )
     matched_count = 0
     for address, meta in addresses.items():
         query = {
             "address": address,
             "fromBlock": hex(from_block),
             "toBlock": hex(latest),
-            "topics": [sorted(LIQUIDITY_EVENT_TOPICS)],
+            "topics": liquidity_event_query_topics(event, meta),
         }
         for log in snapshot_cached_get_logs(
             event,
@@ -992,23 +2555,147 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
             query_max_logs,
             timeout,
         ):
+            identity = strict_rpc_log_identity(log, query)
+            if identity is None:
+                decode_errors += 1
+                continue
             if not liquidity_event_matches(event, log, meta):
                 continue
             row = liquidity_event_row(log, meta)
+            if row is None:
+                decode_errors += 1
+                continue
+            duplicate_state = rpc_log_duplicate_state(
+                log,
+                query,
+                identity,
+                seen_log_fingerprints,
+            )
+            if duplicate_state == "conflict":
+                decode_errors += 1
+                continue
+            if duplicate_state == "duplicate":
+                continue
             direction = str(row.get("direction") or "")
             if direction in direction_counts:
                 direction_counts[direction] += 1
+            activity_key = liquidity_activity_key(
+                row.get("address"),
+                row.get("tx"),
+            )
+            activity_order[activity_key] = max(
+                activity_order.get(activity_key, (0, 0)),
+                (
+                    int(row.get("block") or 0),
+                    int(row.get("log_index") or 0),
+                ),
+            )
+            directions_by_activity.setdefault(activity_key, set()).add(
+                direction
+            )
+            target_amount = liquidity_event_target_amount(
+                event,
+                row,
+                meta,
+            )
+            quote_amount = liquidity_event_quote_amount(
+                event,
+                row,
+                meta,
+            )
+            if direction == "add":
+                add_activity_keys.add(activity_key)
+            elif direction in {"remove", "collect"}:
+                remove_activity_keys.add(activity_key)
+                if target_amount is None:
+                    unattributed_remove_keys.add(activity_key)
+            if target_amount is not None and direction == "add":
+                add_target_amounts[activity_key] = (
+                    add_target_amounts.get(activity_key, Decimal(0))
+                    + target_amount
+                )
+            elif target_amount is not None and direction == "remove":
+                decrease_target_amounts[activity_key] = (
+                    decrease_target_amounts.get(activity_key, Decimal(0))
+                    + target_amount
+                )
+            elif target_amount is not None and direction == "collect":
+                collect_target_amounts[activity_key] = (
+                    collect_target_amounts.get(activity_key, Decimal(0))
+                    + target_amount
+                )
+            if quote_amount is not None and quote_amount > 0 and direction == "add":
+                add_quote_amounts[activity_key] = (
+                    add_quote_amounts.get(activity_key, Decimal(0))
+                    + quote_amount
+                )
+            elif quote_amount is not None and quote_amount > 0 and direction == "remove":
+                decrease_quote_amounts[activity_key] = (
+                    decrease_quote_amounts.get(activity_key, Decimal(0))
+                    + quote_amount
+                )
+            elif quote_amount is not None and quote_amount > 0 and direction == "collect":
+                collect_quote_amounts[activity_key] = (
+                    collect_quote_amounts.get(activity_key, Decimal(0))
+                    + quote_amount
+                )
             matched_count += 1
             rows.append(row)
-            if len(rows) > display_limit:
-                rows.pop(0)
+    rows.sort(
+        key=lambda row: (
+            int(row.get("block") or 0),
+            int(row.get("log_index") or 0),
+            norm(row.get("address")),
+            norm(row.get("tx")),
+        )
+    )
+    rebalance_count = len(add_activity_keys & remove_activity_keys)
+    remove_target_amounts = {
+        key: max(
+            decrease_target_amounts.get(key, Decimal(0)),
+            collect_target_amounts.get(key, Decimal(0)),
+        )
+        for key in (
+            set(decrease_target_amounts) | set(collect_target_amounts)
+        )
+    }
+    remove_quote_amounts = {
+        key: max(
+            decrease_quote_amounts.get(key, Decimal(0)),
+            collect_quote_amounts.get(key, Decimal(0)),
+        )
+        for key in (
+            set(decrease_quote_amounts) | set(collect_quote_amounts)
+        )
+    }
+    threshold_actionable_keys = {
+        key
+        for key in set(remove_target_amounts) | set(remove_quote_amounts)
+        if max(
+            Decimal(0),
+            remove_target_amounts.get(key, Decimal(0))
+            - add_target_amounts.get(key, Decimal(0)),
+        )
+        >= token_threshold
+        or (
+            max(
+                Decimal(0),
+                remove_quote_amounts.get(key, Decimal(0))
+                - add_quote_amounts.get(key, Decimal(0)),
+            )
+            >= quote_threshold
+        )
+    }
+    actionable_remove_keys = sorted(
+        unattributed_remove_keys | threshold_actionable_keys,
+        key=lambda key: activity_order.get(key, (0, 0)),
+    )
+    actionable_remove_count = len(actionable_remove_keys)
     remove_count = direction_counts["remove"]
     collect_count = direction_counts["collect"]
     add_count = direction_counts["add"]
-    if remove_count:
-        risk = "lp_remove"
-    elif collect_count:
-        risk = "lp_collect"
+    if actionable_remove_count:
+        risk = "lp_activity_unattributed"
     else:
         risk = "none"
     parts = []
@@ -1018,14 +2705,39 @@ def scan_liquidity_events(event: dict[str, Any], from_block: int, latest: int, w
         parts.append(f"LP减池/撤流动性 {remove_count} 次")
     if collect_count:
         parts.append(f"LP收取/提取费用 {collect_count} 次")
+    if risk == "lp_activity_unattributed":
+        parts.append("LP主体、金额或资金去向尚未归因")
+    if rebalance_count:
+        parts.append(f"同交易再平衡 {rebalance_count} 条")
     summary = "；".join(parts) if parts else "未发现 LP 增减事件"
     return {
         "summary": summary,
         "risk": risk,
         "rows": matched_count,
-        "events": rows[-10:],
-        "coverage_complete": True,
-        "coverage_status": "complete",
+        "events": rows[-min(10, display_limit):],
+        "add_activity_keys": sorted(add_activity_keys),
+        "remove_activity_keys": sorted(remove_activity_keys),
+        "actionable_remove_keys": actionable_remove_keys,
+        "latest_actionable_remove_key": (
+            actionable_remove_keys[-1] if actionable_remove_keys else ""
+        ),
+        "add_target_amounts": {
+            key: decimal_str(value)
+            for key, value in sorted(add_target_amounts.items())
+        },
+        "remove_target_amounts": {
+            key: decimal_str(value)
+            for key, value in sorted(remove_target_amounts.items())
+        },
+        "remove_quote_amounts": {
+            key: decimal_str(value)
+            for key, value in sorted(remove_quote_amounts.items())
+        },
+        "decode_error_count": decode_errors,
+        "coverage_complete": decode_errors == 0,
+        "coverage_status": (
+            "complete" if decode_errors == 0 else "event_decode_incomplete"
+        ),
     }
 
 
@@ -1925,6 +3637,54 @@ def decode_address_return_state(data: Any) -> tuple[str, str]:
     if candidate == ZERO:
         return "zero", ""
     return "address", candidate
+
+
+def strict_abi_address_return(data: Any) -> tuple[str, str]:
+    if not isinstance(data, str) or not data.startswith("0x"):
+        return "invalid", ""
+    raw = data[2:]
+    if (
+        len(raw) != 64
+        or re.fullmatch(r"[0-9a-fA-F]{64}", raw) is None
+        or raw[:24] != "0" * 24
+    ):
+        return "invalid", ""
+    candidate = "0x" + raw[24:].lower()
+    if candidate == ZERO:
+        return "zero", ""
+    return "address", candidate
+
+
+def strict_abi_uint_return(data: Any, bits: int) -> int | None:
+    if not isinstance(data, str) or not data.startswith("0x"):
+        return None
+    raw = data[2:]
+    if len(raw) != 64 or re.fullmatch(r"[0-9a-fA-F]{64}", raw) is None:
+        return None
+    value = int(raw, 16)
+    return value if 0 <= value < 2**bits else None
+
+
+def has_runtime_bytecode(data: Any) -> bool:
+    if not isinstance(data, str) or not data.startswith("0x"):
+        return False
+    raw = data[2:]
+    return bool(
+        raw
+        and len(raw) % 2 == 0
+        and re.fullmatch(r"[0-9a-fA-F]+", raw)
+        and any(byte != "00" for byte in re.findall(r"..", raw))
+    )
+
+
+def strict_block_hash(data: Any) -> str:
+    if (
+        not isinstance(data, str)
+        or re.fullmatch(r"0x[0-9a-fA-F]{64}", data) is None
+        or int(data[2:], 16) == 0
+    ):
+        return ""
+    return data.lower()
 
 
 def token_controller(chain: str, token_address: str) -> dict[str, str]:
@@ -4552,11 +6312,19 @@ def incremental_opened_event(
         event["opening_liquidity_watch_scope_hash"] = str(
             liquidity_flow.get("watch_scope_hash") or ""
         )
+        event["opening_liquidity_scope_complete"] = (
+            liquidity_flow.get("scope_complete") is True
+        )
+        event["opening_liquidity_scope_status"] = str(
+            liquidity_flow.get("scope_status") or "unknown_incomplete_scope"
+        )
     except OpeningLogCoverageTruncated:
         event["opening_liquidity_coverage_complete"] = False
         event["opening_liquidity_coverage_status"] = (
             "log_coverage_truncated"
         )
+        event["opening_liquidity_scope_complete"] = False
+        event["opening_liquidity_scope_status"] = "log_coverage_truncated"
         event["liquidity_flow"] = {
             "summary": "池/做市日志超过有界预算，覆盖不完整",
             "risk": "unknown_incomplete_coverage",
@@ -4568,6 +6336,8 @@ def incremental_opened_event(
         deadline_exceeded = True
         event["opening_liquidity_coverage_complete"] = False
         event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        event["opening_liquidity_scope_complete"] = False
+        event["opening_liquidity_scope_status"] = "deadline_exceeded"
         event["liquidity_flow"] = {
             "summary": "开盘流动性增量刷新超出预算",
             "risk": "unknown_incomplete_coverage",
@@ -4657,6 +6427,19 @@ def incremental_opened_event(
         ),
         "opening_liquidity_watch_scope_hash": str(
             event.get("opening_liquidity_watch_scope_hash") or ""
+        ),
+        "opening_liquidity_scope_complete": (
+            event.get("opening_liquidity_scope_complete") is True
+        ),
+        "opening_liquidity_scope_status": str(
+            event.get("opening_liquidity_scope_status")
+            or "unknown_incomplete_scope"
+        ),
+        "opening_v3_pool_scope": copy.deepcopy(
+            event.get("opening_v3_pool_scope") or {}
+        ),
+        "opening_v4_pool_scope": copy.deepcopy(
+            event.get("opening_v4_pool_scope") or {}
         ),
         "refresh_status": refresh_status,
         "immutable_opening_generated_at": str(
@@ -5186,7 +6969,8 @@ def apply_opening_coverage_gate(
             "lp_collect",
             "project_quote_in",
             "project_quote_out",
-            "pool_token_out",
+            "project_token_out",
+            "pool_token_in",
         }
     )
     if not confirmed_risk:
@@ -5379,11 +7163,19 @@ def build_opened_event(
         event["opening_liquidity_watch_scope_hash"] = str(
             liquidity_flow.get("watch_scope_hash") or ""
         )
+        event["opening_liquidity_scope_complete"] = (
+            liquidity_flow.get("scope_complete") is True
+        )
+        event["opening_liquidity_scope_status"] = str(
+            liquidity_flow.get("scope_status") or "unknown_incomplete_scope"
+        )
     except OpeningLogCoverageTruncated:
         event["opening_liquidity_coverage_complete"] = False
         event["opening_liquidity_coverage_status"] = (
             "log_coverage_truncated"
         )
+        event["opening_liquidity_scope_complete"] = False
+        event["opening_liquidity_scope_status"] = "log_coverage_truncated"
         event["liquidity_flow"] = {
             "summary": "池/做市日志超过有界预算，覆盖不完整",
             "risk": "unknown_incomplete_coverage",
@@ -5395,6 +7187,8 @@ def build_opened_event(
         deadline_exceeded = True
         event["opening_liquidity_coverage_complete"] = False
         event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        event["opening_liquidity_scope_complete"] = False
+        event["opening_liquidity_scope_status"] = "deadline_exceeded"
         event["liquidity_flow"] = {
             "summary": "池/做市日志刷新超出本轮预算",
             "risk": "unknown_incomplete_coverage",
@@ -5803,15 +7597,7 @@ def analyze_opened(
     liquidity_flow_risk = str(liquidity_flow.get("risk") or "none")
     liquidity_flow_active = liquidity_flow_risk not in {"none", "skipped_old_opening"}
 
-    if not rows:
-        conclusion = f"{event['symbol']} 已到开盘块，暂未发现首批 token 转账。"
-        spot = "观察；等真实成交"
-        perp = "不开；没有价格和抛压证据"
-        direction = "观察"
-        trade_signal = "不买；没有真实成交"
-        operator = "项目方尚未形成可见成交路径。"
-        sniper = "暂无前排买入证据。"
-    elif confirmed_sell_quote >= confirmed_sell_min:
+    if confirmed_sell_quote >= confirmed_sell_min:
         conclusion = f"{event['symbol']} 首批买家累计确认换出 {format_amount(confirmed_sell_quote)} {event['quote']['symbol']}，按卖出信号处理。"
         spot = "减仓/卖出；空仓不接"
         perp = "偏空条件；等交易所流入、价格破位和可交易合约深度"
@@ -5827,6 +7613,22 @@ def analyze_opened(
         trade_signal = "不跟；项目侧收到报价资产"
         operator = f"项目/做市相关地址出现报价资产回收：{liquidity_flow_summary}。"
         sniper = "首批买入信号降权，当前主线转为项目侧资金回收。"
+    elif liquidity_flow_risk == "project_token_out":
+        conclusion = f"{event['symbol']} 项目或做市地址出现大额筹码转出，需确认下一跳。"
+        spot = "不追；已有仓位降低风险，等待转出去向确认"
+        perp = "偏空条件；等交易所流入、池内卖入和价格走弱"
+        direction = "中性偏空"
+        trade_signal = "降低风险；项目/做市筹码大额转出"
+        operator = f"关键地址筹码外流已确认，转账尚未直接解释为成交：{liquidity_flow_summary}。"
+        sniper = "首批狙击信号降权，继续追踪筹码下一跳。"
+    elif liquidity_flow_risk == "pool_token_in":
+        conclusion = f"{event['symbol']} 出现大额代币卖入受监控池，市场卖压已经形成。"
+        spot = "降低风险；空仓等待卖压衰减和真实承接"
+        perp = "偏空观察；等价格破位和可交易合约深度"
+        direction = "偏空"
+        trade_signal = "降低风险；池内大额卖入"
+        operator = f"池内实际卖入已确认，卖方身份仍需结合首批钱包和项目地址归因：{liquidity_flow_summary}。"
+        sniper = "若首批钱包同步外转或换出，将升级为确认卖出。"
     elif liquidity_flow_risk == "lp_remove":
         conclusion = f"{event['symbol']} 开盘短窗口出现减池/撤流动性事件，承接风险上升。"
         spot = "不追；已有仓位先降风险，等池子恢复和价格承接确认"
@@ -5843,6 +7645,22 @@ def analyze_opened(
         trade_signal = "不跟；LP 收取事件待确认"
         operator = f"项目/LP 相关合约出现收取动作：{liquidity_flow_summary}。"
         sniper = "首批买入信号降权，当前看 LP 事件后续去向。"
+    elif liquidity_flow_risk == "lp_activity_unattributed":
+        conclusion = f"{event['symbol']} 出现 LP 活动，主体、金额或资金去向尚未完成归因。"
+        spot = "观察；等待池内实际大额流出和归因证据"
+        perp = "不开；LP 活动尚未形成方向证据"
+        direction = "观察"
+        trade_signal = "观察；LP 活动未归因"
+        operator = f"已记录池活动，暂不解释为项目方或庄家撤池：{liquidity_flow_summary}。"
+        sniper = "继续看池内实际转出与地址归因。"
+    elif not rows:
+        conclusion = f"{event['symbol']} 已到开盘块，暂未发现首批 token 转账。"
+        spot = "观察；等真实成交"
+        perp = "不开；没有价格和抛压证据"
+        direction = "观察"
+        trade_signal = "不买；没有真实成交"
+        operator = "项目方尚未形成可见成交路径。"
+        sniper = "暂无前排买入证据。"
     elif "余额接近0" in trace or "清仓转出" in trace:
         sell_note = f"且小额确认换出 {format_amount(confirmed_sell_quote)} {event['quote']['symbol']}，未达卖出阈值" if confirmed_sell_quote > 0 else "尚未确认卖到市场"
         conclusion = f"{event['symbol']} 首批买家出现清仓/余额接近0，{sell_note}。"
@@ -6060,6 +7878,72 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                 )
             )
         if analysis.get("liquidity_flow_risk") and analysis.get("liquidity_flow_risk") not in {"none", "skipped_old_opening"}:
+            liquidity_flow = event.get("liquidity_flow") or {}
+            liquidity_risk = str(
+                analysis.get("liquidity_flow_risk") or ""
+            )
+            amount_field = {
+                "project_quote_in": "quote_in",
+                "project_quote_out": "quote_out",
+                "project_token_out": "token_out",
+                "pool_token_in": (
+                    "pool_token_in_quote"
+                    if decimal_from(
+                        liquidity_flow.get("pool_token_in_quote")
+                    )
+                    >= Decimal(
+                        os.environ.get(
+                            "ALPHA_OPENING_LIQUIDITY_QUOTE_ALERT",
+                            "10000",
+                        )
+                    )
+                    else (
+                        "pool_token_in_unpriced"
+                        if decimal_from(
+                            liquidity_flow.get("pool_token_in_unpriced")
+                        )
+                        > 0
+                        else "pool_token_in"
+                    )
+                ),
+            }.get(liquidity_risk, "")
+            quote_denominated = (
+                "quote" in liquidity_risk
+                or amount_field == "pool_token_in_quote"
+            )
+            amount_step = Decimal(
+                os.environ.get(
+                    "ALPHA_OPENING_ALERT_QUOTE_BUCKET"
+                    if quote_denominated
+                    else "ALPHA_OPENING_LIQUIDITY_TOKEN_ALERT",
+                    "10000" if quote_denominated else "100000",
+                )
+            )
+            amount_bucket = alert_amount_bucket(
+                decimal_from(liquidity_flow.get(amount_field))
+                if amount_field
+                else Decimal(0),
+                amount_step,
+            )
+            evidence_key = ""
+            if liquidity_risk == "pool_token_in":
+                evidence_rows = liquidity_flow.get(
+                    "pool_swap_evidence_keys"
+                ) or []
+                evidence_key = str(evidence_rows[-1]) if evidence_rows else ""
+            elif liquidity_risk == "lp_activity_unattributed":
+                evidence_key = str(
+                    liquidity_flow.get("latest_actionable_remove_key") or ""
+                )
+                if not evidence_key:
+                    liquidity_events = (
+                        liquidity_flow.get("liquidity_events") or []
+                    )
+                    if liquidity_events:
+                        evidence_key = liquidity_activity_key(
+                            liquidity_events[-1].get("address"),
+                            liquidity_events[-1].get("tx"),
+                        )
             keys.append(
                 "|".join(
                     [
@@ -6067,7 +7951,9 @@ def event_alert_keys(event: dict[str, Any]) -> list[str]:
                         event["symbol"],
                         str(event.get("opening_block", "")),
                         str(event.get("pool_id", "")),
-                        analysis.get("liquidity_flow_risk", ""),
+                        liquidity_risk,
+                        amount_bucket,
+                        evidence_key,
                     ]
                 )
             )
@@ -6143,11 +8029,16 @@ def alert_key_seen(key: str, seen: set[str]) -> bool:
             [parts[0], parts[1], parts[4]]
         ) + "|"
         return any(old.startswith(oldest_prefix) for old in seen)
-    if len(parts) >= 5 and parts[0] == "liquidity_flow":
-        legacy_key = "|".join(
+    if len(parts) >= 7 and parts[0] == "liquidity_flow":
+        if parts[5] != "0" or parts[6]:
+            return False
+        legacy_with_pool = "|".join(parts[:5])
+        legacy_without_pool = "|".join(
             [parts[0], parts[1], parts[2], parts[4]]
         )
-        return legacy_key in seen
+        return bool(
+            legacy_with_pool in seen or legacy_without_pool in seen
+        )
     if len(parts) >= 6 and parts[0] == "buy":
         legacy_key = "|".join(
             [parts[0], parts[1], parts[3], parts[4], parts[5]]
@@ -6203,10 +8094,12 @@ def telegram_event_rank(event: dict[str, Any]) -> tuple[int, int, str]:
     confirmed_sell = decimal_from(analysis.get("cohort_confirmed_sell_quote"))
     confirmed_sell_threshold = Decimal(os.environ.get("ALPHA_OPENING_CONFIRMED_SELL_MIN_QUOTE", "10000"))
     keys = event_alert_keys(event)
-    if confirmed_sell >= confirmed_sell_threshold or liquidity_risk == "lp_remove" or "卖出" in signal or "减仓" in signal:
+    if confirmed_sell >= confirmed_sell_threshold or liquidity_risk in {"lp_remove", "pool_token_in"} or "卖出" in signal or "减仓" in signal:
         risk_rank = 0
-    elif liquidity_risk not in {"", "none", "skipped_old_opening"} or "偏空" in str(analysis.get("direction")):
+    elif liquidity_risk in {"project_quote_in", "project_quote_out", "project_token_out"} or "偏空" in str(analysis.get("direction")):
         risk_rank = 1
+    elif liquidity_risk in {"lp_collect", "lp_activity_unattributed", "unknown_incomplete_coverage"}:
+        risk_rank = 2
     elif any(key.startswith("trace|") for key in keys):
         risk_rank = 2
     elif any(key.startswith("buy|") for key in keys):
@@ -6240,7 +8133,26 @@ def telegram_event_evidence(event: dict[str, Any]) -> str:
             parts.append(f"小额确认换出{telegram_compact_amount(confirmed_sell)} {quote_symbol}/未达阈值")
     liquidity_risk = str(analysis.get("liquidity_flow_risk") or "none")
     if liquidity_risk not in {"", "none", "skipped_old_opening"}:
-        parts.append(f"流动性{liquidity_risk}")
+        liquidity_flow = event.get("liquidity_flow") or {}
+        token_symbol = str(event.get("token", {}).get("symbol") or "TOKEN")
+        if liquidity_risk == "pool_token_in":
+            parts.append(
+                "Swap确认卖入"
+                f"{telegram_compact_amount(liquidity_flow.get('pool_token_in'))} "
+                f"{token_symbol}"
+            )
+        elif liquidity_risk == "project_token_out":
+            parts.append(
+                "项目/做市筹码转出"
+                f"{telegram_compact_amount(liquidity_flow.get('token_out'))} "
+                f"{token_symbol}"
+            )
+        elif liquidity_risk == "lp_activity_unattributed":
+            parts.append("LP活动未归因")
+        elif liquidity_risk == "unknown_incomplete_coverage":
+            parts.append("流动性覆盖不完整")
+        else:
+            parts.append(f"流动性{liquidity_risk}")
     safety_gate = str(analysis.get("can_sell_gate") or "")
     safety_status = str(analysis.get("sell_safety_status") or "")
     if safety_gate.startswith("blocked"):

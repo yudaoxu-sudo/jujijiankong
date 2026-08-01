@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "chains": {
     "bsc": [
       {
@@ -16,6 +16,12 @@
         "address": "0xe9e7cea3dedca5984780bafc599bd69add087d56",
         "label": "BUSD",
         "class": "quote_token"
+      },
+      {
+        "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "label": "Binance-Peg USDC",
+        "class": "quote_token",
+        "evidence": "PancakeSwap official V3 SDK BSC examples use this USDC address; included in the bounded tracked quote-token matrix."
       },
       {
         "address": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
@@ -232,6 +238,14 @@
         "class": "permit2"
       },
       {
+        "address": "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865",
+        "label": "PancakeSwap V3 Factory",
+        "class": "v3_factory",
+        "protocol": "pancakeswap_v3",
+        "fee_tiers": [100, 500, 2500, 10000],
+        "scope": "tracked_quote_token_fee_matrix"
+      },
+      {
         "address": "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364",
         "label": "PancakeSwap V3 Position Manager",
         "class": "lp_position_manager"
@@ -239,12 +253,16 @@
       {
         "address": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
         "label": "PancakeSwap Infinity CLPoolManager",
-        "class": "pool_manager"
+        "class": "pool_manager",
+        "protocol": "pancakeswap_infinity_cl",
+        "v4_manager_type": "cl"
       },
       {
         "address": "0xc697d2898e0d09264376196696c51d7abbbaa4a9",
         "label": "PancakeSwap Infinity BinPoolManager",
-        "class": "pool_manager"
+        "class": "pool_manager",
+        "protocol": "pancakeswap_infinity_bin",
+        "v4_manager_type": "bin"
       }
     ]
   }

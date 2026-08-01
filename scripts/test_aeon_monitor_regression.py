@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import copy
 import json
 import os
 import subprocess
@@ -2777,11 +2778,24 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "0x" + "3" * 40: {
                 "role": "pool",
                 "watch_quote": "false",
+                "source": "event_config",
+                "v3_validation_status": "factory_matrix_verified",
             }
         }
         event = {
+            "chain": "bsc",
             "seconds_until_start": -20000,
             "opening_block": 100,
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
             "opening_liquidity_coverage_complete": True,
             "opening_liquidity_coverage_status": (
                 "complete_recent_window"
@@ -2796,6 +2810,24 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 opening,
                 "liquidity_watch_addresses",
                 return_value=watch,
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "",
+                    "required_as_of_block": 0,
+                    "pools": [
+                        {
+                            "address": "0x" + "3" * 40,
+                            "token0": "0x" + "1" * 40,
+                            "token1": "0x" + "2" * 40,
+                        }
+                    ],
+                },
             ),
         ):
             result = opening.scan_key_liquidity_flows(
@@ -2861,7 +2893,28 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "0x" + "3" * 40: {
                         "role": "pool",
                         "watch_quote": "false",
+                        "source": "event_config",
+                        "v3_validation_status": (
+                            "factory_matrix_verified"
+                        ),
                     }
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "",
+                    "pools": [
+                        {
+                            "address": "0x" + "3" * 40,
+                            "token0": "0x" + "1" * 40,
+                            "token1": "0x" + "2" * 40,
+                        }
+                    ],
                 },
             ),
             mock.patch.object(
@@ -2896,6 +2949,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "0x" + "3" * 40: {
                         "role": "pool",
                         "watch_quote": "false",
+                        "source": "event_config",
+                        "v3_validation_status": (
+                            "factory_matrix_verified"
+                        ),
                     }
                 },
                 event,
@@ -2911,6 +2968,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "0x" + "3" * 40: {
                 "role": "pool",
                 "watch_quote": "false",
+                "source": "event_config",
+                "v3_validation_status": "factory_matrix_verified",
             }
         }
         queries: list[dict[str, object]] = []
@@ -2959,6 +3018,23 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 opening,
                 "liquidity_watch_addresses",
                 return_value=watch,
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "",
+                    "pools": [
+                        {
+                            "address": "0x" + "3" * 40,
+                            "token0": "0x" + "1" * 40,
+                            "token1": "0x" + "2" * 40,
+                        }
+                    ],
+                },
             ),
             mock.patch.object(
                 opening,
@@ -4607,7 +4683,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 {
                     "address": query["address"],
                     "blockNumber": "0x64",
+                    "blockHash": "0x" + "a" * 64,
                     "transactionHash": "0x" + query["address"][2:].rjust(64, "0"),
+                    "logIndex": "0x0",
                     "topics": [direction_topic, target_pool],
                     "data": "0x" + "0" * 192,
                 }
@@ -4628,16 +4706,118 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 100,
                 200,
                 {
-                    first: {"role": "pool_manager", "label": "first"},
-                    second: {"role": "pool_manager", "label": "second"},
+                    first: {
+                        "role": "pool_manager",
+                        "label": "first",
+                        "source": "event_config",
+                        "v4_validation_status": "pool_key_verified",
+                        "v4_manager_type": "cl",
+                    },
+                    second: {
+                        "role": "pool_manager",
+                        "label": "second",
+                        "source": "event_config",
+                        "v4_validation_status": "pool_key_verified",
+                        "v4_manager_type": "cl",
+                    },
                 },
             )
 
         self.assertEqual(calls, [(first, 5000), (second, 5000)])
         self.assertEqual(result["rows"], 2)
-        self.assertEqual(result["risk"], "lp_remove")
+        self.assertEqual(result["risk"], "lp_activity_unattributed")
         self.assertEqual(len(result["events"]), 1)
         self.assertEqual(result["events"][0]["label"], "second")
+
+    def test_liquidity_events_and_alert_key_use_global_latest_order(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        newer_pool = "0x" + "3" * 40
+        older_pool = "0x" + "4" * 40
+        newer_tx = "0x" + "5" * 64
+        older_tx = "0x" + "6" * 64
+
+        def burn(address: str, block: int, tx_hash: str) -> dict[str, object]:
+            return {
+                "address": address,
+                "blockNumber": hex(block),
+                "blockHash": "0x" + f"{block:064x}",
+                "transactionHash": tx_hash,
+                "logIndex": "0x0",
+                "topics": [opening.V3_BURN_TOPIC],
+                "data": "0x" + "".join(
+                    f"{value:064x}" for value in (1, 200000, 1)
+                ),
+            }
+
+        newer_add = burn(newer_pool, 300, newer_tx)
+        newer_add["topics"] = [opening.V3_MINT_TOPIC]
+        newer_add["data"] = "0x" + "".join(
+            f"{value:064x}" for value in (0, 1, 200000, 1)
+        )
+        logs = {
+            newer_pool: [newer_add],
+            older_pool: [burn(older_pool, 200, older_tx)],
+        }
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            side_effect=lambda _event, query, *_args: logs[query["address"]],
+        ):
+            result = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                    "quote": {"address": quote, "decimals": 0},
+                },
+                100,
+                400,
+                {
+                    newer_pool: {
+                        "role": "pool",
+                        "token0": token,
+                        "token1": quote,
+                    },
+                    older_pool: {
+                        "role": "pool",
+                        "token0": token,
+                        "token1": quote,
+                    },
+                },
+            )
+
+        self.assertEqual(result["events"][-1]["tx"], newer_tx)
+        alert_keys = [
+            key
+            for key in opening.event_alert_keys(
+                {
+                    "status": "opened",
+                    "symbol": "TEST",
+                    "opening_block": 100,
+                    "pool_id": "",
+                    "analysis": {
+                        "liquidity_flow_risk": "lp_activity_unattributed"
+                    },
+                    "liquidity_flow": {
+                        "liquidity_events": result["events"],
+                        "latest_actionable_remove_key": result[
+                            "latest_actionable_remove_key"
+                        ],
+                    },
+                    "rows": [],
+                }
+            )
+            if key.startswith("liquidity_flow|")
+        ]
+        self.assertEqual(len(alert_keys), 1)
+        self.assertTrue(
+            alert_keys[0].endswith(
+                opening.liquidity_activity_key(older_pool, older_tx)
+            )
+        )
 
     def test_liquidity_event_scan_skips_unmatchable_managers(
         self,
@@ -4722,6 +4902,15 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             ),
             mock.patch.object(
                 opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "factory_matrix_unavailable",
+                    "complete": False,
+                    "pools": [],
+                },
+            ),
+            mock.patch.object(
+                opening,
                 "snapshot_cached_get_logs",
                 return_value=[],
             ) as fetch,
@@ -4731,7 +4920,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 200,
             )
 
-        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(fetch.call_count, 0)
         self.assertFalse(result["coverage_complete"])
         self.assertEqual(
             result["coverage_status"],
@@ -4741,6 +4930,2241 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             result["risk"],
             "unknown_incomplete_coverage",
         )
+
+    def test_v3_factory_matrix_requires_complete_membership(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        wbnb = "0x" + "3" * 40
+        factory = "0x" + "4" * 40
+        wrong_factory = "0x" + "5" * 40
+        pool = "0x" + "6" * 40
+        event = {
+            "chain": "bsc",
+            "seconds_until_start": -100,
+            "token": {"address": token},
+            "quote": {"address": quote},
+        }
+        labels = {
+            quote: {"class": "quote_token"},
+            wbnb: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "protocol": "test_v3",
+                "fee_tiers": [100],
+            },
+        }
+        mode = {"value": "good"}
+        block_calls: dict[str, int] = {}
+
+        def address_result(value: str) -> str:
+            return "0x" + "0" * 24 + value[2:]
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> str:
+            call = params[0]
+            if method == "eth_getBlockByNumber":
+                current_mode = mode["value"]
+                block_calls[current_mode] = (
+                    block_calls.get(current_mode, 0) + 1
+                )
+                suffix = (
+                    "b"
+                    if current_mode == "block_flip"
+                    and block_calls[current_mode] > 1
+                    else "a"
+                )
+                return {"hash": "0x" + suffix * 64}
+            if method == "eth_getCode":
+                return {
+                    "code_none": None,
+                    "code_zero": "0x00",
+                    "code_malformed": "not-hex",
+                }.get(mode["value"], "0x6000")
+            self.assertEqual(method, "eth_call")
+            self.assertIsInstance(call, dict)
+            to = str(call["to"])
+            data = str(call["data"])
+            if to == factory:
+                if mode["value"] == "abi_malformed":
+                    return address_result(pool) + "00"
+                counterasset = "0x" + data[98:138]
+                if mode["value"] == "mixed" and counterasset == wbnb:
+                    raise RuntimeError("provider unavailable")
+                return (
+                    address_result(pool)
+                    if counterasset == quote
+                    else "0x" + "0" * 64
+                )
+            if data == "0x0dfe1681":
+                return address_result(token)
+            if data == "0xd21220a7":
+                return address_result(quote)
+            if data == "0xc45a0155":
+                return address_result(
+                    wrong_factory
+                    if mode["value"] == "mismatch"
+                    else factory
+                )
+            return "0x" + f"{100:064x}"
+
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+        ):
+            good = opening.supported_v3_pool_scope(event, 200)
+            mode["value"] = "mismatch"
+            mismatch = opening.supported_v3_pool_scope(event, 200)
+            mode["value"] = "mixed"
+            mixed = opening.supported_v3_pool_scope(event, 200)
+            invalid_code_results = []
+            for value in (
+                "code_none",
+                "code_zero",
+                "code_malformed",
+            ):
+                mode["value"] = value
+                invalid_code_results.append(
+                    opening.supported_v3_pool_scope(event, 200)
+                )
+            mode["value"] = "abi_malformed"
+            malformed_abi = opening.supported_v3_pool_scope(event, 200)
+            mode["value"] = "block_flip"
+            incoherent_block = opening.supported_v3_pool_scope(event, 200)
+
+        self.assertTrue(good["complete"])
+        self.assertEqual(good["expected_query_count"], 2)
+        self.assertEqual(good["attempted_query_count"], 2)
+        self.assertEqual(good["pools"][0]["address"], pool)
+        self.assertFalse(mismatch["complete"])
+        self.assertEqual(mismatch["pools"], [])
+        self.assertEqual(mismatch["validation_error_count"], 1)
+        self.assertFalse(mixed["complete"])
+        self.assertEqual(mixed["pools"][0]["address"], pool)
+        self.assertEqual(mixed["validation_error_count"], 1)
+        for result in invalid_code_results:
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["pools"], [])
+        self.assertFalse(malformed_abi["complete"])
+        self.assertEqual(malformed_abi["pools"], [])
+        self.assertFalse(incoherent_block["complete"])
+        self.assertFalse(incoherent_block["snapshot_coherent"])
+        self.assertEqual(incoherent_block["pools"], [])
+
+    def test_v3_factory_matrix_cache_binds_inputs_and_block_hash(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        pool = "0x" + "4" * 40
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "protocol": "test_v3",
+                "fee_tiers": [100],
+            },
+        }
+        block_hashes = {
+            200: "0x" + "a" * 64,
+            300: "0x" + "b" * 64,
+        }
+        get_pool_calls: list[int] = []
+
+        def address_result(value: str) -> str:
+            return "0x" + "0" * 24 + value[2:]
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                block = int(str(params[0]), 16)
+                return {"hash": block_hashes[block]}
+            if method == "eth_getCode":
+                return "0x6000"
+            call = params[0]
+            self.assertIsInstance(call, dict)
+            to = str(call["to"])
+            data = str(call["data"])
+            if to == factory:
+                fee = int(data[-64:], 16)
+                get_pool_calls.append(fee)
+                return (
+                    address_result(pool)
+                    if fee == 100
+                    else "0x" + "0" * 64
+                )
+            if data == "0x0dfe1681":
+                return address_result(token)
+            if data == "0xd21220a7":
+                return address_result(quote)
+            if data == "0xc45a0155":
+                return address_result(factory)
+            return "0x" + f"{100:064x}"
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token},
+            "quote": {"address": quote},
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "101"},
+            ),
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+        ):
+            first = opening.supported_v3_pool_scope(event, 200)
+            event["opening_v3_pool_scope"] = copy.deepcopy(first)
+            cached = opening.supported_v3_pool_scope(event, 300)
+            block_hashes[200] = "0x" + "c" * 64
+            reorg_refreshed = opening.supported_v3_pool_scope(event, 300)
+            labels[factory]["fee_tiers"] = [100, 500]
+            refreshed = opening.supported_v3_pool_scope(event, 300)
+
+        self.assertTrue(first["complete"])
+        self.assertEqual(cached["as_of_block"], 200)
+        self.assertEqual(reorg_refreshed["as_of_block"], 300)
+        self.assertEqual(get_pool_calls, [100, 100, 100, 500])
+        self.assertNotEqual(
+            first["configuration_hash"],
+            refreshed["configuration_hash"],
+        )
+        self.assertEqual(refreshed["expected_query_count"], 2)
+        self.assertTrue(refreshed["complete"])
+
+    def test_v3_factory_matrix_caches_complete_empty_scope(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        block_hash = "0x" + "a" * 64
+        get_pool_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls
+            if method == "eth_getBlockByNumber":
+                return {"hash": block_hash}
+            self.assertEqual(method, "eth_call")
+            self.assertEqual(str(params[0]["to"]), factory)
+            get_pool_calls += 1
+            return "0x" + "0" * 64
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token},
+            "quote": {"address": quote},
+        }
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "fee_tiers": [100],
+            },
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "101"},
+            ),
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+        ):
+            first = opening.supported_v3_pool_scope(event, 200)
+            event["opening_v3_pool_scope"] = copy.deepcopy(first)
+            cached = opening.supported_v3_pool_scope(event, 300)
+
+        self.assertTrue(first["complete"])
+        self.assertEqual(first["pools"], [])
+        self.assertEqual(cached["as_of_block"], 200)
+        self.assertEqual(get_pool_calls, 1)
+
+    def test_v3_factory_matrix_reserves_event_budget(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        deadlines: list[float] = []
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **kwargs: object,
+        ) -> object:
+            deadlines.append(float(kwargs["deadline"]))
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            return "0x" + "0" * 64
+
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "fee_tiers": [100],
+            },
+        }
+        previous_deadline = opening.TRACE_DEADLINE_AT
+        opening.TRACE_DEADLINE_AT = 105.0
+        try:
+            with (
+                mock.patch.object(
+                    opening,
+                    "global_address_labels",
+                    return_value=labels,
+                ),
+                mock.patch.object(opening.time, "monotonic", return_value=100.0),
+                mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            ):
+                result = opening.supported_v3_pool_scope(
+                    {
+                        "chain": "bsc",
+                        "seconds_until_start": -100,
+                        "token": {"address": token},
+                        "quote": {"address": quote},
+                    },
+                    200,
+                )
+        finally:
+            opening.TRACE_DEADLINE_AT = previous_deadline
+
+        self.assertTrue(result["complete"])
+        self.assertTrue(deadlines)
+        self.assertLessEqual(max(deadlines), 101.25)
+
+    def test_manager_only_liquidity_scope_scans_filtered_events(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        manager = "0x" + "3" * 40
+        pool_id = "0x" + "a" * 64
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {
+                    "address": manager,
+                    "role": "pool_manager",
+                    "protocol": "pancakeswap_infinity_cl",
+                }
+            ],
+            "pool_id": pool_id,
+            "lp_position_ids": [],
+        }
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            queries.append(dict(query))
+            if query["topics"][0] == opening.V4_SWAP_TOPIC:
+                return []
+            return [
+                {
+                    "address": manager,
+                    "blockNumber": "0x64",
+                    "blockHash": "0x" + "a" * 64,
+                    "transactionHash": "0x" + "5" * 64,
+                    "logIndex": "0x0",
+                    "topics": [opening.DECREASE_LIQUIDITY_TOPIC, pool_id],
+                    "data": (
+                        "0x"
+                        + f"{0:064x}"
+                        + f"{200000:064x}"
+                        + f"{0:064x}"
+                    ),
+                }
+            ]
+
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "verified",
+                    "pools": [],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v4_manager_scope",
+                return_value={
+                    "status": "complete",
+                    "complete": True,
+                    "configuration_hash": "v4-verified",
+                    "pools": [
+                        {
+                            "address": manager,
+                            "role": "pool_manager",
+                            "pool_id": pool_id,
+                            "token0": token,
+                            "token1": quote,
+                            "fee": 100,
+                            "v4_manager_type": "cl",
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["risk"], "lp_activity_unattributed")
+        self.assertTrue(result["watch_scope_hash"])
+        self.assertEqual(len(queries), 2)
+        lp_query = next(
+            query
+            for query in queries
+            if isinstance(query["topics"][0], list)
+        )
+        self.assertEqual(lp_query["address"], manager)
+        self.assertEqual(lp_query["topics"][1], pool_id)
+
+    def test_position_manager_query_filters_indexed_token_ids(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        manager = "0x" + "3" * 40
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            queries.append(dict(query))
+            return []
+
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            side_effect=fetch,
+        ):
+            result = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "lp_position_ids": [7, "9"],
+                },
+                100,
+                200,
+                {
+                    manager: {
+                        "role": "lp_position_manager",
+                        "label": "position manager",
+                    }
+                },
+            )
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(len(queries), 1)
+        self.assertEqual(
+            queries[0]["topics"][1],
+            ["0x" + f"{7:064x}", "0x" + f"{9:064x}"],
+        )
+
+    def test_v4_manager_scope_validates_pool_key_snapshot(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        manager = "0x" + "3" * 40
+        pool_id = "0x" + "a" * 64
+        block_calls = 0
+
+        def address_word(value: str) -> str:
+            return value[2:].rjust(64, "0")
+
+        pool_key = (
+            "0x"
+            + address_word(token)
+            + address_word(quote)
+            + address_word(opening.ZERO)
+            + address_word(manager)
+            + f"{100:064x}"
+            + "b" * 64
+        )
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal block_calls
+            if method == "eth_getBlockByNumber":
+                block_calls += 1
+                return {"hash": "0x" + "c" * 64}
+            if method == "eth_getCode":
+                return "0x6000"
+            self.assertEqual(method, "eth_call")
+            self.assertEqual(
+                params[0]["data"],
+                opening.V4_POOL_ID_TO_KEY_SELECTOR + pool_id[2:],
+            )
+            return pool_key
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "pool_id": pool_id,
+            "token": {"address": token},
+            "quote": {"address": quote},
+        }
+        watch = {
+            manager: {
+                "role": "pool_manager",
+                "source": "event_config",
+                "label": "Infinity CLPoolManager",
+                "protocol": "pancakeswap_infinity_cl",
+            }
+        }
+        with mock.patch.object(opening, "rpc_call", side_effect=rpc):
+            result = opening.supported_v4_manager_scope(
+                event,
+                200,
+                watch,
+            )
+
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["snapshot_coherent"])
+        self.assertEqual(block_calls, 2)
+        self.assertEqual(result["pools"][0]["token0"], token)
+        self.assertEqual(result["pools"][0]["pool_manager"], manager)
+
+    def test_v4_pool_id_auto_probes_canonical_cl_manager(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        manager = opening.PANCAKE_INFINITY_CL_POOL_MANAGER
+        pool_id = "0x" + "a" * 64
+
+        def address_word(value: str) -> str:
+            return value[2:].rjust(64, "0")
+
+        pool_key = (
+            "0x"
+            + address_word(token)
+            + address_word(quote)
+            + address_word(opening.ZERO)
+            + address_word(manager)
+            + f"{100:064x}"
+            + "b" * 64
+        )
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "c" * 64}
+            if method == "eth_getCode":
+                return "0x6000"
+            if method == "eth_call":
+                return pool_key
+            raise AssertionError(method)
+
+        with mock.patch.object(opening, "rpc_call", side_effect=rpc):
+            result = opening.supported_v4_manager_scope(
+                {
+                    "chain": "bsc",
+                    "opening_block": 100,
+                    "pool_id": pool_id,
+                    "token": {"address": token},
+                    "quote": {"address": quote},
+                },
+                200,
+                {
+                    manager: {
+                        "role": "pool_manager",
+                        "source": "global_label",
+                        "protocol": "pancakeswap_infinity_cl",
+                    }
+                },
+            )
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["expected_query_count"], 1)
+        self.assertEqual(
+            result["pools"][0]["source"],
+            "canonical_pool_id_probe",
+        )
+        missing = opening.supported_v4_manager_scope(
+            {
+                "chain": "bsc",
+                "opening_block": 100,
+                "pool_id": pool_id,
+                "token": {"address": token},
+                "quote": {"address": quote},
+            },
+            200,
+            {},
+        )
+        self.assertFalse(missing["complete"])
+        self.assertEqual(
+            missing["status"],
+            "manager_discovery_unavailable",
+        )
+
+    def test_v4_bin_manager_scope_fails_closed_as_unsupported(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        manager = opening.PANCAKE_INFINITY_BIN_POOL_MANAGER
+        pool_id = "0x" + "a" * 64
+        methods: list[str] = []
+        self.assertEqual(
+            opening.v4_manager_type(
+                manager,
+                {"protocol": "pancakeswap_infinity_cl"},
+            ),
+            "bin",
+        )
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            methods.append(method)
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "c" * 64}
+            raise AssertionError(f"unsupported manager probed with {method}")
+
+        with mock.patch.object(opening, "rpc_call", side_effect=rpc):
+            result = opening.supported_v4_manager_scope(
+                {
+                    "chain": "bsc",
+                    "opening_block": 100,
+                    "seconds_until_start": -100,
+                    "pool_id": pool_id,
+                    "token": {"address": token},
+                    "quote": {"address": quote},
+                },
+                200,
+                {
+                    manager: {
+                        "role": "pool_manager",
+                        "source": "event_config",
+                        "protocol": "pancakeswap_infinity_bin",
+                    }
+                },
+            )
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["status"], "unsupported_manager_abi")
+        self.assertEqual(result["unsupported_manager_count"], 1)
+        self.assertEqual(methods, ["eth_getBlockByNumber", "eth_getBlockByNumber"])
+
+    def test_v4_manager_swap_confirms_pool_sell(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        manager = "0x" + "3" * 40
+        pool_id = "0x" + "a" * 64
+        tx_hash = "0x" + "5" * 64
+
+        def signed_word(value: int) -> str:
+            return f"{(value if value >= 0 else 2**256 + value):064x}"
+
+        swap = {
+            "address": manager,
+            "blockNumber": "0x65",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x2",
+            "topics": [
+                opening.V4_SWAP_TOPIC,
+                pool_id,
+                opening.address_topic("0x" + "4" * 40),
+            ],
+            "data": (
+                "0x"
+                + signed_word(-200000)
+                + signed_word(20000)
+                + f"{1:064x}" * 5
+            ),
+        }
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            return (
+                [swap]
+                if query["topics"] == [opening.V4_SWAP_TOPIC, pool_id]
+                else []
+            )
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {
+                    "address": manager,
+                    "role": "pool_manager",
+                    "protocol": "pancakeswap_infinity_cl",
+                }
+            ],
+            "pool_id": pool_id,
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "configuration_hash": "v3",
+                    "pools": [],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v4_manager_scope",
+                return_value={
+                    "status": "complete",
+                    "complete": True,
+                    "configuration_hash": "v4",
+                    "pools": [
+                        {
+                            "address": manager,
+                            "role": "pool_manager",
+                            "pool_id": pool_id,
+                            "token0": token,
+                            "token1": quote,
+                            "pool_manager": manager,
+                            "fee": 100,
+                            "v4_manager_type": "cl",
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+            buy_event = copy.deepcopy(event)
+            swap["data"] = (
+                "0x"
+                + signed_word(200000)
+                + signed_word(-20000)
+                + f"{1:064x}" * 5
+            )
+            buy_result = opening.scan_key_liquidity_flows(buy_event, 200)
+            invalid_event = copy.deepcopy(event)
+            swap["address"] = "0x" + "9" * 40
+            invalid_result = opening.scan_key_liquidity_flows(
+                invalid_event,
+                200,
+            )
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["risk"], "pool_token_in")
+        self.assertEqual(result["pool_token_in"], "200000")
+        self.assertEqual(result["pool_token_in_quote"], "20000")
+        self.assertEqual(
+            result["pool_swap_evidence_keys"],
+            [opening.liquidity_activity_key(manager, tx_hash)],
+        )
+        self.assertEqual(buy_result["risk"], "none")
+        self.assertEqual(buy_result["pool_token_out"], "200000")
+        self.assertEqual(buy_result["pool_token_in"], "0")
+        self.assertFalse(invalid_result["coverage_complete"])
+        self.assertEqual(
+            invalid_result["risk"],
+            "unknown_incomplete_coverage",
+        )
+        self.assertEqual(invalid_result["pool_token_in"], "0")
+
+    def test_unverified_explicit_pool_fails_closed_without_logs(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        bogus_pool = "0x" + "3" * 40
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {"address": bogus_pool, "role": "pool"}
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "configuration_hash": "verified",
+                    "pools": [],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                return_value=[],
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertFalse(result["scope_complete"])
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["risk"], "unknown_incomplete_coverage")
+        self.assertEqual(
+            result["coverage_status"],
+            "explicit_liquidity_scope_unverified",
+        )
+
+    def test_short_modify_liquidity_event_fails_closed(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        manager = "0x" + "3" * 40
+        pool_id = "0x" + "a" * 64
+        malformed = {
+            "address": manager,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "5" * 64,
+            "logIndex": "0x0",
+            "topics": [opening.MODIFY_LIQUIDITY_TOPIC, pool_id],
+            "data": "0x" + "0" * 192,
+        }
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            return_value=[malformed],
+        ):
+            result = opening.scan_liquidity_events(
+                {"chain": "bsc", "pool_id": pool_id},
+                100,
+                200,
+                {
+                    manager: {
+                        "role": "pool_manager",
+                        "source": "event_config",
+                        "v4_validation_status": "pool_key_verified",
+                        "v4_manager_type": "cl",
+                    }
+                },
+            )
+
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["decode_error_count"], 1)
+
+    def test_rpc_log_identity_rejects_wrong_emitter_topic_and_tx(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        pool = "0x" + "3" * 40
+        query = {
+            "address": pool,
+            "fromBlock": "0x64",
+            "toBlock": "0xc8",
+            "topics": [opening.V3_SWAP_TOPIC],
+        }
+        valid = {
+            "address": pool,
+            "blockNumber": "0x65",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "5" * 64,
+            "logIndex": "0x0",
+            "topics": [opening.V3_SWAP_TOPIC],
+        }
+        self.assertIsNotNone(opening.strict_rpc_log_identity(valid, query))
+        for mutation in (
+            {"address": "0x" + "4" * 40},
+            {"topics": [opening.V4_SWAP_TOPIC]},
+            {"transactionHash": ""},
+            {"blockHash": ""},
+            {"blockNumber": "0xc9"},
+            {"removed": True},
+            {"removed": "true"},
+            {"removed": 1},
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertIsNone(
+                    opening.strict_rpc_log_identity(
+                        {**valid, **mutation},
+                        query,
+                    )
+                )
+
+        seen: dict[tuple[str, str, int], str] = {}
+        identity = opening.strict_rpc_log_identity(valid, query)
+        assert identity is not None
+        self.assertEqual(
+            opening.rpc_log_duplicate_state(valid, query, identity, seen),
+            "new",
+        )
+        self.assertEqual(
+            opening.rpc_log_duplicate_state(valid, query, identity, seen),
+            "duplicate",
+        )
+        self.assertEqual(
+            opening.rpc_log_duplicate_state(
+                {**valid, "data": "0x" + "1" * 64},
+                query,
+                identity,
+                seen,
+            ),
+            "conflict",
+        )
+
+    def test_pool_sell_alert_evidence_uses_latest_sell_only(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        old_sell_tx = "0x" + "f" * 64
+        new_sell_tx = "0x" + "1" * 64
+        newer_buy_tx = "0x" + "e" * 64
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(
+                f"{(value if value >= 0 else 2**256 + value):064x}"
+                for value in values
+            )
+
+        swaps = [
+            {
+                "address": pool,
+                "blockNumber": block,
+                "blockHash": "0x" + block[2:].rjust(64, "0"),
+                "transactionHash": tx,
+                "logIndex": "0x1",
+                "topics": [opening.V3_SWAP_TOPIC],
+                "data": words(amount, -amount, 1, 1, 1),
+            }
+            for block, tx, amount in (
+                ("0x64", old_sell_tx, 200000),
+                ("0x65", new_sell_tx, 200000),
+                ("0x66", newer_buy_tx, -100000),
+            )
+        ]
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            return swaps if query["topics"] == [opening.V3_SWAP_TOPIC] else []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [{"address": pool, "role": "pool"}],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "configuration_hash": "verified",
+                    "pools": [
+                        {
+                            "address": pool,
+                            "token0": token,
+                            "token1": quote,
+                            "factory": "0x" + "9" * 40,
+                            "fee": 100,
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        old_key = opening.liquidity_activity_key(pool, old_sell_tx)
+        new_key = opening.liquidity_activity_key(pool, new_sell_tx)
+        buy_key = opening.liquidity_activity_key(pool, newer_buy_tx)
+        self.assertEqual(
+            result["pool_swap_evidence_keys"],
+            [old_key, new_key],
+        )
+        self.assertNotIn(buy_key, result["pool_swap_evidence_keys"])
+        alert_event = {
+            "symbol": "TEST",
+            "status": "opened",
+            "opening_block": 100,
+            "pool_id": "",
+            "analysis": {"liquidity_flow_risk": "pool_token_in"},
+            "liquidity_flow": result,
+            "rows": [],
+        }
+        alert_key = next(
+            key
+            for key in opening.event_alert_keys(alert_event)
+            if key.startswith("liquidity_flow|")
+        )
+        self.assertTrue(alert_key.endswith(new_key))
+
+    def test_hook_only_scope_does_not_skip_factory_discovery(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "hook": "0x" + "3" * 40,
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "factory_matrix_partial",
+                    "complete": False,
+                    "expected_query_count": 1,
+                    "configuration_hash": "scope",
+                    "pools": [],
+                },
+            ) as discover,
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                return_value=[],
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        discover.assert_called_once()
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["risk"], "unknown_incomplete_coverage")
+
+    def test_missing_required_factory_config_fails_closed(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {
+                "address": "0x" + "1" * 40,
+                "symbol": "TEST",
+                "decimals": 18,
+            },
+            "quote": {
+                "address": "0x" + "2" * 40,
+                "symbol": "USDT",
+                "decimals": 18,
+            },
+            "watch_addresses": [
+                {"address": "0x" + "3" * 40, "role": "pool"}
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                return_value=[],
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertFalse(result["scope_complete"])
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["risk"], "unknown_incomplete_coverage")
+
+    def test_explicit_pool_metadata_wins_over_operator_alias(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        pool = "0x" + "3" * 40
+        with mock.patch.object(
+            opening,
+            "global_address_labels",
+            return_value={},
+        ):
+            watch = opening.liquidity_watch_addresses(
+                {
+                    "chain": "bsc",
+                    "watch_addresses": [
+                        {
+                            "address": pool,
+                            "role": "pool",
+                            "watch_quote": True,
+                        }
+                    ],
+                    "operator": pool,
+                }
+            )
+
+        self.assertEqual(watch[pool]["role"], "pool")
+        self.assertEqual(watch[pool]["watch_quote"], "true")
+
+    def test_unverified_explicit_pool_cannot_claim_confirmed_swap(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        bogus_pool = "0x" + "3" * 40
+        valid_pool = "0x" + "4" * 40
+        trader = "0x" + "5" * 40
+        tx_hash = "0x" + "6" * 64
+        transfer = {
+            "address": token,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x0",
+            "topics": [
+                opening.TRANSFER_TOPIC,
+                opening.address_topic(trader),
+                opening.address_topic(bogus_pool),
+            ],
+            "data": "0x" + f"{200000:064x}",
+        }
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            topics = query["topics"]
+            if query["address"] == token and len(topics) >= 3:
+                if topics[2] == opening.address_topic(bogus_pool):
+                    return [transfer]
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {
+                    "address": bogus_pool,
+                    "role": "pool",
+                    "token0": token,
+                    "token1": quote,
+                }
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "verified",
+                    "pools": [
+                        {
+                            "address": valid_pool,
+                            "token0": token,
+                            "token1": quote,
+                            "factory": "0x" + "9" * 40,
+                            "fee": 100,
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertEqual(result["pool_token_in"], "0")
+        self.assertEqual(result["pool_token_in_unconfirmed"], "200000")
+        self.assertEqual(result["risk"], "unknown_incomplete_coverage")
+
+    def test_liquidity_signal_survives_empty_opening_cohort(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        result = opening.analyze_opened(
+            {
+                "symbol": "TEST",
+                "quote": {"symbol": "USDT"},
+                "market_context": {},
+                "liquidity_flow": {
+                    "risk": "pool_token_in",
+                    "summary": "Swap确认卖入池 200K TEST",
+                },
+            },
+            [],
+            allow_rpc=False,
+        )
+
+        self.assertEqual(result["liquidity_flow_risk"], "pool_token_in")
+        self.assertIn("池内大额卖入", result["trade_signal"])
+        self.assertNotIn("没有真实成交", result["trade_signal"])
+
+    def test_liquidity_alert_upgrade_is_not_swallowed_by_legacy_key(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        def alert(amount: str, tx_suffix: str) -> str:
+            event = {
+                "symbol": "TEST",
+                "status": "opened",
+                "opening_block": 100,
+                "pool_id": "",
+                "analysis": {
+                    "liquidity_flow_risk": "pool_token_in",
+                },
+                "liquidity_flow": {
+                    "pool_token_in": amount,
+                    "pool_swap_evidence_keys": [
+                        "0x" + "3" * 40 + ":0x" + tx_suffix * 64
+                    ],
+                },
+                "rows": [],
+            }
+            return next(
+                key
+                for key in opening.event_alert_keys(event)
+                if key.startswith("liquidity_flow|")
+            )
+
+        first = alert("200000", "5")
+        upgraded = alert("500000", "6")
+        legacy = {"liquidity_flow|TEST|100|pool_token_in"}
+        self.assertNotEqual(first, upgraded)
+        self.assertFalse(opening.alert_key_seen(first, legacy))
+        self.assertFalse(opening.alert_key_seen(upgraded, legacy))
+        self.assertTrue(opening.alert_key_seen(first, {first}))
+
+    def test_confirmed_pool_sell_has_critical_readable_telegram_evidence(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "status": "opened",
+            "opening_block": 100,
+            "pool_id": "",
+            "priority": "P1",
+            "token": {"symbol": "TEST"},
+            "quote": {"symbol": "USDT"},
+            "analysis": {
+                "liquidity_flow_risk": "pool_token_in",
+                "trade_signal": "降低风险；池内大额卖入",
+                "direction": "偏空",
+            },
+            "liquidity_flow": {
+                "pool_token_in": "200000",
+                "pool_swap_evidence_keys": [
+                    "0x" + "3" * 40 + ":0x" + "5" * 64
+                ],
+            },
+            "rows": [],
+        }
+        self.assertEqual(opening.telegram_event_rank(event)[0], 0)
+        self.assertIn(
+            "Swap确认卖入200K TEST",
+            opening.telegram_event_evidence(event),
+        )
+
+        lp_event = copy.deepcopy(event)
+        lp_event["analysis"] = {
+            "liquidity_flow_risk": "lp_activity_unattributed",
+            "trade_signal": "观察；LP 活动未归因",
+            "direction": "观察",
+        }
+        lp_event["liquidity_flow"] = {"liquidity_events": []}
+        self.assertEqual(opening.telegram_event_rank(lp_event)[0], 2)
+        self.assertIn(
+            "LP活动未归因",
+            opening.telegram_event_evidence(lp_event),
+        )
+
+    def test_liquidity_flow_keeps_mm_and_excludes_generic_manager(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        mm = "0x" + "4" * 40
+        manager = "0x" + "5" * 40
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 18},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 18},
+            "watch_addresses": [
+                {"address": pool, "role": "pool"},
+                {"address": mm, "role": "market_maker", "watch_quote": True},
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        labels = {
+            manager: {"class": "pool_manager", "label": "generic manager"}
+        }
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            queries.append(dict(query))
+            return []
+
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "verified",
+                    "pools": [
+                        {
+                            "address": pool,
+                            "token0": token,
+                            "token1": quote,
+                            "factory": "0x" + "9" * 40,
+                            "fee": 100,
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        topics = {
+            topic
+            for query in queries
+            for topic in query.get("topics", [])
+            if isinstance(topic, str)
+        }
+        self.assertTrue(result["coverage_complete"])
+        self.assertIn(opening.address_topic(pool), topics)
+        self.assertIn(opening.address_topic(mm), topics)
+        self.assertNotIn(opening.address_topic(manager), topics)
+
+    def test_pool_buy_is_context_and_pool_sell_is_risk(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        trader = "0x" + "4" * 40
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {
+                    "address": pool,
+                    "role": "pool",
+                    "token0": token,
+                    "token1": quote,
+                }
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+
+        def transfer(sender: str, recipient: str) -> dict[str, object]:
+            return {
+                "address": token,
+                "blockNumber": "0x64",
+                "blockHash": "0x" + "a" * 64,
+                "transactionHash": "0x" + "5" * 64,
+                "logIndex": "0x0",
+                "topics": [
+                    opening.TRANSFER_TOPIC,
+                    opening.address_topic(sender),
+                    opening.address_topic(recipient),
+                ],
+                "data": "0x" + f"{200000:064x}",
+            }
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(
+                f"{(value if value >= 0 else 2**256 + value):064x}"
+                for value in values
+            )
+
+        def scan(
+            log: dict[str, object],
+            swap_amount: int | None,
+            liquidity_logs: list[dict[str, object]] | None = None,
+        ) -> dict[str, object]:
+            def fetch(
+                _event: dict[str, object],
+                query: dict[str, object],
+                *_args: object,
+            ) -> list[dict[str, object]]:
+                topics = query["topics"]
+                if topics == [opening.V3_SWAP_TOPIC]:
+                    if swap_amount is None:
+                        return []
+                    return [
+                        {
+                            "address": pool,
+                            "blockNumber": "0x64",
+                            "blockHash": "0x" + "a" * 64,
+                            "transactionHash": log["transactionHash"],
+                            "logIndex": "0x1",
+                            "topics": [opening.V3_SWAP_TOPIC],
+                            "data": words(
+                                swap_amount,
+                                -swap_amount,
+                                1,
+                                1,
+                                1,
+                            ),
+                        }
+                    ]
+                if topics and isinstance(topics[0], list):
+                    return list(liquidity_logs or [])
+                if len(topics) < 3:
+                    return []
+                return [log] if all(
+                    expected is None or expected == actual
+                    for expected, actual in zip(topics[1:3], log["topics"][1:3])
+                ) else []
+
+            with (
+                mock.patch.object(
+                    opening,
+                    "global_address_labels",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    opening,
+                    "supported_v3_pool_scope",
+                    return_value={
+                        "status": "complete_tracked_factory_matrix",
+                        "complete": True,
+                        "expected_query_count": 1,
+                        "configuration_hash": "verified",
+                        "pools": [
+                            {
+                                "address": pool,
+                                "token0": token,
+                                "token1": quote,
+                                "factory": "0x" + "9" * 40,
+                                "fee": 100,
+                            }
+                        ],
+                    },
+                ),
+                mock.patch.object(
+                    opening,
+                    "snapshot_cached_get_logs",
+                    side_effect=fetch,
+                ),
+            ):
+                return opening.scan_key_liquidity_flows(
+                    copy.deepcopy(event),
+                    200,
+                )
+
+        buy = scan(transfer(pool, trader), -200000)
+        sell = scan(transfer(trader, pool), 200000)
+        bare_transfer = scan(transfer(trader, pool), None)
+        partial_swap = scan(transfer(trader, pool), 1)
+        mint_log = {
+            "address": pool,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "5" * 64,
+            "logIndex": "0x2",
+            "topics": [opening.V3_MINT_TOPIC],
+            "data": words(0, 1, 200000, 1),
+        }
+        liquidity_add = scan(
+            transfer(trader, pool),
+            None,
+            [mint_log],
+        )
+        large_burn = {
+            "address": pool,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "6" * 64,
+            "logIndex": "0x2",
+            "topics": [opening.V3_BURN_TOPIC],
+            "data": words(1, 200000, 1),
+        }
+        sell_with_lp_observation = scan(
+            transfer(trader, pool),
+            200000,
+            [large_burn],
+        )
+        self.assertEqual(buy["risk"], "none")
+        self.assertEqual(buy["pool_token_out"], "200000")
+        self.assertEqual(sell["risk"], "pool_token_in")
+        self.assertEqual(sell["pool_token_in"], "200000")
+        self.assertEqual(bare_transfer["risk"], "unknown_incomplete_coverage")
+        self.assertEqual(
+            bare_transfer["pool_token_in_unconfirmed"],
+            "200000",
+        )
+        self.assertFalse(bare_transfer["coverage_complete"])
+        self.assertEqual(partial_swap["pool_token_in"], "1")
+        self.assertEqual(
+            partial_swap["pool_token_in_unconfirmed"],
+            "199999",
+        )
+        self.assertEqual(
+            partial_swap["risk"],
+            "unknown_incomplete_coverage",
+        )
+        self.assertEqual(liquidity_add["risk"], "none")
+        self.assertEqual(liquidity_add["pool_token_in"], "0")
+        self.assertEqual(
+            liquidity_add["pool_token_in_unconfirmed"],
+            "0",
+        )
+        self.assertEqual(
+            sell_with_lp_observation["risk"],
+            "pool_token_in",
+        )
+
+    def test_v3_swap_tracks_non_event_quote_pool(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        event_quote = "0x" + "2" * 40
+        counterasset = "0x" + "3" * 40
+        pool = "0x" + "4" * 40
+        trader = "0x" + "5" * 40
+        tx_hash = "0x" + "6" * 64
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(
+                f"{(value if value >= 0 else 2**256 + value):064x}"
+                for value in values
+            )
+
+        transfer = {
+            "address": token,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x0",
+            "topics": [
+                opening.TRANSFER_TOPIC,
+                opening.address_topic(trader),
+                opening.address_topic(pool),
+            ],
+            "data": "0x" + f"{200000:064x}",
+        }
+        swap = {
+            "address": pool,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x1",
+            "topics": [opening.V3_SWAP_TOPIC],
+            "data": words(200000, -10, 1, 1, 1),
+        }
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            topics = query["topics"]
+            if topics == [opening.V3_SWAP_TOPIC]:
+                return [swap]
+            if topics and isinstance(topics[0], list):
+                return []
+            if len(topics) >= 3 and topics[2] == opening.address_topic(pool):
+                return [transfer]
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {
+                "address": event_quote,
+                "symbol": "USDT",
+                "decimals": 0,
+            },
+            "watch_addresses": [
+                {
+                    "address": pool,
+                    "role": "pool",
+                    "token0": token,
+                    "token1": counterasset,
+                }
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "verified",
+                    "pools": [
+                        {
+                            "address": pool,
+                            "token0": token,
+                            "token1": counterasset,
+                            "factory": "0x" + "9" * 40,
+                            "fee": 100,
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertEqual(result["risk"], "pool_token_in")
+        self.assertEqual(result["pool_token_in"], "200000")
+
+    def test_v3_pool_sell_threshold_prefers_quote_value(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        tx_hash = "0x" + "4" * 64
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(
+                f"{(value if value >= 0 else 2**256 + value):064x}"
+                for value in values
+            )
+
+        swap = {
+            "address": pool,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x0",
+            "topics": [opening.V3_SWAP_TOPIC],
+            "data": "",
+        }
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+
+        def run(amounts: list[tuple[int, int]]) -> dict[str, object]:
+            swap_rows = [
+                {
+                    **swap,
+                    "logIndex": hex(index),
+                    "data": words(
+                        amount_token,
+                        -amount_quote,
+                        1,
+                        1,
+                        1,
+                    ),
+                }
+                for index, (amount_token, amount_quote) in enumerate(amounts)
+            ]
+
+            def fetch(
+                _event: dict[str, object],
+                query: dict[str, object],
+                *_args: object,
+            ) -> list[dict[str, object]]:
+                return (
+                    swap_rows
+                    if query["topics"] == [opening.V3_SWAP_TOPIC]
+                    else []
+                )
+
+            with (
+                mock.patch.object(opening, "global_address_labels", return_value={}),
+                mock.patch.object(
+                    opening,
+                    "supported_v3_pool_scope",
+                    return_value={
+                        "status": "complete_tracked_factory_matrix",
+                        "complete": True,
+                        "configuration_hash": "verified",
+                        "pools": [
+                            {
+                                "address": pool,
+                                "token0": token,
+                                "token1": quote,
+                                "factory": "0x" + "9" * 40,
+                                "fee": 100,
+                            }
+                        ],
+                    },
+                ),
+                mock.patch.object(
+                    opening,
+                    "snapshot_cached_get_logs",
+                    side_effect=fetch,
+                ),
+            ):
+                return opening.scan_key_liquidity_flows(
+                    copy.deepcopy(event),
+                    200,
+                )
+
+        low_value = run([(200000, 10)])
+        high_value = run([(5, 20000)])
+        quote_negative_roundtrip = run(
+            [(200000, 20000), (-50000, -30000)]
+        )
+
+        self.assertEqual(low_value["risk"], "none")
+        self.assertEqual(low_value["pool_token_in"], "200000")
+        self.assertEqual(low_value["pool_token_in_quote"], "10")
+        self.assertEqual(high_value["risk"], "pool_token_in")
+        self.assertEqual(high_value["pool_token_in"], "5")
+        self.assertEqual(high_value["pool_token_in_quote"], "20000")
+        self.assertEqual(quote_negative_roundtrip["risk"], "none")
+        self.assertEqual(
+            quote_negative_roundtrip["pool_token_in"],
+            "150000",
+        )
+        self.assertEqual(
+            quote_negative_roundtrip["pool_token_in_quote"],
+            "0",
+        )
+
+    def test_v3_same_transaction_roundtrip_uses_net_swap_delta(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+        trader = "0x" + "4" * 40
+        tx_hash = "0x" + "5" * 64
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(
+                f"{(value if value >= 0 else 2**256 + value):064x}"
+                for value in values
+            )
+
+        def transfer(sender: str, recipient: str) -> dict[str, object]:
+            return {
+                "address": token,
+                "blockNumber": "0x64",
+                "blockHash": "0x" + "a" * 64,
+                "transactionHash": tx_hash,
+                "logIndex": "0x0",
+                "topics": [
+                    opening.TRANSFER_TOPIC,
+                    opening.address_topic(sender),
+                    opening.address_topic(recipient),
+                ],
+                "data": "0x" + f"{200000:064x}",
+            }
+
+        inbound = transfer(trader, pool)
+        outbound = transfer(pool, trader)
+        swaps = [
+            {
+                "address": pool,
+                "blockNumber": "0x64",
+                "blockHash": "0x" + "a" * 64,
+                "transactionHash": tx_hash,
+                "logIndex": hex(index + 1),
+                "topics": [opening.V3_SWAP_TOPIC],
+                "data": words(amount, -amount, 1, 1, 1),
+            }
+            for index, amount in enumerate((200000, -200000))
+        ]
+
+        def fetch(
+            _event: dict[str, object],
+            query: dict[str, object],
+            *_args: object,
+        ) -> list[dict[str, object]]:
+            topics = query["topics"]
+            if topics == [opening.V3_SWAP_TOPIC]:
+                return swaps
+            if topics and isinstance(topics[0], list):
+                return []
+            if topics[1] == opening.address_topic(pool):
+                return [outbound]
+            if topics[2] == opening.address_topic(pool):
+                return [inbound]
+            return []
+
+        event = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "seconds_until_start": -100,
+            "token": {"address": token, "symbol": "TEST", "decimals": 0},
+            "quote": {"address": quote, "symbol": "USDT", "decimals": 0},
+            "watch_addresses": [
+                {
+                    "address": pool,
+                    "role": "pool",
+                    "token0": token,
+                    "token1": quote,
+                }
+            ],
+            "pool_id": "",
+            "lp_position_ids": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value={
+                    "status": "complete_tracked_factory_matrix",
+                    "complete": True,
+                    "expected_query_count": 1,
+                    "configuration_hash": "verified",
+                    "pools": [
+                        {
+                            "address": pool,
+                            "token0": token,
+                            "token1": quote,
+                            "factory": "0x" + "9" * 40,
+                            "fee": 100,
+                        }
+                    ],
+                },
+            ),
+            mock.patch.object(
+                opening,
+                "snapshot_cached_get_logs",
+                side_effect=fetch,
+            ),
+        ):
+            result = opening.scan_key_liquidity_flows(event, 200)
+
+        self.assertEqual(result["risk"], "none")
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["pool_token_in"], "0")
+        self.assertEqual(result["pool_token_out"], "0")
+        self.assertEqual(result["pool_token_in_unconfirmed"], "0")
+        self.assertEqual(result["pool_token_out_unconfirmed"], "0")
+
+    def test_v3_rebalance_is_not_sell_signal(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool = "0x" + "3" * 40
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(f"{value:064x}" for value in values)
+
+        logs = [
+            {
+                "address": pool,
+                "blockNumber": "0x64",
+                "blockHash": "0x" + "a" * 64,
+                "transactionHash": "0x" + "5" * 64,
+                "logIndex": "0x0",
+                "topics": [opening.V3_BURN_TOPIC],
+                "data": words(4, 5, 6),
+            },
+            {
+                "address": pool,
+                "blockNumber": "0x64",
+                "blockHash": "0x" + "a" * 64,
+                "transactionHash": "0x" + "5" * 64,
+                "logIndex": "0x1",
+                "topics": [opening.V3_MINT_TOPIC],
+                "data": words(0, 10, 20, 30),
+            },
+        ]
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            side_effect=[logs, [logs[0]]],
+        ):
+            rebalance = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {
+                    pool: {
+                        "role": "pool",
+                        "label": "V3 pool",
+                        "token0": token,
+                        "token1": quote,
+                    }
+                },
+            )
+            removal = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {
+                    pool: {
+                        "role": "pool",
+                        "label": "V3 pool",
+                        "token0": token,
+                        "token1": quote,
+                    }
+                },
+            )
+
+        self.assertEqual(rebalance["risk"], "none")
+        self.assertEqual(
+            [row["event"] for row in rebalance["events"]],
+            ["V3Burn", "V3Mint"],
+        )
+        self.assertEqual(removal["risk"], "none")
+
+        large_burn = dict(logs[0])
+        large_burn["data"] = words(4, 200000, 6)
+        equal_mint = dict(logs[1])
+        equal_mint["data"] = words(0, 1, 200000, 1)
+        dust_mint = dict(logs[1])
+        dust_mint["data"] = words(0, 1, 1, 1)
+        collect = {
+            "address": pool,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": "0x" + "5" * 64,
+            "logIndex": "0x2",
+            "topics": [opening.V3_COLLECT_TOPIC],
+            "data": words(0, 200000, 1),
+        }
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            side_effect=[
+                [large_burn, equal_mint],
+                [large_burn, collect, equal_mint],
+                [large_burn, dust_mint],
+            ],
+        ):
+            equal_rebalance = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {
+                    pool: {
+                        "role": "pool",
+                        "label": "V3 pool",
+                        "token0": token,
+                        "token1": quote,
+                    }
+                },
+            )
+            burn_collect_rebalance = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {
+                    pool: {
+                        "role": "pool",
+                        "label": "V3 pool",
+                        "token0": token,
+                        "token1": quote,
+                    }
+                },
+            )
+            large_rebalance = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {
+                    pool: {
+                        "role": "pool",
+                        "label": "V3 pool",
+                        "token0": token,
+                        "token1": quote,
+                    }
+                },
+            )
+        self.assertEqual(equal_rebalance["risk"], "none")
+        self.assertEqual(burn_collect_rebalance["risk"], "none")
+        self.assertEqual(
+            large_rebalance["risk"],
+            "lp_activity_unattributed",
+        )
+
+    def test_cross_pool_migration_is_not_same_pool_rebalance(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        pool_a = "0x" + "3" * 40
+        pool_b = "0x" + "4" * 40
+        tx_hash = "0x" + "5" * 64
+
+        def words(*values: int) -> str:
+            return "0x" + "".join(f"{value:064x}" for value in values)
+
+        burn = {
+            "address": pool_a,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x0",
+            "topics": [opening.V3_BURN_TOPIC],
+            "data": words(1, 200000, 1),
+        }
+        mint = {
+            "address": pool_b,
+            "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
+            "transactionHash": tx_hash,
+            "logIndex": "0x1",
+            "topics": [opening.V3_MINT_TOPIC],
+            "data": words(0, 1, 200000, 1),
+        }
+        meta = {
+            "role": "pool",
+            "token0": token,
+            "token1": quote,
+        }
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            side_effect=[[burn], [mint]],
+        ):
+            result = opening.scan_liquidity_events(
+                {
+                    "chain": "bsc",
+                    "pool_id": "",
+                    "token": {"address": token, "decimals": 0},
+                },
+                100,
+                200,
+                {pool_a: dict(meta), pool_b: dict(meta)},
+            )
+
+        self.assertEqual(result["risk"], "lp_activity_unattributed")
+        self.assertNotIn("同交易再平衡", result["summary"])
+
+    def test_malformed_liquidity_event_fails_coverage_closed(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        pool = "0x" + "3" * 40
+        with mock.patch.object(
+            opening,
+            "snapshot_cached_get_logs",
+            return_value=[
+                {
+                    "address": pool,
+                    "blockNumber": "0x64",
+                    "blockHash": "0x" + "a" * 64,
+                    "transactionHash": "0x" + "5" * 64,
+                    "logIndex": "0x0",
+                    "topics": [opening.V3_BURN_TOPIC],
+                    "data": "0x01",
+                }
+            ],
+        ):
+            result = opening.scan_liquidity_events(
+                {"chain": "bsc", "pool_id": ""},
+                100,
+                200,
+                {pool: {"role": "pool"}},
+            )
+
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["coverage_status"], "event_decode_incomplete")
+        self.assertEqual(result["decode_error_count"], 1)
 
     def test_liquidity_scope_hash_includes_pool_and_positions(
         self,
@@ -4771,6 +7195,19 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(base, with_pool)
         self.assertNotEqual(base, with_position)
+
+        topics_without_collect = set(opening.LIQUIDITY_EVENT_TOPICS)
+        topics_without_collect.remove(opening.V3_COLLECT_TOPIC)
+        with mock.patch.object(
+            opening,
+            "LIQUIDITY_EVENT_TOPICS",
+            topics_without_collect,
+        ):
+            previous_semantics = opening.liquidity_watch_scope_hash(
+                watch,
+                {"pool_id": "", "lp_position_ids": []},
+            )
+        self.assertNotEqual(base, previous_semantics)
 
     def test_snapshot_log_cache_is_success_only_and_returns_copies(
         self,
@@ -4867,7 +7304,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual(len(failed_cache), 1)
 
-    def test_snapshot_log_cache_shares_raw_manager_logs_only(
+    def test_snapshot_log_cache_separates_indexed_manager_scope(
         self,
     ) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -4880,12 +7317,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             manager: {
                 "role": "pool_manager",
                 "label": "manager",
+                "source": "event_config",
+                "v4_validation_status": "pool_key_verified",
+                "v4_manager_type": "cl",
             }
         }
         raw_log = {
             "address": manager,
             "blockNumber": "0x64",
+            "blockHash": "0x" + "a" * 64,
             "transactionHash": "0x" + "2" * 64,
+            "logIndex": "0x0",
             "topics": [
                 opening.DECREASE_LIQUIDITY_TOPIC,
                 second_pool,
@@ -4920,11 +7362,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 watch,
             )
 
-        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(fetch.call_count, 2)
         self.assertEqual(first["rows"], 0)
         self.assertEqual(first["risk"], "none")
+        self.assertFalse(first["coverage_complete"])
         self.assertEqual(second["rows"], 1)
-        self.assertEqual(second["risk"], "lp_remove")
+        self.assertEqual(second["risk"], "lp_activity_unattributed")
 
     def test_opening_owner_probe_rejects_owner_zero_conflict(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -5703,6 +8146,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "relevant_tx_count": 8,
             "rows": [row],
             "liquidity_flow": {"summary": "cached", "risk": "none", "rows": 0},
+            "opening_v4_pool_scope": {"configuration_hash": "old-v4"},
         }
 
         refreshed_trace = {
@@ -5710,17 +8154,27 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "as_of_block": "140",
             "confirmed_sell_quote_received": "38000",
         }
+
+        def refresh_liquidity(
+            target_event: dict[str, object],
+            _latest: int,
+        ) -> dict[str, object]:
+            target_event["opening_v4_pool_scope"] = {
+                "configuration_hash": "new-v4"
+            }
+            return {
+                "summary": "fresh",
+                "risk": "none",
+                "rows": 0,
+                "coverage_complete": True,
+                "coverage_status": "complete_recent_window",
+            }
+
         with (
             mock.patch.object(
                 opening,
                 "scan_key_liquidity_flows",
-                return_value={
-                    "summary": "fresh",
-                    "risk": "none",
-                    "rows": 0,
-                    "coverage_complete": True,
-                    "coverage_status": "complete_recent_window",
-                },
+                side_effect=refresh_liquidity,
             ),
             mock.patch.object(
                 opening,
@@ -5746,6 +8200,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "38000",
         )
         self.assertEqual(previous["rows"][0]["buyer_trace"]["as_of_block"], "120")
+        self.assertEqual(
+            refreshed["opening_v4_pool_scope"]["configuration_hash"],
+            "new-v4",
+        )
         self.assertEqual(
             trace_buyer.call_args.args[-1]["confirmed_sell_quote_received"],
             "37331.42",
