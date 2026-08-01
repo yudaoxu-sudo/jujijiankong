@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
@@ -7452,14 +7453,150 @@ print(len(text))
         project_watch = json.loads((ROOT / "output" / "alpha_project_watch" / "latest.json").read_text(encoding="utf-8"))
         projects = project_watch.get("projects", [])
         skipped = project_watch.get("skipped", [])
-        project_watch_ok = (
-            len(projects) >= 2
-            and "alert_count" in project_watch
-            and any(row.get("symbol") == "ARX" and row.get("reason") == "specialized_watch" for row in skipped)
-            and all("spot_action" in row.get("analysis", {}) for row in projects)
-            and all("perp_action" in row.get("analysis", {}) for row in projects)
+        watchlist = json.loads(
+            (ROOT / "config" / "current_alpha_watchlist.json").read_text(
+                encoding="utf-8"
+            )
         )
-        project_watch_msg = f"{len(projects)} projects, alerts={project_watch.get('alert_count')}, skipped={skipped}"
+        policy = watchlist.get("monitoring_policy", {})
+        focused_symbols = {
+            str(symbol).upper() for symbol in policy.get("symbols", [])
+        }
+        project_symbols = {
+            str(row.get("symbol") or "").upper() for row in projects
+        }
+        analysis_complete = all(
+            "spot_action" in row.get("analysis", {})
+            and "perp_action" in row.get("analysis", {})
+            for row in projects
+        )
+
+        def focused_address(value: Any) -> bool:
+            text = str(value or "").lower()
+            return (
+                len(text) == 42
+                and text.startswith("0x")
+                and all(
+                    character in "0123456789abcdef"
+                    for character in text[2:]
+                )
+            )
+
+        def focused_balance_complete(row: Any) -> bool:
+            if not isinstance(row, dict) or row.get("error"):
+                return False
+            try:
+                balance = Decimal(str(row["balance"]))
+            except (KeyError, InvalidOperation, ValueError):
+                return False
+            return (
+                focused_address(row.get("address"))
+                and focused_address(row.get("balance_token_address"))
+                and balance.is_finite()
+                and balance >= 0
+            )
+
+        def focused_contract_complete(contract: dict[str, Any]) -> bool:
+            requested = int(contract.get("requested_from_block") or 0)
+            target = int(contract.get("target_latest_block") or 0)
+            covered = int(contract.get("covered_through_block") or 0)
+            next_from = int(contract.get("next_from_block") or 0)
+            latest = int(contract.get("latest_block") or 0)
+            balances = contract.get("balances", [])
+            target_hash = str(
+                contract.get("target_latest_block_hash") or ""
+            )
+            balance_identities = {
+                (
+                    str(row.get("address") or "").lower(),
+                    str(row.get("balance_token_address") or "").lower(),
+                )
+                for row in balances
+                if isinstance(row, dict)
+            }
+            return (
+                contract.get("coverage_complete") is True
+                and contract.get("transfer_coverage_complete") is True
+                and contract.get("scan_status") == "complete"
+                and not contract.get("error")
+                and focused_address(contract.get("address"))
+                and int(contract.get("log_error_count") or 0) == 0
+                and not contract.get("log_errors")
+                and requested > 0
+                and target > 0
+                and requested <= target
+                and covered == target
+                and latest == target
+                and next_from == target + 1
+                and len(target_hash) == 66
+                and target_hash.startswith("0x")
+                and target_hash != "0x" + "0" * 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in target_hash[2:].lower()
+                )
+                and isinstance(balances, list)
+                and int(contract.get("balance_target_count") or 0)
+                == len(balances)
+                and len(balance_identities) == len(balances)
+                and all(
+                    focused_balance_complete(row) for row in balances
+                )
+            )
+
+        focused_projects_complete = all(
+            row.get("coverage_complete") is True
+            and isinstance(row.get("contracts"), list)
+            and bool(row.get("contracts"))
+            and all(
+                focused_contract_complete(contract)
+                for contract in row.get("contracts", [])
+                if isinstance(contract, dict)
+            )
+            and all(
+                isinstance(contract, dict)
+                for contract in row.get("contracts", [])
+            )
+            for row in projects
+        )
+        legacy_output_ok = (
+            policy.get("mode") != "exclusive_symbols"
+            and len(projects) >= 2
+            and any(
+                row.get("symbol") == "ARX"
+                and row.get("reason") == "specialized_watch"
+                for row in skipped
+            )
+            and analysis_complete
+        )
+        focused_output_ok = (
+            policy.get("mode") == "exclusive_symbols"
+            and bool(focused_symbols)
+            and project_symbols == focused_symbols
+            and len(projects) == len(focused_symbols)
+            and int(project_watch.get("project_count") or 0)
+            == len(focused_symbols)
+            and project_watch.get("coverage_complete") is True
+            and int(project_watch.get("expected_project_count") or 0)
+            == len(focused_symbols)
+            and all(
+                str(row.get("symbol") or "").upper()
+                not in focused_symbols
+                and row.get("reason") == "archived_or_paused"
+                for row in skipped
+            )
+            and analysis_complete
+            and focused_projects_complete
+        )
+        project_watch_ok = (
+            "alert_count" in project_watch
+            and (focused_output_ok or legacy_output_ok)
+        )
+        project_watch_msg = (
+            f"{len(projects)} projects, "
+            f"mode={'focused' if focused_output_ok else 'legacy'}, "
+            f"alerts={project_watch.get('alert_count')}, skipped={skipped}"
+        )
     except Exception as exc:
         project_watch_msg = str(exc)
     checks.append(("alpha project watch parses", project_watch_ok, project_watch_msg))
