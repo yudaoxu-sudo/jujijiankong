@@ -3,11 +3,19 @@ set -euo pipefail
 
 cd "${SNIPER_PROJECT_DIR:-/home/ubuntu/sniper}"
 
-LOCK_FILE="${SNIPER_RUN_LOCK_FILE:-/tmp/sniper_server_run_once.lock}"
+REQUESTED_ALPHA_PROJECT_ONLY="${ALPHA_PROJECT_ONLY:-0}"
+if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
+  LOCK_FILE="${SNIPER_PROJECT_ONLY_RUN_LOCK_FILE:-/tmp/sniper_server_project_only.lock}"
+else
+  LOCK_FILE="${SNIPER_RUN_LOCK_FILE:-/tmp/sniper_server_run_once.lock}"
+fi
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
     echo "server_run_once skipped: previous run still active"
+    if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
+      exit 75
+    fi
     exit 0
   fi
 else
@@ -42,6 +50,7 @@ fi
 
 export ALPHA_PROJECT_LOG_CHUNK_BLOCKS="${ALPHA_PROJECT_LOG_CHUNK_BLOCKS:-2000}"
 
+LAST_STEP_STATUS=0
 run_step() {
   local seconds="$1"
   local status=0
@@ -56,6 +65,36 @@ run_step() {
     echo "step failed with status ${status} or timed out after ${seconds}s: $*" >&2
     printf '%s\t%s\t%s\n' "$status" "$seconds" "$*" >>"$RUNTIME_HEALTH_FAILURE_FILE"
   fi
+  LAST_STEP_STATUS="$status"
+}
+
+acquire_project_lock() {
+  local project_lock_file="${ALPHA_PROJECT_WATCH_LOCK_FILE:-/tmp/sniper_alpha_project_watch.lock}"
+  if ! command -v flock >/dev/null 2>&1; then
+    return 78
+  fi
+  exec 7>"$project_lock_file"
+  flock -w 5 7
+}
+
+release_project_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    flock -u 7
+  fi
+}
+
+run_project_step() {
+  local seconds="$1"
+  local lock_status=0
+  shift
+  acquire_project_lock || lock_status=$?
+  if (( lock_status != 0 )); then
+    echo "alpha project watch failed: project lock unavailable" >&2
+    printf '%s\t%s\t%s\n' "$lock_status" "$seconds" "alpha project lock" >>"$RUNTIME_HEALTH_FAILURE_FILE"
+    return 0
+  fi
+  run_step "$seconds" "$@"
+  release_project_lock
 }
 
 runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
@@ -92,19 +131,38 @@ else
     exit 78
   fi
 fi
-if [[ "${ALPHA_PROJECT_ONLY:-0}" == "1" ]]; then
+if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
   project_only_cycles="${ALPHA_PROJECT_ONLY_CYCLES:-1}"
+  if [[ ! "$project_only_cycles" =~ ^[1-9][0-9]*$ ]] \
+    || (( 10#$project_only_cycles > 64 )); then
+    echo "server_run_once failed: invalid project-only cycle count" >&2
+    exit 64
+  fi
+  project_only_cycles="$((10#$project_only_cycles))"
+  project_lock_status=0
+  acquire_project_lock || project_lock_status=$?
+  if (( project_lock_status != 0 )); then
+    echo "alpha project watch failed: project lock unavailable" >&2
+    exit "$project_lock_status"
+  fi
+  project_only_status=1
   for ((project_cycle = 1; project_cycle <= project_only_cycles; project_cycle++)); do
     echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) project-only cycle ${project_cycle}/${project_only_cycles}"
     run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+    project_only_status="$LAST_STEP_STATUS"
     if [[ ! -s output/alpha_project_watch/progress.json ]]; then
       break
     fi
   done
-  exit 0
+  release_project_lock
+  if [[ -s output/alpha_project_watch/progress.json ]]; then
+    echo "alpha project watch incomplete after ${project_only_cycles} cycles" >&2
+    exit 1
+  fi
+  exit "$project_only_status"
 fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
-run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+run_project_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
 run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" python3 scripts/alpha_intraday_flow_watch.py
 run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_sprint.sh
 run_step "${ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-360}" env ALPHA_INTRADAY_REQUIRED_ONLY=1 ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS="${ALPHA_INTRADAY_POST_OPENING_WATCHER_BUDGET_SECONDS:-330}" python3 scripts/alpha_intraday_flow_watch.py
