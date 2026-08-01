@@ -93,7 +93,14 @@ else
   fi
 fi
 if [[ "${ALPHA_PROJECT_ONLY:-0}" == "1" ]]; then
-  run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+  project_only_cycles="${ALPHA_PROJECT_ONLY_CYCLES:-1}"
+  for ((project_cycle = 1; project_cycle <= project_only_cycles; project_cycle++)); do
+    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) project-only cycle ${project_cycle}/${project_only_cycles}"
+    run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+    if [[ ! -s output/alpha_project_watch/progress.json ]]; then
+      break
+    fi
+  done
   exit 0
 fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
