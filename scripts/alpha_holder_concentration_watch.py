@@ -23,6 +23,21 @@ sys.path.insert(0, str(ROOT))
 from sniper_engine.address_labels import global_address_label, global_address_labels
 from sniper_engine.rpc import rpc_call
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
+from scripts.alpha_opening_block_watch import (
+    MODIFY_LIQUIDITY_TOPIC,
+    PANCAKE_INFINITY_BIN_POOL_MANAGER,
+    V3_BURN_TOPIC,
+    V3_COLLECT_TOPIC,
+    V3_MINT_TOPIC,
+    V3_SWAP_TOPIC,
+    V4_SWAP_TOPIC,
+    int_slot,
+    strict_abi_event_word_count,
+    strict_rpc_log_identity,
+    strict_v3_swap_amount,
+    strict_v4_swap_amount,
+    uint_slot,
+)
 
 
 getcontext().prec = 80
@@ -74,6 +89,8 @@ RETENTION_FLOW_DAYS = 30
 RETENTION_CEX_MIN_SUPPLY_BPS = 5
 BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
 RETENTION_SCOPE_STATE_SCHEMA_VERSION = 1
+LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION = 2
+LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP = 128
 RETENTION_PROJECT_ROLES = {
     "contract_owner",
     "deployer",
@@ -418,6 +435,26 @@ def latest_block(chain: str) -> int:
     return int(
         holder_rpc_call(chain, "eth_blockNumber", []),
         16,
+    )
+
+
+def liquidity_checkpoint_block_hash(chain: str, block: int) -> str:
+    try:
+        payload = holder_rpc_call(
+            chain,
+            "eth_getBlockByNumber",
+            [hex(block), False],
+        )
+    except Exception:
+        return ""
+    block_hash = norm(
+        payload.get("hash") if isinstance(payload, dict) else ""
+    )
+    return (
+        block_hash
+        if valid_hash32(block_hash)
+        and int(block_hash[2:], 16) != 0
+        else ""
     )
 
 
@@ -1093,6 +1130,564 @@ def retention_evidence_scope(
     )
 
 
+def valid_hash32(value: Any) -> bool:
+    return re.fullmatch(r"0x[a-f0-9]{64}", norm(str(value or ""))) is not None
+
+
+def valid_sha256(value: Any) -> bool:
+    return re.fullmatch(r"[a-f0-9]{64}", norm(str(value or ""))) is not None
+
+
+def strict_unsigned_event_word(
+    data: Any,
+    index: int,
+    bits: int,
+) -> int | None:
+    if (
+        bits <= 0
+        or bits > 256
+        or not isinstance(data, str)
+        or not data.startswith("0x")
+    ):
+        return None
+    raw = data[2:]
+    start = index * 64
+    if (
+        index < 0
+        or len(raw) < start + 64
+        or re.fullmatch(r"[0-9a-fA-F]{64}", raw[start:start + 64])
+        is None
+    ):
+        return None
+    value = int(raw[start:start + 64], 16)
+    return value if value < 2**bits else None
+
+
+def strict_signed_event_word(
+    data: Any,
+    index: int,
+    bits: int,
+) -> int | None:
+    word = strict_unsigned_event_word(data, index, 256)
+    if word is None or bits <= 0 or bits > 256:
+        return None
+    if bits == 256:
+        return word - 2**256 if word >= 2**255 else word
+    mask = 2**bits - 1
+    low = word & mask
+    high = word >> bits
+    if low >= 2 ** (bits - 1):
+        if high != 2 ** (256 - bits) - 1:
+            return None
+        return low - 2**bits
+    return low if high == 0 else None
+
+
+def strict_swap_static_fields(data: Any, event_kind: str) -> bool:
+    if event_kind == "v3_swap":
+        return bool(
+            strict_abi_event_word_count(data) == 5
+            and strict_unsigned_event_word(data, 2, 160) is not None
+            and strict_unsigned_event_word(data, 3, 128) is not None
+            and strict_signed_event_word(data, 4, 24) is not None
+        )
+    if event_kind == "v4_swap":
+        return bool(
+            strict_abi_event_word_count(data) == 7
+            and strict_unsigned_event_word(data, 2, 160) is not None
+            and strict_unsigned_event_word(data, 3, 128) is not None
+            and strict_signed_event_word(data, 4, 24) is not None
+            and strict_unsigned_event_word(data, 5, 24) is not None
+            and strict_unsigned_event_word(data, 6, 16) is not None
+        )
+    return False
+
+
+def strict_indexed_event_word(topic: Any, bits: int) -> int | None:
+    text = norm(str(topic or ""))
+    if re.fullmatch(r"0x[a-f0-9]{64}", text) is None:
+        return None
+    value = int(text[2:], 16)
+    if bits == 160:
+        return value if value < 2**160 else None
+    if bits <= 0 or bits > 256:
+        return None
+    if bits == 256:
+        return value
+    mask = 2**bits - 1
+    low = value & mask
+    high = value >> bits
+    if low >= 2 ** (bits - 1):
+        if high != 2 ** (256 - bits) - 1:
+            return None
+        return low - 2**bits
+    return low if high == 0 else None
+
+
+def strict_liquidity_event_fields(
+    event_kind: str,
+    topics: list[Any],
+    data: Any,
+) -> bool:
+    if event_kind == "v3_swap":
+        return bool(
+            strict_indexed_event_word(topics[1], 160) is not None
+            and strict_indexed_event_word(topics[2], 160) is not None
+            and strict_swap_static_fields(data, event_kind)
+        )
+    if event_kind in {"v3_mint", "v3_burn", "v3_collect"}:
+        indexed_valid = bool(
+            strict_indexed_event_word(topics[1], 160) is not None
+            and strict_indexed_event_word(topics[2], 24) is not None
+            and strict_indexed_event_word(topics[3], 24) is not None
+        )
+        if event_kind == "v3_mint":
+            return bool(
+                indexed_valid
+                and strict_unsigned_event_word(data, 0, 160)
+                is not None
+                and strict_unsigned_event_word(data, 1, 128)
+                is not None
+            )
+        if event_kind == "v3_burn":
+            return bool(
+                indexed_valid
+                and strict_unsigned_event_word(data, 0, 128)
+                is not None
+            )
+        return bool(
+            indexed_valid
+            and strict_unsigned_event_word(data, 0, 160) is not None
+            and strict_unsigned_event_word(data, 1, 128) is not None
+            and strict_unsigned_event_word(data, 2, 128) is not None
+        )
+    if event_kind == "v4_swap":
+        return bool(
+            strict_indexed_event_word(topics[2], 160) is not None
+            and strict_swap_static_fields(data, event_kind)
+        )
+    if event_kind == "v4_modify_liquidity":
+        return bool(
+            strict_indexed_event_word(topics[2], 160) is not None
+            and strict_signed_event_word(data, 0, 24) is not None
+            and strict_signed_event_word(data, 1, 24) is not None
+            and strict_signed_event_word(data, 2, 256) is not None
+        )
+    return False
+
+
+def liquidity_pool_scope_hash(pools: list[dict[str, Any]]) -> str:
+    stable_rows = [
+        {
+            key: row.get(key)
+            for key in (
+                "protocol",
+                "address",
+                "factory",
+                "pool_id",
+                "v4_manager_type",
+                "token0",
+                "token1",
+                "quote_token",
+                "quote_decimals",
+                "quote_symbol",
+                "fee",
+            )
+            if key in row
+        }
+        for row in sorted(
+            pools,
+            key=lambda value: (
+                str(value.get("protocol") or ""),
+                str(value.get("address") or ""),
+                str(value.get("pool_id") or ""),
+            ),
+        )
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            stable_rows,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def normalized_verified_liquidity_pools(
+    pools: Any,
+    token: str,
+) -> list[dict[str, Any]] | None:
+    if not isinstance(pools, list):
+        return None
+    normalized: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw in pools:
+        if not isinstance(raw, dict):
+            return None
+        protocol = str(raw.get("protocol") or "").lower()
+        address = norm(raw.get("address"))
+        token0 = norm(raw.get("token0"))
+        token1 = norm(raw.get("token1"))
+        quote_token = norm(raw.get("quote_token"))
+        try:
+            quote_decimals = int(raw.get("quote_decimals"))
+        except (TypeError, ValueError):
+            return None
+        quote_symbol = str(raw.get("quote_symbol") or "").strip().upper()
+        if (
+            protocol not in {"v3", "v4_cl"}
+            or not is_address(address)
+            or token0 == token1
+            or not is_address(token0)
+            or not is_address(token1)
+            or norm(token) not in {token0, token1}
+            or quote_token not in {token0, token1}
+            or quote_token == norm(token)
+            or quote_decimals < 0
+            or quote_decimals > 36
+            or not quote_symbol
+        ):
+            return None
+        if protocol == "v3":
+            factory = norm(raw.get("factory"))
+            try:
+                fee = int(raw.get("fee"))
+            except (TypeError, ValueError):
+                return None
+            if not is_address(factory) or fee <= 0:
+                return None
+            row = {
+                "protocol": "v3",
+                "address": address,
+                "factory": factory,
+                "token0": token0,
+                "token1": token1,
+                "quote_token": quote_token,
+                "quote_decimals": quote_decimals,
+                "quote_symbol": quote_symbol,
+                "fee": fee,
+            }
+            identity = ("v3", address, "")
+        else:
+            pool_id = norm(raw.get("pool_id"))
+            manager_type = str(raw.get("v4_manager_type") or "").lower()
+            pool_manager = norm(raw.get("pool_manager") or address)
+            if (
+                manager_type != "cl"
+                or address == PANCAKE_INFINITY_BIN_POOL_MANAGER
+                or pool_manager != address
+                or not valid_hash32(pool_id)
+            ):
+                return None
+            row = {
+                "protocol": "v4_cl",
+                "address": address,
+                "pool_id": pool_id,
+                "v4_manager_type": "cl",
+                "token0": token0,
+                "token1": token1,
+                "quote_token": quote_token,
+                "quote_decimals": quote_decimals,
+                "quote_symbol": quote_symbol,
+            }
+            if str(raw.get("fee") or "").isdigit():
+                row["fee"] = int(raw["fee"])
+            identity = ("v4_cl", address, pool_id)
+        previous = normalized.get(identity)
+        if previous is not None and previous != row:
+            return None
+        normalized[identity] = row
+    return sorted(
+        normalized.values(),
+        key=lambda value: (
+            value["protocol"],
+            value["address"],
+            str(value.get("pool_id") or ""),
+        ),
+    )
+
+
+def opening_verified_pool_scope(
+    payload: dict[str, Any],
+    symbol: str,
+    chain: str,
+    token: str,
+    persisted_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw_events = payload.get("events", [])
+    if (
+        not isinstance(raw_events, list)
+        or any(not isinstance(event, dict) for event in raw_events)
+    ):
+        return {
+            "status": "current_opening_payload_invalid",
+            "complete": False,
+            "source": "opening",
+            "matching_event_count": 0,
+            "pool_scope": [],
+            "pool_count": 0,
+            "v3_pool_count": 0,
+            "v4_pool_count": 0,
+            "scope_hash": "",
+        }
+    identity_candidates = [
+        event
+        for event in raw_events
+        if str(event.get("symbol") or "").upper() == symbol
+        and str(event.get("chain") or "").lower() == chain
+    ]
+    candidate_tokens = [
+        norm(event["token"].get("address"))
+        if isinstance(event.get("token"), dict)
+        else ""
+        for event in identity_candidates
+    ]
+    if identity_candidates and any(
+        candidate != norm(token) for candidate in candidate_tokens
+    ):
+        return {
+            "status": "current_opening_identity_invalid",
+            "complete": False,
+            "source": "opening",
+            "matching_event_count": len(identity_candidates),
+            "pool_scope": [],
+            "pool_count": 0,
+            "v3_pool_count": 0,
+            "v4_pool_count": 0,
+            "scope_hash": "",
+        }
+    matching = identity_candidates
+    if not matching:
+        persisted_scope = persisted_scope or {}
+        persisted_pools = normalized_verified_liquidity_pools(
+            persisted_scope.get("pool_scope"),
+            token,
+        )
+        persisted_hash = str(persisted_scope.get("scope_hash") or "")
+        valid_persisted = bool(
+            int(
+                persisted_scope.get("scope_state_schema_version")
+                or 0
+            )
+            == LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            and persisted_pools
+            and len(persisted_hash) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in persisted_hash.lower()
+            )
+            and liquidity_pool_scope_hash(persisted_pools)
+            == persisted_hash
+        )
+        if valid_persisted:
+            return {
+                "status": "persisted_verified_scope",
+                "complete": True,
+                "source": "state",
+                "matching_event_count": 0,
+                "pool_scope": persisted_pools,
+                "pool_count": len(persisted_pools),
+                "v3_pool_count": sum(
+                    row["protocol"] == "v3"
+                    for row in persisted_pools
+                ),
+                "v4_pool_count": sum(
+                    row["protocol"] == "v4_cl"
+                    for row in persisted_pools
+                ),
+                "scope_hash": persisted_hash,
+            }
+        return {
+            "status": "opening_event_unavailable",
+            "complete": False,
+            "source": "none",
+            "matching_event_count": 0,
+            "pool_scope": [],
+            "pool_count": 0,
+            "v3_pool_count": 0,
+            "v4_pool_count": 0,
+            "scope_hash": "",
+        }
+
+    pools: list[dict[str, Any]] = []
+    for event in matching:
+        v3_scope = event.get("opening_v3_pool_scope")
+        v4_scope = event.get("opening_v4_pool_scope")
+        quote_meta = (
+            event.get("quote")
+            if isinstance(event.get("quote"), dict)
+            else {}
+        )
+        quote = norm(quote_meta.get("address"))
+        quote_symbol = str(quote_meta.get("symbol") or "").strip().upper()
+        try:
+            quote_decimals = int(quote_meta.get("decimals"))
+        except (TypeError, ValueError):
+            quote_decimals = -1
+        if (
+            event.get("status") != "opened"
+            or event.get("opening_liquidity_scope_complete") is not True
+            or not valid_sha256(
+                event.get("opening_liquidity_watch_scope_hash")
+            )
+            or not is_address(quote)
+            or quote == norm(token)
+            or not quote_symbol
+            or quote_decimals < 0
+            or quote_decimals > 36
+            or not isinstance(v3_scope, dict)
+            or v3_scope.get("schema")
+            != "opening_v3_factory_matrix.v2"
+            or v3_scope.get("complete") is not True
+            or v3_scope.get("snapshot_coherent") is not True
+            or not valid_sha256(v3_scope.get("configuration_hash"))
+            or not valid_hash32(v3_scope.get("as_of_block_hash"))
+            or int(v3_scope.get("as_of_block") or 0) <= 0
+            or not isinstance(v3_scope.get("pools"), list)
+            or any(
+                not isinstance(row, dict)
+                for row in v3_scope.get("pools", [])
+            )
+            or not isinstance(v4_scope, dict)
+            or v4_scope.get("schema")
+            != "opening_v4_manager_scope.v2"
+            or v4_scope.get("complete") is not True
+            or not isinstance(v4_scope.get("pools"), list)
+            or any(
+                not isinstance(row, dict)
+                for row in v4_scope.get("pools", [])
+            )
+            or (
+                v4_scope.get("applicable") is not True
+                and bool(v4_scope.get("pools"))
+            )
+        ):
+            return {
+                "status": "current_opening_scope_incomplete",
+                "complete": False,
+                "source": "opening",
+                "matching_event_count": len(matching),
+                "pool_scope": [],
+                "pool_count": 0,
+                "v3_pool_count": 0,
+                "v4_pool_count": 0,
+                "scope_hash": "",
+            }
+        if v4_scope.get("applicable") is True and (
+            v4_scope.get("snapshot_coherent") is not True
+            or not valid_sha256(v4_scope.get("configuration_hash"))
+            or not valid_hash32(v4_scope.get("as_of_block_hash"))
+            or int(v4_scope.get("as_of_block") or 0) <= 0
+        ):
+            return {
+                "status": "current_opening_scope_incomplete",
+                "complete": False,
+                "source": "opening",
+                "matching_event_count": len(matching),
+                "pool_scope": [],
+                "pool_count": 0,
+                "v3_pool_count": 0,
+                "v4_pool_count": 0,
+                "scope_hash": "",
+            }
+        v3_pools = [
+            {
+                **row,
+                "protocol": "v3",
+                "quote_token": quote,
+                "quote_decimals": quote_decimals,
+                "quote_symbol": quote_symbol,
+            }
+            for row in v3_scope.get("pools", [])
+            if isinstance(row, dict)
+        ]
+        v4_pools = [
+            {
+                **row,
+                "protocol": "v4_cl",
+                "quote_token": quote,
+                "quote_decimals": quote_decimals,
+                "quote_symbol": quote_symbol,
+            }
+            for row in v4_scope.get("pools", [])
+            if isinstance(row, dict)
+        ]
+        normalized = normalized_verified_liquidity_pools(
+            v3_pools + v4_pools,
+            token,
+        )
+        if normalized is None:
+            return {
+                "status": "current_opening_scope_invalid",
+                "complete": False,
+                "source": "opening",
+                "matching_event_count": len(matching),
+                "pool_scope": [],
+                "pool_count": 0,
+                "v3_pool_count": 0,
+                "v4_pool_count": 0,
+                "scope_hash": "",
+            }
+        if any(
+            {row.get("token0"), row.get("token1")}
+            != {norm(token), quote}
+            for row in normalized
+        ):
+            return {
+                "status": "current_opening_scope_invalid",
+                "complete": False,
+                "source": "opening",
+                "matching_event_count": len(matching),
+                "pool_scope": [],
+                "pool_count": 0,
+                "v3_pool_count": 0,
+                "v4_pool_count": 0,
+                "scope_hash": "",
+            }
+        pools.extend(normalized)
+    normalized_pools = normalized_verified_liquidity_pools(pools, token)
+    if normalized_pools is None:
+        return {
+            "status": "current_opening_scope_invalid",
+            "complete": False,
+            "source": "opening",
+            "matching_event_count": len(matching),
+            "pool_scope": [],
+            "pool_count": 0,
+            "v3_pool_count": 0,
+            "v4_pool_count": 0,
+            "scope_hash": "",
+        }
+    if not normalized_pools:
+        return {
+            "status": "no_verified_pool",
+            "complete": True,
+            "source": "opening",
+            "matching_event_count": len(matching),
+            "pool_scope": [],
+            "pool_count": 0,
+            "v3_pool_count": 0,
+            "v4_pool_count": 0,
+            "scope_hash": "",
+        }
+    scope_hash = liquidity_pool_scope_hash(normalized_pools)
+    return {
+        "status": "verified_pool_scope",
+        "complete": True,
+        "source": "opening",
+        "matching_event_count": len(matching),
+        "pool_scope": normalized_pools,
+        "pool_count": len(normalized_pools),
+        "v3_pool_count": sum(
+            row["protocol"] == "v3" for row in normalized_pools
+        ),
+        "v4_pool_count": sum(
+            row["protocol"] == "v4_cl" for row in normalized_pools
+        ),
+        "scope_hash": scope_hash,
+    }
+
+
 def targeted_retention_transfer_logs(
     chain: str,
     token: str,
@@ -1473,6 +2068,474 @@ def bounded_targeted_retention_logs(
     return logs, errors, truncated, selected_to, metadata
 
 
+def retention_liquidity_query_scopes(
+    pools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    scopes: list[dict[str, Any]] = []
+    v3_pools = [
+        pool for pool in pools if pool.get("protocol") == "v3"
+    ]
+    if v3_pools:
+        addresses = sorted({pool["address"] for pool in v3_pools})
+        scopes.append(
+            {
+                "address": addresses[0] if len(addresses) == 1 else addresses,
+                "topics": [
+                    sorted(
+                        {
+                            V3_SWAP_TOPIC,
+                            V3_MINT_TOPIC,
+                            V3_BURN_TOPIC,
+                            V3_COLLECT_TOPIC,
+                        }
+                    )
+                ],
+                "event_specs": {
+                    V3_SWAP_TOPIC: ("v3_swap", 3, 5),
+                    V3_MINT_TOPIC: ("v3_mint", 4, 4),
+                    V3_BURN_TOPIC: ("v3_burn", 4, 3),
+                    V3_COLLECT_TOPIC: ("v3_collect", 4, 3),
+                },
+                "pool_by_key": {
+                    pool["address"]: pool for pool in v3_pools
+                },
+                "protocol": "v3",
+            }
+        )
+    v4_pools = [
+        pool for pool in pools if pool.get("protocol") == "v4_cl"
+    ]
+    v4_by_manager: dict[str, list[dict[str, Any]]] = {}
+    for pool in v4_pools:
+        v4_by_manager.setdefault(pool["address"], []).append(pool)
+    for manager, manager_pools in sorted(v4_by_manager.items()):
+        pool_ids = sorted(
+            {pool["pool_id"] for pool in manager_pools}
+        )
+        scopes.append(
+            {
+                "address": manager,
+                "topics": [
+                    sorted({V4_SWAP_TOPIC, MODIFY_LIQUIDITY_TOPIC}),
+                    pool_ids[0] if len(pool_ids) == 1 else pool_ids,
+                ],
+                "event_specs": {
+                    V4_SWAP_TOPIC: ("v4_swap", 3, 7),
+                    MODIFY_LIQUIDITY_TOPIC: (
+                        "v4_modify_liquidity",
+                        3,
+                        4,
+                    ),
+                },
+                "pool_by_key": {
+                    f"{pool['address']}:{pool['pool_id']}": pool
+                    for pool in manager_pools
+                },
+                "protocol": "v4_cl",
+            }
+        )
+    return scopes
+
+
+def targeted_retention_liquidity_logs(
+    chain: str,
+    pools: list[dict[str, Any]],
+    from_block: int,
+    to_block: int,
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    bool,
+    dict[str, Any],
+]:
+    scopes = retention_liquidity_query_scopes(pools)
+    metadata = {
+        "coverage_mode": "verified_pool_indexed_topics",
+        "query_scope_complete": False,
+        "query_count": 0,
+        "scope_batch_count": len(scopes),
+        "pool_count": len(pools),
+        "v3_pool_count": sum(
+            row.get("protocol") == "v3" for row in pools
+        ),
+        "v4_pool_count": sum(
+            row.get("protocol") == "v4_cl" for row in pools
+        ),
+        "v4_manager_count": len(
+            {
+                row.get("address")
+                for row in pools
+                if row.get("protocol") == "v4_cl"
+            }
+        ),
+        "event_filter_count": sum(
+            4 if row.get("protocol") == "v3" else 2
+            for row in pools
+        ),
+    }
+    if from_block > to_block:
+        return [], ["liquidity retention scan window invalid"], False, metadata
+    if not scopes:
+        return [], ["liquidity retention pool scope is empty"], False, metadata
+    configured_chunk_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_LOG_CHUNK_BLOCKS",
+                "8000",
+            )
+        ),
+    )
+    chunk_blocks = (
+        min(configured_chunk_blocks, 2000)
+        if chain == "base"
+        else configured_chunk_blocks
+    )
+    metadata["query_chunk_blocks"] = chunk_blocks
+    query_chunk_count = (
+        to_block - from_block + 1 + chunk_blocks - 1
+    ) // chunk_blocks
+    metadata["query_chunk_count"] = query_chunk_count
+    metadata["expected_query_count"] = (
+        len(scopes) * query_chunk_count
+    )
+    max_logs = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_MAX_LOGS",
+                "20000",
+            )
+        ),
+    )
+    configured_provider_row_limit = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_PROVIDER_MAX_ROWS_PER_QUERY",
+                str(LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP),
+            )
+        ),
+    )
+    provider_row_limit = min(
+        configured_provider_row_limit,
+        LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP,
+    )
+    metadata["provider_row_limit"] = provider_row_limit
+    seen: dict[tuple[str, int], tuple[str, dict[str, Any]]] = {}
+    block_hash_by_number: dict[int, str] = {}
+    for start in range(from_block, to_block + 1, chunk_blocks):
+        end = min(to_block, start + chunk_blocks - 1)
+        for scope in scopes:
+            query = {
+                "address": scope["address"],
+                "fromBlock": hex(start),
+                "toBlock": hex(end),
+                "topics": scope["topics"],
+            }
+            metadata["query_count"] += 1
+            try:
+                result = holder_rpc_call(
+                    chain,
+                    "eth_getLogs",
+                    [query],
+                )
+            except Exception:
+                return (
+                    [],
+                    [
+                        "liquidity retention indexed eth_getLogs "
+                        f"coverage failed for {start}-{end}"
+                    ],
+                    False,
+                    metadata,
+                )
+            if (
+                not isinstance(result, list)
+                or any(not isinstance(row, dict) for row in result)
+            ):
+                return (
+                    [],
+                    [
+                        "liquidity retention indexed eth_getLogs "
+                        f"response invalid for {start}-{end}"
+                    ],
+                    False,
+                    metadata,
+                )
+            if len(result) >= provider_row_limit:
+                return [], [], True, metadata
+            for raw in result:
+                quantity_pattern = (
+                    r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)"
+                )
+                if (
+                    not isinstance(raw.get("blockNumber"), str)
+                    or re.fullmatch(
+                        quantity_pattern,
+                        raw["blockNumber"],
+                    )
+                    is None
+                    or not isinstance(raw.get("logIndex"), str)
+                    or re.fullmatch(
+                        quantity_pattern,
+                        raw["logIndex"],
+                    )
+                    is None
+                ):
+                    return (
+                        [],
+                        ["liquidity retention RPC quantity invalid"],
+                        False,
+                        metadata,
+                    )
+                identity = strict_rpc_log_identity(raw, query)
+                topics = raw.get("topics")
+                topic0 = (
+                    norm(topics[0])
+                    if isinstance(topics, list) and topics
+                    else ""
+                )
+                event_spec = scope["event_specs"].get(topic0)
+                if event_spec is None:
+                    return (
+                        [],
+                        ["liquidity retention event topic invalid"],
+                        False,
+                        metadata,
+                    )
+                event_kind, topic_count, word_count = event_spec
+                if (
+                    identity is None
+                    or not isinstance(topics, list)
+                    or len(topics) != topic_count
+                    or strict_abi_event_word_count(raw.get("data"))
+                    != word_count
+                    or not strict_liquidity_event_fields(
+                        event_kind,
+                        topics,
+                        raw.get("data"),
+                    )
+                ):
+                    return (
+                        [],
+                        ["liquidity retention log identity or ABI invalid"],
+                        False,
+                        metadata,
+                    )
+                if scope["protocol"] == "v3":
+                    pool = scope["pool_by_key"].get(
+                        norm(raw.get("address"))
+                    )
+                else:
+                    pool_id = norm(topics[1]) if len(topics) > 1 else ""
+                    pool = scope["pool_by_key"].get(
+                        f"{norm(raw.get('address'))}:{pool_id}"
+                    )
+                if not isinstance(pool, dict):
+                    return (
+                        [],
+                        ["liquidity retention pool identity invalid"],
+                        False,
+                        metadata,
+                    )
+                if event_kind == "v3_swap":
+                    amount0 = strict_v3_swap_amount(raw.get("data"), 0)
+                    amount1 = strict_v3_swap_amount(raw.get("data"), 1)
+                    swap_valid = bool(
+                        amount0 is not None
+                        and amount1 is not None
+                        and amount0 != 0
+                        and amount1 != 0
+                        and (amount0 > 0) != (amount1 > 0)
+                        and strict_swap_static_fields(
+                            raw.get("data"),
+                            event_kind,
+                        )
+                    )
+                elif event_kind == "v4_swap":
+                    amount0 = strict_v4_swap_amount(raw.get("data"), 0)
+                    amount1 = strict_v4_swap_amount(raw.get("data"), 1)
+                    swap_valid = bool(
+                        amount0 is not None
+                        and amount1 is not None
+                        and amount0 != 0
+                        and amount1 != 0
+                        and (amount0 > 0) != (amount1 > 0)
+                        and strict_swap_static_fields(
+                            raw.get("data"),
+                            event_kind,
+                        )
+                    )
+                else:
+                    swap_valid = True
+                if not swap_valid:
+                    return (
+                        [],
+                        ["liquidity retention swap ABI invalid"],
+                        False,
+                        metadata,
+                    )
+                order, tx_hash, block_hash = identity
+                previous_block_hash = block_hash_by_number.get(order[0])
+                if (
+                    previous_block_hash is not None
+                    and previous_block_hash != block_hash
+                ):
+                    return (
+                        [],
+                        [
+                            "liquidity retention block hash conflict "
+                            f"at block {order[0]}"
+                        ],
+                        False,
+                        metadata,
+                    )
+                block_hash_by_number[order[0]] = block_hash
+                fingerprint = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "address": norm(raw.get("address")),
+                            "block": order[0],
+                            "block_hash": norm(raw.get("blockHash")),
+                            "topics": [norm(topic) for topic in topics],
+                            "data": norm(raw.get("data")),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                row = {
+                    **raw,
+                    "_retention_pool": copy.deepcopy(pool),
+                    "_retention_event_kind": event_kind,
+                }
+                dedupe_key = (tx_hash, order[1])
+                previous = seen.get(dedupe_key)
+                if previous is None:
+                    seen[dedupe_key] = (fingerprint, row)
+                elif previous[0] != fingerprint:
+                    return (
+                        [],
+                        ["liquidity retention duplicate identity conflict"],
+                        False,
+                        metadata,
+                    )
+                if len(seen) >= max_logs:
+                    return [], [], True, metadata
+    rows = sorted(
+        (row for _fingerprint, row in seen.values()),
+        key=lambda row: (block_number(row), log_index(row)),
+    )
+    metadata["query_scope_complete"] = bool(
+        metadata["query_count"] == metadata["expected_query_count"]
+    )
+    return rows, [], False, metadata
+
+
+def bounded_retention_liquidity_logs(
+    chain: str,
+    pools: list[dict[str, Any]],
+    from_block: int,
+    requested_to_block: int,
+    *,
+    token: str = "",
+    decimals: int = 18,
+    supply_raw: int = 0,
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    bool,
+    int,
+    dict[str, Any],
+]:
+    max_window = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS",
+                "50000",
+            )
+        ),
+    )
+    min_window = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS",
+                "16",
+            )
+        ),
+    )
+    max_attempts = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_ATTEMPTS",
+                "12",
+            )
+        ),
+    )
+    selected_to = min(
+        requested_to_block,
+        from_block + max_window - 1,
+    )
+    attempts = 0
+    logs: list[dict[str, Any]] = []
+    errors: list[str] = []
+    truncated = True
+    metadata: dict[str, Any] = {}
+    derived_event_shrink_count = 0
+    while attempts < max_attempts:
+        attempts += 1
+        logs, errors, raw_truncated, metadata = (
+            targeted_retention_liquidity_logs(
+                chain,
+                pools,
+                from_block,
+                selected_to,
+            )
+        )
+        derived_events_truncated = False
+        if not errors and not raw_truncated and token:
+            _, _, derived_events_truncated = retention_liquidity_events(
+                logs,
+                token,
+                decimals,
+                supply_raw,
+            )
+        truncated = raw_truncated or derived_events_truncated
+        if derived_events_truncated:
+            derived_event_shrink_count += 1
+        if errors or not truncated:
+            break
+        current_span = selected_to - from_block + 1
+        if current_span <= min_window or attempts >= max_attempts:
+            break
+        next_span = max(min_window, current_span // 2)
+        if next_span >= current_span:
+            break
+        selected_to = from_block + next_span - 1
+    complete_selected = not errors and not truncated
+    metadata.update(
+        {
+            "applicable": True,
+            "active": selected_to < requested_to_block,
+            "requested_to_block": requested_to_block,
+            "selected_to_block": selected_to,
+            "attempt_count": attempts,
+            "derived_event_shrink_count": derived_event_shrink_count,
+            "complete_selected_window": complete_selected,
+            "complete_requested_window": bool(
+                complete_selected
+                and selected_to == requested_to_block
+            ),
+        }
+    )
+    return logs, errors, truncated, selected_to, metadata
+
+
 def retention_transfer_events(
     logs: list[dict[str, Any]],
     decimals: int,
@@ -1650,6 +2713,1103 @@ def retention_transfer_events(
         )
     )
     return events, matched_transfer_count
+
+
+def retention_liquidity_events(
+    logs: list[dict[str, Any]],
+    token: str,
+    decimals: int,
+    supply_raw: int,
+    alert_from_block: int | None = None,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    try:
+        min_supply_bps = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_MIN_SUPPLY_BPS",
+                    "5",
+                )
+            ),
+        )
+    except ValueError:
+        min_supply_bps = 5
+    configured_quote_min = os.environ.get(
+        "ALPHA_RETENTION_LIQUIDITY_QUOTE_MIN_AMOUNT"
+    )
+
+    def quote_min_amount(pool: dict[str, Any]) -> Decimal:
+        if configured_quote_min is not None:
+            parsed = decimal_from(configured_quote_min, "-1")
+            if parsed >= 0:
+                return parsed
+        return (
+            Decimal("10")
+            if str(pool.get("quote_symbol") or "").upper()
+            in {"WBNB", "WETH"}
+            else Decimal("10000")
+        )
+
+    swaps: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    v3_lp: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    v4_liquidity: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in logs:
+        pool = row.get("_retention_pool")
+        event_kind = str(row.get("_retention_event_kind") or "")
+        if not isinstance(pool, dict):
+            continue
+        protocol = str(pool.get("protocol") or "")
+        address = norm(pool.get("address"))
+        pool_id = norm(pool.get("pool_id"))
+        tx_hash = norm(row.get("transactionHash"))
+        token0 = norm(pool.get("token0"))
+        token1 = norm(pool.get("token1"))
+        if norm(token) not in {token0, token1}:
+            continue
+        target_slot = 0 if norm(token) == token0 else 1
+        key = (protocol, address, pool_id, tx_hash)
+        order = (block_number(row), log_index(row))
+        if event_kind in {"v3_swap", "v4_swap"}:
+            if event_kind == "v3_swap":
+                target_raw = strict_v3_swap_amount(
+                    row.get("data"),
+                    target_slot,
+                )
+                quote_raw = strict_v3_swap_amount(
+                    row.get("data"),
+                    1 - target_slot,
+                )
+                normalized_target = target_raw
+                normalized_quote = (
+                    -quote_raw if quote_raw is not None else None
+                )
+            else:
+                target_raw = strict_v4_swap_amount(
+                    row.get("data"),
+                    target_slot,
+                )
+                quote_raw = strict_v4_swap_amount(
+                    row.get("data"),
+                    1 - target_slot,
+                )
+                normalized_target = (
+                    -target_raw if target_raw is not None else None
+                )
+                normalized_quote = quote_raw
+            if (
+                target_raw is None
+                or quote_raw is None
+                or target_raw == 0
+                or quote_raw == 0
+                or (target_raw > 0) == (quote_raw > 0)
+                or normalized_target is None
+                or normalized_quote is None
+            ):
+                continue
+            group = swaps.setdefault(
+                key,
+                {
+                    "target_net_raw": 0,
+                    "quote_net_raw": 0,
+                    "latest_order": order,
+                    "latest_row": row,
+                    "pool": pool,
+                },
+            )
+            group["target_net_raw"] += normalized_target
+            group["quote_net_raw"] += normalized_quote
+            if order >= group["latest_order"]:
+                group["latest_order"] = order
+                group["latest_row"] = row
+        elif event_kind in {"v3_mint", "v3_burn", "v3_collect"}:
+            first_amount_slot = 2 if event_kind == "v3_mint" else 1
+            amounts_raw = [
+                uint_slot(
+                    str(row.get("data") or "0x"),
+                    first_amount_slot + slot,
+                )
+                for slot in (0, 1)
+            ]
+            group = v3_lp.setdefault(
+                key,
+                {
+                    "mint_raw": [0, 0],
+                    "burn_raw": [0, 0],
+                    "collect_raw": [0, 0],
+                    "latest_burn_order": (-1, -1),
+                    "latest_burn_row": None,
+                    "latest_collect_order": (-1, -1),
+                    "latest_collect_row": None,
+                    "pool": pool,
+                },
+            )
+            if event_kind == "v3_mint":
+                group["mint_raw"] = [
+                    int(group["mint_raw"][slot]) + amounts_raw[slot]
+                    for slot in (0, 1)
+                ]
+            elif event_kind == "v3_burn":
+                group["burn_raw"] = [
+                    int(group["burn_raw"][slot]) + amounts_raw[slot]
+                    for slot in (0, 1)
+                ]
+                if order >= group["latest_burn_order"]:
+                    group["latest_burn_order"] = order
+                    group["latest_burn_row"] = row
+            else:
+                group["collect_raw"] = [
+                    int(group["collect_raw"][slot]) + amounts_raw[slot]
+                    for slot in (0, 1)
+                ]
+                if order >= group["latest_collect_order"]:
+                    group["latest_collect_order"] = order
+                    group["latest_collect_row"] = row
+        elif event_kind == "v4_modify_liquidity":
+            delta = int_slot(str(row.get("data") or "0x"), 2)
+            if delta:
+                group = v4_liquidity.setdefault(
+                    key,
+                    {
+                        "liquidity_delta": 0,
+                        "liquidity_added": 0,
+                        "liquidity_removed": 0,
+                        "saw_add": False,
+                        "saw_remove": False,
+                        "latest_order": order,
+                        "latest_row": row,
+                        "pool": pool,
+                    },
+                )
+                group["liquidity_delta"] += delta
+                if delta > 0:
+                    group["liquidity_added"] += delta
+                else:
+                    group["liquidity_removed"] += -delta
+                group["saw_add"] = bool(group["saw_add"] or delta > 0)
+                group["saw_remove"] = bool(
+                    group["saw_remove"] or delta < 0
+                )
+                if order >= group["latest_order"]:
+                    group["latest_order"] = order
+                    group["latest_row"] = row
+
+    def supply_bps(amount_raw: int) -> Decimal:
+        if supply_raw <= 0:
+            return Decimal(0)
+        return (
+            Decimal(amount_raw)
+            * Decimal(10_000)
+            / Decimal(supply_raw)
+        )
+
+    def base_event(
+        key: tuple[str, str, str, str],
+        row: dict[str, Any],
+        pool: dict[str, Any],
+    ) -> dict[str, Any]:
+        block = block_number(row)
+        historical = bool(
+            alert_from_block is not None
+            and block < alert_from_block
+        )
+        return {
+            "protocol": key[0],
+            "pool": key[1],
+            "pool_id": key[2],
+            "block": block,
+            "tx": key[3],
+            "log_index": log_index(row),
+            "token0": pool.get("token0"),
+            "token1": pool.get("token1"),
+            "historical_catchup": historical,
+            "alert_eligible": not historical,
+        }
+
+    events: list[dict[str, Any]] = []
+    handled_swap_keys: set[tuple[str, str, str, str]] = set()
+    for key, lp in v3_lp.items():
+        pool = lp["pool"]
+        target_slot = (
+            0 if norm(token) == norm(pool.get("token0")) else 1
+        )
+        quote_slot = 1 - target_slot
+        net_remove_by_slot = [
+            max(
+                0,
+                int(lp["burn_raw"][slot])
+                - int(lp["mint_raw"][slot]),
+            )
+            for slot in (0, 1)
+        ]
+        net_add_by_slot = [
+            max(
+                0,
+                int(lp["mint_raw"][slot])
+                - int(lp["burn_raw"][slot]),
+            )
+            for slot in (0, 1)
+        ]
+        net_remove_raw = net_remove_by_slot[target_slot]
+        quote_remove_raw = net_remove_by_slot[quote_slot]
+        net_add_raw = net_add_by_slot[target_slot]
+        quote_add_raw = net_add_by_slot[quote_slot]
+        try:
+            quote_decimals = int(pool.get("quote_decimals"))
+        except (TypeError, ValueError):
+            quote_decimals = -1
+        quote_removed_amount = (
+            decimal_amount(quote_remove_raw, quote_decimals)
+            if quote_remove_raw > 0 and quote_decimals >= 0
+            else Decimal(0)
+        )
+        quote_added_amount = (
+            decimal_amount(quote_add_raw, quote_decimals)
+            if quote_add_raw > 0 and quote_decimals >= 0
+            else Decimal(0)
+        )
+        lp_bps = supply_bps(net_remove_raw)
+        lp_added_bps = supply_bps(net_add_raw)
+        quote_remove_material = bool(
+            quote_remove_raw > 0
+            and quote_decimals >= 0
+            and quote_removed_amount >= quote_min_amount(pool)
+        )
+        material_net_add = bool(
+            lp_added_bps >= Decimal(min_supply_bps)
+            or (
+                quote_add_raw > 0
+                and quote_decimals >= 0
+                and quote_added_amount >= quote_min_amount(pool)
+            )
+        )
+        saw_mint_burn = bool(
+            any(int(value) > 0 for value in lp["mint_raw"])
+            and any(int(value) > 0 for value in lp["burn_raw"])
+        )
+        mixed_mode = (
+            "rebalance"
+            if saw_mint_burn and material_net_add
+            else "partial_remove"
+            if saw_mint_burn
+            else "remove"
+        )
+        collect_target_raw = int(lp["collect_raw"][target_slot])
+        collect_quote_raw = int(lp["collect_raw"][quote_slot])
+        collect_target_bps = supply_bps(collect_target_raw)
+        quote_collected_amount = (
+            decimal_amount(collect_quote_raw, quote_decimals)
+            if collect_quote_raw > 0 and quote_decimals >= 0
+            else Decimal(0)
+        )
+        collect_fields = {
+            "collected_amount": (
+                str(decimal_amount(collect_target_raw, decimals))
+                if collect_target_raw > 0
+                else ""
+            ),
+            "collected_supply_bps": (
+                str(collect_target_bps)
+                if collect_target_raw > 0
+                else ""
+            ),
+            "quote_collected_amount": (
+                str(quote_collected_amount)
+                if collect_quote_raw > 0 and quote_decimals >= 0
+                else ""
+            ),
+            "quote_collected_token": pool.get("quote_token"),
+            "quote_collected_symbol": pool.get("quote_symbol"),
+        }
+        burn_row = lp.get("latest_burn_row")
+        swap = swaps.get(key)
+        removal_event_emitted = False
+        if (
+            (net_remove_raw > 0 or quote_remove_raw > 0)
+            and isinstance(burn_row, dict)
+        ):
+            if swap and int(swap["target_net_raw"]) > 0:
+                sell_raw = int(swap["target_net_raw"])
+                sell_bps = supply_bps(sell_raw)
+                event = {
+                    **base_event(
+                        key,
+                        swap["latest_row"],
+                        lp["pool"],
+                    ),
+                    "type": (
+                        "liquidity_rebalance_with_sell"
+                        if mixed_mode == "rebalance"
+                        else "liquidity_partial_remove_with_sell"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_exit_with_sell"
+                    ),
+                    "level": (
+                        "HIGH"
+                        if (
+                            sell_bps >= Decimal(min_supply_bps)
+                            if mixed_mode == "rebalance"
+                            else (
+                                max(lp_bps, sell_bps)
+                                >= Decimal(min_supply_bps)
+                                or quote_remove_material
+                            )
+                        )
+                        else "INFO"
+                    ),
+                    "direction": (
+                        "liquidity_rebalance_and_sell"
+                        if mixed_mode == "rebalance"
+                        else "liquidity_partial_remove_and_sell"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_exit_and_sell"
+                    ),
+                    "evidence_level": (
+                        "verified_pool_swap_and_v3_mint_burn_rebalance_same_tx"
+                        if mixed_mode == "rebalance"
+                        else "verified_pool_swap_and_v3_mint_burn_partial_remove_same_tx"
+                        if mixed_mode == "partial_remove"
+                        else "verified_pool_swap_and_v3_burn_same_tx"
+                    ),
+                    "amount": str(decimal_amount(sell_raw, decimals)),
+                    "amount_supply_bps": str(sell_bps),
+                    "lp_removed_amount": (
+                        str(decimal_amount(net_remove_raw, decimals))
+                        if net_remove_raw > 0
+                        else ""
+                    ),
+                    "lp_removed_supply_bps": (
+                        str(lp_bps) if net_remove_raw > 0 else ""
+                    ),
+                    "lp_added_amount": (
+                        str(decimal_amount(net_add_raw, decimals))
+                        if net_add_raw > 0
+                        else ""
+                    ),
+                    "lp_added_supply_bps": (
+                        str(lp_added_bps) if net_add_raw > 0 else ""
+                    ),
+                    "quote_removed_amount": (
+                        str(quote_removed_amount)
+                        if quote_remove_raw > 0 and quote_decimals >= 0
+                        else ""
+                    ),
+                    "quote_removed_token": pool.get("quote_token"),
+                    "quote_removed_symbol": pool.get("quote_symbol"),
+                    "quote_added_amount": (
+                        str(quote_added_amount)
+                        if quote_add_raw > 0 and quote_decimals >= 0
+                        else ""
+                    ),
+                    "quote_added_token": pool.get("quote_token"),
+                    "quote_added_symbol": pool.get("quote_symbol"),
+                    **collect_fields,
+                    "quote_amount_raw": str(
+                        max(0, int(swap["quote_net_raw"]))
+                    ),
+                }
+                events.append(event)
+                handled_swap_keys.add(key)
+                removal_event_emitted = True
+            elif (
+                lp_bps >= Decimal(min_supply_bps)
+                or quote_remove_material
+            ):
+                events.append(
+                    {
+                        **base_event(key, burn_row, pool),
+                        "type": (
+                            "lp_rebalance_observation"
+                            if mixed_mode == "rebalance"
+                            else "lp_partial_remove_observation"
+                            if mixed_mode == "partial_remove"
+                            else "lp_remove_observation"
+                        ),
+                        "level": (
+                            "INFO"
+                            if mixed_mode == "rebalance"
+                            else "HIGH"
+                        ),
+                        "direction": (
+                            "liquidity_rebalance"
+                            if mixed_mode == "rebalance"
+                            else "liquidity_partial_remove"
+                            if mixed_mode == "partial_remove"
+                            else "liquidity_remove"
+                        ),
+                        "evidence_level": (
+                            "v3_mint_burn_rebalance_same_pool_tx"
+                            if mixed_mode == "rebalance"
+                            else "v3_mint_burn_partial_remove_same_pool_tx"
+                            if mixed_mode == "partial_remove"
+                            else "v3_burn_same_pool_tx"
+                        ),
+                        "amount": (
+                            str(decimal_amount(net_remove_raw, decimals))
+                            if net_remove_raw > 0
+                            else ""
+                        ),
+                        "amount_supply_bps": (
+                            str(lp_bps) if net_remove_raw > 0 else ""
+                        ),
+                        "quote_removed_amount": (
+                            str(quote_removed_amount)
+                            if quote_remove_raw > 0
+                            and quote_decimals >= 0
+                            else ""
+                        ),
+                        "quote_removed_token": pool.get("quote_token"),
+                        "quote_removed_symbol": pool.get("quote_symbol"),
+                        "lp_added_amount": (
+                            str(decimal_amount(net_add_raw, decimals))
+                            if net_add_raw > 0
+                            else ""
+                        ),
+                        "lp_added_supply_bps": (
+                            str(lp_added_bps)
+                            if net_add_raw > 0
+                            else ""
+                        ),
+                        "quote_added_amount": (
+                            str(quote_added_amount)
+                            if quote_add_raw > 0
+                            and quote_decimals >= 0
+                            else ""
+                        ),
+                        "quote_added_token": pool.get("quote_token"),
+                        "quote_added_symbol": pool.get("quote_symbol"),
+                        **collect_fields,
+                    }
+                )
+                removal_event_emitted = True
+        if removal_event_emitted:
+            continue
+        collect_material = bool(
+            collect_target_bps >= Decimal(min_supply_bps)
+            or (
+                collect_quote_raw > 0
+                and quote_decimals >= 0
+                and quote_collected_amount >= quote_min_amount(pool)
+            )
+        )
+        collect_row = lp.get("latest_collect_row")
+        if not (
+            collect_material
+            and isinstance(collect_row, dict)
+        ):
+            continue
+        events.append(
+            {
+                **base_event(key, collect_row, pool),
+                "type": (
+                    "lp_rebalance_collect_observation"
+                    if saw_mint_burn
+                    else "lp_collect_observation"
+                ),
+                "level": "INFO",
+                    "direction": (
+                        "liquidity_rebalance_collect"
+                        if saw_mint_burn
+                    else "collect_only"
+                ),
+                    "evidence_level": (
+                        "v3_mint_burn_collect_same_pool_tx"
+                        if saw_mint_burn
+                    else "v3_collect_only"
+                ),
+                "amount": collect_fields["collected_amount"],
+                "amount_supply_bps": collect_fields[
+                    "collected_supply_bps"
+                ],
+                **collect_fields,
+            }
+        )
+    for key, liquidity in v4_liquidity.items():
+        if liquidity.get("saw_remove") is not True:
+            continue
+        swap = swaps.get(key)
+        row = liquidity["latest_row"]
+        mixed_mode = (
+            "partial_remove"
+            if (
+                liquidity.get("saw_add") is True
+                and int(liquidity.get("liquidity_delta") or 0) < 0
+            )
+            else "rebalance"
+            if liquidity.get("saw_add") is True
+            else "remove"
+        )
+        if swap and int(swap["target_net_raw"]) > 0:
+            sell_raw = int(swap["target_net_raw"])
+            sell_bps = supply_bps(sell_raw)
+            events.append(
+                {
+                    **base_event(key, swap["latest_row"], liquidity["pool"]),
+                    "type": (
+                        "liquidity_rebalance_with_sell"
+                        if mixed_mode == "rebalance"
+                        else "liquidity_partial_remove_with_sell"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_exit_with_sell"
+                    ),
+                    "level": (
+                        "HIGH"
+                        if sell_bps >= Decimal(min_supply_bps)
+                        else "INFO"
+                    ),
+                    "direction": (
+                        "liquidity_rebalance_and_sell"
+                        if mixed_mode == "rebalance"
+                        else "liquidity_partial_remove_and_sell"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_exit_and_sell"
+                    ),
+                    "evidence_level": (
+                        "verified_pool_swap_and_mixed_liquidity_delta_same_tx"
+                        if mixed_mode == "rebalance"
+                        else "verified_pool_swap_and_net_negative_mixed_liquidity_delta_same_tx"
+                        if mixed_mode == "partial_remove"
+                        else "verified_pool_swap_and_liquidity_delta_same_tx"
+                    ),
+                    "amount": str(decimal_amount(sell_raw, decimals)),
+                    "amount_supply_bps": str(sell_bps),
+                    "liquidity_delta": str(liquidity["liquidity_delta"]),
+                    "liquidity_added": str(liquidity["liquidity_added"]),
+                    "liquidity_removed": str(
+                        liquidity["liquidity_removed"]
+                    ),
+                    "quote_amount_raw": str(
+                        max(0, int(swap["quote_net_raw"]))
+                    ),
+                }
+            )
+            handled_swap_keys.add(key)
+        else:
+            events.append(
+                {
+                    **base_event(key, row, liquidity["pool"]),
+                    "type": (
+                        "lp_rebalance_observation"
+                        if mixed_mode == "rebalance"
+                        else "lp_partial_remove_observation"
+                        if mixed_mode == "partial_remove"
+                        else "lp_remove_observation"
+                    ),
+                    "level": "INFO",
+                    "direction": (
+                        "liquidity_rebalance_unattributed"
+                        if mixed_mode == "rebalance"
+                        else "liquidity_partial_remove_unattributed"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_remove_unattributed"
+                    ),
+                    "evidence_level": (
+                        "mixed_liquidity_delta_only"
+                        if mixed_mode == "rebalance"
+                        else "net_negative_mixed_liquidity_delta_only"
+                        if mixed_mode == "partial_remove"
+                        else "liquidity_delta_only"
+                    ),
+                    "amount": "",
+                    "amount_supply_bps": "",
+                    "liquidity_delta": str(liquidity["liquidity_delta"]),
+                    "liquidity_added": str(liquidity["liquidity_added"]),
+                    "liquidity_removed": str(
+                        liquidity["liquidity_removed"]
+                    ),
+                }
+            )
+    for key, swap in swaps.items():
+        sell_raw = int(swap["target_net_raw"])
+        sell_bps = supply_bps(sell_raw)
+        if (
+            key in handled_swap_keys
+            or sell_raw <= 0
+            or sell_bps < Decimal(min_supply_bps)
+        ):
+            continue
+        events.append(
+            {
+                **base_event(key, swap["latest_row"], swap["pool"]),
+                "type": "verified_pool_sell_pressure",
+                "level": "HIGH",
+                "direction": "verified_pool_sell",
+                "evidence_level": "verified_pool_swap",
+                "amount": str(decimal_amount(sell_raw, decimals)),
+                "amount_supply_bps": str(sell_bps),
+                "quote_amount_raw": str(
+                    max(0, int(swap["quote_net_raw"]))
+                ),
+            }
+        )
+    events.sort(
+        key=lambda event: (
+            int(event.get("block") or 0),
+            int(event.get("log_index") or 0),
+            str(event.get("type") or ""),
+        )
+    )
+    max_events = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_MAX_EVENTS",
+                "500",
+            )
+        ),
+    )
+    events_truncated = len(events) > max_events
+    return events[-max_events:], len(events), events_truncated
+
+
+def build_liquidity_retention(
+    *,
+    item: dict[str, Any],
+    token: str,
+    pools: list[dict[str, Any]],
+    scope_hash: str,
+    previous_scope_hash: str,
+    scope_rebaseline: bool,
+    previous_catchup_active: bool,
+    scope_coverage_from_block: int,
+    logs: list[dict[str, Any]],
+    errors: list[str],
+    truncated: bool,
+    decimals: int,
+    supply_raw: int,
+    scan_from_block: int,
+    scan_to_block: int,
+    target_scan_to_block: int,
+    previous_latest_block: int,
+    coverage_metadata: dict[str, Any],
+    alert_from_block: int,
+) -> dict[str, Any]:
+    window = retention_window(item, str(item.get("chain") or ""))
+    events, event_count, events_truncated = retention_liquidity_events(
+        logs,
+        token,
+        decimals,
+        supply_raw,
+        alert_from_block,
+    )
+    continuous = bool(
+        previous_latest_block > 0
+        and scan_from_block == previous_latest_block + 1
+    )
+    continuity_ready = continuous or scope_rebaseline
+    try:
+        query_count = int(coverage_metadata.get("query_count") or 0)
+        scope_batch_count = int(
+            coverage_metadata.get("scope_batch_count") or 0
+        )
+        query_chunk_count = int(
+            coverage_metadata.get("query_chunk_count") or 0
+        )
+        expected_query_count = int(
+            coverage_metadata.get("expected_query_count") or 0
+        )
+    except (TypeError, ValueError):
+        query_count = 0
+        scope_batch_count = 0
+        query_chunk_count = 0
+        expected_query_count = 0
+    query_scope_complete = bool(
+        coverage_metadata.get("query_scope_complete") is True
+        and scope_batch_count > 0
+        and query_chunk_count > 0
+        and expected_query_count
+        == scope_batch_count * query_chunk_count
+        and query_count == expected_query_count
+    )
+    scan_complete = bool(
+        window.get("status") == "active"
+        and pools
+        and len(scope_hash) == 64
+        and not errors
+        and not truncated
+        and not events_truncated
+        and scan_from_block <= scan_to_block
+        and continuity_ready
+        and query_scope_complete
+    )
+    latest = scan_to_block if scan_complete else previous_latest_block
+    complete = bool(
+        scan_complete and latest == target_scan_to_block
+    )
+    return {
+        **window,
+        "status": "active",
+        "coverage_mode": "verified_pool_indexed_topics",
+        "complete": complete,
+        "selected_window_complete": scan_complete,
+        "scope_complete": True,
+        "scope_hash": scope_hash,
+        "previous_scope_hash": previous_scope_hash,
+        "scope_rebaseline": scope_rebaseline,
+        "scope_state_schema_version": (
+            LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        ),
+        "scope_coverage_from_block": scope_coverage_from_block,
+        "pool_count": len(pools),
+        "v3_pool_count": sum(
+            row.get("protocol") == "v3" for row in pools
+        ),
+        "v4_pool_count": sum(
+            row.get("protocol") == "v4_cl" for row in pools
+        ),
+        "v4_manager_count": int(
+            coverage_metadata.get("v4_manager_count") or 0
+        ),
+        "event_filter_count": int(
+            coverage_metadata.get("event_filter_count") or 0
+        ),
+        "scan_from_block": scan_from_block,
+        "scan_to_block": scan_to_block,
+        "target_latest_block": target_scan_to_block,
+        "previous_latest_block": previous_latest_block,
+        "latest_block": latest,
+        "continuous": continuous,
+        "previous_catchup_active": previous_catchup_active,
+        "query_scope_complete": query_scope_complete,
+        "query_count": query_count,
+        "scope_batch_count": scope_batch_count,
+        "query_chunk_count": query_chunk_count,
+        "query_chunk_blocks": int(
+            coverage_metadata.get("query_chunk_blocks") or 0
+        ),
+        "expected_query_count": expected_query_count,
+        "log_count": len(logs),
+        "log_error_count": len(errors),
+        "log_errors": errors[:3],
+        "truncated": truncated,
+        "events_truncated": events_truncated,
+        "incremental_catchup": {
+            key: coverage_metadata.get(key)
+            for key in (
+                "applicable",
+                "active",
+                "requested_to_block",
+                "selected_to_block",
+                "attempt_count",
+                "complete_selected_window",
+                "complete_requested_window",
+            )
+            if key in coverage_metadata
+        },
+        "alert_from_block": alert_from_block,
+        "event_count": event_count,
+        "events": events,
+    }
+
+
+def build_token_liquidity_retention(
+    *,
+    item: dict[str, Any],
+    symbol: str,
+    chain: str,
+    token: str,
+    tip: int,
+    decimals: int,
+    supply_raw: int,
+    opening_payload: dict[str, Any],
+    liquidity_state: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    window = retention_window(item, chain)
+    if window.get("status") != "active":
+        return {
+            **window,
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "pool_count": 0,
+            "events": [],
+        }, None
+    scope = opening_verified_pool_scope(
+        opening_payload,
+        symbol,
+        chain,
+        token,
+        persisted_scope=liquidity_state,
+    )
+    pools = scope.get("pool_scope") or []
+    if scope.get("complete") is not True or not pools:
+        return {
+            **window,
+            "status": (
+                "not_applicable"
+                if scope.get("complete") is True
+                else "coverage_gap"
+            ),
+            "reason": str(scope.get("status") or "pool_scope_unavailable"),
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": scope.get("complete") is True,
+            "scope_hash": str(scope.get("scope_hash") or ""),
+            "pool_count": int(scope.get("pool_count") or 0),
+            "v3_pool_count": int(scope.get("v3_pool_count") or 0),
+            "v4_pool_count": int(scope.get("v4_pool_count") or 0),
+            "complete": scope.get("complete") is True,
+            "selected_window_complete": False,
+            "log_error_count": int(scope.get("complete") is not True),
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+        }, None
+    previous_latest = int(liquidity_state.get("latest_block") or 0)
+    previous_scope_hash = str(liquidity_state.get("scope_hash") or "")
+    current_scope_hash = str(scope.get("scope_hash") or "")
+    previous_catchup_active = (
+        liquidity_state.get("catchup_active") is True
+    )
+    try:
+        state_schema_version = int(
+            liquidity_state.get("scope_state_schema_version") or 0
+        )
+    except (TypeError, ValueError):
+        state_schema_version = 0
+    scope_rebaseline = bool(
+        previous_latest <= 0
+        or state_schema_version
+        != LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        or not previous_scope_hash
+        or previous_scope_hash != current_scope_hash
+    )
+    bootstrap_blocks = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS",
+                "2400",
+            )
+        ),
+    )
+    scope_coverage_from = int(
+        liquidity_state.get("scope_coverage_from_block") or 0
+    )
+    try:
+        confirmation_blocks = max(
+            0,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS",
+                    "2",
+                )
+            ),
+        )
+    except ValueError:
+        confirmation_blocks = 2
+    confirmed_tip = max(0, tip - confirmation_blocks)
+    checkpoint_reorg_recovery = False
+    checkpoint_refresh = False
+    effective_previous_latest = previous_latest
+    verified_previous_hash = ""
+    if scope_rebaseline:
+        scan_from = max(0, confirmed_tip - bootstrap_blocks + 1)
+        scope_coverage_from = scan_from
+    else:
+        previous_block_hash = str(
+            liquidity_state.get("latest_block_hash") or ""
+        ).lower()
+        canonical_previous_hash = liquidity_checkpoint_block_hash(
+            chain,
+            previous_latest,
+        )
+        if (
+            not valid_hash32(previous_block_hash)
+            or int(previous_block_hash[2:], 16) == 0
+            or not canonical_previous_hash
+        ):
+            return {
+                **window,
+                "status": "coverage_gap",
+                "reason": "liquidity_checkpoint_hash_unavailable",
+                "coverage_mode": "verified_pool_indexed_topics",
+                "scope_complete": True,
+                "scope_hash": current_scope_hash,
+                "pool_count": len(pools),
+                "complete": False,
+                "selected_window_complete": False,
+                "log_error_count": 1,
+                "truncated": False,
+                "events_truncated": False,
+                "events": [],
+            }, None
+        if canonical_previous_hash != previous_block_hash:
+            checkpoint_reorg_recovery = True
+            try:
+                reorg_rescan_blocks = max(
+                    1,
+                    int(
+                        os.environ.get(
+                            "ALPHA_RETENTION_LIQUIDITY_REORG_RESCAN_BLOCKS",
+                            "2400",
+                        )
+                    ),
+                )
+            except ValueError:
+                reorg_rescan_blocks = 2400
+            scan_from = max(
+                scope_coverage_from,
+                previous_latest - reorg_rescan_blocks + 1,
+            )
+            effective_previous_latest = max(0, scan_from - 1)
+        elif previous_latest >= confirmed_tip:
+            if previous_latest > confirmed_tip:
+                return {
+                    **window,
+                    "status": "coverage_gap",
+                    "reason": "liquidity_confirmed_tip_behind_checkpoint",
+                    "coverage_mode": "verified_pool_indexed_topics",
+                    "scope_complete": True,
+                    "scope_hash": current_scope_hash,
+                    "pool_count": len(pools),
+                    "complete": False,
+                    "selected_window_complete": False,
+                    "log_error_count": 1,
+                    "truncated": False,
+                    "events_truncated": False,
+                    "events": [],
+                }, None
+            checkpoint_refresh = True
+            verified_previous_hash = canonical_previous_hash
+            scan_from = previous_latest
+            effective_previous_latest = max(0, previous_latest - 1)
+        else:
+            verified_previous_hash = canonical_previous_hash
+            scan_from = previous_latest + 1
+    confirmed_tip_hash_before = liquidity_checkpoint_block_hash(
+        chain,
+        confirmed_tip,
+    )
+    if not confirmed_tip_hash_before:
+        return {
+            **window,
+            "status": "coverage_gap",
+            "reason": "liquidity_confirmed_tip_hash_unavailable",
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "scope_hash": current_scope_hash,
+            "pool_count": len(pools),
+            "complete": False,
+            "selected_window_complete": False,
+            "log_error_count": 1,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+        }, None
+    (
+        logs,
+        errors,
+        truncated,
+        scan_to,
+        coverage_metadata,
+    ) = bounded_retention_liquidity_logs(
+        chain,
+        pools,
+        scan_from,
+        confirmed_tip,
+        token=token,
+        decimals=decimals,
+        supply_raw=supply_raw,
+    )
+    checkpoint_hash = ""
+    if not errors and not truncated:
+        checkpoint_hash = liquidity_checkpoint_block_hash(chain, scan_to)
+        if not checkpoint_hash:
+            errors = [*errors, "liquidity checkpoint hash unavailable"]
+        elif any(
+            block_number(row) == scan_to
+            and norm(row.get("blockHash")) != checkpoint_hash
+            for row in logs
+        ):
+            errors = [*errors, "liquidity checkpoint block hash mismatch"]
+        elif (
+            verified_previous_hash
+            and liquidity_checkpoint_block_hash(chain, previous_latest)
+            != verified_previous_hash
+        ):
+            errors = [
+                *errors,
+                "liquidity previous checkpoint changed during scan",
+            ]
+        elif (
+            (
+                checkpoint_hash
+                if scan_to == confirmed_tip
+                else liquidity_checkpoint_block_hash(chain, confirmed_tip)
+            )
+            != confirmed_tip_hash_before
+        ):
+            errors = [
+                *errors,
+                "liquidity confirmed tip changed during scan",
+            ]
+    alert_from = (
+        confirmed_tip + 1
+        if (
+            scope_rebaseline
+            or previous_catchup_active
+            or coverage_metadata.get("active") is True
+        )
+        else scan_from
+    )
+    flow = build_liquidity_retention(
+        item={**item, "chain": chain},
+        token=token,
+        pools=pools,
+        scope_hash=current_scope_hash,
+        previous_scope_hash=(
+            ""
+            if scope_rebaseline
+            and previous_scope_hash == current_scope_hash
+            else previous_scope_hash
+        ),
+        scope_rebaseline=scope_rebaseline,
+        previous_catchup_active=previous_catchup_active,
+        scope_coverage_from_block=scope_coverage_from,
+        logs=logs,
+        errors=errors,
+        truncated=truncated,
+        decimals=decimals,
+        supply_raw=supply_raw,
+        scan_from_block=scan_from,
+        scan_to_block=scan_to,
+        target_scan_to_block=confirmed_tip,
+        previous_latest_block=effective_previous_latest,
+        coverage_metadata=coverage_metadata,
+        alert_from_block=alert_from,
+    )
+    flow.update(
+        {
+            "observed_latest_block": tip,
+            "confirmation_blocks": confirmation_blocks,
+            "latest_block_hash": (
+                checkpoint_hash
+                if flow.get("selected_window_complete") is True
+                else str(liquidity_state.get("latest_block_hash") or "")
+            ),
+            "checkpoint_reorg_recovery": checkpoint_reorg_recovery,
+            "checkpoint_refresh": checkpoint_refresh,
+            "replaced_checkpoint_block": (
+                previous_latest if checkpoint_reorg_recovery else 0
+            ),
+        }
+    )
+    next_state = None
+    if flow.get("selected_window_complete") is True:
+        next_state = {
+            "scope_state_schema_version": (
+                LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": current_scope_hash,
+            "pool_scope": copy.deepcopy(pools),
+            "pool_count": len(pools),
+            "scope_coverage_from_block": scope_coverage_from,
+            "latest_block": int(flow.get("latest_block") or scan_to),
+            "latest_block_hash": checkpoint_hash,
+            "catchup_active": (
+                (flow.get("incremental_catchup") or {}).get("active")
+                is True
+            ),
+        }
+    return flow, next_state
 
 
 def build_retention_flow(
@@ -2297,6 +4457,11 @@ def build_token_snapshot(
     retention_was_catching_up = (
         retention_state.get("catchup_active") is True
     )
+    liquidity_state = (
+        retention_state.get("liquidity")
+        if isinstance(retention_state.get("liquidity"), dict)
+        else {}
+    )
     holder_scan_skipped = (
         holder_baseline_status == BOUNDED_BOOTSTRAP_UNRELIABLE
     )
@@ -2648,6 +4813,21 @@ def build_token_snapshot(
     retention_flow["previous_catchup_active"] = (
         retention_was_catching_up
     )
+    (
+        liquidity_retention,
+        next_liquidity_state,
+    ) = build_token_liquidity_retention(
+        item=config_item,
+        symbol=symbol,
+        chain=chain,
+        token=token,
+        tip=raw_tip,
+        decimals=decimals,
+        supply_raw=supply_raw,
+        opening_payload=resolved_retention_context.get("opening") or {},
+        liquidity_state=liquidity_state,
+    )
+    retention_flow["liquidity_retention"] = liquidity_retention
     catchup_pending = bool(
         not coverage_failed
         and
@@ -2733,6 +4913,7 @@ def build_token_snapshot(
     retention_checkpoint_can_advance = (
         retention_flow.get("selected_window_complete") is True
     )
+    liquidity_checkpoint_can_advance = next_liquidity_state is not None
     current_opening_scope_complete = bool(
         int(
             retention_scope_metadata.get(
@@ -2829,6 +5010,7 @@ def build_token_snapshot(
             holder_checkpoint_can_advance
             or retention_checkpoint_can_advance
             or scope_state_can_advance
+            or liquidity_checkpoint_can_advance
         )
         else token_state
     )
@@ -2930,6 +5112,17 @@ def build_token_snapshot(
                 ),
             }
         )
+        token_state_next["retention_flow"] = next_retention_state
+    if next_liquidity_state is not None:
+        next_retention_state = dict(
+            token_state_next.get("retention_flow")
+            if isinstance(
+                token_state_next.get("retention_flow"),
+                dict,
+            )
+            else {}
+        )
+        next_retention_state["liquidity"] = next_liquidity_state
         token_state_next["retention_flow"] = next_retention_state
     return payload
 
@@ -3123,17 +5316,143 @@ def retention_alert_coverage_complete(
     )
 
 
+def liquidity_retention_alert_coverage_complete(
+    project: dict[str, Any],
+) -> bool:
+    retention = (
+        project.get("retention_flow")
+        if isinstance(project.get("retention_flow"), dict)
+        else {}
+    )
+    liquidity = (
+        retention.get("liquidity_retention")
+        if isinstance(
+            retention.get("liquidity_retention"),
+            dict,
+        )
+        else {}
+    )
+    catchup = (
+        liquidity.get("incremental_catchup")
+        if isinstance(liquidity.get("incremental_catchup"), dict)
+        else {}
+    )
+    try:
+        pool_count = int(liquidity.get("pool_count") or 0)
+        v3_count = int(liquidity.get("v3_pool_count") or 0)
+        v4_count = int(liquidity.get("v4_pool_count") or 0)
+        v4_manager_count = int(
+            liquidity.get("v4_manager_count") or 0
+        )
+        event_filter_count = int(
+            liquidity.get("event_filter_count") or 0
+        )
+        query_count = int(liquidity.get("query_count") or 0)
+        scope_batch_count = int(
+            liquidity.get("scope_batch_count") or 0
+        )
+        query_chunk_count = int(
+            liquidity.get("query_chunk_count") or 0
+        )
+        expected_query_count = int(
+            liquidity.get("expected_query_count") or 0
+        )
+        scan_from = int(liquidity.get("scan_from_block") or 0)
+        scan_to = int(liquidity.get("scan_to_block") or 0)
+        previous_latest = int(
+            liquidity.get("previous_latest_block") or 0
+        )
+        latest = int(liquidity.get("latest_block") or 0)
+        target_latest = int(
+            liquidity.get("target_latest_block") or 0
+        )
+        observed_latest = int(
+            liquidity.get("observed_latest_block") or 0
+        )
+        confirmation_blocks = int(
+            liquidity.get("confirmation_blocks") or 0
+        )
+        requested_to = int(catchup["requested_to_block"])
+        selected_to = int(catchup["selected_to_block"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    scope_hash = str(liquidity.get("scope_hash") or "")
+    previous_scope_hash = str(
+        liquidity.get("previous_scope_hash") or ""
+    )
+    latest_block_hash = str(
+        liquidity.get("latest_block_hash") or ""
+    ).lower()
+    return bool(
+        liquidity.get("status") == "active"
+        and liquidity.get("coverage_mode")
+        == "verified_pool_indexed_topics"
+        and liquidity.get("complete") is True
+        and liquidity.get("selected_window_complete") is True
+        and liquidity.get("scope_complete") is True
+        and not int(liquidity.get("log_error_count") or 0)
+        and liquidity.get("truncated") is not True
+        and liquidity.get("events_truncated") is not True
+        and liquidity.get("query_scope_complete") is True
+        and liquidity.get("scope_rebaseline") is not True
+        and liquidity.get("previous_catchup_active") is not True
+        and liquidity.get("continuous") is True
+        and liquidity.get("scope_state_schema_version")
+        == LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        and len(scope_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in scope_hash.lower()
+        )
+        and previous_scope_hash == scope_hash
+        and valid_hash32(latest_block_hash)
+        and int(latest_block_hash[2:], 16) != 0
+        and confirmation_blocks >= 0
+        and target_latest
+        == max(0, observed_latest - confirmation_blocks)
+        and pool_count > 0
+        and pool_count == v3_count + v4_count
+        and scope_batch_count
+        == int(v3_count > 0) + v4_manager_count
+        and v4_manager_count
+        >= int(v4_count > 0)
+        and v4_manager_count <= v4_count
+        and event_filter_count == v3_count * 4 + v4_count * 2
+        and query_chunk_count > 0
+        and expected_query_count
+        == scope_batch_count * query_chunk_count
+        and query_count == expected_query_count
+        and catchup.get("applicable") is True
+        and catchup.get("active") is False
+        and catchup.get("complete_selected_window") is True
+        and catchup.get("complete_requested_window") is True
+        and requested_to == selected_to == scan_to == target_latest
+        and scan_from == previous_latest + 1
+        and scan_from <= scan_to
+        and latest == scan_to
+    )
+
+
 def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
-    if not retention_alert_coverage_complete(project):
-        return []
-    retention = project["retention_flow"]
+    retention = (
+        project.get("retention_flow")
+        if isinstance(project.get("retention_flow"), dict)
+        else {}
+    )
+    events: list[dict[str, Any]] = []
+    if retention_alert_coverage_complete(project):
+        events.extend(retention.get("events", []) or [])
+    if liquidity_retention_alert_coverage_complete(project):
+        liquidity = retention.get("liquidity_retention") or {}
+        events.extend(liquidity.get("events", []) or [])
     return [
         event
-        for event in retention.get("events", []) or []
+        for event in events
         if isinstance(event, dict)
         and event.get("historical_catchup") is not True
         and event.get("alert_eligible") is not False
-        and str(event.get("level") or "").upper() in {"HIGH", "CRITICAL"}
+        and str(event.get("level") or "").upper()
+        in {"HIGH", "CRITICAL"}
     ]
 
 
@@ -3165,10 +5484,14 @@ def retention_event_key(
     project: dict[str, Any],
     event: dict[str, Any],
 ) -> str:
-    return "|".join(
+    parts = [
+        str(project.get("chain") or ""),
+        str(project.get("address") or ""),
+    ]
+    if event.get("pool"):
+        parts.append(str(event.get("pool") or ""))
+    parts.extend(
         [
-            str(project.get("chain") or ""),
-            str(project.get("address") or ""),
             str(event.get("sample_tx") or event.get("tx") or ""),
             str(
                 event.get("sample_log_index")
@@ -3178,6 +5501,7 @@ def retention_event_key(
             str(event.get("type") or ""),
         ]
     )
+    return "|".join(parts)
 
 
 def alert_keys(snapshot: dict[str, Any]) -> list[str]:
@@ -3218,6 +5542,47 @@ def send_telegram_batch(
     )
 
 
+def retention_event_amount_text(event: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if str(event.get("amount") or ""):
+        parts.append(f"合计 {format_amount(event.get('amount'))} 枚")
+    if str(event.get("lp_added_amount") or ""):
+        parts.append(
+            "代币侧再投入 "
+            f"{format_amount(event.get('lp_added_amount'))} 枚"
+        )
+    if str(event.get("collected_amount") or ""):
+        parts.append(
+            "代币侧提取 "
+            f"{format_amount(event.get('collected_amount'))} 枚"
+        )
+    quote_symbol = str(
+        event.get("quote_removed_symbol")
+        or event.get("quote_added_symbol")
+        or event.get("quote_collected_symbol")
+        or "报价资产"
+    )
+    if str(event.get("quote_removed_amount") or ""):
+        parts.append(
+            "报价侧撤出 "
+            f"{format_amount(event.get('quote_removed_amount'))} "
+            f"{quote_symbol}"
+        )
+    if str(event.get("quote_added_amount") or ""):
+        parts.append(
+            "报价侧再投入 "
+            f"{format_amount(event.get('quote_added_amount'))} "
+            f"{quote_symbol}"
+        )
+    if str(event.get("quote_collected_amount") or ""):
+        parts.append(
+            "报价侧提取 "
+            f"{format_amount(event.get('quote_collected_amount'))} "
+            f"{quote_symbol}"
+        )
+    return "；".join(parts) if parts else "金额未归因"
+
+
 def retention_telegram_text(
     project: dict[str, Any],
     events: list[dict[str, Any]],
@@ -3230,6 +5595,15 @@ def retention_telegram_text(
             "开盘接收地址转出"
         ),
         "project_or_mm_outflow_transfer_risk": "项目/做市地址外流",
+        "verified_pool_sell_pressure": "已验证池大额卖压",
+        "lp_remove_observation": "LP 撤出观察",
+        "lp_partial_remove_observation": "LP 部分撤出观察",
+        "lp_collect_observation": "LP 提取观察",
+        "lp_rebalance_collect_observation": "LP 调仓提取观察",
+        "lp_rebalance_observation": "LP 调仓观察",
+        "liquidity_exit_with_sell": "撤池并卖出复合风险",
+        "liquidity_partial_remove_with_sell": "部分撤池并卖出复合风险",
+        "liquidity_rebalance_with_sell": "调池并卖出复合风险",
     }
     lines = [
         (
@@ -3244,17 +5618,53 @@ def retention_telegram_text(
                 (
                     f"{marker}{event_labels.get(str(event.get('type') or ''), str(event.get('type') or '转移风险'))}"
                     f"｜{int(event.get('transfer_count') or 1)}笔"
-                    f"｜合计 {format_amount(event.get('amount'))} 枚"
+                    f"｜{retention_event_amount_text(event)}"
                     f"｜{event.get('evidence_level')}"
                 ),
                 (
-                    f"样本 {short_addr(str(event.get('sample_from') or event.get('from') or ''))} → "
-                    f"{short_addr(str(event.get('sample_to') or event.get('to') or ''))}｜"
+                    f"样本 {short_addr(str(event.get('pool') or event.get('sample_from') or event.get('from') or ''))} → "
+                    f"{short_addr(str(event.get('sample_to') or event.get('to') or project.get('address') or ''))}｜"
                     f"tx {short_addr(str(event.get('sample_tx') or event.get('tx') or ''))}"
                 ),
             ]
         )
-    return "\n".join(lines)[:TELEGRAM_LIMIT]
+    return "\n".join(lines)
+
+
+def retention_telegram_batches(
+    project: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    batches: list[tuple[str, list[dict[str, Any]]]] = []
+    current: list[dict[str, Any]] = []
+    for event in events:
+        candidate = [*current, event]
+        if (
+            current
+            and len(retention_telegram_text(project, candidate))
+            > TELEGRAM_LIMIT
+        ):
+            batches.append(
+                (
+                    retention_telegram_text(project, current)[
+                        :TELEGRAM_LIMIT
+                    ],
+                    current,
+                )
+            )
+            current = [event]
+        else:
+            current = candidate
+    if current:
+        batches.append(
+            (
+                retention_telegram_text(project, current)[
+                    :TELEGRAM_LIMIT
+                ],
+                current,
+            )
+        )
+    return batches
 
 
 def holder_only_project(project: dict[str, Any]) -> dict[str, Any]:
@@ -3289,17 +5699,21 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> bool:
         ]
         if not events:
             continue
-        batch_keys = [
-            retention_event_key(project, event)
-            for event in events
-        ]
-        send_telegram_batch(
-            retention_telegram_text(project, events),
-            batch_keys,
-            token=token,
-            chat_id=chat_id,
-            seen=seen,
-        )
+        for text, batch_events in retention_telegram_batches(
+            project,
+            events,
+        ):
+            batch_keys = [
+                retention_event_key(project, event)
+                for event in batch_events
+            ]
+            send_telegram_batch(
+                text,
+                batch_keys,
+                token=token,
+                chat_id=chat_id,
+                seen=seen,
+            )
 
     holder_projects = [
         holder_only_project(project)
@@ -3386,6 +5800,15 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
                     "开盘接收地址转出"
                 ),
                 "project_or_mm_outflow_transfer_risk": "项目/做市地址外流",
+                "verified_pool_sell_pressure": "已验证池大额卖压",
+                "lp_remove_observation": "LP 撤出观察",
+                "lp_partial_remove_observation": "LP 部分撤出观察",
+                "lp_collect_observation": "LP 提取观察",
+                "lp_rebalance_collect_observation": "LP 调仓提取观察",
+                "lp_rebalance_observation": "LP 调仓观察",
+                "liquidity_exit_with_sell": "撤池并卖出复合风险",
+                "liquidity_partial_remove_with_sell": "部分撤池并卖出复合风险",
+                "liquidity_rebalance_with_sell": "调池并卖出复合风险",
             }
             lines.extend(
                 [
@@ -3395,13 +5818,13 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
                     ),
                     (
                         f"信号：{event_labels.get(str(event.get('type') or ''), str(event.get('type') or '转移风险'))}"
-                        f"｜{int(event.get('transfer_count') or 1)}笔合计 "
-                        f"{format_amount(event.get('amount'))} 枚"
+                        f"｜{int(event.get('transfer_count') or 1)}笔｜"
+                        f"{retention_event_amount_text(event)}"
                         f"｜证据 {event.get('evidence_level')}"
                     ),
                     (
-                        f"样本路径：{short_addr(str(event.get('sample_from') or event.get('from') or ''))}"
-                        f" → {short_addr(str(event.get('sample_to') or event.get('to') or ''))}"
+                        f"样本路径：{short_addr(str(event.get('pool') or event.get('sample_from') or event.get('from') or ''))}"
+                        f" → {short_addr(str(event.get('sample_to') or event.get('to') or project.get('address') or ''))}"
                         f"｜tx {short_addr(str(event.get('sample_tx') or event.get('tx') or ''))}"
                     ),
                 ]
@@ -3492,6 +5915,8 @@ def project_decision_context(project: dict[str, Any]) -> dict[str, str]:
     if isinstance(decision, dict) and decision.get("action"):
         return decision
     return holder_decision_context(project, {})
+
+
 def render(snapshot: dict[str, Any]) -> str:
     lines = [
         "# Alpha Holder Concentration Watch",
@@ -3553,6 +5978,31 @@ def render(snapshot: dict[str, Any]) -> str:
                         f"evidence={event.get('evidence_level')}"
                     )
                 )
+            liquidity = retention.get("liquidity_retention") or {}
+            if liquidity:
+                lines.extend(
+                    [
+                        "",
+                        "### 已验证池连续流动性",
+                        "",
+                        (
+                            f"- status={liquidity.get('status')} "
+                            f"complete={liquidity.get('complete')} "
+                            f"pools={liquidity.get('pool_count')} "
+                            f"blocks={liquidity.get('scan_from_block')}..{liquidity.get('scan_to_block')}"
+                        ),
+                    ]
+                )
+                for event in liquidity.get("events", [])[-10:]:
+                    amount = retention_event_amount_text(event)
+                    lines.append(
+                        (
+                            f"- `{event.get('type')}` {amount}；pool "
+                            f"`{short_addr(str(event.get('pool') or ''))}`；tx "
+                            f"`{short_addr(str(event.get('tx') or ''))}` "
+                            f"evidence={event.get('evidence_level')}"
+                        )
+                    )
     return "\n".join(lines)
 
 

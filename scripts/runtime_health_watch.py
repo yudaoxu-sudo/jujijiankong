@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS = 48
 DEFAULT_INTRADAY_CORE_HOURS = 72
+LIQUIDITY_RETENTION_STATE_SCHEMA_VERSION = 2
 # Historical prelaunch receipt enforcement first became a runtime-health
 # invariant in commit 4bf8d53. Projects both discovered and opened before this
 # boundary cannot acquire a persisted delivery receipt retroactively.
@@ -624,8 +625,122 @@ def retention_flow_required(
 ) -> bool:
     return bool(
         listing is not None
-        and current >= listing
+        and listing <= current <= listing + timedelta(days=30)
     )
+
+
+def valid_hex_value(value: Any, digits: int, prefix: str = "") -> bool:
+    text = str(value or "").lower()
+    return bool(
+        len(text) == len(prefix) + digits
+        and text.startswith(prefix)
+        and all(
+            character in "0123456789abcdef"
+            for character in text[len(prefix):]
+        )
+    )
+
+
+def opening_has_verified_liquidity_pool_scope(
+    opening_path: Path,
+    identity: tuple[str, str],
+) -> bool:
+    chain, token = identity
+    for event in snapshot_rows(opening_path):
+        if identity not in row_contract_identities(event, "opening"):
+            continue
+        if (
+            event.get("status") != "opened"
+            or event.get("opening_liquidity_scope_complete") is not True
+            or not valid_hex_value(
+                event.get("opening_liquidity_watch_scope_hash"),
+                64,
+            )
+        ):
+            continue
+        quote = str((event.get("quote") or {}).get("address") or "").lower()
+        if (
+            str(event.get("chain") or "").lower() != chain
+            or not valid_hex_value(token, 40, "0x")
+            or not valid_hex_value(quote, 40, "0x")
+            or quote == token
+        ):
+            continue
+
+        v3_scope = (
+            event.get("opening_v3_pool_scope")
+            if isinstance(event.get("opening_v3_pool_scope"), dict)
+            else {}
+        )
+        if (
+            v3_scope.get("schema") != "opening_v3_factory_matrix.v2"
+            or v3_scope.get("complete") is not True
+            or v3_scope.get("snapshot_coherent") is not True
+            or not valid_hex_value(v3_scope.get("configuration_hash"), 64)
+            or not valid_hex_value(
+                v3_scope.get("as_of_block_hash"), 64, "0x"
+            )
+        ):
+            continue
+        v3_pools = v3_scope.get("pools")
+        if not isinstance(v3_pools, list):
+            continue
+        if not all(
+            isinstance(pool, dict)
+            and valid_hex_value(pool.get("address"), 40, "0x")
+            and valid_hex_value(pool.get("factory"), 40, "0x")
+            and {
+                str(pool.get("token0") or "").lower(),
+                str(pool.get("token1") or "").lower(),
+            }
+            == {token, quote}
+            and str(pool.get("fee") or "").isdigit()
+            and int(pool["fee"]) > 0
+            for pool in v3_pools
+        ):
+            continue
+
+        v4_scope = (
+            event.get("opening_v4_pool_scope")
+            if isinstance(event.get("opening_v4_pool_scope"), dict)
+            else {}
+        )
+        v4_pools = v4_scope.get("pools")
+        if not isinstance(v4_pools, list):
+            continue
+        if v4_scope.get("applicable") is True:
+            if (
+                v4_scope.get("schema") != "opening_v4_manager_scope.v2"
+                or v4_scope.get("complete") is not True
+                or v4_scope.get("snapshot_coherent") is not True
+                or not valid_hex_value(
+                    v4_scope.get("configuration_hash"), 64
+                )
+                or not valid_hex_value(
+                    v4_scope.get("as_of_block_hash"), 64, "0x"
+                )
+            ):
+                continue
+        elif v4_pools:
+            continue
+        if not all(
+            isinstance(pool, dict)
+            and valid_hex_value(pool.get("address"), 40, "0x")
+            and str(pool.get("pool_manager") or "").lower()
+            == str(pool.get("address") or "").lower()
+            and str(pool.get("v4_manager_type") or "").lower() == "cl"
+            and valid_hex_value(pool.get("pool_id"), 64, "0x")
+            and {
+                str(pool.get("token0") or "").lower(),
+                str(pool.get("token1") or "").lower(),
+            }
+            == {token, quote}
+            for pool in v4_pools
+        ):
+            continue
+        if v3_pools or v4_pools:
+            return True
+    return False
 
 
 def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
@@ -783,6 +898,182 @@ def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
         return "retention flow scan does not continue previous checkpoint"
     if latest != scan_to:
         return "retention flow checkpoint did not reach scan tip"
+    return ""
+
+
+def liquidity_retention_coverage_issue(row: dict[str, Any]) -> str:
+    retention = (
+        row.get("retention_flow")
+        if isinstance(row.get("retention_flow"), dict)
+        else {}
+    )
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention.get("liquidity_retention"), dict)
+        else {}
+    )
+    if flow.get("status") != "active":
+        return (
+            "liquidity retention status="
+            f"{flow.get('status', 'missing')}"
+        )
+    if flow.get("coverage_mode") != "verified_pool_indexed_topics":
+        return "liquidity retention coverage mode invalid"
+    if flow.get("scope_complete") is not True:
+        return "liquidity retention verified pool scope incomplete"
+    if flow.get("complete") is not True:
+        return "liquidity retention coverage incomplete"
+    if flow.get("selected_window_complete") is not True:
+        return "liquidity retention selected window incomplete"
+    if flow.get("query_scope_complete") is not True:
+        return "liquidity retention indexed query scope incomplete"
+    if flow.get("truncated") or flow.get("events_truncated"):
+        return "liquidity retention output truncated"
+    try:
+        log_error_count = int(flow.get("log_error_count") or 0)
+        decode_error_count = int(flow.get("decode_error_count") or 0)
+        pool_count = int(flow.get("pool_count") or 0)
+        v3_pool_count = int(flow.get("v3_pool_count") or 0)
+        v4_pool_count = int(flow.get("v4_pool_count") or 0)
+        v4_manager_count = int(flow.get("v4_manager_count") or 0)
+        event_filter_count = int(
+            flow.get("event_filter_count") or 0
+        )
+        scope_state_schema_version = int(
+            flow.get("scope_state_schema_version") or 0
+        )
+        scope_batch_count = int(flow.get("scope_batch_count") or 0)
+        query_count = int(flow.get("query_count") or 0)
+        query_chunk_count = int(flow.get("query_chunk_count") or 0)
+        expected_query_count = int(
+            flow.get("expected_query_count") or 0
+        )
+    except (TypeError, ValueError):
+        return "liquidity retention indexed query metadata invalid"
+    if log_error_count or decode_error_count:
+        return "liquidity retention log scan has errors"
+    if (
+        scope_state_schema_version
+        != LIQUIDITY_RETENTION_STATE_SCHEMA_VERSION
+        or pool_count <= 0
+        or min(v3_pool_count, v4_pool_count) < 0
+        or v3_pool_count + v4_pool_count != pool_count
+        or v4_manager_count < int(v4_pool_count > 0)
+        or v4_manager_count > v4_pool_count
+        or event_filter_count
+        != v3_pool_count * 4 + v4_pool_count * 2
+    ):
+        return "liquidity retention verified pool scope invalid"
+    if (
+        scope_batch_count <= 0
+        or scope_batch_count
+        != int(v3_pool_count > 0) + v4_manager_count
+        or query_chunk_count <= 0
+        or expected_query_count
+        != scope_batch_count * query_chunk_count
+        or query_count != expected_query_count
+    ):
+        return "liquidity retention indexed query count invalid"
+
+    scope_hash = str(flow.get("scope_hash") or "")
+    previous_scope_hash = str(flow.get("previous_scope_hash") or "")
+    latest_block_hash = str(flow.get("latest_block_hash") or "")
+    if (
+        not valid_hex_value(latest_block_hash, 64, "0x")
+        or int(latest_block_hash[2:], 16) == 0
+    ):
+        return "liquidity retention checkpoint hash invalid"
+    scope_rebaseline = flow.get("scope_rebaseline") is True
+    if not valid_hex_value(scope_hash, 64):
+        return "liquidity retention scope hash invalid"
+    if scope_rebaseline:
+        if previous_scope_hash == scope_hash:
+            return "liquidity retention scope rebaseline metadata invalid"
+    elif previous_scope_hash != scope_hash:
+        return "liquidity retention scope continuity hash mismatch"
+
+    catchup = flow.get("incremental_catchup")
+    if not isinstance(catchup, dict):
+        return "liquidity retention catch-up metadata missing"
+    try:
+        requested_to = int(catchup["requested_to_block"])
+        selected_to = int(catchup["selected_to_block"])
+        scan_from = int(flow["scan_from_block"])
+        scan_to = int(flow["scan_to_block"])
+        target_latest = int(flow["target_latest_block"])
+        previous_latest = int(flow.get("previous_latest_block") or 0)
+        latest = int(flow["latest_block"])
+        scope_coverage_from = int(
+            flow.get("scope_coverage_from_block") or 0
+        )
+        observed_latest = int(flow.get("observed_latest_block") or 0)
+        confirmation_blocks = int(flow.get("confirmation_blocks") or 0)
+    except (KeyError, TypeError, ValueError):
+        return "liquidity retention block metadata invalid"
+    if min(
+        requested_to,
+        selected_to,
+        scan_from,
+        scan_to,
+        target_latest,
+        previous_latest,
+        latest,
+        scope_coverage_from,
+        observed_latest,
+        confirmation_blocks,
+    ) < 0:
+        return "liquidity retention block metadata invalid"
+    if target_latest != max(0, observed_latest - confirmation_blocks):
+        return "liquidity retention confirmation boundary invalid"
+    if (
+        catchup.get("applicable") is not True
+        or not isinstance(catchup.get("active"), bool)
+        or catchup.get("active") is not False
+        or catchup.get("complete_selected_window") is not True
+        or catchup.get("complete_requested_window") is not True
+        or requested_to != target_latest
+        or selected_to != scan_to
+        or selected_to != requested_to
+    ):
+        return "liquidity retention catch-up metadata invalid"
+    if scan_from > scan_to or latest != scan_to:
+        return "liquidity retention scan window invalid"
+    if scope_rebaseline:
+        if scan_from != scope_coverage_from:
+            return "liquidity retention scope rebaseline start invalid"
+    elif (
+        flow.get("continuous") is not True
+        or scan_from != previous_latest + 1
+    ):
+        return "liquidity retention scan does not continue previous checkpoint"
+    return ""
+
+
+def liquidity_retention_coverage_warning(row: dict[str, Any]) -> str:
+    retention = (
+        row.get("retention_flow")
+        if isinstance(row.get("retention_flow"), dict)
+        else {}
+    )
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention.get("liquidity_retention"), dict)
+        else {}
+    )
+    if flow.get("status") == "active" and flow.get("scope_rebaseline"):
+        return (
+            "liquidity retention verified pool scope was baselined from "
+            "its declared coverage block; earlier pool history remains "
+            "outside verified monitoring"
+        )
+    if (
+        flow.get("status") == "active"
+        and flow.get("checkpoint_reorg_recovery") is True
+    ):
+        return (
+            "liquidity retention checkpoint hash changed; the configured "
+            "overlap was rescanned from the canonical chain"
+        )
     return ""
 
 
@@ -1320,6 +1611,63 @@ def alpha_coverage_evaluation(
                                 f"alpha_coverage_warning:{identity_label}:retention_flow:{detail}",
                             )
                         )
+                if opening_has_verified_liquidity_pool_scope(
+                    output_paths["opening"],
+                    identity,
+                ):
+                    liquidity_details = [
+                        detail
+                        for detail in (
+                            liquidity_retention_coverage_issue(candidate)
+                            for candidate in matching
+                        )
+                        if detail
+                    ]
+                    if liquidity_details:
+                        detail = liquidity_details[0]
+                        issues.append(
+                            issue(
+                                "alpha_coverage_gap",
+                                symbol,
+                                (
+                                    f"{symbol} liquidity_retention: "
+                                    f"{detail}"
+                                ),
+                                (
+                                    f"alpha_coverage_gap:{identity_label}:"
+                                    f"liquidity_retention:{detail}"
+                                ),
+                            )
+                        )
+                    else:
+                        liquidity_warnings = [
+                            detail
+                            for detail in (
+                                liquidity_retention_coverage_warning(
+                                    candidate
+                                )
+                                for candidate in matching
+                            )
+                            if detail
+                        ]
+                        if liquidity_warnings:
+                            detail = liquidity_warnings[0]
+                            warnings.append(
+                                issue(
+                                    "alpha_coverage_warning",
+                                    symbol,
+                                    (
+                                        f"{symbol} liquidity_retention: "
+                                        f"{detail}"
+                                    ),
+                                    (
+                                        "alpha_coverage_warning:"
+                                        f"{identity_label}:"
+                                        "liquidity_retention:"
+                                        f"{detail}"
+                                    ),
+                                )
+                            )
             if output_name == "prelaunch":
                 delivery_detail = prelaunch_delivery_issue(root, matching)
                 if delivery_detail:

@@ -12648,12 +12648,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "ALPHA_HOLDER_FINALITY_BLOCKS": "0",
+                    "ALPHA_HOLDER_FINALITY_BLOCKS": "2",
                     "ALPHA_HOLDER_LOG_CHUNK_BLOCKS": "2",
                     "ALPHA_HOLDER_MAX_LOGS_PER_TOKEN": "100",
                 },
             ),
-            mock.patch.object(holder, "latest_block", return_value=104),
+            mock.patch.object(holder, "latest_block", return_value=106),
             mock.patch.object(holder, "rpc_call", side_effect=fetch),
             mock.patch.object(holder, "token_total_supply_raw", return_value=1000),
             mock.patch.object(holder, "top_rows", return_value=[]),
@@ -12662,6 +12662,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "full_holder_source_status",
                 return_value={"source": "none", "status": "not_configured"},
             ),
+            mock.patch.object(
+                holder,
+                "build_token_liquidity_retention",
+                wraps=holder.build_token_liquidity_retention,
+            ) as liquidity_builder,
         ):
             result = holder.build_token_snapshot(
                 {
@@ -12677,7 +12682,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(calls, [(101, 102), (103, 104)])
         self.assertEqual(state, before)
-        self.assertEqual(result["raw_latest_block"], 104)
+        self.assertEqual(result["raw_latest_block"], 106)
         self.assertEqual(result["latest_block"], 100)
         self.assertEqual(result["previous_latest_block"], 100)
         self.assertEqual(result["log_count"], 0)
@@ -12688,6 +12693,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "private-provider-secret",
             " ".join(result["log_errors"]),
         )
+        self.assertEqual(liquidity_builder.call_args.kwargs["tip"], 106)
 
     def test_holder_log_truncation_keeps_previous_state_checkpoint(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -16155,6 +16161,1744 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 alpha_coverage_issues(root, current=current),
                 [],
             )
+
+
+class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _address(digit: str) -> str:
+        return "0x" + digit * 40
+
+    @staticmethod
+    def _hash(digit: str) -> str:
+        return "0x" + digit * 64
+
+    @staticmethod
+    def _word(value: int, bits: int = 256) -> str:
+        if value < 0:
+            low = (1 << bits) + value
+            if bits < 256:
+                low |= ((1 << (256 - bits)) - 1) << bits
+            value = low
+        return f"{value:064x}"
+
+    @classmethod
+    def _data(cls, *values: tuple[int, int] | int) -> str:
+        words = []
+        for value in values:
+            if isinstance(value, tuple):
+                words.append(cls._word(value[0], value[1]))
+            else:
+                words.append(cls._word(value))
+        return "0x" + "".join(words)
+
+    @classmethod
+    def _opening_payload(cls) -> dict[str, object]:
+        token = cls._address("1")
+        quote = cls._address("2")
+        v3_pool = cls._address("3")
+        factory = cls._address("4")
+        manager = cls._address("5")
+        pool_id = cls._hash("6")
+        return {
+            "events": [
+                {
+                    "status": "opened",
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "token": {"address": token},
+                    "quote": {
+                        "address": quote,
+                        "decimals": 18,
+                        "symbol": "WBNB",
+                    },
+                    "opening_liquidity_scope_complete": True,
+                    "opening_liquidity_watch_scope_hash": "7" * 64,
+                    "opening_v3_pool_scope": {
+                        "schema": "opening_v3_factory_matrix.v2",
+                        "complete": True,
+                        "snapshot_coherent": True,
+                        "configuration_hash": "8" * 64,
+                        "as_of_block": 100,
+                        "as_of_block_hash": cls._hash("9"),
+                        "pools": [
+                            {
+                                "address": v3_pool,
+                                "factory": factory,
+                                "token0": token,
+                                "token1": quote,
+                                "fee": 2500,
+                            }
+                        ],
+                    },
+                    "opening_v4_pool_scope": {
+                        "schema": "opening_v4_manager_scope.v2",
+                        "applicable": True,
+                        "complete": True,
+                        "snapshot_coherent": True,
+                        "configuration_hash": "a" * 64,
+                        "as_of_block": 100,
+                        "as_of_block_hash": cls._hash("b"),
+                        "pools": [
+                            {
+                                "address": manager,
+                                "pool_manager": manager,
+                                "pool_id": pool_id,
+                                "v4_manager_type": "cl",
+                                "token0": token,
+                                "token1": quote,
+                                "fee": 500,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+    @classmethod
+    def _event_row(
+        cls,
+        *,
+        pool: dict[str, object],
+        event_kind: str,
+        topic: str,
+        data: str,
+        tx_digit: str,
+        block: int,
+        index: int,
+    ) -> dict[str, object]:
+        return {
+            "address": pool["address"],
+            "blockNumber": hex(block),
+            "blockHash": cls._hash("f"),
+            "logIndex": hex(index),
+            "transactionHash": cls._hash(tx_digit),
+            "topics": [topic],
+            "data": data,
+            "removed": False,
+            "_retention_pool": pool,
+            "_retention_event_kind": event_kind,
+        }
+
+    def test_opening_verified_pool_scope_is_stable_and_fail_closed(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+        self.assertTrue(scope["complete"])
+        self.assertEqual(scope["pool_count"], 2)
+        self.assertEqual(scope["v3_pool_count"], 1)
+        self.assertEqual(scope["v4_pool_count"], 1)
+
+        refreshed = copy.deepcopy(payload)
+        event = refreshed["events"][0]
+        event["opening_v3_pool_scope"]["as_of_block"] = 200
+        event["opening_v3_pool_scope"]["as_of_block_hash"] = self._hash("c")
+        event["opening_v4_pool_scope"]["as_of_block"] = 200
+        event["opening_v4_pool_scope"]["as_of_block_hash"] = self._hash("d")
+        self.assertEqual(
+            holder.opening_verified_pool_scope(
+                refreshed,
+                "TEST",
+                "bsc",
+                token,
+            )["scope_hash"],
+            scope["scope_hash"],
+        )
+
+        persisted = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+        }
+        fallback = holder.opening_verified_pool_scope(
+            {"events": []},
+            "TEST",
+            "bsc",
+            token,
+            persisted_scope=persisted,
+        )
+        self.assertEqual(fallback["source"], "state")
+        self.assertEqual(fallback["pool_scope"], scope["pool_scope"])
+
+        incomplete = copy.deepcopy(payload)
+        incomplete["events"][0]["opening_liquidity_scope_complete"] = False
+        rejected = holder.opening_verified_pool_scope(
+            incomplete,
+            "TEST",
+            "bsc",
+            token,
+            persisted_scope=persisted,
+        )
+        self.assertFalse(rejected["complete"])
+        self.assertEqual(rejected["pool_scope"], [])
+
+        malformed_identity = copy.deepcopy(payload)
+        malformed_identity["events"][0]["token"] = {}
+        rejected_identity = holder.opening_verified_pool_scope(
+            malformed_identity,
+            "TEST",
+            "bsc",
+            token,
+            persisted_scope=persisted,
+        )
+        self.assertFalse(rejected_identity["complete"])
+        self.assertEqual(rejected_identity["source"], "opening")
+
+        missing_quote_symbol = copy.deepcopy(payload)
+        del missing_quote_symbol["events"][0]["quote"]["symbol"]
+        rejected_quote = holder.opening_verified_pool_scope(
+            missing_quote_symbol,
+            "TEST",
+            "bsc",
+            token,
+            persisted_scope=persisted,
+        )
+        self.assertFalse(rejected_quote["complete"])
+        self.assertEqual(rejected_quote["source"], "opening")
+
+        blank_quote_symbol = copy.deepcopy(payload)
+        blank_quote_symbol["events"][0]["quote"]["symbol"] = "   "
+        self.assertFalse(
+            holder.opening_verified_pool_scope(
+                blank_quote_symbol,
+                "TEST",
+                "bsc",
+                token,
+            )["complete"]
+        )
+
+        conflicting_events = copy.deepcopy(payload)
+        conflicting_event = copy.deepcopy(conflicting_events["events"][0])
+        conflicting_event["quote"]["symbol"] = "BNB"
+        conflicting_events["events"].append(conflicting_event)
+        rejected_conflict = holder.opening_verified_pool_scope(
+            conflicting_events,
+            "TEST",
+            "bsc",
+            token,
+        )
+        self.assertFalse(rejected_conflict["complete"])
+        self.assertEqual(
+            rejected_conflict["status"],
+            "current_opening_scope_invalid",
+        )
+
+        for malformed_events in ("corrupt", {}, [123]):
+            rejected_payload = holder.opening_verified_pool_scope(
+                {"events": malformed_events},
+                "TEST",
+                "bsc",
+                token,
+                persisted_scope=persisted,
+            )
+            self.assertFalse(rejected_payload["complete"])
+            self.assertEqual(
+                rejected_payload["status"],
+                "current_opening_payload_invalid",
+            )
+            self.assertEqual(rejected_payload["source"], "opening")
+
+        for malformed_pools in ("not-a-list", [{}], ["not-a-pool"]):
+            malformed = copy.deepcopy(payload)
+            malformed["events"][0]["opening_v3_pool_scope"]["pools"] = (
+                malformed_pools
+            )
+            result = holder.opening_verified_pool_scope(
+                malformed,
+                "TEST",
+                "bsc",
+                token,
+                persisted_scope=persisted,
+            )
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["pool_scope"], [])
+
+        spoofed_bin = copy.deepcopy(payload)
+        spoofed_v4 = spoofed_bin["events"][0]["opening_v4_pool_scope"]
+        spoofed_v4["pools"][0]["address"] = (
+            holder.PANCAKE_INFINITY_BIN_POOL_MANAGER
+        )
+        spoofed_v4["pools"][0]["pool_manager"] = (
+            holder.PANCAKE_INFINITY_BIN_POOL_MANAGER
+        )
+        spoofed_v4["pools"][0]["v4_manager_type"] = "cl"
+        rejected_bin = holder.opening_verified_pool_scope(
+            spoofed_bin,
+            "TEST",
+            "bsc",
+            token,
+        )
+        self.assertFalse(rejected_bin["complete"])
+        self.assertEqual(rejected_bin["pool_scope"], [])
+
+    def test_liquidity_log_queries_use_exact_topics_and_dedupe(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        scope = holder.opening_verified_pool_scope(
+            self._opening_payload(),
+            "TEST",
+            "bsc",
+            self._address("1"),
+        )
+        queries: list[dict[str, object]] = []
+
+        def fetch(
+            _chain: str,
+            method: str,
+            params: list[object],
+        ) -> list[dict[str, object]]:
+            self.assertEqual(method, "eth_getLogs")
+            query = copy.deepcopy(params[0])
+            assert isinstance(query, dict)
+            queries.append(query)
+            allowed_topics = query["topics"][0]
+            assert isinstance(allowed_topics, list)
+            rows = []
+            for offset, topic0 in enumerate(allowed_topics, start=1):
+                word_count = {
+                    holder.V3_SWAP_TOPIC: 5,
+                    holder.V3_MINT_TOPIC: 4,
+                    holder.V3_BURN_TOPIC: 3,
+                    holder.V3_COLLECT_TOPIC: 3,
+                    holder.V4_SWAP_TOPIC: 7,
+                    holder.MODIFY_LIQUIDITY_TOPIC: 4,
+                }[topic0]
+                topic_count = (
+                    3
+                    if topic0
+                    in {
+                        holder.V3_SWAP_TOPIC,
+                        holder.V4_SWAP_TOPIC,
+                        holder.MODIFY_LIQUIDITY_TOPIC,
+                    }
+                    else 4
+                )
+                topics = [topic0]
+                if topic0 in {
+                    holder.V4_SWAP_TOPIC,
+                    holder.MODIFY_LIQUIDITY_TOPIC,
+                }:
+                    pool_ids = query["topics"][1]
+                    topics.append(
+                        pool_ids[0]
+                        if isinstance(pool_ids, list)
+                        else pool_ids
+                    )
+                    topics.append(holder.topic_address(self._address("e")))
+                elif topic0 == holder.V3_SWAP_TOPIC:
+                    topics.extend(
+                        [
+                            holder.topic_address(self._address("d")),
+                            holder.topic_address(self._address("e")),
+                        ]
+                    )
+                else:
+                    topics.extend(
+                        [
+                            holder.topic_address(self._address("d")),
+                            self._hash("0"),
+                            self._hash("0"),
+                        ]
+                    )
+                self.assertEqual(len(topics), topic_count)
+                index = len(queries) * 10 + offset
+                rows.append(
+                    {
+                        "address": (
+                            query["address"][0]
+                            if isinstance(query["address"], list)
+                            else query["address"]
+                        ),
+                        "blockNumber": hex(105),
+                        "blockHash": self._hash("f"),
+                        "logIndex": hex(index),
+                        "transactionHash": "0x" + f"{index:064x}",
+                        "topics": topics,
+                        "data": (
+                            self._data(1, -1, 0, 0, 0)
+                            if topic0 == holder.V3_SWAP_TOPIC
+                            else self._data(
+                                (-1, 128),
+                                (1, 128),
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                            )
+                            if topic0 == holder.V4_SWAP_TOPIC
+                            else "0x" + "0" * (word_count * 64)
+                        ),
+                        "removed": False,
+                    }
+                )
+            if len(queries) == 1:
+                rows.append(dict(rows[0]))
+            return rows
+
+        with mock.patch.object(holder, "rpc_call", side_effect=fetch):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc",
+                    scope["pool_scope"],
+                    101,
+                    110,
+                )
+            )
+
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(len(logs), 6)
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(
+            queries[0]["topics"],
+            [
+                sorted(
+                    {
+                        holder.V3_SWAP_TOPIC,
+                        holder.V3_MINT_TOPIC,
+                        holder.V3_BURN_TOPIC,
+                        holder.V3_COLLECT_TOPIC,
+                    }
+                )
+            ],
+        )
+        self.assertEqual(
+            queries[1]["topics"],
+            [
+                sorted(
+                    {
+                        holder.V4_SWAP_TOPIC,
+                        holder.MODIFY_LIQUIDITY_TOPIC,
+                    }
+                ),
+                self._hash("6"),
+            ],
+        )
+        self.assertTrue(metadata["query_scope_complete"])
+        self.assertEqual(metadata["expected_query_count"], 2)
+
+        second_v3 = {
+            **scope["pool_scope"][0],
+            "address": self._address("c"),
+        }
+        second_v4 = {
+            **scope["pool_scope"][1],
+            "pool_id": self._hash("d"),
+        }
+        batched = holder.retention_liquidity_query_scopes(
+            [*scope["pool_scope"], second_v3, second_v4]
+        )
+        self.assertEqual(len(batched), 2)
+        self.assertEqual(
+            batched[0]["address"],
+            sorted([self._address("3"), self._address("c")]),
+        )
+        self.assertEqual(
+            batched[1]["topics"][1],
+            sorted([self._hash("6"), self._hash("d")]),
+        )
+
+    def test_base_liquidity_queries_cap_chunks_at_two_thousand_blocks(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": self._address("1"),
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+        queries = []
+
+        def fetch(
+            _chain: str,
+            _method: str,
+            params: list[object],
+        ) -> list[object]:
+            queries.append(params[0])
+            return []
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_RETENTION_LIQUIDITY_LOG_CHUNK_BLOCKS": "8000"},
+            ),
+            mock.patch.object(holder, "rpc_call", side_effect=fetch),
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_liquidity_logs(
+                    "base", [pool], 1, 4001
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(len(queries), 3)
+        self.assertEqual(metadata["query_chunk_blocks"], 2000)
+        self.assertEqual(metadata["expected_query_count"], 3)
+
+    def test_bounded_liquidity_event_overflow_shrinks_and_catches_up(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+
+        def fetch(
+            _chain: str,
+            _pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+        ) -> tuple[list[dict[str, object]], list[str], bool, dict[str, object]]:
+            rows = [
+                {
+                    "address": pool["address"],
+                    "blockNumber": hex(block),
+                    "blockHash": self._hash("f"),
+                    "logIndex": "0x0",
+                    "transactionHash": "0x" + f"{block:064x}",
+                    "topics": [holder.V3_SWAP_TOPIC],
+                    "data": self._data(100, -1, 0, 0, 0),
+                    "removed": False,
+                    "_retention_pool": pool,
+                    "_retention_event_kind": "v3_swap",
+                }
+                for block in range(from_block, to_block + 1)
+            ]
+            return rows, [], False, {"query_scope_complete": True}
+
+        cursor = 0
+        scan_ranges: list[tuple[int, int]] = []
+        shrink_count = 0
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_MAX_EVENTS": "4",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ),
+        ):
+            while cursor < 16:
+                scan_from = cursor + 1
+                logs, errors, truncated, selected_to, metadata = (
+                    holder.bounded_retention_liquidity_logs(
+                        "bsc",
+                        [pool],
+                        scan_from,
+                        16,
+                        token=token,
+                        decimals=0,
+                        supply_raw=10_000,
+                    )
+                )
+                self.assertEqual(errors, [])
+                self.assertFalse(truncated)
+                self.assertLessEqual(len(logs), 4)
+                self.assertGreaterEqual(selected_to, scan_from)
+                scan_ranges.append((scan_from, selected_to))
+                shrink_count += int(
+                    metadata.get("derived_event_shrink_count") or 0
+                )
+                cursor = selected_to
+
+        self.assertEqual(scan_ranges[0][0], 1)
+        self.assertTrue(
+            all(
+                current[0] == previous[1] + 1
+                for previous, current in zip(
+                    scan_ranges,
+                    scan_ranges[1:],
+                )
+            )
+        )
+        self.assertEqual(cursor, 16)
+        self.assertGreater(shrink_count, 0)
+
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_MAX_EVENTS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "4",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_ATTEMPTS": "1",
+                },
+            ),
+        ):
+            _, errors, truncated, selected_to, metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    1,
+                    4,
+                    token=token,
+                    decimals=0,
+                    supply_raw=10_000,
+                )
+            )
+        self.assertEqual(errors, [])
+        self.assertTrue(truncated)
+
+        self.assertEqual(selected_to, 4)
+        self.assertFalse(metadata["complete_selected_window"])
+
+    def test_liquidity_log_identity_errors_and_provider_cap_fail_closed(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": self._address("1"),
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+        base = {
+            "address": pool["address"],
+            "blockNumber": hex(105),
+            "blockHash": self._hash("f"),
+            "logIndex": hex(1),
+            "transactionHash": self._hash("a"),
+            "topics": [
+                holder.V3_SWAP_TOPIC,
+                holder.topic_address(self._address("b")),
+                holder.topic_address(self._address("c")),
+            ],
+            "data": self._data(1, -1, 0, 0, 0),
+            "removed": False,
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[{**base, "removed": "false"}],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+        conflicting_block_hash = {
+            **base,
+            "blockHash": self._hash("e"),
+            "logIndex": hex(2),
+            "transactionHash": self._hash("b"),
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[base, conflicting_block_hash],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(
+            any("block hash conflict" in error for error in errors)
+        )
+        self.assertFalse(truncated)
+
+        bare_quantity = {
+            **base,
+            "blockNumber": "105",
+            "logIndex": "1",
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[bare_quantity],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 0x100, 0x110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+        overflow_static = {
+            **base,
+            "data": self._data(1, -1, 2**200, 0, 0),
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[overflow_static],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+        conflict = {**base, "data": "0x" + "1" + "0" * (5 * 64 - 1)}
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[base, conflict],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_PROVIDER_MAX_ROWS_PER_QUERY": "1"
+                },
+            ),
+            mock.patch.object(holder, "rpc_call", return_value=[base]),
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertTrue(truncated)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_PROVIDER_MAX_ROWS_PER_QUERY": "10000"
+                },
+            ),
+            mock.patch.object(holder, "rpc_call", return_value=[]),
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(
+            metadata["provider_row_limit"],
+            holder.LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP,
+        )
+
+        v4_pool = {
+            "protocol": "v4_cl",
+            "address": self._address("5"),
+            "pool_id": self._hash("6"),
+            "v4_manager_type": "cl",
+            "token0": self._address("1"),
+            "token1": self._address("2"),
+        }
+        malformed_v4 = {
+            **base,
+            "address": v4_pool["address"],
+            "topics": [
+                holder.V4_SWAP_TOPIC,
+                v4_pool["pool_id"],
+                holder.topic_address(self._address("c")),
+            ],
+            "data": (
+                "0x"
+                + f"{(1 << 128) - 1:064x}"
+                + self._word(1, 128)
+                + "0" * (5 * 64)
+            ),
+        }
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[malformed_v4],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [v4_pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+        wrong_pool_id = copy.deepcopy(malformed_v4)
+        wrong_pool_id["topics"][1] = self._hash("d")
+        wrong_pool_id["data"] = self._data(
+            (-1, 128),
+            (1, 128),
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            return_value=[wrong_pool_id],
+        ):
+            logs, errors, truncated, _ = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [v4_pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+
+    def test_v3_and_v4_swap_signs_emit_only_verified_sell_pressure(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        v3 = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": quote,
+            "fee": 2500,
+        }
+        v4 = {
+            "protocol": "v4_cl",
+            "address": self._address("5"),
+            "pool_id": self._hash("6"),
+            "v4_manager_type": "cl",
+            "token0": token,
+            "token1": quote,
+        }
+        logs = [
+            self._event_row(
+                pool=v3,
+                event_kind="v3_swap",
+                topic=holder.V3_SWAP_TOPIC,
+                data=self._data(1000, -100, 0, 0, 0),
+                tx_digit="a",
+                block=101,
+                index=1,
+            ),
+            self._event_row(
+                pool=v3,
+                event_kind="v3_swap",
+                topic=holder.V3_SWAP_TOPIC,
+                data=self._data(-1000, 100, 0, 0, 0),
+                tx_digit="b",
+                block=102,
+                index=2,
+            ),
+            self._event_row(
+                pool=v4,
+                event_kind="v4_swap",
+                topic=holder.V4_SWAP_TOPIC,
+                data=self._data((-1000, 128), (100, 128), 0, 0, 0, 0, 0),
+                tx_digit="c",
+                block=103,
+                index=3,
+            ),
+            self._event_row(
+                pool=v4,
+                event_kind="v4_swap",
+                topic=holder.V4_SWAP_TOPIC,
+                data=self._data((1000, 128), (-100, 128), 0, 0, 0, 0, 0),
+                tx_digit="d",
+                block=104,
+                index=4,
+            ),
+        ]
+        events, count, truncated = holder.retention_liquidity_events(
+            logs,
+            token,
+            0,
+            1_000_000,
+        )
+        self.assertFalse(truncated)
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            [event["protocol"] for event in events],
+            ["v3", "v4_cl"],
+        )
+        self.assertTrue(
+            all(
+                event["type"] == "verified_pool_sell_pressure"
+                and event["direction"] == "verified_pool_sell"
+                for event in events
+            )
+        )
+
+    def test_v3_burn_nets_mint_and_collect_stays_observation(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": self._address("2"),
+            "quote_token": self._address("2"),
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+            "fee": 2500,
+        }
+        rows = [
+            self._event_row(
+                pool=pool,
+                event_kind="v3_swap",
+                topic=holder.V3_SWAP_TOPIC,
+                data=self._data(100, -10, 0, 0, 0),
+                tx_digit="a",
+                block=101,
+                index=1,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_mint",
+                topic=holder.V3_MINT_TOPIC,
+                data=self._data(0, 0, 100, 20_000),
+                tx_digit="a",
+                block=101,
+                index=2,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 600, 0),
+                tx_digit="a",
+                block=101,
+                index=3,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 600, 100_000),
+                tx_digit="a",
+                block=101,
+                index=4,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 600, 0),
+                tx_digit="b",
+                block=102,
+                index=5,
+            ),
+        ]
+        events, _, _ = holder.retention_liquidity_events(
+            rows,
+            token,
+            0,
+            10_000,
+        )
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["liquidity_rebalance_with_sell", "lp_collect_observation"],
+        )
+        self.assertEqual(events[0]["amount"], "100")
+        self.assertEqual(events[0]["lp_removed_amount"], "500")
+        self.assertEqual(events[0]["level"], "HIGH")
+        self.assertEqual(
+            events[0]["evidence_level"],
+            "verified_pool_swap_and_v3_mint_burn_rebalance_same_tx",
+        )
+        self.assertEqual(events[0]["quote_collected_amount"], "100000")
+        self.assertIn(
+            "100000.0000 USDT",
+            holder.retention_event_amount_text(events[0]),
+        )
+        self.assertEqual(events[1]["level"], "INFO")
+
+    def test_v3_quote_only_removal_collect_and_rebalance_are_visible(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+            "fee": 2500,
+        }
+        rows = [
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="a",
+                block=101,
+                index=1,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="a",
+                block=101,
+                index=2,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="b",
+                block=102,
+                index=3,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_mint",
+                topic=holder.V3_MINT_TOPIC,
+                data=self._data(0, 0, 0, 200),
+                tx_digit="c",
+                block=103,
+                index=4,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="c",
+                block=103,
+                index=5,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="c",
+                block=103,
+                index=6,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 1, 0),
+                tx_digit="d",
+                block=104,
+                index=7,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_collect",
+                topic=holder.V3_COLLECT_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="d",
+                block=104,
+                index=8,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_mint",
+                topic=holder.V3_MINT_TOPIC,
+                data=self._data(0, 0, 100, 50),
+                tx_digit="e",
+                block=105,
+                index=9,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="e",
+                block=105,
+                index=10,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_mint",
+                topic=holder.V3_MINT_TOPIC,
+                data=self._data(0, 0, 0, 1),
+                tx_digit="f",
+                block=106,
+                index=11,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(0, 0, 200),
+                tx_digit="f",
+                block=106,
+                index=12,
+            ),
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {"ALPHA_RETENTION_LIQUIDITY_QUOTE_MIN_AMOUNT": "100"},
+        ):
+            events, _, _ = holder.retention_liquidity_events(
+                rows,
+                token,
+                0,
+                10_000,
+            )
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            [
+                "lp_remove_observation",
+                "lp_collect_observation",
+                "lp_rebalance_collect_observation",
+                "lp_collect_observation",
+                "lp_rebalance_observation",
+                "lp_partial_remove_observation",
+            ],
+        )
+        self.assertEqual(events[0]["amount"], "")
+        self.assertEqual(events[0]["quote_removed_amount"], "200")
+        self.assertEqual(events[0]["level"], "HIGH")
+        self.assertIn(
+            "200.0000 USDT",
+            holder.retention_event_amount_text(events[0]),
+        )
+        self.assertEqual(events[1]["quote_collected_amount"], "200")
+        self.assertEqual(
+            events[2]["direction"],
+            "liquidity_rebalance_collect",
+        )
+        self.assertEqual(events[3]["quote_collected_amount"], "200")
+        self.assertEqual(events[4]["level"], "INFO")
+        self.assertEqual(
+            events[4]["direction"],
+            "liquidity_rebalance",
+        )
+        self.assertEqual(events[5]["level"], "HIGH")
+        self.assertEqual(
+            events[5]["direction"],
+            "liquidity_partial_remove",
+        )
+        self.assertEqual(events[5]["quote_removed_amount"], "199")
+
+    def test_v4_modify_is_unattributed_or_combined_with_verified_sell(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        pool = {
+            "protocol": "v4_cl",
+            "address": self._address("5"),
+            "pool_id": self._hash("6"),
+            "v4_manager_type": "cl",
+            "token0": token,
+            "token1": self._address("2"),
+        }
+        rows = [
+            self._event_row(
+                pool=pool,
+                event_kind="v4_swap",
+                topic=holder.V4_SWAP_TOPIC,
+                data=self._data((-1000, 128), (100, 128), 0, 0, 0, 0, 0),
+                tx_digit="a",
+                block=101,
+                index=1,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, -5, 0),
+                tx_digit="a",
+                block=101,
+                index=2,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, 5, 0),
+                tx_digit="a",
+                block=101,
+                index=3,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, -7, 0),
+                tx_digit="b",
+                block=102,
+                index=4,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, 7, 0),
+                tx_digit="c",
+                block=103,
+                index=5,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, -100_000, 0),
+                tx_digit="d",
+                block=104,
+                index=6,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v4_modify_liquidity",
+                topic=holder.MODIFY_LIQUIDITY_TOPIC,
+                data=self._data(0, 0, 1, 0),
+                tx_digit="d",
+                block=104,
+                index=7,
+            ),
+        ]
+        events, _, _ = holder.retention_liquidity_events(
+            rows,
+            token,
+            0,
+            1_000_000,
+        )
+        self.assertEqual(events[0]["type"], "liquidity_rebalance_with_sell")
+        self.assertEqual(events[0]["level"], "HIGH")
+        self.assertEqual(
+            events[0]["direction"],
+            "liquidity_rebalance_and_sell",
+        )
+        self.assertEqual(events[1]["type"], "lp_remove_observation")
+        self.assertEqual(events[1]["level"], "INFO")
+        self.assertEqual(events[1]["amount"], "")
+        self.assertEqual(events[2]["type"], "lp_partial_remove_observation")
+        self.assertEqual(events[2]["liquidity_delta"], "-99999")
+        self.assertEqual(events[2]["liquidity_added"], "1")
+        self.assertNotIn("dealer", json.dumps(events).lower())
+
+    def test_liquidity_cursor_rebaseline_then_advances_previous_plus_one(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+            **_event_scope: object,
+        ) -> tuple[list[dict[str, object]], list[str], bool, int, dict[str, object]]:
+            calls.append((from_block, to_block))
+            scope_count = len(holder.retention_liquidity_query_scopes(pools))
+            return (
+                [],
+                [],
+                False,
+                to_block,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": len(
+                        {
+                            pool["address"]
+                            for pool in pools
+                            if pool.get("protocol") == "v4_cl"
+                        }
+                    ),
+                    "event_filter_count": sum(
+                        4 if pool.get("protocol") == "v3" else 2
+                        for pool in pools
+                    ),
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": to_block,
+                    "selected_to_block": to_block,
+                    "attempt_count": 1,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
+            )
+
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                return_value=self._hash("e"),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS": "10",
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                },
+            ),
+        ):
+            first, first_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=120,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state={},
+            )
+            assert first_state is not None
+            second, second_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=first_state,
+            )
+
+        self.assertEqual(calls, [(111, 120), (121, 130)])
+        self.assertTrue(first["scope_rebaseline"])
+        self.assertFalse(first["continuous"])
+        self.assertFalse(second["scope_rebaseline"])
+        self.assertTrue(second["continuous"])
+        self.assertEqual(second["previous_latest_block"], 120)
+        self.assertEqual(second["latest_block"], 130)
+        self.assertEqual(second["latest_block_hash"], self._hash("e"))
+        self.assertIsNotNone(second_state)
+
+    def test_liquidity_checkpoint_hash_change_rescans_overlap(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+            **_event_scope: object,
+        ) -> tuple[list[dict[str, object]], list[str], bool, int, dict[str, object]]:
+            calls.append((from_block, to_block))
+            scope_count = len(holder.retention_liquidity_query_scopes(pools))
+            return (
+                [],
+                [],
+                False,
+                to_block,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": to_block,
+                    "selected_to_block": to_block,
+                    "attempt_count": 1,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
+            )
+
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+        state = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "scope_coverage_from_block": 100,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": False,
+        }
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                side_effect=[
+                    self._hash("b"),
+                    self._hash("c"),
+                    self._hash("c"),
+                ],
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                    "ALPHA_RETENTION_LIQUIDITY_REORG_RESCAN_BLOCKS": "10",
+                },
+            ),
+        ):
+            flow, next_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=state,
+            )
+
+        self.assertEqual(calls, [(111, 130)])
+        self.assertTrue(flow["checkpoint_reorg_recovery"])
+        self.assertTrue(flow["continuous"])
+        self.assertEqual(flow["previous_latest_block"], 110)
+        self.assertEqual(flow["alert_from_block"], 111)
+        self.assertEqual(flow["latest_block_hash"], self._hash("c"))
+        self.assertIsNotNone(next_state)
+        assert next_state is not None
+        self.assertEqual(next_state["latest_block_hash"], self._hash("c"))
+
+        calls.clear()
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                side_effect=[
+                    self._hash("a"),
+                    self._hash("c"),
+                    self._hash("c"),
+                    self._hash("b"),
+                ],
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0"},
+            ),
+        ):
+            raced_flow, raced_state = (
+                holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state=state,
+                )
+            )
+        self.assertEqual(calls, [(121, 130)])
+        self.assertFalse(raced_flow["selected_window_complete"])
+        self.assertTrue(
+            any(
+                "changed during scan" in error
+                for error in raced_flow["log_errors"]
+            )
+        )
+        self.assertIsNone(raced_state)
+
+        calls.clear()
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                side_effect=[
+                    self._hash("a"),
+                    self._hash("d"),
+                    self._hash("c"),
+                    self._hash("a"),
+                ],
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0"},
+            ),
+        ):
+            tip_raced_flow, tip_raced_state = (
+                holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state=state,
+                )
+            )
+        self.assertEqual(calls, [(121, 130)])
+        self.assertFalse(tip_raced_flow["selected_window_complete"])
+        self.assertIn(
+            "liquidity confirmed tip changed during scan",
+            tip_raced_flow["log_errors"],
+        )
+        self.assertIsNone(tip_raced_state)
+
+    def test_liquidity_alert_and_health_gates_are_independent(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        from scripts.runtime_health_watch import (
+            liquidity_retention_coverage_issue,
+            liquidity_retention_coverage_warning,
+            retention_flow_required,
+        )
+
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": self._address("1"),
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+        metadata = {
+            "query_scope_complete": True,
+            "query_count": 1,
+            "scope_batch_count": 1,
+            "query_chunk_count": 1,
+            "expected_query_count": 1,
+            "v4_manager_count": 0,
+            "event_filter_count": 4,
+            "applicable": True,
+            "active": False,
+            "requested_to_block": 120,
+            "selected_to_block": 120,
+            "attempt_count": 1,
+            "complete_selected_window": True,
+            "complete_requested_window": True,
+        }
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+        with mock.patch.object(holder, "retention_window", return_value=active):
+            flow = holder.build_liquidity_retention(
+                item={"chain": "bsc"},
+                token=self._address("1"),
+                pools=[pool],
+                scope_hash="a" * 64,
+                previous_scope_hash="a" * 64,
+                scope_rebaseline=False,
+                previous_catchup_active=False,
+                scope_coverage_from_block=100,
+                logs=[],
+                errors=[],
+                truncated=False,
+                decimals=18,
+                supply_raw=10**24,
+                scan_from_block=101,
+                scan_to_block=120,
+                target_scan_to_block=120,
+                previous_latest_block=100,
+                coverage_metadata=metadata,
+                alert_from_block=101,
+            )
+        flow.update(
+            {
+                "observed_latest_block": 120,
+                "confirmation_blocks": 0,
+                "latest_block_hash": self._hash("f"),
+                "checkpoint_reorg_recovery": False,
+            }
+        )
+        event = {
+            "type": "verified_pool_sell_pressure",
+            "level": "HIGH",
+            "pool": pool["address"],
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "historical_catchup": False,
+            "alert_eligible": True,
+        }
+        project = {
+            "chain": "bsc",
+            "address": self._address("1"),
+            "retention_flow": {
+                "status": "coverage_gap",
+                "events": [],
+                "liquidity_retention": {**flow, "events": [event]},
+            },
+        }
+        self.assertTrue(
+            holder.liquidity_retention_alert_coverage_complete(project)
+        )
+        self.assertEqual(holder.retention_alert_events(project), [event])
+        self.assertEqual(liquidity_retention_coverage_issue(project), "")
+        self.assertEqual(liquidity_retention_coverage_warning(project), "")
+
+        rebaseline = copy.deepcopy(project)
+        rebaseline_flow = rebaseline["retention_flow"][
+            "liquidity_retention"
+        ]
+        rebaseline_flow["scope_rebaseline"] = True
+        rebaseline_flow["continuous"] = False
+        rebaseline_flow["previous_scope_hash"] = "b" * 64
+        rebaseline_flow["scope_coverage_from_block"] = 101
+        self.assertEqual(
+            liquidity_retention_coverage_issue(rebaseline),
+            "",
+        )
+        self.assertIn(
+            "baselined",
+            liquidity_retention_coverage_warning(rebaseline),
+        )
+
+        broken = copy.deepcopy(project)
+        broken["retention_flow"]["liquidity_retention"]["query_count"] = 0
+        self.assertIn(
+            "query count",
+            liquidity_retention_coverage_issue(broken),
+        )
+        current = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        self.assertFalse(
+            retention_flow_required(current + timedelta(seconds=1), current)
+        )
+        self.assertTrue(
+            retention_flow_required(current - timedelta(days=30), current)
+        )
+        self.assertFalse(
+            retention_flow_required(
+                current - timedelta(days=30, seconds=1),
+                current,
+            )
+        )
+
+    def test_retention_telegram_batches_only_ack_rendered_events(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        project = {
+            "symbol": "TEST",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": self._address("1"),
+        }
+        events = [
+            {
+                "type": "verified_pool_sell_pressure",
+                "level": "HIGH",
+                "pool": self._address("3"),
+                "tx": "0x" + f"{index:064x}",
+                "log_index": index,
+                "amount": str(index + 1),
+                "evidence_level": "verified_pool_swap_" + "x" * 160,
+            }
+            for index in range(80)
+        ]
+        batches = holder.retention_telegram_batches(project, events)
+
+        self.assertGreater(len(batches), 1)
+        rendered_events = []
+        for text, batch_events in batches:
+            self.assertLessEqual(len(text), holder.TELEGRAM_LIMIT)
+            self.assertTrue(batch_events)
+            rendered_events.extend(batch_events)
+            for event in batch_events:
+                self.assertIn(holder.short_addr(event["tx"]), text)
+        self.assertEqual(rendered_events, events)
+        self.assertEqual(
+            {
+                holder.retention_event_key(project, event)
+                for _text, batch_events in batches
+                for event in batch_events
+            },
+            {
+                holder.retention_event_key(project, event)
+                for event in events
+            },
+        )
 
 
 if __name__ == "__main__":
