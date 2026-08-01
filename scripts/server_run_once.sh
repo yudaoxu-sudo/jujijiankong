@@ -92,6 +92,10 @@ else
     exit 78
   fi
 fi
+if [[ "${ALPHA_PROJECT_ONLY:-0}" == "1" ]]; then
+  run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+  exit 0
+fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
 run_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
 run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" python3 scripts/alpha_intraday_flow_watch.py
