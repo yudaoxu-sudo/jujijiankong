@@ -40,6 +40,8 @@ if [[ "${DISABLE_TELEGRAM:-0}" == "1" ]]; then
   export ARX_OPENING_TELEGRAM=0
 fi
 
+export ALPHA_PROJECT_LOG_CHUNK_BLOCKS="${ALPHA_PROJECT_LOG_CHUNK_BLOCKS:-2000}"
+
 run_step() {
   local seconds="$1"
   local status=0
