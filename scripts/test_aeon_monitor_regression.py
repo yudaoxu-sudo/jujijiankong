@@ -18814,6 +18814,105 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(selected_to, 4)
         self.assertFalse(metadata["complete_selected_window"])
 
+    def test_bounded_liquidity_rpc_error_shrinks_to_successful_window(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": self._address("1"),
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+        ranges: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            _pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            dict[str, object],
+        ]:
+            ranges.append((from_block, to_block))
+            if to_block - from_block + 1 > 4:
+                return (
+                    [],
+                    ["coverage failed"],
+                    False,
+                    {"range_shrink_retryable": True},
+                )
+            return [], [], False, {"query_scope_complete": True}
+
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ),
+        ):
+            logs, errors, truncated, selected_to, metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    1,
+                    16,
+                )
+            )
+
+        self.assertEqual(logs, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(selected_to, 4)
+        self.assertEqual(ranges, [(1, 16), (1, 8), (1, 4)])
+        self.assertEqual(metadata["rpc_error_shrink_count"], 2)
+        self.assertEqual(metadata["successful_window_blocks"], 4)
+        self.assertEqual(metadata["next_window_blocks"], 8)
+
+        ranges.clear()
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                return_value=(
+                    [],
+                    ["duplicate identity conflict"],
+                    False,
+                    {"range_shrink_retryable": False},
+                ),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ),
+        ):
+            _, errors, _, selected_to, metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    1,
+                    16,
+                )
+            )
+        self.assertEqual(errors, ["duplicate identity conflict"])
+        self.assertEqual(selected_to, 16)
+        self.assertEqual(metadata["attempt_count"], 1)
+        self.assertEqual(metadata["rpc_error_shrink_count"], 0)
+
     def test_historical_liquidity_overflow_does_not_throttle_coverage(
         self,
     ) -> None:
@@ -19027,7 +19126,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "rpc_call",
             return_value=[{**base, "removed": "false"}],
         ):
-            logs, errors, truncated, _ = (
+            logs, errors, truncated, metadata = (
                 holder.targeted_retention_liquidity_logs(
                     "bsc", [pool], 101, 110
                 )
@@ -19035,6 +19134,22 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(logs, [])
         self.assertTrue(errors)
         self.assertFalse(truncated)
+        self.assertFalse(metadata["range_shrink_retryable"])
+
+        with mock.patch.object(
+            holder,
+            "rpc_call",
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            logs, errors, truncated, metadata = (
+                holder.targeted_retention_liquidity_logs(
+                    "bsc", [pool], 101, 110
+                )
+            )
+        self.assertEqual(logs, [])
+        self.assertTrue(errors)
+        self.assertFalse(truncated)
+        self.assertTrue(metadata["range_shrink_retryable"])
 
         conflicting_block_hash = {
             **base,

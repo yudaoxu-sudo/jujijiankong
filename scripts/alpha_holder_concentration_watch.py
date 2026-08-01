@@ -2183,6 +2183,7 @@ def targeted_retention_liquidity_logs(
     metadata = {
         "coverage_mode": "verified_pool_indexed_topics",
         "query_scope_complete": False,
+        "range_shrink_retryable": False,
         "query_count": 0,
         "scope_batch_count": len(scopes),
         "pool_count": len(pools),
@@ -2272,6 +2273,7 @@ def targeted_retention_liquidity_logs(
                     [query],
                 )
             except Exception:
+                metadata["range_shrink_retryable"] = True
                 return (
                     [],
                     [
@@ -2528,6 +2530,7 @@ def bounded_retention_liquidity_logs(
     derived_event_shrink_count = 0
     historical_event_truncation_count = 0
     raw_truncation_shrink_count = 0
+    rpc_error_shrink_count = 0
     while attempts < max_attempts:
         attempts += 1
         logs, errors, raw_truncated, metadata = (
@@ -2557,9 +2560,14 @@ def bounded_retention_liquidity_logs(
         truncated = raw_truncated or alert_events_truncated
         if raw_truncated:
             raw_truncation_shrink_count += 1
+        if errors:
+            if metadata.get("range_shrink_retryable") is True:
+                rpc_error_shrink_count += 1
         if alert_events_truncated:
             derived_event_shrink_count += 1
-        if errors or not truncated:
+        if not errors and not truncated:
+            break
+        if errors and metadata.get("range_shrink_retryable") is not True:
             break
         current_span = selected_to - from_block + 1
         if current_span <= min_window or attempts >= max_attempts:
@@ -2592,6 +2600,7 @@ def bounded_retention_liquidity_logs(
             "raw_truncation_shrink_count": (
                 raw_truncation_shrink_count
             ),
+            "rpc_error_shrink_count": rpc_error_shrink_count,
             "derived_event_shrink_count": derived_event_shrink_count,
             "historical_event_truncation_count": (
                 historical_event_truncation_count
@@ -3607,6 +3616,7 @@ def build_liquidity_retention(
                 "successful_window_blocks",
                 "next_window_blocks",
                 "raw_truncation_shrink_count",
+                "rpc_error_shrink_count",
                 "derived_event_shrink_count",
                 "historical_event_truncation_count",
                 "complete_selected_window",
