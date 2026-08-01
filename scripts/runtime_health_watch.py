@@ -9,6 +9,7 @@ import os
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -290,7 +291,14 @@ def output_row_coverage_issue(
     if row.get("error"):
         return f"{output_name} scan has errors"
     if output_name == "project":
-        contracts = [item for item in row.get("contracts", []) if isinstance(item, dict)]
+        if row.get("coverage_complete") is not True:
+            return "project coverage incomplete"
+        raw_contracts = row.get("contracts")
+        if not isinstance(raw_contracts, list) or any(
+            not isinstance(item, dict) for item in raw_contracts
+        ):
+            return "project contract coverage metadata invalid"
+        contracts = list(raw_contracts)
         if target_contract:
             contracts = [
                 item
@@ -299,11 +307,91 @@ def output_row_coverage_issue(
             ]
         if not contracts:
             return "project contract missing"
+        if any(item.get("coverage_complete") is not True for item in contracts):
+            return "project contract coverage incomplete"
         if any(
             item.get("error") or int(item.get("log_error_count") or 0)
             for item in contracts
         ):
             return "project contract scan has errors"
+        for item in contracts:
+            try:
+                requested = int(item["requested_from_block"])
+                target = int(item["target_latest_block"])
+                covered = int(item["covered_through_block"])
+                next_from = int(item["next_from_block"])
+                latest = int(item["latest_block"])
+                decimals = int(item["decimals"])
+                watch_address_count = int(item["watch_address_count"])
+                balance_target_count = int(item["balance_target_count"])
+                total_supply = Decimal(str(item["total_supply"]))
+            except (InvalidOperation, KeyError, TypeError, ValueError):
+                return "project contract coverage metadata invalid"
+            target_hash = str(
+                item.get("target_latest_block_hash") or ""
+            ).lower()
+            balances = item.get("balances")
+            watch_addresses = item.get("watch_addresses")
+            if (
+                requested < 0
+                or requested > target + 1
+                or covered != target
+                or latest != target
+                or next_from != target + 1
+                or item.get("transfer_coverage_complete") is not True
+                or item.get("scan_status") != "complete"
+                or not 0 <= decimals <= 36
+                or total_supply < 0
+                or not isinstance(watch_addresses, list)
+                or any(
+                    not isinstance(watch, dict)
+                    or not str(watch.get("address") or "")
+                    for watch in watch_addresses
+                )
+                or watch_address_count != len(watch_addresses)
+                or not isinstance(balances, list)
+                or any(
+                    not isinstance(balance, dict) or balance.get("error")
+                    for balance in balances
+                )
+                or len(target_hash) != 66
+                or not target_hash.startswith("0x")
+                or any(
+                    char not in "0123456789abcdef"
+                    for char in target_hash[2:]
+                )
+                or int(target_hash, 16) == 0
+            ):
+                return "project contract coverage metadata invalid"
+            actual_balance_keys = {
+                (
+                    str(balance.get("address") or "").lower(),
+                    str(
+                        balance.get("balance_token_address") or ""
+                    ).lower(),
+                )
+                for balance in balances
+            }
+            primary_balance_keys = {
+                (
+                    str(watch.get("address") or "").lower(),
+                    str(item.get("address") or "").lower(),
+                )
+                for watch in watch_addresses
+            }
+            if (
+                balance_target_count != len(balances)
+                or len(actual_balance_keys) != len(balances)
+                or not primary_balance_keys.issubset(actual_balance_keys)
+            ):
+                return "project contract coverage metadata invalid"
+            for balance in balances:
+                try:
+                    current_balance = Decimal(str(balance["balance"]))
+                except (InvalidOperation, KeyError, TypeError, ValueError):
+                    return "project contract coverage metadata invalid"
+                if current_balance < 0:
+                    return "project contract coverage metadata invalid"
         states = {
             str(item.get("operator_attribution_state") or "")
             for item in contracts
@@ -445,6 +533,83 @@ def output_row_coverage_issue(
         ):
             return "holder emitted directional risk from an unreliable baseline"
     return ""
+
+
+def project_scan_progress_issues(root: Path) -> list[dict[str, str]]:
+    path = root / "output" / "alpha_project_watch" / "progress.json"
+    if not path.exists():
+        return []
+    progress = read_json(path, None)
+    if not isinstance(progress, dict) or progress.get("schema_version") != 2:
+        detail = "project scan progress invalid"
+    else:
+        active = progress.get("active_project")
+        completed = progress.get("completed_projects")
+        if active is None:
+            detail = (
+                "project publish pending"
+                if isinstance(completed, list)
+                else "project scan progress invalid"
+            )
+        elif not isinstance(active, dict):
+            detail = "project scan progress invalid"
+        else:
+            contract_progress = active.get("contract_progress")
+            if not isinstance(contract_progress, dict):
+                detail = "project scan pending"
+            else:
+                try:
+                    previous_tip = int(
+                        contract_progress["previous_latest_block"]
+                    )
+                    requested = int(
+                        contract_progress["requested_from_block"]
+                    )
+                    target = int(
+                        contract_progress["target_latest_block"]
+                    )
+                    covered = int(
+                        contract_progress["covered_through_block"]
+                    )
+                    next_from = int(contract_progress["next_from_block"])
+                except (KeyError, TypeError, ValueError):
+                    detail = "project scan pending"
+                else:
+                    target_hash = str(
+                        contract_progress.get("target_latest_block_hash")
+                        or ""
+                    ).lower()
+                    if (
+                        previous_tip < 0
+                        or requested < 0
+                        or requested > target + 1
+                        or covered != next_from - 1
+                        or not requested <= next_from <= target + 1
+                        or len(target_hash) != 66
+                        or not target_hash.startswith("0x")
+                        or any(
+                            char not in "0123456789abcdef"
+                            for char in target_hash[2:]
+                        )
+                        or int(target_hash, 16) == 0
+                    ):
+                        detail = "project scan progress invalid"
+                    else:
+                        phase = (
+                            "bootstrap" if previous_tip == 0 else "catchup"
+                        )
+                        detail = (
+                            f"project {phase} pending; "
+                            f"covered={covered} target={target}"
+                        )
+    return [
+        issue(
+            "alpha_project_scan_pending",
+            "alpha_project",
+            detail,
+            "alpha_project_scan_pending",
+        )
+    ]
 
 
 def output_row_coverage_warning(
@@ -2188,6 +2353,7 @@ def build_cycle_snapshot(args: argparse.Namespace, root: Path) -> dict[str, Any]
         )
         issues.extend(fast_lane_issues)
     issues.extend(verification_issues(root))
+    issues.extend(project_scan_progress_issues(root))
     coverage_issues, warnings = alpha_coverage_evaluation(root)
     issues.extend(coverage_issues)
     return {

@@ -665,7 +665,8 @@
       "opening_max_age_hours": 720,
       "opening_liquidity_max_age_seconds": 2592000,
       "intraday_max_age_hours": 72,
-      "project_lookback_blocks": 50000,
+      "project_lookback_blocks": 250000,
+      "project_operator_probe": "owner",
       "contracts": [
         {
           "chain": "bsc",

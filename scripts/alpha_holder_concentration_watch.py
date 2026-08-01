@@ -2474,6 +2474,8 @@ def bounded_retention_liquidity_logs(
     token: str = "",
     decimals: int = 18,
     supply_raw: int = 0,
+    alert_from_block: int | None = None,
+    preferred_window_blocks: int = 0,
 ) -> tuple[
     list[dict[str, Any]],
     list[str],
@@ -2508,16 +2510,24 @@ def bounded_retention_liquidity_logs(
             )
         ),
     )
+    preferred_window = (
+        min(max_window, max(1, preferred_window_blocks))
+        if preferred_window_blocks > 0
+        else max_window
+    )
     selected_to = min(
         requested_to_block,
-        from_block + max_window - 1,
+        from_block + preferred_window - 1,
     )
+    initial_window_blocks = selected_to - from_block + 1
     attempts = 0
     logs: list[dict[str, Any]] = []
     errors: list[str] = []
     truncated = True
     metadata: dict[str, Any] = {}
     derived_event_shrink_count = 0
+    historical_event_truncation_count = 0
+    raw_truncation_shrink_count = 0
     while attempts < max_attempts:
         attempts += 1
         logs, errors, raw_truncated, metadata = (
@@ -2528,16 +2538,26 @@ def bounded_retention_liquidity_logs(
                 selected_to,
             )
         )
-        derived_events_truncated = False
+        event_coverage: dict[str, Any] = {}
+        alert_events_truncated = False
         if not errors and not raw_truncated and token:
-            _, _, derived_events_truncated = retention_liquidity_events(
+            retention_liquidity_events(
                 logs,
                 token,
                 decimals,
                 supply_raw,
+                alert_from_block,
+                event_coverage,
             )
-        truncated = raw_truncated or derived_events_truncated
-        if derived_events_truncated:
+            alert_events_truncated = bool(
+                event_coverage.get("alert_events_truncated")
+            )
+            if event_coverage.get("historical_events_truncated"):
+                historical_event_truncation_count += 1
+        truncated = raw_truncated or alert_events_truncated
+        if raw_truncated:
+            raw_truncation_shrink_count += 1
+        if alert_events_truncated:
             derived_event_shrink_count += 1
         if errors or not truncated:
             break
@@ -2549,6 +2569,11 @@ def bounded_retention_liquidity_logs(
             break
         selected_to = from_block + next_span - 1
     complete_selected = not errors and not truncated
+    successful_window_blocks = (
+        selected_to - from_block + 1
+        if complete_selected
+        else 0
+    )
     metadata.update(
         {
             "applicable": True,
@@ -2556,7 +2581,22 @@ def bounded_retention_liquidity_logs(
             "requested_to_block": requested_to_block,
             "selected_to_block": selected_to,
             "attempt_count": attempts,
+            "initial_window_blocks": initial_window_blocks,
+            "successful_window_blocks": successful_window_blocks,
+            "next_window_blocks": (
+                min(max_window, successful_window_blocks * 2)
+                if complete_selected
+                and selected_to < requested_to_block
+                else 0
+            ),
+            "raw_truncation_shrink_count": (
+                raw_truncation_shrink_count
+            ),
             "derived_event_shrink_count": derived_event_shrink_count,
+            "historical_event_truncation_count": (
+                historical_event_truncation_count
+            ),
+            **event_coverage,
             "complete_selected_window": complete_selected,
             "complete_requested_window": bool(
                 complete_selected
@@ -2752,6 +2792,7 @@ def retention_liquidity_events(
     decimals: int,
     supply_raw: int,
     alert_from_block: int | None = None,
+    coverage_out: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     try:
         min_supply_bps = max(
@@ -3388,8 +3429,39 @@ def retention_liquidity_events(
             )
         ),
     )
-    events_truncated = len(events) > max_events
-    return events[-max_events:], len(events), events_truncated
+    retained_events = events[-max_events:]
+    event_count = len(events)
+    alert_event_count = sum(
+        event.get("alert_eligible") is not False
+        and event.get("historical_catchup") is not True
+        for event in events
+    )
+    retained_alert_event_count = sum(
+        event.get("alert_eligible") is not False
+        and event.get("historical_catchup") is not True
+        for event in retained_events
+    )
+    historical_event_count = event_count - alert_event_count
+    retained_historical_event_count = (
+        len(retained_events) - retained_alert_event_count
+    )
+    events_truncated = event_count > max_events
+    if coverage_out is not None:
+        coverage_out.update(
+            {
+                "event_count": event_count,
+                "alert_event_count": alert_event_count,
+                "historical_event_count": historical_event_count,
+                "alert_events_truncated": (
+                    retained_alert_event_count < alert_event_count
+                ),
+                "historical_events_truncated": (
+                    retained_historical_event_count
+                    < historical_event_count
+                ),
+            }
+        )
+    return retained_events, event_count, events_truncated
 
 
 def build_liquidity_retention(
@@ -3415,12 +3487,19 @@ def build_liquidity_retention(
     alert_from_block: int,
 ) -> dict[str, Any]:
     window = retention_window(item, str(item.get("chain") or ""))
-    events, event_count, events_truncated = retention_liquidity_events(
-        logs,
-        token,
-        decimals,
-        supply_raw,
-        alert_from_block,
+    event_coverage: dict[str, Any] = {}
+    events, event_count, _display_events_truncated = (
+        retention_liquidity_events(
+            logs,
+            token,
+            decimals,
+            supply_raw,
+            alert_from_block,
+            event_coverage,
+        )
+    )
+    alert_events_truncated = bool(
+        event_coverage.get("alert_events_truncated")
     )
     continuous = bool(
         previous_latest_block > 0
@@ -3457,7 +3536,7 @@ def build_liquidity_retention(
         and len(scope_hash) == 64
         and not errors
         and not truncated
-        and not events_truncated
+        and not alert_events_truncated
         and scan_from_block <= scan_to_block
         and continuity_ready
         and query_scope_complete
@@ -3512,7 +3591,10 @@ def build_liquidity_retention(
         "log_error_count": len(errors),
         "log_errors": errors[:3],
         "truncated": truncated,
-        "events_truncated": events_truncated,
+        "events_truncated": alert_events_truncated,
+        "historical_events_truncated": bool(
+            event_coverage.get("historical_events_truncated")
+        ),
         "incremental_catchup": {
             key: coverage_metadata.get(key)
             for key in (
@@ -3521,6 +3603,12 @@ def build_liquidity_retention(
                 "requested_to_block",
                 "selected_to_block",
                 "attempt_count",
+                "initial_window_blocks",
+                "successful_window_blocks",
+                "next_window_blocks",
+                "raw_truncation_shrink_count",
+                "derived_event_shrink_count",
+                "historical_event_truncation_count",
                 "complete_selected_window",
                 "complete_requested_window",
             )
@@ -3528,6 +3616,12 @@ def build_liquidity_retention(
         },
         "alert_from_block": alert_from_block,
         "event_count": event_count,
+        "alert_event_count": int(
+            event_coverage.get("alert_event_count") or 0
+        ),
+        "historical_event_count": int(
+            event_coverage.get("historical_event_count") or 0
+        ),
         "events": events,
     }
 
@@ -3589,6 +3683,12 @@ def build_token_liquidity_retention(
     previous_catchup_active = (
         liquidity_state.get("catchup_active") is True
     )
+    try:
+        preferred_window_blocks = int(
+            liquidity_state.get("next_catchup_window_blocks") or 0
+        )
+    except (TypeError, ValueError):
+        preferred_window_blocks = 0
     try:
         state_schema_version = int(
             liquidity_state.get("scope_state_schema_version") or 0
@@ -3705,6 +3805,25 @@ def build_token_liquidity_retention(
         else:
             verified_previous_hash = canonical_previous_hash
             scan_from = previous_latest + 1
+    alert_watermark_reinitialized = False
+    if scope_rebaseline:
+        alert_from = confirmed_tip + 1
+    elif previous_catchup_active:
+        try:
+            persisted_alert_from = int(
+                liquidity_state.get("catchup_live_from_block") or 0
+            )
+        except (TypeError, ValueError):
+            persisted_alert_from = 0
+        if persisted_alert_from >= max(1, scope_coverage_from):
+            alert_from = max(scan_from, persisted_alert_from)
+        else:
+            alert_from = confirmed_tip + 1
+            alert_watermark_reinitialized = True
+    elif checkpoint_reorg_recovery:
+        alert_from = scan_from
+    else:
+        alert_from = scan_from
     confirmed_tip_hash_before = liquidity_checkpoint_block_hash(
         chain,
         confirmed_tip,
@@ -3739,6 +3858,8 @@ def build_token_liquidity_retention(
         token=token,
         decimals=decimals,
         supply_raw=supply_raw,
+        alert_from_block=alert_from,
+        preferred_window_blocks=preferred_window_blocks,
     )
     checkpoint_hash = ""
     if not errors and not truncated:
@@ -3772,15 +3893,6 @@ def build_token_liquidity_retention(
                 *errors,
                 "liquidity confirmed tip changed during scan",
             ]
-    alert_from = (
-        confirmed_tip + 1
-        if (
-            scope_rebaseline
-            or previous_catchup_active
-            or coverage_metadata.get("active") is True
-        )
-        else scan_from
-    )
     flow = build_liquidity_retention(
         item={**item, "chain": chain},
         token=token,
@@ -3818,6 +3930,9 @@ def build_token_liquidity_retention(
             ),
             "checkpoint_reorg_recovery": checkpoint_reorg_recovery,
             "checkpoint_refresh": checkpoint_refresh,
+            "alert_watermark_reinitialized": (
+                alert_watermark_reinitialized
+            ),
             "replaced_checkpoint_block": (
                 previous_latest if checkpoint_reorg_recovery else 0
             ),
@@ -3825,6 +3940,10 @@ def build_token_liquidity_retention(
     )
     next_state = None
     if flow.get("selected_window_complete") is True:
+        catchup_active = bool(
+            (flow.get("incremental_catchup") or {}).get("active")
+            is True
+        )
         next_state = {
             "scope_state_schema_version": (
                 LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
@@ -3835,11 +3954,20 @@ def build_token_liquidity_retention(
             "scope_coverage_from_block": scope_coverage_from,
             "latest_block": int(flow.get("latest_block") or scan_to),
             "latest_block_hash": checkpoint_hash,
-            "catchup_active": (
-                (flow.get("incremental_catchup") or {}).get("active")
-                is True
-            ),
+            "catchup_active": catchup_active,
         }
+        if catchup_active:
+            next_state["catchup_live_from_block"] = alert_from
+            next_window_blocks = int(
+                (flow.get("incremental_catchup") or {}).get(
+                    "next_window_blocks"
+                )
+                or 0
+            )
+            if next_window_blocks > 0:
+                next_state["next_catchup_window_blocks"] = (
+                    next_window_blocks
+                )
     return flow, next_state
 
 
@@ -5464,6 +5592,114 @@ def liquidity_retention_alert_coverage_complete(
     )
 
 
+def liquidity_selected_window_alert_coverage_complete(
+    project: dict[str, Any],
+) -> bool:
+    retention = (
+        project.get("retention_flow")
+        if isinstance(project.get("retention_flow"), dict)
+        else {}
+    )
+    liquidity = (
+        retention.get("liquidity_retention")
+        if isinstance(retention.get("liquidity_retention"), dict)
+        else {}
+    )
+    catchup = (
+        liquidity.get("incremental_catchup")
+        if isinstance(liquidity.get("incremental_catchup"), dict)
+        else {}
+    )
+    try:
+        pool_count = int(liquidity.get("pool_count") or 0)
+        v3_count = int(liquidity.get("v3_pool_count") or 0)
+        v4_count = int(liquidity.get("v4_pool_count") or 0)
+        v4_manager_count = int(
+            liquidity.get("v4_manager_count") or 0
+        )
+        event_filter_count = int(
+            liquidity.get("event_filter_count") or 0
+        )
+        query_count = int(liquidity.get("query_count") or 0)
+        scope_batch_count = int(
+            liquidity.get("scope_batch_count") or 0
+        )
+        query_chunk_count = int(
+            liquidity.get("query_chunk_count") or 0
+        )
+        expected_query_count = int(
+            liquidity.get("expected_query_count") or 0
+        )
+        scan_from = int(liquidity.get("scan_from_block") or 0)
+        scan_to = int(liquidity.get("scan_to_block") or 0)
+        latest = int(liquidity.get("latest_block") or 0)
+        target_latest = int(
+            liquidity.get("target_latest_block") or 0
+        )
+        observed_latest = int(
+            liquidity.get("observed_latest_block") or 0
+        )
+        confirmation_blocks = int(
+            liquidity.get("confirmation_blocks") or 0
+        )
+        alert_from = int(liquidity.get("alert_from_block") or 0)
+        requested_to = int(catchup["requested_to_block"])
+        selected_to = int(catchup["selected_to_block"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    scope_hash = str(liquidity.get("scope_hash") or "")
+    previous_scope_hash = str(
+        liquidity.get("previous_scope_hash") or ""
+    )
+    latest_block_hash = str(
+        liquidity.get("latest_block_hash") or ""
+    ).lower()
+    scope_rebaseline = liquidity.get("scope_rebaseline") is True
+    return bool(
+        liquidity.get("status") == "active"
+        and liquidity.get("coverage_mode")
+        == "verified_pool_indexed_topics"
+        and liquidity.get("selected_window_complete") is True
+        and liquidity.get("scope_complete") is True
+        and not int(liquidity.get("log_error_count") or 0)
+        and liquidity.get("truncated") is not True
+        and liquidity.get("events_truncated") is not True
+        and liquidity.get("query_scope_complete") is True
+        and liquidity.get("scope_state_schema_version")
+        == LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        and len(scope_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in scope_hash.lower()
+        )
+        and (scope_rebaseline or previous_scope_hash == scope_hash)
+        and valid_hash32(latest_block_hash)
+        and int(latest_block_hash[2:], 16) != 0
+        and confirmation_blocks >= 0
+        and target_latest
+        == max(0, observed_latest - confirmation_blocks)
+        and requested_to == target_latest
+        and pool_count > 0
+        and pool_count == v3_count + v4_count
+        and scope_batch_count
+        == int(v3_count > 0) + v4_manager_count
+        and v4_manager_count >= int(v4_count > 0)
+        and v4_manager_count <= v4_count
+        and event_filter_count == v3_count * 4 + v4_count * 2
+        and query_chunk_count > 0
+        and expected_query_count
+        == scope_batch_count * query_chunk_count
+        and query_count == expected_query_count
+        and catchup.get("applicable") is True
+        and isinstance(catchup.get("active"), bool)
+        and catchup.get("complete_selected_window") is True
+        and selected_to == scan_to == latest
+        and scan_from <= scan_to <= requested_to
+        and alert_from > 0
+        and (scope_rebaseline or liquidity.get("continuous") is True)
+    )
+
+
 def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
     retention = (
         project.get("retention_flow")
@@ -5473,7 +5709,7 @@ def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if retention_alert_coverage_complete(project):
         events.extend(retention.get("events", []) or [])
-    if liquidity_retention_alert_coverage_complete(project):
+    if liquidity_selected_window_alert_coverage_complete(project):
         liquidity = retention.get("liquidity_retention") or {}
         events.extend(liquidity.get("events", []) or [])
     return [

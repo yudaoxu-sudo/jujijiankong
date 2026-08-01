@@ -20,6 +20,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def complete_project_contract(
+    address: str,
+    *,
+    operator_state: str = "owner_renounced",
+    latest_block: int = 100,
+) -> dict[str, object]:
+    return {
+        "chain": "bsc",
+        "address": address,
+        "latest_block": latest_block,
+        "requested_from_block": 1,
+        "target_latest_block": latest_block,
+        "target_latest_block_hash": "0x" + "a" * 64,
+        "covered_through_block": latest_block,
+        "next_from_block": latest_block + 1,
+        "coverage_complete": True,
+        "transfer_coverage_complete": True,
+        "scan_status": "complete",
+        "decimals": 18,
+        "total_supply": "1000",
+        "watch_address_count": 0,
+        "balance_target_count": 0,
+        "watch_addresses": [],
+        "operator_attribution_state": operator_state,
+        "log_error_count": 0,
+        "balances": [],
+    }
+
+
 class AeonSignalParsingRegressionTests(unittest.TestCase):
     def test_opening_sprint_inner_timeout_is_bounded_and_remapped(self) -> None:
         if os.environ.get("SNIPER_OFFLINE") == "1":
@@ -4912,9 +4941,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
 
         row = {
+            "coverage_complete": True,
             "contracts": [
                 {
-                    "address": "0x" + "1" * 40,
+                    **complete_project_contract("0x" + "1" * 40),
                     "operator_attribution_state": "conflicting_owner_selectors",
                 }
             ]
@@ -4935,6 +4965,52 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 target_contract="0x" + "1" * 40,
             ),
             "project operator attribution warning=conflicting_owner_selectors",
+        )
+
+    def test_health_fails_closed_on_missing_project_coverage_or_balance_error(self) -> None:
+        from scripts.runtime_health_watch import output_row_coverage_issue
+
+        target = "0x" + "1" * 40
+        self.assertEqual(
+            output_row_coverage_issue(
+                "project",
+                {"contracts": [{"address": target}]},
+                target_contract=target,
+            ),
+            "project coverage incomplete",
+        )
+        invalid_balance = complete_project_contract(target)
+        invalid_balance["balances"] = [{"address": target, "error": "rpc"}]
+        self.assertEqual(
+            output_row_coverage_issue(
+                "project",
+                {
+                    "coverage_complete": True,
+                    "contracts": [invalid_balance],
+                },
+                target_contract=target,
+            ),
+            "project contract coverage metadata invalid",
+        )
+        missing_balance = complete_project_contract(target)
+        missing_balance.update(
+            {
+                "watch_address_count": 1,
+                "balance_target_count": 1,
+                "watch_addresses": [{"address": "0x" + "2" * 40}],
+                "balances": [],
+            }
+        )
+        self.assertEqual(
+            output_row_coverage_issue(
+                "project",
+                {
+                    "coverage_complete": True,
+                    "contracts": [missing_balance],
+                },
+                target_contract=target,
+            ),
+            "project contract coverage metadata invalid",
         )
 
     def test_shared_pool_manager_event_requires_matching_pool_id(self) -> None:
@@ -11136,6 +11212,216 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(alerts, [])
 
+    def test_project_metadata_scope_and_balance_fail_closed(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        contract = {"chain": "bsc", "address": token}
+        base_item = {
+            "symbol": "TEST",
+            "contracts": [contract],
+            "watch_addresses": [{"chain": "bsc", "address": watched}],
+        }
+        for patchers in (
+            (mock.patch.object(project, "token_decimals", side_effect=RuntimeError("rpc")),),
+            (
+                mock.patch.object(project, "token_decimals", return_value=18),
+                mock.patch.object(project, "token_total_supply", side_effect=RuntimeError("rpc")),
+            ),
+        ):
+            with self.subTest(patch_count=len(patchers)), ExitStack() as stack:
+                for patcher in patchers:
+                    stack.enter_context(patcher)
+                result = project.build_project(base_item, {}, {}, 0, 10)
+            self.assertFalse(result["coverage_complete"])
+            self.assertEqual(result["contracts"][0]["scan_status"], "error")
+
+        owner_item = {
+            "symbol": "TEST",
+            "contracts": [contract],
+            "project_operator_probe": "owner",
+        }
+        with (
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "project_rpc_call",
+                side_effect=RuntimeError("rpc"),
+            ),
+        ):
+            result = project.build_project(owner_item, {}, {}, 0, 10)
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["contracts"][0]["scan_status"], "error")
+
+        target_hash = "0x" + "a" * 64
+        watch_scope = [
+            {
+                "chain": "bsc",
+                "address": watched,
+                "watch_quote": False,
+                "control_scope": "token",
+                "identity_status": "verified",
+            }
+        ]
+
+        def complete_logs(*_args, on_chunk_complete=None, **_kwargs):
+            on_chunk_complete(0, 10, [])
+            return [], []
+
+        with (
+            mock.patch.object(project, "latest_block", return_value=10),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "effective_watch_addresses",
+                return_value=(watch_scope, "verified_token_controller"),
+            ),
+            mock.patch.object(project, "canonical_block_hash", return_value=target_hash),
+            mock.patch.object(project, "get_transfer_logs", side_effect=complete_logs),
+            mock.patch.object(
+                project,
+                "build_balances",
+                return_value=[{"address": watched, "error": "rpc"}],
+            ),
+        ):
+            balance_result = project.build_contract(
+                "TEST",
+                contract,
+                base_item,
+                {},
+                {},
+                finality=0,
+                lookback=20,
+            )
+        self.assertFalse(balance_result["coverage_complete"])
+        self.assertEqual(balance_result["scan_status"], "balance_scan_pending")
+        self.assertEqual(balance_result["latest_block"], 0)
+        self.assertEqual(balance_result["log_error_count"], 1)
+
+        with (
+            mock.patch.object(project, "latest_block", return_value=10),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "effective_watch_addresses",
+                return_value=(watch_scope, "verified_token_controller"),
+            ),
+            mock.patch.object(project, "canonical_block_hash", return_value=target_hash),
+            mock.patch.object(project, "get_transfer_logs", side_effect=complete_logs),
+            mock.patch.object(project, "build_balances", return_value=[]),
+        ):
+            empty_balance_result = project.build_contract(
+                "TEST",
+                contract,
+                base_item,
+                {},
+                {},
+                finality=0,
+                lookback=20,
+            )
+        self.assertFalse(empty_balance_result["coverage_complete"])
+        self.assertEqual(
+            empty_balance_result["scan_status"],
+            "balance_scan_pending",
+        )
+
+    def test_project_checkpoint_continuity_has_no_gap_and_reorg_blocks(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        checkpoint_hash = "0x" + "a" * 64
+        replacement_hash = "0x" + "b" * 64
+        target_hash = "0x" + "c" * 64
+        watch_scope = [{"chain": "bsc", "address": watched}]
+
+        def run(
+            previous_chain_hash: str,
+            stored_hash: str | None = checkpoint_hash,
+        ) -> tuple[dict[str, object], list[tuple[int, int, int]]]:
+            ranges: list[tuple[int, int, int]] = []
+
+            def canonical(_chain: str, block: int) -> str:
+                return previous_chain_hash if block == 100 else target_hash
+
+            def complete_logs(
+                _chain,
+                _token,
+                _watched,
+                from_block,
+                to_block,
+                *,
+                resume_from_block=None,
+                on_chunk_complete=None,
+            ):
+                ranges.append((from_block, to_block, resume_from_block))
+                on_chunk_complete(from_block, to_block, [])
+                return [], []
+
+            with (
+                mock.patch.object(project, "latest_block", return_value=1000),
+                mock.patch.object(project, "token_decimals", return_value=18),
+                mock.patch.object(project, "token_total_supply", return_value="1000"),
+                mock.patch.object(
+                    project,
+                    "effective_watch_addresses",
+                    return_value=(watch_scope, "configured"),
+                ),
+                mock.patch.object(project, "canonical_block_hash", side_effect=canonical),
+                mock.patch.object(project, "get_transfer_logs", side_effect=complete_logs),
+                mock.patch.object(
+                    project,
+                    "build_balances",
+                    return_value=[
+                        {
+                            "address": watched,
+                            "balance_token_address": token,
+                            "balance": "0",
+                        }
+                    ],
+                ),
+                mock.patch.object(project, "build_contract_alerts", return_value=[]),
+            ):
+                result = project.build_contract(
+                    "TEST",
+                    {"chain": "bsc", "address": token},
+                    {},
+                    {("TEST", "bsc", token): 100},
+                    {},
+                    finality=0,
+                    lookback=100,
+                    previous_hashes=(
+                        {("TEST", "bsc", token): stored_hash}
+                        if stored_hash
+                        else {}
+                    ),
+                )
+            return result, ranges
+
+        continuous, continuous_ranges = run(checkpoint_hash)
+        self.assertTrue(continuous["coverage_complete"])
+        self.assertEqual(continuous["requested_from_block"], 101)
+        self.assertEqual(continuous_ranges, [(101, 1000, 101)])
+
+        blocked, blocked_ranges = run(replacement_hash)
+        self.assertFalse(blocked["coverage_complete"])
+        self.assertEqual(blocked["scan_status"], "previous_checkpoint_reorg")
+        self.assertEqual(blocked["latest_block"], 100)
+        self.assertEqual(blocked_ranges, [])
+
+        unverifiable, unverifiable_ranges = run(checkpoint_hash, None)
+        self.assertFalse(unverifiable["coverage_complete"])
+        self.assertEqual(
+            unverifiable["scan_status"],
+            "previous_checkpoint_unverifiable",
+        )
+        self.assertEqual(unverifiable["latest_block"], 100)
+        self.assertEqual(unverifiable_ranges, [])
+
     def test_project_log_gap_keeps_previous_checkpoint_and_balances(self) -> None:
         from decimal import Decimal
 
@@ -11146,6 +11432,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         calls: list[tuple[int, int]] = []
 
         def fetch(chain, method, params):
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
             self.assertEqual(method, "eth_getLogs")
             query = params[0]
             bounds = (
@@ -11208,6 +11496,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 previous_balances,
                 finality=0,
                 lookback=10,
+                previous_hashes={
+                    ("AEON", "bsc", token): "0x" + "a" * 64,
+                },
             )
 
         self.assertEqual(calls, [(101, 102), (101, 102), (103, 104)])
@@ -11409,6 +11700,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mock.patch.object(project, "token_total_supply", return_value="1000"),
             mock.patch.object(
                 project,
+                "canonical_block_hash",
+                return_value="0x" + "a" * 64,
+            ),
+            mock.patch.object(
+                project,
                 "rpc_call",
                 side_effect=[[base], [conflicting]],
             ),
@@ -11430,6 +11726,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 {},
                 finality=0,
                 lookback=10,
+                previous_hashes={
+                    ("TEST", "bsc", token): "0x" + "a" * 64,
+                },
             )
         self.assertEqual(conflict_result["latest_block"], 5)
         self.assertEqual(conflict_result["log_error_count"], 1)
@@ -11466,6 +11765,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             previous_balance_map,
             finality,
             lookback,
+            **_kwargs,
         ):
             nonlocal interrupt_second
             previous_tip = previous_tips.get(
@@ -11479,10 +11779,24 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             return {
                 "chain": contract["chain"],
                 "address": contract["address"],
+                "raw_latest_block": previous_tip + 100,
                 "latest_block": previous_tip + 100,
                 "previous_latest_block": previous_tip,
+                "requested_from_block": previous_tip + 1,
+                "target_latest_block": previous_tip + 100,
+                "target_latest_block_hash": "0x" + "a" * 64,
+                "covered_through_block": previous_tip + 100,
+                "next_from_block": previous_tip + 101,
+                "coverage_complete": True,
+                "transfer_coverage_complete": True,
+                "scan_status": "complete",
+                "decimals": 18,
+                "total_supply": "1000",
                 "watch_address_count": 0,
+                "balance_target_count": 0,
+                "watch_addresses": [],
                 "operator_attribution_state": "unresolved",
+                "log_error_count": 0,
                 "balances": [],
                 "recent_transfers": [],
                 "alerts": [],
@@ -11494,12 +11808,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             latest_path = root / "latest.json"
             report_path = root / "latest.md"
             progress_path = root / "progress.json"
+            pending_path = root / "pending.json"
+            pending_report_path = root / "pending.md"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with (
                 mock.patch.object(project, "CONFIG_PATH", config_path),
                 mock.patch.object(project, "LATEST_PATH", latest_path),
                 mock.patch.object(project, "REPORT_PATH", report_path),
                 mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "PENDING_PATH", pending_path),
+                mock.patch.object(
+                    project,
+                    "PENDING_REPORT_PATH",
+                    pending_report_path,
+                ),
                 mock.patch.object(project, "build_contract", side_effect=build_contract),
                 self.assertRaises(SystemExit),
             ):
@@ -11508,12 +11830,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             progress = json.loads(progress_path.read_text(encoding="utf-8"))
             self.assertEqual(len(progress["completed_projects"]), 1)
             self.assertIsNone(progress["active_project"])
+            config["generated_at"] = "2026-08-01T01:02:03+00:00"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
 
             with (
                 mock.patch.object(project, "CONFIG_PATH", config_path),
                 mock.patch.object(project, "LATEST_PATH", latest_path),
                 mock.patch.object(project, "REPORT_PATH", report_path),
                 mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "PENDING_PATH", pending_path),
+                mock.patch.object(
+                    project,
+                    "PENDING_REPORT_PATH",
+                    pending_report_path,
+                ),
                 mock.patch.object(project, "build_contract", side_effect=build_contract),
             ):
                 resumed = project.build_snapshot()
@@ -11536,6 +11866,669 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             self.assertFalse(next_cycle["resumed_from_progress"])
             self.assertEqual(calls[-2:], [("FIRST", 100), ("SECOND", 100)])
 
+    def test_project_contract_cursor_resumes_after_completed_chunk(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        target_hash = "0x" + "a" * 64
+        calls: list[tuple[int, int, str]] = []
+        fail_after_first_chunk = True
+
+        def fake_rpc(_chain, method, params):
+            self.assertEqual(method, "eth_getLogs")
+            query = params[0]
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            direction = "from" if query["topics"][1] is not None else "to"
+            calls.append((start, end, direction))
+            if fail_after_first_chunk and start >= 8:
+                raise project.RpcDeadlineExceeded("deadline")
+            return []
+
+        checkpoints: list[dict[str, object]] = []
+        watch_scope = [
+            {
+                "chain": "bsc",
+                "address": watched,
+                "label": "controller",
+                "role": "token_controller",
+                "level": "HIGH",
+                "watch_quote": False,
+                "watch_quote_tokens": [],
+                "control_scope": "token",
+                "identity_status": "verified",
+                "attribution": "fixture",
+            }
+        ]
+        common_patches = (
+            mock.patch.object(project, "latest_block", return_value=10),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(
+                project,
+                "token_total_supply",
+                return_value="1000",
+            ),
+            mock.patch.object(
+                project,
+                "effective_watch_addresses",
+                return_value=(watch_scope, "verified_token_controller"),
+            ),
+            mock.patch.object(
+                project,
+                "canonical_block_hash",
+                return_value=target_hash,
+            ),
+            mock.patch.object(project, "project_rpc_call", side_effect=fake_rpc),
+            mock.patch.object(
+                project,
+                "build_balances",
+                return_value=[
+                    {
+                        "address": watched,
+                        "balance_token_address": token,
+                        "balance": "0",
+                    }
+                ],
+            ),
+            mock.patch.object(project, "build_contract_alerts", return_value=[]),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_PROJECT_LOG_CHUNK_BLOCKS": "2"},
+            ),
+        )
+        with ExitStack() as stack:
+            for patcher in common_patches:
+                stack.enter_context(patcher)
+            first = project.build_contract(
+                "TEST",
+                {"chain": "bsc", "address": token},
+                {},
+                {("TEST", "bsc", token): 5},
+                {},
+                finality=0,
+                lookback=4,
+                previous_hashes={
+                    ("TEST", "bsc", token): target_hash,
+                },
+                on_progress=lambda row: checkpoints.append(copy.deepcopy(row)),
+            )
+
+        self.assertFalse(first["coverage_complete"])
+        self.assertEqual(first["latest_block"], 5)
+        self.assertEqual(checkpoints[-1]["covered_through_block"], 7)
+        self.assertEqual(checkpoints[-1]["next_from_block"], 8)
+        self.assertEqual(
+            calls[:3],
+            [(6, 7, "from"), (6, 7, "to"), (8, 9, "from")],
+        )
+
+        resumed_progress = copy.deepcopy(checkpoints[-1])
+        calls.clear()
+        fail_after_first_chunk = False
+        with ExitStack() as stack:
+            for patcher in (
+                mock.patch.object(project, "latest_block", return_value=99),
+                mock.patch.object(project, "token_decimals", return_value=18),
+                mock.patch.object(
+                    project,
+                    "token_total_supply",
+                    return_value="1000",
+                ),
+                mock.patch.object(
+                    project,
+                    "effective_watch_addresses",
+                    return_value=(watch_scope, "verified_token_controller"),
+                ),
+                mock.patch.object(
+                    project,
+                    "canonical_block_hash",
+                    return_value=target_hash,
+                ),
+                mock.patch.object(
+                    project,
+                    "project_rpc_call",
+                    side_effect=fake_rpc,
+                ),
+                mock.patch.object(
+                    project,
+                    "build_balances",
+                    return_value=[
+                        {
+                            "address": watched,
+                            "balance_token_address": token,
+                            "balance": "0",
+                        }
+                    ],
+                ),
+                mock.patch.object(
+                    project,
+                    "build_contract_alerts",
+                    return_value=[],
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_PROJECT_LOG_CHUNK_BLOCKS": "2"},
+                ),
+            ):
+                stack.enter_context(patcher)
+            second = project.build_contract(
+                "TEST",
+                {"chain": "bsc", "address": token},
+                {},
+                {("TEST", "bsc", token): 5},
+                {},
+                finality=0,
+                lookback=4,
+                previous_hashes={
+                    ("TEST", "bsc", token): target_hash,
+                },
+                resumed_progress=resumed_progress,
+            )
+
+        self.assertTrue(second["coverage_complete"])
+        self.assertEqual(second["latest_block"], 10)
+        self.assertEqual(second["covered_through_block"], 10)
+        self.assertEqual(second["next_from_block"], 11)
+        self.assertEqual(calls[0], (8, 9, "from"))
+        self.assertNotIn((6, 7, "from"), calls)
+
+    def test_project_second_direction_failure_does_not_advance_chunk(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        calls: list[str] = []
+        checkpoints: list[tuple[int, int]] = []
+
+        def fail_second(_chain, _method, params):
+            direction = "from" if params[0]["topics"][1] is not None else "to"
+            calls.append(direction)
+            if direction == "to":
+                raise RuntimeError("fixture failure")
+            return []
+
+        with mock.patch.object(
+            project,
+            "project_rpc_call",
+            side_effect=fail_second,
+        ):
+            rows, errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                6,
+                7,
+                on_chunk_complete=lambda start, end, _rows: checkpoints.append(
+                    (start, end)
+                ),
+            )
+
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+        self.assertEqual(calls, ["from", "to"])
+        self.assertEqual(checkpoints, [])
+
+        calls.clear()
+        with mock.patch.object(project, "project_rpc_call", return_value=[]):
+            rows, errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                6,
+                7,
+                on_chunk_complete=lambda start, end, _rows: checkpoints.append(
+                    (start, end)
+                ),
+            )
+        self.assertEqual(rows, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(checkpoints, [(6, 7)])
+
+    def test_project_250001_block_bootstrap_resumes_without_coverage_gaps(
+        self,
+    ) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        target_hash = "0x" + "a" * 64
+        progress: dict[str, object] = {}
+        accepted_ranges: list[tuple[int, int]] = []
+        successful_queries: list[tuple[int, int]] = []
+        covered_through = 49999
+        completed = None
+        watch_scope = [
+            {
+                "chain": "bsc",
+                "address": watched,
+                "role": "token_controller",
+                "watch_quote": False,
+                "control_scope": "token",
+                "identity_status": "verified",
+            }
+        ]
+
+        for _cycle in range(10):
+            successful_directions = 0
+
+            def fake_rpc(_chain, _method, params):
+                nonlocal successful_directions
+                query = params[0]
+                start = int(query["fromBlock"], 16)
+                end = int(query["toBlock"], 16)
+                if successful_directions >= 6:
+                    raise project.RpcDeadlineExceeded("fixture deadline")
+                successful_directions += 1
+                successful_queries.append((start, end))
+                return []
+
+            def checkpoint(row):
+                nonlocal progress, covered_through
+                progress = copy.deepcopy(row)
+                if "covered_through_block" not in row:
+                    return
+                current_covered = int(row["covered_through_block"])
+                if current_covered > covered_through:
+                    accepted_ranges.append(
+                        (covered_through + 1, current_covered)
+                    )
+                    covered_through = current_covered
+
+            with (
+                mock.patch.object(project, "latest_block", return_value=300000),
+                mock.patch.object(project, "token_decimals", return_value=18),
+                mock.patch.object(
+                    project,
+                    "token_total_supply",
+                    return_value="1000",
+                ),
+                mock.patch.object(
+                    project,
+                    "effective_watch_addresses",
+                    return_value=(watch_scope, "verified_token_controller"),
+                ),
+                mock.patch.object(
+                    project,
+                    "canonical_block_hash",
+                    return_value=target_hash,
+                ),
+                mock.patch.object(
+                    project,
+                    "project_rpc_call",
+                    side_effect=fake_rpc,
+                ),
+                mock.patch.object(
+                    project,
+                    "build_balances",
+                    return_value=[
+                        {
+                            "address": watched,
+                            "balance_token_address": token,
+                            "balance": "0",
+                        }
+                    ],
+                ),
+                mock.patch.object(
+                    project,
+                    "build_contract_alerts",
+                    return_value=[],
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_PROJECT_LOG_CHUNK_BLOCKS": "10000"},
+                ),
+            ):
+                completed = project.build_contract(
+                    "TEST",
+                    {"chain": "bsc", "address": token},
+                    {"project_lookback_blocks": 250000},
+                    {},
+                    {},
+                    finality=0,
+                    lookback=50000,
+                    resumed_progress=progress,
+                    on_progress=checkpoint,
+                )
+            if completed["coverage_complete"]:
+                break
+            self.assertEqual(completed["latest_block"], 0)
+
+        self.assertIsNotNone(completed)
+        self.assertTrue(completed["coverage_complete"])
+        self.assertEqual(completed["requested_from_block"], 50000)
+        self.assertEqual(completed["latest_block"], 300000)
+        self.assertEqual(accepted_ranges[0], (50000, 59999))
+        self.assertEqual(accepted_ranges[-1], (300000, 300000))
+        self.assertEqual(
+            sum(end - start + 1 for start, end in accepted_ranges),
+            250001,
+        )
+        self.assertTrue(
+            all(
+                left[1] + 1 == right[0]
+                for left, right in zip(
+                    accepted_ranges,
+                    accepted_ranges[1:],
+                )
+            )
+        )
+        self.assertTrue(
+            all(
+                successful_queries.count(bounds) == 2
+                for bounds in set(successful_queries)
+            )
+        )
+
+    def test_project_scan_fingerprint_ignores_previous_report_fields(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        item = {
+            "symbol": "TEST",
+            "priority": "P1_MONITOR",
+            "contracts": [{"chain": "bsc", "address": token}],
+            "watch_addresses": [{"chain": "bsc", "address": watched}],
+        }
+        previous = {
+            "generated_at": "first",
+            "projects": [
+                {
+                    "symbol": "TEST",
+                    "analysis": {"volatile": "first"},
+                    "alerts": [{"type": "fixture"}],
+                    "contracts": [
+                        {
+                            "chain": "bsc",
+                            "address": token,
+                            "latest_block": 100,
+                            "balances": [
+                                {
+                                    "address": watched,
+                                    "balance_token_address": token,
+                                    "balance": "12.5",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        refreshed = copy.deepcopy(previous)
+        refreshed["generated_at"] = "second"
+        refreshed["projects"][0]["analysis"] = {"volatile": "second"}
+        refreshed["projects"][0]["alerts"] = []
+        first = project.project_scan_fingerprint([item], previous, 20, 250000)
+        second = project.project_scan_fingerprint([item], refreshed, 20, 250000)
+        self.assertEqual(first, second)
+
+        changed_scope = copy.deepcopy(item)
+        changed_scope["watch_addresses"][0]["address"] = "0x" + "4" * 40
+        self.assertNotEqual(
+            first,
+            project.project_scan_fingerprint(
+                [changed_scope],
+                previous,
+                20,
+                250000,
+            ),
+        )
+        self.assertNotEqual(
+            first,
+            project.project_scan_fingerprint([item], previous, 21, 250000),
+        )
+        self.assertNotEqual(
+            first,
+            project.project_scan_fingerprint([item], previous, 20, 50000),
+        )
+
+        refreshed["projects"][0]["contracts"][0]["latest_block"] = 101
+        self.assertNotEqual(
+            first,
+            project.project_scan_fingerprint([item], refreshed, 20, 250000),
+        )
+
+    def test_project_target_hash_change_resets_completed_transfer_window(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        checkpoints: list[dict[str, object]] = []
+        old_hash = "0x" + "a" * 64
+        new_hash = "0x" + "b" * 64
+        with (
+            mock.patch.object(project, "latest_block", return_value=10),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "effective_watch_addresses",
+                return_value=([], "unresolved"),
+            ),
+            mock.patch.object(
+                project,
+                "canonical_block_hash",
+                side_effect=[old_hash, old_hash, new_hash],
+            ),
+        ):
+            result = project.build_contract(
+                "TEST",
+                {"chain": "bsc", "address": token},
+                {},
+                {("TEST", "bsc", token): 5},
+                {},
+                finality=0,
+                lookback=4,
+                previous_hashes={
+                    ("TEST", "bsc", token): old_hash,
+                },
+                on_progress=lambda row: checkpoints.append(copy.deepcopy(row)),
+            )
+
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["scan_status"], "target_reorg_retry")
+        self.assertEqual(result["latest_block"], 5)
+        self.assertEqual(checkpoints[-1]["next_from_block"], 6)
+        self.assertEqual(checkpoints[-1]["covered_through_block"], 5)
+        self.assertEqual(checkpoints[-1]["recent_transfers"], [])
+
+    def test_project_progress_is_a_runtime_health_blocker(self) -> None:
+        import scripts.runtime_health_watch as health
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            progress_path = (
+                root / "output" / "alpha_project_watch" / "progress.json"
+            )
+            progress_path.parent.mkdir(parents=True)
+            progress_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "completed_projects": [],
+                        "active_project": {
+                            "contract_progress": {
+                                "previous_latest_block": 5,
+                                "requested_from_block": 6,
+                                "target_latest_block": 10,
+                                "target_latest_block_hash": "0x" + "a" * 64,
+                                "next_from_block": 8,
+                                "covered_through_block": 7,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            issues = health.project_scan_progress_issues(root)
+
+        self.assertEqual(len(issues), 1)
+        self.assertIn("project catchup pending", issues[0]["detail"])
+        self.assertEqual(
+            health.output_row_coverage_issue(
+                "project",
+                {"coverage_complete": False, "contracts": []},
+            ),
+            "project coverage incomplete",
+        )
+
+    def test_project_transfer_alert_key_includes_log_index(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        tx_hash = "0x" + "3" * 64
+        transfers = [
+            {
+                "block": 6,
+                "tx": tx_hash,
+                "log_index": index,
+                "from": watched,
+                "to": "0x" + "4" * 40,
+                "amount": "100000",
+            }
+            for index in (0, 1)
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {"ALPHA_PROJECT_MIN_TRANSFER_ALERT": "1"},
+        ):
+            alerts = project.build_contract_alerts(
+                "TEST",
+                "bsc",
+                token,
+                5,
+                transfers,
+                [],
+                [
+                    {
+                        "address": watched,
+                        "role": "token_controller",
+                        "control_scope": "token",
+                        "identity_status": "verified",
+                    }
+                ],
+            )
+
+        self.assertEqual(len(alerts), 2)
+        self.assertEqual(len(project.alert_keys(alerts)), 2)
+
+    def test_project_early_chunk_alert_survives_recent_transfer_window(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        receiver = "0x" + "3" * 40
+        target_hash = "0x" + "a" * 64
+
+        def raw_transfer(block: int, index: int, amount: int):
+            return {
+                "address": token,
+                "blockHash": "0x" + f"{block:064x}",
+                "blockNumber": hex(block),
+                "data": "0x" + f"{amount:064x}",
+                "removed": False,
+                "topics": [
+                    project.TRANSFER_TOPIC,
+                    project.topic_address(watched),
+                    project.topic_address(receiver),
+                ],
+                "transactionHash": "0x" + f"{index + 1:064x}",
+                "transactionIndex": "0x0",
+                "logIndex": hex(index),
+            }
+
+        high = raw_transfer(6, 0, 1000)
+        later = [
+            raw_transfer(min(6 + index, 50), index, 1)
+            for index in range(1, 46)
+        ]
+
+        def fake_logs(
+            _chain,
+            _token,
+            _watched,
+            _from,
+            _to,
+            *,
+            resume_from_block=None,
+            on_chunk_complete=None,
+        ):
+            self.assertEqual(resume_from_block, 6)
+            on_chunk_complete(6, 6, [high])
+            on_chunk_complete(7, 50, [high, *later])
+            return [high, *later], []
+
+        with (
+            mock.patch.object(project, "latest_block", return_value=50),
+            mock.patch.object(project, "token_decimals", return_value=0),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "effective_watch_addresses",
+                return_value=(
+                    [
+                        {
+                            "chain": "bsc",
+                            "address": watched,
+                            "role": "token_controller",
+                            "watch_quote": False,
+                            "control_scope": "token",
+                            "identity_status": "verified",
+                        }
+                    ],
+                    "verified_token_controller",
+                ),
+            ),
+            mock.patch.object(
+                project,
+                "canonical_block_hash",
+                return_value=target_hash,
+            ),
+            mock.patch.object(
+                project,
+                "get_transfer_logs",
+                side_effect=fake_logs,
+            ),
+            mock.patch.object(
+                project,
+                "build_balances",
+                return_value=[
+                    {
+                        "address": watched,
+                        "balance_token_address": token,
+                        "balance": "0",
+                    }
+                ],
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_PROJECT_MIN_TRANSFER_ALERT": "100"},
+            ),
+        ):
+            result = project.build_contract(
+                "TEST",
+                {"chain": "bsc", "address": token},
+                {},
+                {("TEST", "bsc", token): 5},
+                {},
+                finality=0,
+                lookback=50,
+                previous_hashes={
+                    ("TEST", "bsc", token): target_hash,
+                },
+            )
+
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(len(result["recent_transfers"]), 40)
+        self.assertNotIn(
+            high["transactionHash"],
+            {row["tx"] for row in result["recent_transfers"]},
+        )
+        self.assertEqual(len(result["alerts"]), 1)
+        self.assertEqual(result["alerts"][0]["tx"], high["transactionHash"])
+        self.assertEqual(len(project.alert_keys(result["alerts"])), 1)
+
     def test_project_publish_keeps_progress_until_delivery_succeeds(self) -> None:
         import scripts.alpha_project_watch as project
 
@@ -11543,6 +12536,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "generated_at": "2026-08-01T00:00:00+00:00",
             "project_count": 0,
             "alert_count": 0,
+            "coverage_complete": True,
             "skipped": [],
             "projects": [],
         }
@@ -11551,6 +12545,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             latest_path = root / "latest.json"
             report_path = root / "latest.md"
             progress_path = root / "progress.json"
+            pending_path = root / "pending.json"
+            pending_report_path = root / "pending.md"
             latest_path.write_text('{"old": true}', encoding="utf-8")
             progress_path.write_text('{"partial": true}', encoding="utf-8")
 
@@ -11558,6 +12554,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 mock.patch.object(project, "LATEST_PATH", latest_path),
                 mock.patch.object(project, "REPORT_PATH", report_path),
                 mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "PENDING_PATH", pending_path),
+                mock.patch.object(
+                    project,
+                    "PENDING_REPORT_PATH",
+                    pending_report_path,
+                ),
                 mock.patch.object(
                     project,
                     "maybe_send_telegram",
@@ -11578,6 +12580,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 mock.patch.object(project, "LATEST_PATH", latest_path),
                 mock.patch.object(project, "REPORT_PATH", report_path),
                 mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "PENDING_PATH", pending_path),
+                mock.patch.object(
+                    project,
+                    "PENDING_REPORT_PATH",
+                    pending_report_path,
+                ),
                 mock.patch.object(project, "maybe_send_telegram"),
             ):
                 project.publish_snapshot(snapshot)
@@ -11588,7 +12596,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
             self.assertFalse(progress_path.exists())
 
-    def test_project_missing_telegram_credentials_blocks_pending_publish(
+    def test_project_pending_publish_skips_telegram_and_preserves_baseline(
         self,
     ) -> None:
         import scripts.alpha_project_watch as project
@@ -11597,6 +12605,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "generated_at": "2026-08-01T00:00:00+00:00",
             "project_count": 1,
             "alert_count": 1,
+            "coverage_complete": False,
             "skipped": [],
             "projects": [
                 {
@@ -11626,6 +12635,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             latest_path = root / "latest.json"
             report_path = root / "latest.md"
             progress_path = root / "progress.json"
+            pending_path = root / "pending.json"
+            pending_report_path = root / "pending.md"
             seen_path = root / "seen.json"
             latest_path.write_text('{"old": true}', encoding="utf-8")
             progress_path.write_text('{"partial": true}', encoding="utf-8")
@@ -11639,11 +12650,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 mock.patch.object(project, "LATEST_PATH", latest_path),
                 mock.patch.object(project, "REPORT_PATH", report_path),
                 mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "PENDING_PATH", pending_path),
+                mock.patch.object(
+                    project,
+                    "PENDING_REPORT_PATH",
+                    pending_report_path,
+                ),
                 mock.patch.object(project, "SEEN_PATH", seen_path),
                 mock.patch.dict(os.environ, env),
-                self.assertRaisesRegex(
-                    RuntimeError,
-                    "Telegram delivery unavailable",
+                mock.patch.object(
+                    project,
+                    "maybe_send_telegram",
+                    side_effect=AssertionError(
+                        "pending snapshot must not send"
+                    ),
                 ),
             ):
                 project.publish_snapshot(pending_snapshot)
@@ -11654,6 +12674,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
             self.assertTrue(progress_path.exists())
             self.assertFalse(report_path.exists())
+            self.assertEqual(
+                json.loads(pending_path.read_text(encoding="utf-8")),
+                pending_snapshot,
+            )
+            self.assertTrue(pending_report_path.exists())
+            self.assertFalse(seen_path.exists())
 
             with (
                 mock.patch.object(project, "SEEN_PATH", seen_path),
@@ -16376,6 +17402,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         target = "0x" + "2" * 40
         row = {
+            "coverage_complete": True,
             "contracts": [
                 {
                     "address": "0x" + "1" * 40,
@@ -16383,9 +17410,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "operator_attribution_state": "contract_error",
                 },
                 {
-                    "address": target,
-                    "log_error_count": 0,
-                    "operator_attribution_state": "owner_renounced",
+                    **complete_project_contract(target),
                 },
             ]
         }
@@ -16395,10 +17420,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "",
         )
         unresolved = {
+            "coverage_complete": True,
             "contracts": [
                 {
-                    "address": target,
-                    "operator_attribution_state": "owner_unresolved",
+                    **complete_project_contract(
+                        target,
+                        operator_state="owner_unresolved",
+                    ),
                 }
             ]
         }
@@ -16782,13 +17810,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "projects": [
                         {
                             "symbol": "LEGACYAEON",
+                            "coverage_complete": True,
                             "contracts": [
-                                {
-                                    "chain": "bsc",
-                                    "address": contract,
-                                    "log_error_count": 0,
-                                    "operator_attribution_state": "owner_renounced",
-                                }
+                                complete_project_contract(contract)
                             ],
                         }
                     ]
@@ -16907,13 +17931,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "projects": [
                         {
                             "symbol": "TAIL",
+                            "coverage_complete": True,
                             "contracts": [
-                                {
-                                    "chain": "bsc",
-                                    "address": contract,
-                                    "log_error_count": 0,
-                                    "operator_attribution_state": "owner_renounced",
-                                }
+                                complete_project_contract(contract)
                             ],
                         }
                     ]
@@ -17794,6 +18814,189 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(selected_to, 4)
         self.assertFalse(metadata["complete_selected_window"])
 
+    def test_historical_liquidity_overflow_does_not_throttle_coverage(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+
+        def fetch(
+            _chain: str,
+            _pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            dict[str, object],
+        ]:
+            return (
+                [
+                    {
+                        "address": pool["address"],
+                        "blockNumber": hex(block),
+                        "blockHash": self._hash("f"),
+                        "logIndex": "0x0",
+                        "transactionHash": "0x" + f"{block:064x}",
+                        "topics": [holder.V3_SWAP_TOPIC],
+                        "data": self._data(100, -1, 0, 0, 0),
+                        "removed": False,
+                        "_retention_pool": pool,
+                        "_retention_event_kind": "v3_swap",
+                    }
+                    for block in range(from_block, to_block + 1)
+                ],
+                [],
+                False,
+                {"query_scope_complete": True},
+            )
+
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_MAX_EVENTS": "4",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ),
+        ):
+            logs, errors, truncated, selected_to, metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    1,
+                    16,
+                    token=token,
+                    decimals=0,
+                    supply_raw=10_000,
+                    alert_from_block=17,
+                )
+            )
+
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertEqual(len(logs), 16)
+        self.assertEqual(selected_to, 16)
+        self.assertEqual(metadata["attempt_count"], 1)
+        self.assertEqual(metadata["historical_event_count"], 16)
+        self.assertTrue(metadata["historical_events_truncated"])
+        self.assertFalse(metadata["alert_events_truncated"])
+        self.assertTrue(metadata["complete_requested_window"])
+
+    def test_liquidity_catchup_reuses_last_successful_window(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": self._address("2"),
+            "fee": 2500,
+        }
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            _pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            dict[str, object],
+        ]:
+            calls.append((from_block, to_block))
+            return (
+                [
+                    {
+                        "address": pool["address"],
+                        "blockNumber": hex(block),
+                        "blockHash": self._hash("f"),
+                        "logIndex": "0x0",
+                        "transactionHash": "0x" + f"{block:064x}",
+                        "topics": [holder.V3_SWAP_TOPIC],
+                        "data": self._data(100, -1, 0, 0, 0),
+                        "removed": False,
+                        "_retention_pool": pool,
+                        "_retention_event_kind": "v3_swap",
+                    }
+                    for block in range(from_block, to_block + 1)
+                ],
+                [],
+                False,
+                {"query_scope_complete": True},
+            )
+
+        with (
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_MAX_EVENTS": "4",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ),
+        ):
+            _, _, _, first_to, first_metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    1,
+                    16,
+                    token=token,
+                    decimals=0,
+                    supply_raw=10_000,
+                    alert_from_block=1,
+                )
+            )
+            calls.clear()
+            _, _, _, second_to, second_metadata = (
+                holder.bounded_retention_liquidity_logs(
+                    "bsc",
+                    [pool],
+                    first_to + 1,
+                    16,
+                    token=token,
+                    decimals=0,
+                    supply_raw=10_000,
+                    alert_from_block=1,
+                    preferred_window_blocks=first_metadata[
+                        "next_window_blocks"
+                    ],
+                )
+            )
+
+        self.assertEqual(first_to, 4)
+        self.assertEqual(first_metadata["next_window_blocks"], 8)
+        self.assertEqual(calls, [(5, 12), (5, 8)])
+        self.assertEqual(second_to, 8)
+        self.assertEqual(second_metadata["attempt_count"], 2)
+        self.assertEqual(second_metadata["next_window_blocks"], 8)
+
     def test_liquidity_log_identity_errors_and_provider_cap_fail_closed(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -18552,6 +19755,246 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(second["latest_block_hash"], self._hash("e"))
         self.assertIsNotNone(second_state)
 
+    def test_selected_catchup_window_can_deliver_only_live_events(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "factory": self._address("4"),
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 18,
+            "quote_symbol": "WBNB",
+            "fee": 2500,
+        }
+        logs = [
+            self._event_row(
+                pool=pool,
+                event_kind="v3_swap",
+                topic=holder.V3_SWAP_TOPIC,
+                data=self._data(100, -1, 0, 0, 0),
+                tx_digit="a",
+                block=100,
+                index=1,
+            ),
+            self._event_row(
+                pool=pool,
+                event_kind="v3_swap",
+                topic=holder.V3_SWAP_TOPIC,
+                data=self._data(100, -1, 0, 0, 0),
+                tx_digit="b",
+                block=106,
+                index=2,
+            ),
+        ]
+        coverage = {
+            "query_scope_complete": True,
+            "query_count": 1,
+            "scope_batch_count": 1,
+            "query_chunk_count": 1,
+            "expected_query_count": 1,
+            "v4_manager_count": 0,
+            "event_filter_count": 4,
+            "applicable": True,
+            "active": True,
+            "requested_to_block": 110,
+            "selected_to_block": 108,
+            "attempt_count": 1,
+            "complete_selected_window": True,
+            "complete_requested_window": False,
+        }
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "age_hours": 1,
+        }
+        with mock.patch.object(
+            holder,
+            "retention_window",
+            return_value=active,
+        ):
+            flow = holder.build_liquidity_retention(
+                item={"chain": "bsc"},
+                token=token,
+                pools=[pool],
+                scope_hash="c" * 64,
+                previous_scope_hash="c" * 64,
+                scope_rebaseline=False,
+                previous_catchup_active=True,
+                scope_coverage_from_block=1,
+                logs=logs,
+                errors=[],
+                truncated=False,
+                decimals=0,
+                supply_raw=10_000,
+                scan_from_block=100,
+                scan_to_block=108,
+                target_scan_to_block=110,
+                previous_latest_block=99,
+                coverage_metadata=coverage,
+                alert_from_block=105,
+            )
+        flow.update(
+            {
+                "observed_latest_block": 112,
+                "confirmation_blocks": 2,
+                "latest_block_hash": self._hash("f"),
+            }
+        )
+        project = {
+            "retention_flow": {"liquidity_retention": flow}
+        }
+
+        self.assertFalse(flow["complete"])
+        self.assertFalse(
+            holder.liquidity_retention_alert_coverage_complete(project)
+        )
+        self.assertTrue(
+            holder.liquidity_selected_window_alert_coverage_complete(
+                project
+            )
+        )
+        self.assertTrue(flow["events"][0]["historical_catchup"])
+        self.assertFalse(flow["events"][1]["historical_catchup"])
+        alerts = holder.retention_alert_events(project)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["block"], 106)
+
+    def test_existing_catchup_migrates_and_persists_live_watermark(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+        state = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "pool_count": scope["pool_count"],
+            "scope_coverage_from_block": 100,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("f"),
+            "catchup_active": True,
+        }
+        calls: list[tuple[int, int]] = []
+
+        def bounded(
+            _chain: str,
+            pools: list[dict[str, object]],
+            from_block: int,
+            requested_to: int,
+            **kwargs: object,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            calls.append(
+                (
+                    int(kwargs["alert_from_block"]),
+                    int(kwargs["preferred_window_blocks"]),
+                )
+            )
+            selected_to = min(requested_to, from_block + 3)
+            scope_count = len(
+                holder.retention_liquidity_query_scopes(pools)
+            )
+            return (
+                [],
+                [],
+                False,
+                selected_to,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": selected_to < requested_to,
+                    "requested_to_block": requested_to,
+                    "selected_to_block": selected_to,
+                    "attempt_count": 1,
+                    "next_window_blocks": 4,
+                    "complete_selected_window": True,
+                    "complete_requested_window": (
+                        selected_to == requested_to
+                    ),
+                },
+            )
+
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "age_hours": 1,
+        }
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=bounded,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                return_value=self._hash("f"),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0"},
+            ),
+        ):
+            first, first_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=state,
+            )
+            assert first_state is not None
+            second, second_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=140,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=first_state,
+            )
+
+        self.assertEqual(calls, [(131, 0), (131, 4)])
+        self.assertTrue(first["alert_watermark_reinitialized"])
+        self.assertFalse(second["alert_watermark_reinitialized"])
+        self.assertEqual(first_state["catchup_live_from_block"], 131)
+        self.assertEqual(first_state["next_catchup_window_blocks"], 4)
+        self.assertIsNotNone(second_state)
+
     def test_liquidity_checkpoint_hash_change_rescans_overlap(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -18659,6 +20102,52 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertIsNotNone(next_state)
         assert next_state is not None
         self.assertEqual(next_state["latest_block_hash"], self._hash("c"))
+
+        catchup_state = {
+            **state,
+            "catchup_active": True,
+            "catchup_live_from_block": 119,
+        }
+        calls.clear()
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                side_effect=[
+                    self._hash("b"),
+                    self._hash("c"),
+                    self._hash("c"),
+                ],
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                    "ALPHA_RETENTION_LIQUIDITY_REORG_RESCAN_BLOCKS": "10",
+                },
+            ),
+        ):
+            catchup_reorg_flow, _ = (
+                holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state=catchup_state,
+                )
+            )
+        self.assertEqual(calls, [(111, 130)])
+        self.assertEqual(catchup_reorg_flow["alert_from_block"], 119)
 
         calls.clear()
         with (

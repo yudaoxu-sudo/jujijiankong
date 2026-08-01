@@ -293,6 +293,21 @@ def validated_liquidity_seed(
                 "catchup_active": catchup_active,
             }
         )
+        if catchup_active:
+            try:
+                live_from = int(
+                    payload.get("catchup_live_from_block") or 0
+                )
+                next_window = int(
+                    payload.get("next_catchup_window_blocks") or 0
+                )
+            except (TypeError, ValueError):
+                live_from = 0
+                next_window = 0
+            if live_from >= max(1, coverage_from):
+                seed["catchup_live_from_block"] = live_from
+            if next_window > 0:
+                seed["next_catchup_window_blocks"] = next_window
     return seed
 
 

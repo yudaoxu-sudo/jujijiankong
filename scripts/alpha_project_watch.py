@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, getcontext
@@ -15,7 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sniper_engine.rpc import rpc_call
+from sniper_engine.rpc import RpcDeadlineExceeded, rpc_call
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 
 
@@ -30,6 +31,8 @@ REPORT_PATH = OUT_DIR / "latest.md"
 SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
 PROGRESS_PATH = OUT_DIR / "progress.json"
+PENDING_PATH = OUT_DIR / "pending.json"
+PENDING_REPORT_PATH = OUT_DIR / "pending.md"
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO = "0x0000000000000000000000000000000000000000"
@@ -44,8 +47,25 @@ QUOTE_TOKENS_BY_CHAIN = {
 }
 SUPPORTED_CHAINS = {"bsc", "base"}
 TELEGRAM_LIMIT = 3900
-PROGRESS_SCHEMA_VERSION = 1
+PROGRESS_SCHEMA_VERSION = 2
 PROJECT_PROVIDER_ROW_LIMIT_HARD_CAP = 128
+PROJECT_RUNTIME_BUDGET_SECONDS = 90
+PROJECT_DEADLINE_AT: float | None = None
+
+
+def project_rpc_call(
+    chain: str,
+    method: str,
+    params: list[Any],
+) -> Any:
+    if PROJECT_DEADLINE_AT is None:
+        return rpc_call(chain, method, params)
+    return rpc_call(
+        chain,
+        method,
+        params,
+        deadline=PROJECT_DEADLINE_AT,
+    )
 
 
 def now_utc() -> datetime:
@@ -114,8 +134,18 @@ def encode_balance_of(address: str) -> str:
 
 
 def call_uint(chain: str, contract: str, data: str) -> int:
-    raw = rpc_call(chain, "eth_call", [{"to": contract, "data": data}, "latest"])
-    return int(raw or "0x0", 16)
+    raw = project_rpc_call(
+        chain,
+        "eth_call",
+        [{"to": contract, "data": data}, "latest"],
+    )
+    if (
+        not isinstance(raw, str)
+        or not raw.startswith("0x")
+        or len(raw) <= 2
+    ):
+        raise RuntimeError("token uint RPC result unavailable")
+    return int(raw, 16)
 
 
 def decode_address_return(value: Any) -> str:
@@ -140,14 +170,18 @@ def token_controller(chain: str, contract: str) -> dict[str, str]:
     owners: set[str] = set()
     successful_selectors = 0
     zero_selectors = 0
+    failed_selectors = 0
     for selector in OWNER_SELECTORS:
         try:
-            raw = rpc_call(
+            raw = project_rpc_call(
                 chain,
                 "eth_call",
                 [{"to": contract, "data": selector}, "latest"],
             )
+        except RpcDeadlineExceeded:
+            raise
         except Exception:
+            failed_selectors += 1
             continue
         state, owner = decode_address_return_state(raw)
         if state == "address":
@@ -172,7 +206,7 @@ def token_controller(chain: str, contract: str) -> dict[str, str]:
             "attribution": "canonical_owner_call",
             "selector_count": str(successful_selectors),
         }
-    if zero_selectors:
+    if zero_selectors and not failed_selectors:
         return {
             "state": "owner_renounced",
             "control_scope": "token",
@@ -180,6 +214,8 @@ def token_controller(chain: str, contract: str) -> dict[str, str]:
             "attribution": "canonical_owner_call",
             "selector_count": str(successful_selectors),
         }
+    if failed_selectors:
+        raise RuntimeError("token controller RPC unavailable")
     return {
         "state": "owner_unresolved",
         "identity_status": "unattributed",
@@ -187,18 +223,19 @@ def token_controller(chain: str, contract: str) -> dict[str, str]:
 
 
 def token_decimals(chain: str, contract: str) -> int:
-    try:
-        value = call_uint(chain, contract, encode_uint_call("0x313ce567"))
-    except Exception:
-        return 18
-    return value if 0 <= value <= 36 else 18
+    value = call_uint(chain, contract, encode_uint_call("0x313ce567"))
+    if not 0 <= value <= 36:
+        raise RuntimeError("token decimals unavailable")
+    return value
 
 
 def token_total_supply(chain: str, contract: str, decimals: int) -> str:
-    try:
-        return str(decimal_amount(call_uint(chain, contract, encode_uint_call("0x18160ddd")), decimals))
-    except Exception:
-        return ""
+    return str(
+        decimal_amount(
+            call_uint(chain, contract, encode_uint_call("0x18160ddd")),
+            decimals,
+        )
+    )
 
 
 def token_balance(chain: str, contract: str, address: str, decimals: int) -> Decimal:
@@ -206,7 +243,23 @@ def token_balance(chain: str, contract: str, address: str, decimals: int) -> Dec
 
 
 def latest_block(chain: str) -> int:
-    return int(rpc_call(chain, "eth_blockNumber", []), 16)
+    return int(project_rpc_call(chain, "eth_blockNumber", []), 16)
+
+
+def canonical_block_hash(chain: str, block: int) -> str:
+    payload = project_rpc_call(
+        chain,
+        "eth_getBlockByNumber",
+        [hex(block), False],
+    )
+    block_hash = (
+        normalized_hex_bytes(payload.get("hash"), 32, allow_zero=False)
+        if isinstance(payload, dict)
+        else ""
+    )
+    if not block_hash:
+        raise RuntimeError("project checkpoint block hash unavailable")
+    return block_hash
 
 
 def topic_address(address: str) -> str:
@@ -338,6 +391,9 @@ def get_transfer_logs(
     watched_addresses: list[str],
     from_block: int,
     to_block: int,
+    *,
+    resume_from_block: int | None = None,
+    on_chunk_complete: Any = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if not watched_addresses:
         return [], []
@@ -362,7 +418,8 @@ def get_transfer_logs(
         configured_row_limit,
         PROJECT_PROVIDER_ROW_LIMIT_HARD_CAP,
     )
-    for start in range(from_block, to_block + 1, chunk_size):
+    selected_from = max(from_block, int(resume_from_block or from_block))
+    for start in range(selected_from, to_block + 1, chunk_size):
         end = min(to_block, start + chunk_size - 1)
         for topic_filter in queries:
             pending = [(start, end)]
@@ -375,7 +432,13 @@ def get_transfer_logs(
                     "topics": topic_filter,
                 }
                 try:
-                    result = rpc_call(chain, "eth_getLogs", [query])
+                    result = project_rpc_call(
+                        chain,
+                        "eth_getLogs",
+                        [query],
+                    )
+                except RpcDeadlineExceeded:
+                    raise
                 except Exception:
                     errors.append(
                         "eth_getLogs coverage failed for "
@@ -437,6 +500,15 @@ def get_transfer_logs(
                         )
                         return [], errors
                     rows[key] = normalized_row
+        if on_chunk_complete is not None:
+            on_chunk_complete(
+                start,
+                end,
+                sorted(
+                    rows.values(),
+                    key=lambda row: (block_number(row), log_index(row)),
+                ),
+            )
     ordered = sorted(rows.values(), key=lambda row: (block_number(row), log_index(row)))
     return ordered, errors
 
@@ -466,6 +538,31 @@ def previous_contract_tips(payload: dict[str, Any]) -> dict[tuple[str, str, str]
         for contract in project.get("contracts", []):
             key = (symbol, contract.get("chain", ""), norm(contract.get("address")))
             out[key] = int(contract.get("latest_block") or 0)
+    return out
+
+
+def previous_contract_hashes(
+    payload: dict[str, Any],
+) -> dict[tuple[str, str, str], str]:
+    out: dict[tuple[str, str, str], str] = {}
+    for project in payload.get("projects", []):
+        symbol = str(project.get("symbol", "")).upper()
+        for contract in project.get("contracts", []):
+            if not complete_contract_payload(contract):
+                continue
+            block_hash = normalized_hex_bytes(
+                contract.get("target_latest_block_hash"),
+                32,
+                allow_zero=False,
+            )
+            if not block_hash:
+                continue
+            key = (
+                symbol,
+                contract.get("chain", ""),
+                norm(contract.get("address")),
+            )
+            out[key] = block_hash
     return out
 
 
@@ -633,7 +730,13 @@ def tx_receipts(item: dict[str, Any]) -> list[dict[str, Any]]:
         if chain not in SUPPORTED_CHAINS or not tx_hash:
             continue
         try:
-            receipt = rpc_call(chain, "eth_getTransactionReceipt", [tx_hash])
+            receipt = project_rpc_call(
+                chain,
+                "eth_getTransactionReceipt",
+                [tx_hash],
+            )
+        except RpcDeadlineExceeded:
+            raise
         except Exception as exc:
             rows.append({"chain": chain, "tx": tx_hash, "reason": tx.get("reason", ""), "error": str(exc)})
             continue
@@ -663,8 +766,65 @@ def stable_hash(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def project_item_scan_payload(item: dict[str, Any]) -> dict[str, Any]:
+    """Return only fields that can change project scan results."""
+    watch_addresses = []
+    for row in item.get("watch_addresses", []):
+        if not isinstance(row, dict):
+            continue
+        watch_addresses.append(
+            {
+                key: row.get(key)
+                for key in (
+                    "chain",
+                    "address",
+                    "label",
+                    "role",
+                    "level",
+                    "watch_quote",
+                    "watch_quote_tokens",
+                    "control_scope",
+                    "identity_status",
+                    "attribution",
+                )
+                if key in row
+            }
+        )
+    known_txs = []
+    for row in item.get("known_txs", []):
+        if not isinstance(row, dict):
+            continue
+        known_txs.append(
+            {
+                key: row.get(key)
+                for key in ("chain", "tx", "reason")
+                if key in row
+            }
+        )
+    facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+    return {
+        "symbol": str(item.get("symbol") or "").upper(),
+        "name": item.get("name", ""),
+        "priority": item.get("priority", ""),
+        "active_monitoring": item.get("active_monitoring", True),
+        "project_watch_skip_generic": bool(
+            item.get("project_watch_skip_generic")
+        ),
+        "project_lookback_blocks": item.get("project_lookback_blocks"),
+        "project_operator_probe": item.get("project_operator_probe", ""),
+        "contracts": extract_contracts(item),
+        "watch_addresses": watch_addresses,
+        "known_txs": known_txs,
+        "pool_ids": item.get("pool_ids", []),
+        "alpha_id": facts.get("alpha_id"),
+        "market_context": item.get("market_context", {}),
+        "event_distributions": item.get("event_distributions", []),
+        "required_checks": item.get("required_checks", []),
+    }
+
+
 def project_item_fingerprint(item: dict[str, Any]) -> str:
-    return stable_hash(item)
+    return stable_hash(project_item_scan_payload(item))
 
 
 def contract_checkpoint_key(contract: dict[str, Any]) -> str:
@@ -672,18 +832,233 @@ def contract_checkpoint_key(contract: dict[str, Any]) -> str:
 
 
 def project_scan_fingerprint(
-    config: dict[str, Any],
+    items: list[dict[str, Any]],
     previous: dict[str, Any],
     finality: int,
     lookback: int,
 ) -> str:
+    previous_tips = [
+        [symbol, chain, address, tip]
+        for (symbol, chain, address), tip in sorted(
+            previous_contract_tips(previous).items()
+        )
+    ]
+    previous_balance_rows = [
+        [symbol, chain, token, address, str(balance)]
+        for (symbol, chain, token, address), balance in sorted(
+            previous_balances(previous).items()
+        )
+    ]
+    previous_hash_rows = [
+        [symbol, chain, address, block_hash]
+        for (symbol, chain, address), block_hash in sorted(
+            previous_contract_hashes(previous).items()
+        )
+    ]
     return stable_hash(
         {
-            "config": config,
-            "previous": previous,
+            "items": [project_item_scan_payload(item) for item in items],
+            "previous_contract_tips": previous_tips,
+            "previous_contract_hashes": previous_hash_rows,
+            "previous_balances": previous_balance_rows,
             "finality": finality,
             "lookback": lookback,
         }
+    )
+
+
+def contract_scan_scope_fingerprint(
+    symbol: str,
+    contract: dict[str, Any],
+    watch_addresses: list[dict[str, Any]],
+    finality: int,
+    lookback: int,
+    decimals: int,
+) -> str:
+    return stable_hash(
+        {
+            "symbol": symbol,
+            "contract": {
+                "chain": str(contract.get("chain") or "").lower(),
+                "address": norm(contract.get("address")),
+            },
+            "watch_addresses": sorted(
+                watch_addresses,
+                key=lambda row: (
+                    str(row.get("chain") or ""),
+                    norm(row.get("address")),
+                ),
+            ),
+            "finality": finality,
+            "lookback": lookback,
+            "decimals": decimals,
+            "min_transfer_alert": str(
+                env_decimal(
+                    "ALPHA_PROJECT_MIN_TRANSFER_ALERT",
+                    "100000",
+                )
+            ),
+        }
+    )
+
+
+def validated_contract_progress(
+    payload: Any,
+    *,
+    contract_key: str,
+    scope_fingerprint: str,
+    previous_tip: int,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    if (
+        payload.get("contract_key") != contract_key
+        or payload.get("scope_fingerprint") != scope_fingerprint
+    ):
+        return {}
+    try:
+        raw_tip = int(payload["raw_latest_block"])
+        target_tip = int(payload["target_latest_block"])
+        requested_from = int(payload["requested_from_block"])
+        next_from = int(payload["next_from_block"])
+        covered_through = int(payload["covered_through_block"])
+        stored_previous = int(payload.get("previous_latest_block") or 0)
+    except (KeyError, TypeError, ValueError):
+        return {}
+    target_hash = normalized_hex_bytes(
+        payload.get("target_latest_block_hash"),
+        32,
+        allow_zero=False,
+    )
+    if (
+        stored_previous != previous_tip
+        or raw_tip < target_tip
+        or target_tip < 0
+        or not 0 <= requested_from <= target_tip + 1
+        or not requested_from <= next_from <= target_tip + 1
+        or covered_through != next_from - 1
+        or not target_hash
+    ):
+        return {}
+    normalized_transfer_lists: dict[str, list[dict[str, Any]]] = {}
+    for field, max_rows in (
+        ("recent_transfers", 40),
+        ("pending_transfer_candidates", None),
+    ):
+        transfers = payload.get(field)
+        if (
+            not isinstance(transfers, list)
+            or (max_rows is not None and len(transfers) > max_rows)
+        ):
+            return {}
+        normalized_transfers: list[dict[str, Any]] = []
+        for row in transfers:
+            if not isinstance(row, dict):
+                return {}
+            try:
+                block = int(row.get("block"))
+                index = int(row.get("log_index"))
+                Decimal(str(row.get("amount")))
+            except (InvalidOperation, TypeError, ValueError):
+                return {}
+            if (
+                block < requested_from
+                or block > covered_through
+                or index < 0
+                or not normalized_hex_bytes(
+                    row.get("tx"),
+                    32,
+                    allow_zero=False,
+                )
+                or not is_address(row.get("from"))
+                or not is_address(row.get("to"))
+            ):
+                return {}
+            normalized_transfers.append(dict(row))
+        normalized_transfer_lists[field] = normalized_transfers
+    return {
+        **payload,
+        "raw_latest_block": raw_tip,
+        "target_latest_block": target_tip,
+        "requested_from_block": requested_from,
+        "next_from_block": next_from,
+        "covered_through_block": covered_through,
+        "previous_latest_block": stored_previous,
+        "target_latest_block_hash": target_hash,
+        **normalized_transfer_lists,
+    }
+
+
+def complete_contract_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if (
+        payload.get("coverage_complete") is not True
+        or payload.get("transfer_coverage_complete") is not True
+        or payload.get("scan_status") != "complete"
+        or payload.get("error")
+        or int(payload.get("log_error_count") or 0) != 0
+    ):
+        return False
+    try:
+        requested = int(payload["requested_from_block"])
+        target = int(payload["target_latest_block"])
+        covered = int(payload["covered_through_block"])
+        next_from = int(payload["next_from_block"])
+        latest = int(payload["latest_block"])
+        decimals = int(payload["decimals"])
+        watch_address_count = int(payload["watch_address_count"])
+        balance_target_count = int(payload["balance_target_count"])
+        total_supply = Decimal(str(payload["total_supply"]))
+    except (InvalidOperation, KeyError, TypeError, ValueError):
+        return False
+    watch_addresses = payload.get("watch_addresses")
+    balances = payload.get("balances")
+    if not isinstance(balances, list):
+        return False
+    for balance in balances:
+        if not isinstance(balance, dict) or balance.get("error"):
+            return False
+        try:
+            current_balance = Decimal(str(balance["balance"]))
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return False
+        if current_balance < 0 or not is_address(balance.get("address")):
+            return False
+    expected_balance_keys = expected_balance_identities(
+        str(payload.get("chain") or "").lower(),
+        norm(payload.get("address")),
+        watch_addresses if isinstance(watch_addresses, list) else [],
+    )
+    actual_balance_keys = {
+        (
+            norm(balance.get("address")),
+            norm(balance.get("balance_token_address")),
+        )
+        for balance in balances
+    }
+    return bool(
+        requested >= 0
+        and requested <= target + 1
+        and covered == target
+        and latest == target
+        and next_from == target + 1
+        and 0 <= decimals <= 36
+        and total_supply >= 0
+        and isinstance(watch_addresses, list)
+        and all(
+            isinstance(row, dict) and is_address(row.get("address"))
+            for row in watch_addresses
+        )
+        and watch_address_count == len(watch_addresses)
+        and balance_target_count == len(expected_balance_keys)
+        and actual_balance_keys == expected_balance_keys
+        and len(actual_balance_keys) == len(balances)
+        and normalized_hex_bytes(
+            payload.get("target_latest_block_hash"),
+            32,
+            allow_zero=False,
+        )
     )
 
 
@@ -709,22 +1084,27 @@ def eligible_project_items(
 def validated_scan_progress(
     items: list[dict[str, Any]],
     scan_fingerprint: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+    bool,
+]:
     progress = read_json(PROGRESS_PATH, {})
     if not isinstance(progress, dict):
-        return [], [], False
+        return [], [], {}, False
     if progress.get("schema_version") != PROGRESS_SCHEMA_VERSION:
-        return [], [], False
+        return [], [], {}, False
     if progress.get("scan_fingerprint") != scan_fingerprint:
-        return [], [], False
+        return [], [], {}, False
     completed_entries = progress.get("completed_projects")
     if not isinstance(completed_entries, list) or len(completed_entries) > len(items):
-        return [], [], False
+        return [], [], {}, False
 
     completed_projects: list[dict[str, Any]] = []
     for index, entry in enumerate(completed_entries):
         if not isinstance(entry, dict) or index >= len(items):
-            return [], [], False
+            return [], [], {}, False
         item = items[index]
         project = entry.get("project")
         if (
@@ -732,7 +1112,7 @@ def validated_scan_progress(
             or entry.get("item_fingerprint") != project_item_fingerprint(item)
             or not isinstance(project, dict)
         ):
-            return [], [], False
+            return [], [], {}, False
         expected_contract_keys = [
             contract_checkpoint_key(contract) for contract in extract_contracts(item)
         ]
@@ -740,15 +1120,21 @@ def validated_scan_progress(
         if not isinstance(project_contracts, list) or any(
             not isinstance(contract, dict) for contract in project_contracts
         ):
-            return [], [], False
+            return [], [], {}, False
+        if project.get("coverage_complete") is not True or any(
+            not complete_contract_payload(contract)
+            for contract in project_contracts
+        ):
+            return [], [], {}, False
         actual_contract_keys = [
             contract_checkpoint_key(contract) for contract in project_contracts
         ]
         if actual_contract_keys != expected_contract_keys:
-            return [], [], False
+            return [], [], {}, False
         completed_projects.append(project)
 
     active_contracts: list[dict[str, Any]] = []
+    active_contract_progress: dict[str, Any] = {}
     active = progress.get("active_project")
     if active is not None:
         active_index = len(completed_projects)
@@ -759,12 +1145,12 @@ def validated_scan_progress(
             or active.get("item_fingerprint")
             != project_item_fingerprint(items[active_index])
         ):
-            return [], [], False
+            return [], [], {}, False
         stored_contracts = active.get("contracts")
         if not isinstance(stored_contracts, list) or any(
             not isinstance(contract, dict) for contract in stored_contracts
         ):
-            return [], [], False
+            return [], [], {}, False
         expected_contract_keys = [
             contract_checkpoint_key(contract)
             for contract in extract_contracts(items[active_index])
@@ -773,10 +1159,26 @@ def validated_scan_progress(
             contract_checkpoint_key(contract) for contract in stored_contracts
         ]
         if actual_contract_keys != expected_contract_keys[: len(actual_contract_keys)]:
-            return [], [], False
+            return [], [], {}, False
+        if any(
+            not complete_contract_payload(contract)
+            for contract in stored_contracts
+        ):
+            return [], [], {}, False
         active_contracts = stored_contracts
-    return completed_projects, active_contracts, bool(
-        completed_projects or active_contracts
+        raw_contract_progress = active.get("contract_progress")
+        if raw_contract_progress is not None:
+            if not isinstance(raw_contract_progress, dict):
+                return [], [], {}, False
+            if len(active_contracts) >= len(expected_contract_keys):
+                return [], [], {}, False
+            if raw_contract_progress.get("contract_key") != expected_contract_keys[
+                len(active_contracts)
+            ]:
+                return [], [], {}, False
+            active_contract_progress = raw_contract_progress
+    return completed_projects, active_contracts, active_contract_progress, bool(
+        completed_projects or active_contracts or active_contract_progress
     )
 
 
@@ -785,6 +1187,7 @@ def write_scan_progress(
     items: list[dict[str, Any]],
     completed_projects: list[dict[str, Any]],
     active_contracts: list[dict[str, Any]] | None,
+    active_contract_progress: dict[str, Any] | None = None,
 ) -> None:
     completed_entries = [
         {
@@ -801,6 +1204,7 @@ def write_scan_progress(
             "item_index": active_index,
             "item_fingerprint": project_item_fingerprint(items[active_index]),
             "contracts": active_contracts,
+            "contract_progress": active_contract_progress,
         }
     write_json(
         PROGRESS_PATH,
@@ -814,63 +1218,130 @@ def write_scan_progress(
 
 
 def build_snapshot() -> dict[str, Any]:
+    global PROJECT_DEADLINE_AT
+
     config = read_json(CONFIG_PATH, {"items": []})
     previous = load_previous()
     previous_tips = previous_contract_tips(previous)
+    previous_hashes = previous_contract_hashes(previous)
     previous_balance_map = previous_balances(previous)
     finality = int(os.environ.get("ALPHA_PROJECT_FINALITY_BLOCKS", "20"))
     lookback = int(os.environ.get("ALPHA_PROJECT_LOOKBACK_BLOCKS", "50000"))
     items, skipped = eligible_project_items(config)
     scan_fingerprint = project_scan_fingerprint(
-        config,
+        items,
         previous,
         finality,
         lookback,
     )
-    projects, active_contracts, resumed = validated_scan_progress(
+    (
+        projects,
+        active_contracts,
+        active_contract_progress,
+        resumed,
+    ) = validated_scan_progress(
         items,
         scan_fingerprint,
     )
+    try:
+        configured_budget = int(
+            os.environ.get(
+                "ALPHA_PROJECT_RUNTIME_BUDGET_SECONDS",
+                str(PROJECT_RUNTIME_BUDGET_SECONDS),
+            )
+        )
+    except ValueError:
+        configured_budget = PROJECT_RUNTIME_BUDGET_SECONDS
+    previous_deadline = PROJECT_DEADLINE_AT
+    PROJECT_DEADLINE_AT = time.monotonic() + min(
+        PROJECT_RUNTIME_BUDGET_SECONDS,
+        max(1, configured_budget),
+    )
+    snapshot_projects = list(projects)
+    try:
+        for item_index in range(len(projects), len(items)):
+            item = items[item_index]
+            resumed_contracts = (
+                active_contracts if item_index == len(projects) else []
+            )
+            resumed_progress = (
+                active_contract_progress
+                if item_index == len(projects)
+                else {}
+            )
 
-    for item_index in range(len(projects), len(items)):
-        item = items[item_index]
-        resumed_contracts = active_contracts if item_index == len(projects) else []
+            def checkpoint_contracts(
+                contracts: list[dict[str, Any]],
+            ) -> None:
+                write_scan_progress(
+                    scan_fingerprint,
+                    items,
+                    projects,
+                    contracts,
+                )
 
-        def checkpoint_contracts(contracts: list[dict[str, Any]]) -> None:
+            def checkpoint_contract_progress(
+                contracts: list[dict[str, Any]],
+                contract_progress: dict[str, Any],
+            ) -> None:
+                write_scan_progress(
+                    scan_fingerprint,
+                    items,
+                    projects,
+                    contracts,
+                    contract_progress,
+                )
+
+            project = build_project(
+                item,
+                previous_tips,
+                previous_balance_map,
+                finality,
+                lookback,
+                previous_hashes=previous_hashes,
+                resumed_contracts=resumed_contracts,
+                resumed_contract_progress=resumed_progress,
+                on_contract_complete=checkpoint_contracts,
+                on_contract_progress=checkpoint_contract_progress,
+            )
+            if project.get("coverage_complete") is not True:
+                snapshot_projects = projects + [project]
+                break
+            projects.append(project)
+            snapshot_projects = list(projects)
+            active_contracts = []
+            active_contract_progress = {}
             write_scan_progress(
                 scan_fingerprint,
                 items,
                 projects,
-                contracts,
+                None,
             )
+    finally:
+        PROJECT_DEADLINE_AT = previous_deadline
 
-        project = build_project(
-            item,
-            previous_tips,
-            previous_balance_map,
-            finality,
-            lookback,
-            resumed_contracts=resumed_contracts,
-            on_contract_complete=checkpoint_contracts,
+    coverage_complete = bool(
+        len(projects) == len(items)
+        and all(
+            project.get("coverage_complete") is True
+            for project in projects
         )
-        projects.append(project)
-        active_contracts = []
-        write_scan_progress(
-            scan_fingerprint,
-            items,
-            projects,
-            None,
-        )
-
-    alerts = [alert for project in projects for alert in project.get("alerts", [])]
+    )
+    alerts = [
+        alert
+        for project in snapshot_projects
+        for alert in project.get("alerts", [])
+    ]
     snapshot = {
         "generated_at": now_iso(),
         "config_path": str(CONFIG_PATH),
-        "project_count": len(projects),
+        "project_count": len(snapshot_projects),
+        "expected_project_count": len(items),
         "alert_count": len(alerts),
+        "coverage_complete": coverage_complete,
         "resumed_from_progress": resumed,
         "skipped": skipped,
-        "projects": projects,
+        "projects": snapshot_projects,
     }
     return snapshot
 
@@ -882,16 +1353,46 @@ def build_project(
     finality: int,
     lookback: int,
     *,
+    previous_hashes: dict[tuple[str, str, str], str] | None = None,
     resumed_contracts: list[dict[str, Any]] | None = None,
+    resumed_contract_progress: dict[str, Any] | None = None,
     on_contract_complete: Any = None,
+    on_contract_progress: Any = None,
 ) -> dict[str, Any]:
     symbol = str(item.get("symbol") or item.get("name") or "UNKNOWN").upper()
     contracts = list(resumed_contracts or [])
     alerts = []
     configured_contracts = extract_contracts(item)
-    for contract in configured_contracts[len(contracts) :]:
+    pending = False
+    for contract_index, contract in enumerate(
+        configured_contracts[len(contracts) :],
+        start=len(contracts),
+    ):
+        contract_progress = (
+            dict(resumed_contract_progress or {})
+            if contract_index == len(contracts)
+            else {}
+        )
+
+        def checkpoint_progress(progress: dict[str, Any]) -> None:
+            if on_contract_progress is not None:
+                on_contract_progress(contracts, progress)
+
         try:
-            contract_payload = build_contract(symbol, contract, item, previous_tips, previous_balance_map, finality, lookback)
+            contract_payload = build_contract(
+                symbol,
+                contract,
+                item,
+                previous_tips,
+                previous_balance_map,
+                finality,
+                lookback,
+                previous_hashes=previous_hashes,
+                resumed_progress=contract_progress,
+                on_progress=checkpoint_progress,
+            )
+        except RpcDeadlineExceeded:
+            raise
         except Exception as exc:
             previous_tip = previous_tips.get(
                 (symbol, contract["chain"], norm(contract["address"])),
@@ -899,13 +1400,16 @@ def build_project(
             )
             contract_payload = build_contract_error(contract, exc, previous_tip)
         contracts.append(contract_payload)
+        if contract_payload.get("coverage_complete") is False:
+            pending = True
+            break
         if on_contract_complete is not None:
             on_contract_complete(contracts)
 
     for contract_payload in contracts:
         alerts.extend(contract_payload.get("alerts", []))
     launches = launch_events(item)
-    receipts = tx_receipts(item)
+    receipts = [] if pending else tx_receipts(item)
 
     attribution_gap_states = sorted(
         {
@@ -931,7 +1435,7 @@ def build_project(
         )
 
     start_hours = int(os.environ.get("ALPHA_PROJECT_START_ALERT_HOURS", "36"))
-    for event in launches:
+    for event in [] if pending else launches:
         hours = float(event.get("hours_until_start", 9999))
         if -1 <= hours <= start_hours and str(item.get("priority", "")).startswith(("P0", "P1")):
             alerts.append(
@@ -951,6 +1455,10 @@ def build_project(
         "symbol": symbol,
         "name": item.get("name", ""),
         "priority": item.get("priority", ""),
+        "coverage_complete": bool(
+            not pending and len(contracts) == len(configured_contracts)
+        ),
+        "scan_status": "pending" if pending else "complete",
         "contracts": contracts,
         "launch_events": launches,
         "tx_receipts": receipts,
@@ -968,27 +1476,49 @@ def build_contract(
     previous_balance_map: dict[tuple[str, str, str, str], Decimal],
     finality: int,
     lookback: int,
+    *,
+    previous_hashes: dict[tuple[str, str, str], str] | None = None,
+    resumed_progress: dict[str, Any] | None = None,
+    on_progress: Any = None,
 ) -> dict[str, Any]:
     chain = contract["chain"]
     address = norm(contract["address"])
-    raw_tip = latest_block(chain)
-    tip = max(0, raw_tip - finality)
-    effective_lookback = max(1, int(item.get("project_lookback_blocks") or lookback))
-    previous_tip = previous_tips.get((symbol, chain, address), 0)
-    from_block = max(0, tip - effective_lookback)
-    if previous_tip:
-        from_block = max(from_block, previous_tip + 1)
-    decimals = token_decimals(chain, address)
-    total_supply = token_total_supply(chain, address, decimals)
-    watch_addresses, operator_attribution_state = effective_watch_addresses(
-        item,
-        chain,
-        address,
+    contract_key = contract_checkpoint_key(contract)
+    checkpoint_key = (symbol, chain, address)
+    previous_tip = previous_tips.get(checkpoint_key, 0)
+    published_tip = previous_tip
+    previous_hash = (previous_hashes or {}).get(checkpoint_key, "")
+    effective_lookback = max(
+        1,
+        int(item.get("project_lookback_blocks") or lookback),
     )
-    watch_addr_values = [row["address"] for row in watch_addresses]
-    logs, log_errors = get_transfer_logs(chain, address, watch_addr_values, from_block, tip)
-    if log_errors:
-        transfers: list[dict[str, Any]] = []
+    progress = (
+        dict(resumed_progress or {})
+        if (resumed_progress or {}).get("contract_key") == contract_key
+        else {"contract_key": contract_key, "phase": "metadata"}
+    )
+    if on_progress is not None:
+        on_progress(progress)
+
+    raw_tip = int(progress.get("raw_latest_block") or 0)
+    tip = int(progress.get("target_latest_block") or 0)
+    from_block = int(progress.get("requested_from_block") or 0)
+    decimals = 18
+    total_supply = ""
+    watch_addresses: list[dict[str, Any]] = []
+    operator_attribution_state = "unresolved"
+
+    def pending_payload(
+        reason: str,
+        log_errors: list[str] | None = None,
+    ) -> dict[str, Any]:
+        next_from = int(progress.get("next_from_block") or from_block)
+        covered_through = int(
+            progress.get("covered_through_block")
+            if progress.get("covered_through_block") is not None
+            else next_from - 1
+        )
+        transfer_complete = bool(tip >= 0 and next_from > tip)
         balances = preserved_balance_rows(
             symbol,
             chain,
@@ -996,42 +1526,330 @@ def build_contract(
             watch_addresses,
             previous_balance_map,
         )
-        alerts: list[dict[str, Any]] = []
-        checkpoint_tip = previous_tip
-    else:
-        transfers = [transfer_row(row, decimals) for row in logs[-40:]]
-        balances = build_balances(symbol, chain, address, decimals, watch_addresses, previous_balance_map)
+        errors = list(log_errors or [])
+        return {
+            "chain": chain,
+            "address": address,
+            "confidence": contract.get("confidence", ""),
+            "raw_latest_block": raw_tip,
+            "latest_block": previous_tip,
+            "previous_latest_block": previous_tip,
+            "from_block": from_block,
+            "requested_from_block": from_block,
+            "target_latest_block": tip,
+            "target_latest_block_hash": str(
+                progress.get("target_latest_block_hash") or ""
+            ),
+            "covered_through_block": covered_through,
+            "next_from_block": next_from,
+            "coverage_complete": False,
+            "transfer_coverage_complete": transfer_complete,
+            "scan_status": reason,
+            "finality_blocks": finality,
+            "lookback_blocks": effective_lookback,
+            "decimals": decimals,
+            "total_supply": total_supply,
+            "watch_address_count": len(watch_addresses),
+            "balance_target_count": len(
+                expected_balance_identities(
+                    chain,
+                    address,
+                    watch_addresses,
+                )
+            ),
+            "operator_attribution_state": operator_attribution_state,
+            "watch_addresses": watch_addresses,
+            "log_error_count": len(errors),
+            "log_errors": errors[:3],
+            "balances": balances,
+            "recent_transfers": [],
+            "alerts": [],
+        }
+
+    try:
+        if previous_tip:
+            normalized_previous_hash = normalized_hex_bytes(
+                previous_hash,
+                32,
+                allow_zero=False,
+            )
+            if not normalized_previous_hash:
+                return pending_payload(
+                    "previous_checkpoint_unverifiable"
+                )
+            if (
+                canonical_block_hash(chain, previous_tip)
+                != normalized_previous_hash
+            ):
+                return pending_payload("previous_checkpoint_reorg")
+        decimals = token_decimals(chain, address)
+        total_supply = token_total_supply(chain, address, decimals)
+        watch_addresses, operator_attribution_state = effective_watch_addresses(
+            item,
+            chain,
+            address,
+        )
+        if (
+            str(item.get("project_operator_probe") or "").lower()
+            == "owner"
+            and not watch_addresses
+            and operator_attribution_state
+            in {"owner_unresolved", "conflicting_owner_selectors", "unresolved"}
+        ):
+            raise RuntimeError("project operator scope unresolved")
+        scope_fingerprint = contract_scan_scope_fingerprint(
+            symbol,
+            contract,
+            watch_addresses,
+            finality,
+            effective_lookback,
+            decimals,
+        )
+        progress = validated_contract_progress(
+            progress,
+            contract_key=contract_key,
+            scope_fingerprint=scope_fingerprint,
+            previous_tip=previous_tip,
+        )
+        if progress:
+            tip = int(progress["target_latest_block"])
+            raw_tip = int(progress["raw_latest_block"])
+            from_block = int(progress["requested_from_block"])
+            if canonical_block_hash(chain, tip) != progress[
+                "target_latest_block_hash"
+            ]:
+                progress = {}
+        if not progress:
+            raw_tip = latest_block(chain)
+            tip = max(0, raw_tip - finality)
+            if published_tip and tip < published_tip:
+                from_block = published_tip + 1
+                return pending_payload("target_behind_checkpoint")
+            if previous_tip:
+                from_block = previous_tip + 1
+            else:
+                from_block = max(0, tip - effective_lookback)
+            from_block = min(from_block, tip + 1)
+            progress = {
+                "contract_key": contract_key,
+                "scope_fingerprint": scope_fingerprint,
+                "phase": "transfer_scan",
+                "raw_latest_block": raw_tip,
+                "target_latest_block": tip,
+                "target_latest_block_hash": canonical_block_hash(
+                    chain,
+                    tip,
+                ),
+                "previous_latest_block": previous_tip,
+                "requested_from_block": from_block,
+                "next_from_block": from_block,
+                "covered_through_block": from_block - 1,
+                "recent_transfers": [],
+                "pending_transfer_candidates": [],
+            }
+            if on_progress is not None:
+                on_progress(progress)
+
+        transfers = list(progress.get("recent_transfers") or [])
+        transfer_candidates = list(
+            progress.get("pending_transfer_candidates") or []
+        )
+        min_transfer = env_decimal(
+            "ALPHA_PROJECT_MIN_TRANSFER_ALERT",
+            "100000",
+        )
+
+        def checkpoint_chunk(
+            _start: int,
+            end: int,
+            completed_rows: list[dict[str, Any]],
+        ) -> None:
+            merged: dict[tuple[str, int], dict[str, Any]] = {
+                (str(row.get("tx") or "").lower(), int(row.get("log_index") or 0)): row
+                for row in transfers
+            }
+            for raw_row in completed_rows:
+                row = transfer_row(raw_row, decimals)
+                key = (
+                    str(row.get("tx") or "").lower(),
+                    int(row.get("log_index") or 0),
+                )
+                previous_row = merged.get(key)
+                if previous_row is not None and previous_row != row:
+                    raise RuntimeError(
+                        "project transfer checkpoint identity conflict"
+                    )
+                merged[key] = row
+            candidate_merged: dict[tuple[str, int], dict[str, Any]] = {
+                (
+                    str(row.get("tx") or "").lower(),
+                    int(row.get("log_index") or 0),
+                ): row
+                for row in transfer_candidates
+            }
+            for row in merged.values():
+                if (
+                    previous_tip > 0
+                    and Decimal(str(row.get("amount") or "0"))
+                    >= min_transfer
+                ):
+                    candidate_merged[
+                        (
+                            str(row.get("tx") or "").lower(),
+                            int(row.get("log_index") or 0),
+                        )
+                    ] = row
+            transfers[:] = sorted(
+                merged.values(),
+                key=lambda row: (
+                    int(row.get("block") or 0),
+                    int(row.get("log_index") or 0),
+                ),
+            )[-40:]
+            transfer_candidates[:] = sorted(
+                candidate_merged.values(),
+                key=lambda row: (
+                    int(row.get("block") or 0),
+                    int(row.get("log_index") or 0),
+                ),
+            )
+            progress.update(
+                {
+                    "phase": (
+                        "balances" if end >= tip else "transfer_scan"
+                    ),
+                    "next_from_block": end + 1,
+                    "covered_through_block": end,
+                    "recent_transfers": list(transfers),
+                    "pending_transfer_candidates": list(
+                        transfer_candidates
+                    ),
+                }
+            )
+            if on_progress is not None:
+                on_progress(progress)
+
+        next_from = int(progress["next_from_block"])
+        log_errors: list[str] = []
+        if watch_addresses and next_from <= tip:
+            _, log_errors = get_transfer_logs(
+                chain,
+                address,
+                [row["address"] for row in watch_addresses],
+                from_block,
+                tip,
+                resume_from_block=next_from,
+                on_chunk_complete=checkpoint_chunk,
+            )
+        elif not watch_addresses and next_from <= tip:
+            progress.update(
+                {
+                    "phase": "balances",
+                    "next_from_block": tip + 1,
+                    "covered_through_block": tip,
+                }
+            )
+            if on_progress is not None:
+                on_progress(progress)
+        if log_errors:
+            return pending_payload("transfer_scan_pending", log_errors)
+        if int(progress["next_from_block"]) <= tip:
+            return pending_payload("transfer_scan_pending")
+
+        current_target_hash = canonical_block_hash(chain, tip)
+        if current_target_hash != progress["target_latest_block_hash"]:
+            progress.update(
+                {
+                    "phase": "target_reorg_retry",
+                    "target_latest_block_hash": current_target_hash,
+                    "next_from_block": from_block,
+                    "covered_through_block": from_block - 1,
+                    "recent_transfers": [],
+                    "pending_transfer_candidates": [],
+                }
+            )
+            transfers.clear()
+            if on_progress is not None:
+                on_progress(progress)
+            return pending_payload("target_reorg_retry")
+
+        balances = build_balances(
+            symbol,
+            chain,
+            address,
+            decimals,
+            watch_addresses,
+            previous_balance_map,
+        )
+        balance_errors = [
+            str(row.get("error") or "balance RPC unavailable")
+            for row in balances
+            if row.get("error")
+        ]
+        expected_balance_keys = expected_balance_identities(
+            chain,
+            address,
+            watch_addresses,
+        )
+        actual_balance_keys = {
+            (
+                norm(row.get("address")),
+                norm(row.get("balance_token_address")),
+            )
+            for row in balances
+            if isinstance(row, dict)
+        }
+        if (
+            balance_errors
+            or actual_balance_keys != expected_balance_keys
+            or len(actual_balance_keys) != len(balances)
+        ):
+            if not balance_errors:
+                balance_errors.append("balance coverage incomplete")
+            return pending_payload("balance_scan_pending", balance_errors)
         alerts = build_contract_alerts(
             symbol,
             chain,
             address,
             previous_tip,
-            transfers,
+            transfer_candidates,
             balances,
             watch_addresses,
         )
-        checkpoint_tip = tip
-    return {
-        "chain": chain,
-        "address": address,
-        "confidence": contract.get("confidence", ""),
-        "raw_latest_block": raw_tip,
-        "latest_block": checkpoint_tip,
-        "previous_latest_block": previous_tip,
-        "from_block": from_block,
-        "finality_blocks": finality,
-        "lookback_blocks": effective_lookback,
-        "decimals": decimals,
-        "total_supply": total_supply,
-        "watch_address_count": len(watch_addresses),
-        "operator_attribution_state": operator_attribution_state,
-        "watch_addresses": watch_addresses,
-        "log_error_count": len(log_errors),
-        "log_errors": log_errors[:3],
-        "balances": balances,
-        "recent_transfers": transfers,
-        "alerts": alerts,
-    }
+        return {
+            "chain": chain,
+            "address": address,
+            "confidence": contract.get("confidence", ""),
+            "raw_latest_block": raw_tip,
+            "latest_block": tip,
+            "previous_latest_block": previous_tip,
+            "from_block": from_block,
+            "requested_from_block": from_block,
+            "target_latest_block": tip,
+            "target_latest_block_hash": progress[
+                "target_latest_block_hash"
+            ],
+            "covered_through_block": tip,
+            "next_from_block": tip + 1,
+            "coverage_complete": True,
+            "transfer_coverage_complete": True,
+            "scan_status": "complete",
+            "finality_blocks": finality,
+            "lookback_blocks": effective_lookback,
+            "decimals": decimals,
+            "total_supply": total_supply,
+            "watch_address_count": len(watch_addresses),
+            "balance_target_count": len(expected_balance_keys),
+            "operator_attribution_state": operator_attribution_state,
+            "watch_addresses": watch_addresses,
+            "log_error_count": 0,
+            "log_errors": [],
+            "balances": balances,
+            "recent_transfers": transfers,
+            "alerts": alerts,
+        }
+    except RpcDeadlineExceeded:
+        return pending_payload("deadline_exceeded")
 
 
 def build_contract_error(
@@ -1047,11 +1865,20 @@ def build_contract_error(
         "latest_block": previous_tip,
         "previous_latest_block": previous_tip,
         "from_block": previous_tip + 1 if previous_tip else 0,
+        "requested_from_block": previous_tip + 1 if previous_tip else 0,
+        "target_latest_block": previous_tip,
+        "target_latest_block_hash": "",
+        "covered_through_block": previous_tip,
+        "next_from_block": previous_tip + 1,
+        "coverage_complete": False,
+        "transfer_coverage_complete": False,
+        "scan_status": "error",
         "finality_blocks": 0,
         "lookback_blocks": 0,
         "decimals": 18,
         "total_supply": "",
         "watch_address_count": 0,
+        "balance_target_count": 0,
         "operator_attribution_state": "contract_error",
         "watch_addresses": [],
         "log_error_count": 1,
@@ -1061,6 +1888,36 @@ def build_contract_error(
         "alerts": [],
         "error": str(exc),
     }
+
+
+def expected_balance_identities(
+    chain: str,
+    token: str,
+    watch_addresses: list[dict[str, Any]],
+) -> set[tuple[str, str]]:
+    identities: set[tuple[str, str]] = set()
+    token = norm(token)
+    for item in watch_addresses:
+        address = norm(item.get("address"))
+        identities.add((address, token))
+        if not item.get("watch_quote"):
+            continue
+        requested = {
+            str(row).upper()
+            for row in item.get("watch_quote_tokens") or ["USDT"]
+        }
+        for quote_address, quote_symbol in QUOTE_TOKENS_BY_CHAIN.get(
+            chain,
+            {},
+        ).items():
+            if (
+                requested
+                and quote_symbol.upper() not in requested
+                and quote_address.upper() not in requested
+            ):
+                continue
+            identities.add((address, norm(quote_address)))
+    return identities
 
 
 def build_balances(
@@ -1080,6 +1937,8 @@ def build_balances(
         for balance_token, balance_symbol, balance_decimals, is_quote in balance_targets:
             try:
                 balance = token_balance(chain, balance_token, address, balance_decimals)
+            except RpcDeadlineExceeded:
+                raise
             except Exception as exc:
                 rows.append(
                     {
@@ -1205,6 +2064,7 @@ def build_contract_alerts(
                 "level": "CRITICAL" if amount >= min_transfer * Decimal(5) else "HIGH",
                 "block": row.get("block"),
                 "tx": row.get("tx"),
+                "log_index": row.get("log_index"),
                 "from": row.get("from"),
                 "to": row.get("to"),
                 "amount": str(amount),
@@ -1506,6 +2366,7 @@ def alert_keys(alerts: list[dict[str, Any]]) -> list[str]:
                         alert.get("chain", ""),
                         norm(alert.get("token")),
                         alert.get("tx", ""),
+                        str(alert.get("log_index", "")),
                         str(alert.get("amount", "")),
                     ]
                 )
@@ -1734,6 +2595,8 @@ def render(snapshot: dict[str, Any]) -> str:
         "",
         f"- generated_at: `{snapshot.get('generated_at')}`",
         f"- project_count: `{snapshot.get('project_count')}`",
+        f"- expected_project_count: `{snapshot.get('expected_project_count', snapshot.get('project_count'))}`",
+        f"- coverage_complete: `{snapshot.get('coverage_complete')}`",
         f"- alert_count: `{snapshot.get('alert_count')}`",
         f"- skipped: `{len(snapshot.get('skipped', []))}`",
         "",
@@ -1748,6 +2611,7 @@ def render(snapshot: dict[str, Any]) -> str:
                 f"- spot_action: {analysis.get('spot_action', '')}",
                 f"- perp_action: {analysis.get('perp_action', '')}",
                 f"- attention: {analysis.get('attention', '')}",
+                f"- scan_status: `{project.get('scan_status', '')}`",
                 f"- alerts: `{len(project.get('alerts', []))}`",
                 "",
                 "| Chain | Contract | Block Range | Watch Addresses | Supply |",
@@ -1889,21 +2753,31 @@ def short_tx(value: str) -> str:
 
 
 def publish_snapshot(snapshot: dict[str, Any]) -> None:
+    if snapshot.get("coverage_complete") is not True:
+        write_text(PENDING_REPORT_PATH, render(snapshot))
+        write_json(PENDING_PATH, snapshot)
+        return
     if not maybe_send_telegram(snapshot):
         raise RuntimeError("alpha project Telegram delivery unavailable")
     write_text(REPORT_PATH, render(snapshot))
     write_json(LATEST_PATH, snapshot)
     PROGRESS_PATH.unlink(missing_ok=True)
+    PENDING_PATH.unlink(missing_ok=True)
+    PENDING_REPORT_PATH.unlink(missing_ok=True)
 
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     snapshot = build_snapshot()
     publish_snapshot(snapshot)
-    print(LATEST_PATH)
-    print(REPORT_PATH)
+    if snapshot.get("coverage_complete") is True:
+        print(LATEST_PATH)
+        print(REPORT_PATH)
+    else:
+        print(PENDING_PATH)
+        print(PENDING_REPORT_PATH)
     print(f"projects={snapshot['project_count']} alerts={snapshot['alert_count']}")
-    return 0
+    return 0 if snapshot.get("coverage_complete") is True else 1
 
 
 if __name__ == "__main__":
