@@ -629,6 +629,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 "protocol": str(factory_row.get("protocol") or "v3"),
                 "fee": fee,
                 "quote": quote,
+                "quote_symbol": str(
+                    (labels.get(quote) or {}).get("symbol") or ""
+                ).strip().upper(),
+                "quote_decimals": (labels.get(quote) or {}).get("decimals"),
             }
             for factory, factory_row, fee, quote in fee_rows
         ],
@@ -782,7 +786,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             ):
                 errors += 1
                 continue
-            pools[pool] = {
+            pool_row = {
                 "address": pool,
                 "factory": factory,
                 "protocol": factory_row.get("protocol", "v3"),
@@ -791,6 +795,23 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 "fee": fee,
                 "as_of_block": latest,
             }
+            quote_row = labels.get(quote) or {}
+            quote_symbol = str(
+                quote_row.get("symbol") or ""
+            ).strip().upper()
+            try:
+                quote_decimals = int(quote_row.get("decimals"))
+            except (TypeError, ValueError):
+                quote_decimals = -1
+            if quote_symbol and 0 <= quote_decimals <= 36:
+                pool_row.update(
+                    {
+                        "quote_token": quote,
+                        "quote_symbol": quote_symbol,
+                        "quote_decimals": quote_decimals,
+                    }
+                )
+            pools[pool] = pool_row
         except OpeningTraceDeadlineExceeded:
             errors += 1
             break

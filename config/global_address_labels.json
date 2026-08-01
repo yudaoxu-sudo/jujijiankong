@@ -5,22 +5,30 @@
       {
         "address": "0x55d398326f99059ff775485246999027b3197955",
         "label": "BSC USDT",
-        "class": "quote_token"
+        "class": "quote_token",
+        "symbol": "USDT",
+        "decimals": 18
       },
       {
         "address": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
         "label": "WBNB",
-        "class": "quote_token"
+        "class": "quote_token",
+        "symbol": "WBNB",
+        "decimals": 18
       },
       {
         "address": "0xe9e7cea3dedca5984780bafc599bd69add087d56",
         "label": "BUSD",
-        "class": "quote_token"
+        "class": "quote_token",
+        "symbol": "BUSD",
+        "decimals": 18
       },
       {
         "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
         "label": "Binance-Peg USDC",
         "class": "quote_token",
+        "symbol": "USDC",
+        "decimals": 18,
         "evidence": "PancakeSwap official V3 SDK BSC examples use this USDC address; included in the bounded tracked quote-token matrix."
       },
       {

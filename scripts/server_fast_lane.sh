@@ -26,6 +26,7 @@ fi
 if [[ "${DISABLE_TELEGRAM:-0}" == "1" ]]; then
   export ALPHA_PRELAUNCH_TELEGRAM=0
   export ALPHA_PRICE_MOMENTUM_TELEGRAM=0
+  export ALPHA_HOLDER_TELEGRAM=0
 fi
 
 FAST_LANE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -56,18 +57,38 @@ wait "$collector_pid"
 wait "$user_collector_pid"
 run_step "${FAST_BINANCE_ALPHA_CATALOG_TIMEOUT_SECONDS:-20}" python3 scripts/binance_alpha_catalog_watch.py
 
+runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
 if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
   runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
-  runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
+  curated_watchlist="config/current_alpha_watchlist.json"
   runtime_age="$(
     python3 -c 'import os, sys, time; print(max(0, int(time.time() - os.path.getmtime(sys.argv[1]))))' \
       "$runtime_watchlist" 2>/dev/null || echo "$((runtime_ttl + 1))"
   )"
-  if [[ -s "$runtime_watchlist" ]] && (( runtime_age <= runtime_ttl )); then
+  runtime_policy_status="$(
+    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
+      "$runtime_watchlist" "$curated_watchlist" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
+  )"
+  if [[ "$runtime_policy_status" == "static_invalid" ]]; then
+    echo "server_fast_lane failed: curated Alpha monitoring policy is invalid" >&2
+    exit 78
+  fi
+  if [[ -s "$runtime_watchlist" ]] \
+    && (( runtime_age <= runtime_ttl )) \
+    && [[ "$runtime_policy_status" == "runtime_valid" ]]; then
     export ALPHA_WATCHLIST_PATH="$runtime_watchlist"
   else
-    export ALPHA_WATCHLIST_PATH="config/current_alpha_watchlist.json"
-    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) fast lane using curated watchlist fallback"
+    export ALPHA_WATCHLIST_PATH="$curated_watchlist"
+    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) fast lane using curated watchlist fallback after runtime policy check"
+  fi
+else
+  configured_policy_status="$(
+    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
+      "$ALPHA_WATCHLIST_PATH" "config/current_alpha_watchlist.json" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
+  )"
+  if [[ "$configured_policy_status" != "runtime_valid" ]]; then
+    echo "server_fast_lane failed: configured Alpha watchlist violates the curated monitoring policy" >&2
+    exit 78
   fi
 fi
 
@@ -77,10 +98,13 @@ run_step "${FAST_ALPHA_PRELAUNCH_TIMEOUT_SECONDS:-15}" python3 scripts/alpha_pre
 prelaunch_pid=$!
 run_step "${FAST_PERP_OI_FUNDING_TIMEOUT_SECONDS:-25}" python3 scripts/perp_oi_funding_watch.py &
 perp_pid=$!
+run_step "${FAST_ALPHA_LIQUIDITY_TIMEOUT_SECONDS:-40}" python3 scripts/alpha_liquidity_retention_watch.py &
+liquidity_pid=$!
 wait "$prediction_pid"
 wait "$prelaunch_pid"
 wait "$perp_pid"
 run_step "${FAST_ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS:-25}" python3 scripts/alpha_price_momentum_watch.py
+wait "$liquidity_pid"
 run_step "${FAST_TELEGRAM_FLUSH_TIMEOUT_SECONDS:-15}" python3 scripts/telegram_signal_collector.py --flush-pending
 python3 scripts/fast_lane_health.py \
   --failure-file "$FAST_LANE_FAILURE_FILE" \

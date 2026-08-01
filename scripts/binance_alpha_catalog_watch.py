@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Any
 import urllib.request
 
@@ -94,6 +96,122 @@ def validate_static_watchlist(payload: Any) -> dict[str, Any]:
     if any(not isinstance(item, dict) for item in payload["items"]):
         raise ValueError("static Alpha watchlist items must be objects")
     return payload
+
+
+def normalized_monitoring_policy(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Alpha watchlist must be an object")
+    raw_policy = payload.get("monitoring_policy")
+    if raw_policy is None:
+        return {}
+    if not isinstance(raw_policy, dict):
+        raise ValueError("monitoring_policy must be an object")
+    if raw_policy.get("mode") != "exclusive_symbols":
+        raise ValueError("monitoring_policy mode must be exclusive_symbols")
+    raw_symbols = raw_policy.get("symbols")
+    if not isinstance(raw_symbols, list):
+        raise ValueError("monitoring_policy symbols must be a list")
+    symbols = sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in raw_symbols
+            if str(symbol or "").strip()
+        }
+    )
+    if not symbols:
+        raise ValueError("monitoring_policy symbols must not be empty")
+    return {"mode": "exclusive_symbols", "symbols": symbols}
+
+
+def monitoring_policy_fingerprint(policy: dict[str, Any]) -> str:
+    if not policy:
+        return ""
+    encoded = json.dumps(
+        policy,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def active_monitoring_symbols(payload: Any) -> set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    return {
+        str(item.get("symbol") or "").strip().upper()
+        for item in payload.get("items", [])
+        if isinstance(item, dict)
+        and item.get("active_monitoring") is not False
+        and str(item.get("symbol") or "").strip()
+    }
+
+
+def apply_monitoring_policy(
+    items: list[dict[str, Any]],
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not policy:
+        return items
+    focused = set(policy["symbols"])
+    scoped: list[dict[str, Any]] = []
+    for raw_item in items:
+        item = copy.deepcopy(raw_item)
+        symbol = str(item.get("symbol") or "").strip().upper()
+        item["active_monitoring"] = bool(symbol and symbol in focused)
+        scoped.append(item)
+    return scoped
+
+
+def watchlist_policy_compatible(
+    runtime_watchlist: Any,
+    static_watchlist: Any,
+) -> bool:
+    try:
+        policy = normalized_monitoring_policy(static_watchlist)
+        runtime_policy = normalized_monitoring_policy(runtime_watchlist)
+    except ValueError:
+        return False
+    if not policy or runtime_policy != policy:
+        return False
+    focused = set(policy["symbols"])
+    return (
+        active_monitoring_symbols(static_watchlist) == focused
+        and active_monitoring_symbols(runtime_watchlist) == focused
+        and runtime_watchlist.get("monitoring_policy_fingerprint")
+        == monitoring_policy_fingerprint(policy)
+    )
+
+
+def watchlist_policy_status(
+    runtime_path: Path,
+    static_path: Path = STATIC_WATCHLIST_PATH,
+    max_age_seconds: int | None = None,
+) -> str:
+    static_watchlist = read_json(static_path, {})
+    try:
+        policy = normalized_monitoring_policy(static_watchlist)
+    except ValueError:
+        return "static_invalid"
+    if (
+        not policy
+        or active_monitoring_symbols(static_watchlist)
+        != set(policy["symbols"])
+    ):
+        return "static_invalid"
+    if runtime_path.resolve() == static_path.resolve():
+        return "runtime_valid"
+    if max_age_seconds is not None:
+        try:
+            age_seconds = max(0, int(time.time() - runtime_path.stat().st_mtime))
+        except OSError:
+            return "runtime_invalid"
+        if max_age_seconds < 1 or age_seconds > max_age_seconds:
+            return "runtime_stale"
+    runtime_watchlist = read_json(runtime_path, {})
+    if watchlist_policy_compatible(runtime_watchlist, static_watchlist):
+        return "runtime_valid"
+    return "runtime_invalid"
 
 
 def read_static_watchlist(path: Path = STATIC_WATCHLIST_PATH) -> dict[str, Any]:
@@ -2081,7 +2199,11 @@ def preserve_earliest_lifecycle_first_seen(
         return
 
 
-def catalog_summary_row(item: dict[str, Any]) -> dict[str, Any]:
+def catalog_summary_row(
+    item: dict[str, Any],
+    *,
+    active_monitoring: bool | None = None,
+) -> dict[str, Any]:
     contracts = [
         row
         for row in item.get("contracts", [])
@@ -2101,6 +2223,11 @@ def catalog_summary_row(item: dict[str, Any]) -> dict[str, Any]:
         ),
         "alpha_id": facts.get("alpha_id", ""),
         "cohort_source": facts.get("catalog_cohort_source", ""),
+        "active_monitoring": (
+            item.get("active_monitoring") is not False
+            if active_monitoring is None
+            else active_monitoring
+        ),
     }
 
 
@@ -2412,9 +2539,27 @@ def build_runtime_watchlist(
             not in covered_symbol_openings
         )
     ]
+    monitoring_policy = normalized_monitoring_policy(static_watchlist)
+    items = apply_monitoring_policy(items, monitoring_policy)
+    focused_symbols = set(monitoring_policy.get("symbols", []))
+
+    def candidate_is_active(item: dict[str, Any]) -> bool:
+        if monitoring_policy:
+            return str(item.get("symbol") or "").strip().upper() in focused_symbols
+        return item.get("active_monitoring") is not False
+
+    active_symbols = sorted(active_monitoring_symbols({"items": items}))
     payload = {
         "generated_at": now_iso(current),
         "runtime_source": "curated_plus_binance_alpha_public_catalog_and_verified_signals",
+        "monitoring_policy": monitoring_policy,
+        "monitoring_policy_fingerprint": monitoring_policy_fingerprint(
+            monitoring_policy
+        ),
+        "active_monitoring_item_count": sum(
+            item.get("active_monitoring") is not False for item in items
+        ),
+        "active_monitoring_symbols": active_symbols,
         "catalog_retention_days": retention_days,
         "catalog_current_eligible_count": len(current_eligible),
         "catalog_retained_eligible_count": retained_eligible_count,
@@ -2431,7 +2576,10 @@ def build_runtime_watchlist(
         "registry_pending_count": len(registry_pending),
         "registry_selected": [
             {
-                **catalog_summary_row(item),
+                **catalog_summary_row(
+                    item,
+                    active_monitoring=candidate_is_active(item),
+                ),
                 "source": "telegram_signal_receipt_verified",
             }
             for item in registry_lifecycle_targets
@@ -2454,6 +2602,14 @@ def public_summary(
     lookahead_hours: int,
     max_selected: int,
 ) -> dict[str, Any]:
+    monitoring_policy = normalized_monitoring_policy(runtime_watchlist)
+    focused_symbols = set(monitoring_policy.get("symbols", []))
+
+    def candidate_is_active(item: dict[str, Any]) -> bool:
+        if monitoring_policy:
+            return str(item.get("symbol") or "").strip().upper() in focused_symbols
+        return item.get("active_monitoring") is not False
+
     return {
         "schema": "binance_alpha_catalog_watch.v1",
         "status": "pass",
@@ -2461,6 +2617,16 @@ def public_summary(
         "lookback_hours": lookback_hours,
         "lookahead_hours": lookahead_hours,
         "supported_chains": sorted(SUPPORTED_CHAINS),
+        "monitoring_policy": monitoring_policy,
+        "monitoring_policy_fingerprint": str(
+            runtime_watchlist.get("monitoring_policy_fingerprint") or ""
+        ),
+        "active_monitoring_item_count": int(
+            runtime_watchlist.get("active_monitoring_item_count") or 0
+        ),
+        "active_monitoring_symbols": list(
+            runtime_watchlist.get("active_monitoring_symbols") or []
+        ),
         "max_selected": max_selected,
         "official_token_count": token_count,
         "supported_schema_count": int(
@@ -2507,7 +2673,13 @@ def public_summary(
             runtime_watchlist.get("static_time_conflicts") or []
         ),
         "runtime_watchlist_item_count": len(runtime_watchlist.get("items", [])),
-        "selected": [catalog_summary_row(item) for item in selected],
+        "selected": [
+            catalog_summary_row(
+                item,
+                active_monitoring=candidate_is_active(item),
+            )
+            for item in selected
+        ],
     }
 
 

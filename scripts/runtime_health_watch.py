@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS = 48
 DEFAULT_INTRADAY_CORE_HOURS = 72
 LIQUIDITY_RETENTION_STATE_SCHEMA_VERSION = 2
+PANCAKE_INFINITY_BIN_POOL_MANAGER = (
+    "0xc697d2898e0d09264376196696c51d7abbbaa4a9"
+)
 # Historical prelaunch receipt enforcement first became a runtime-health
 # invariant in commit 4bf8d53. Projects both discovered and opened before this
 # boundary cannot acquire a persisted delivery receipt retroactively.
@@ -49,6 +52,10 @@ CRITICAL_OUTPUTS = (
     ("perp_oi_funding", "output/perp_oi_funding_watch/latest.json"),
     ("alpha_price", "output/alpha_price_momentum_watch/latest.json"),
     ("alpha_holders", "output/alpha_holder_concentration_watch/latest.json"),
+    (
+        "alpha_liquidity",
+        "output/alpha_liquidity_retention_watch/latest.json",
+    ),
     ("surf_aux", "output/surf_aux_market_watch/latest.json"),
     ("telegram_bot", "output/telegram_signals/state.json"),
     ("telegram_user", "output/telegram_user_signals/state.json"),
@@ -260,7 +267,7 @@ def row_contract_identities(
         address = str(row.get("contract") or "").lower()
         chain = str(row.get("chain") or "bsc").lower()
         return {(chain, address)} if address else set()
-    if output_name == "holder":
+    if output_name in {"holder", "liquidity"}:
         address = str(row.get("address") or "").lower()
         chain = str(row.get("chain") or "").lower()
         return {(chain, address)} if address else set()
@@ -545,6 +552,18 @@ def matching_rows_coverage_issue(
     return ""
 
 
+def matching_opening_nonhistorical_coverage_issue(
+    rows: list[dict[str, Any]],
+) -> str:
+    adjusted_rows = []
+    for row in rows:
+        adjusted = dict(row)
+        if adjusted.get("status") == "opened":
+            adjusted["opening_liquidity_coverage_complete"] = True
+        adjusted_rows.append(adjusted)
+    return matching_rows_coverage_issue("opening", adjusted_rows)
+
+
 def matching_rows_coverage_warning(
     output_name: str,
     rows: list[dict[str, Any]],
@@ -651,27 +670,73 @@ def opening_has_verified_liquidity_pool_scope(
             continue
         if (
             event.get("status") != "opened"
-            or event.get("opening_liquidity_scope_complete") is not True
-            or not valid_hex_value(
-                event.get("opening_liquidity_watch_scope_hash"),
-                64,
-            )
         ):
             continue
-        quote = str((event.get("quote") or {}).get("address") or "").lower()
+        quote_meta = (
+            event.get("quote")
+            if isinstance(event.get("quote"), dict)
+            else {}
+        )
+        quote = str(quote_meta.get("address") or "").lower()
+        quote_symbol = str(quote_meta.get("symbol") or "").strip()
+        try:
+            quote_decimals = int(quote_meta.get("decimals"))
+        except (TypeError, ValueError):
+            quote_decimals = -1
         if (
             str(event.get("chain") or "").lower() != chain
             or not valid_hex_value(token, 40, "0x")
             or not valid_hex_value(quote, 40, "0x")
             or quote == token
+            or not quote_symbol
+            or quote_decimals < 0
+            or quote_decimals > 36
         ):
             continue
+
+        def verified_pool_pair(pool: dict[str, Any]) -> bool:
+            pair = {
+                str(pool.get("token0") or "").lower(),
+                str(pool.get("token1") or "").lower(),
+            }
+            if (
+                len(pair) != 2
+                or token not in pair
+                or not all(valid_hex_value(value, 40, "0x") for value in pair)
+            ):
+                return False
+            pool_quote = str(pool.get("quote_token") or "").lower()
+            pool_quote_symbol = str(
+                pool.get("quote_symbol") or ""
+            ).strip()
+            try:
+                pool_quote_decimals = int(pool.get("quote_decimals"))
+            except (TypeError, ValueError):
+                pool_quote_decimals = -1
+            if not (
+                valid_hex_value(pool_quote, 40, "0x")
+                and pool_quote_symbol
+                and 0 <= pool_quote_decimals <= 36
+            ):
+                pool_quote = quote
+                pool_quote_symbol = quote_symbol
+                pool_quote_decimals = quote_decimals
+            return bool(
+                pool_quote != token
+                and pool_quote in pair
+                and pool_quote_symbol
+                and 0 <= pool_quote_decimals <= 36
+            )
 
         v3_scope = (
             event.get("opening_v3_pool_scope")
             if isinstance(event.get("opening_v3_pool_scope"), dict)
             else {}
         )
+        try:
+            v3_as_of_block = int(v3_scope.get("as_of_block") or 0)
+        except (TypeError, ValueError):
+            v3_as_of_block = 0
         if (
             v3_scope.get("schema") != "opening_v3_factory_matrix.v2"
             or v3_scope.get("complete") is not True
@@ -680,6 +745,7 @@ def opening_has_verified_liquidity_pool_scope(
             or not valid_hex_value(
                 v3_scope.get("as_of_block_hash"), 64, "0x"
             )
+            or v3_as_of_block <= 0
         ):
             continue
         v3_pools = v3_scope.get("pools")
@@ -689,11 +755,7 @@ def opening_has_verified_liquidity_pool_scope(
             isinstance(pool, dict)
             and valid_hex_value(pool.get("address"), 40, "0x")
             and valid_hex_value(pool.get("factory"), 40, "0x")
-            and {
-                str(pool.get("token0") or "").lower(),
-                str(pool.get("token1") or "").lower(),
-            }
-            == {token, quote}
+            and verified_pool_pair(pool)
             and str(pool.get("fee") or "").isdigit()
             and int(pool["fee"]) > 0
             for pool in v3_pools
@@ -708,17 +770,25 @@ def opening_has_verified_liquidity_pool_scope(
         v4_pools = v4_scope.get("pools")
         if not isinstance(v4_pools, list):
             continue
+        try:
+            v4_as_of_block = int(v4_scope.get("as_of_block") or 0)
+        except (TypeError, ValueError):
+            v4_as_of_block = 0
+        if (
+            v4_scope.get("schema") != "opening_v4_manager_scope.v2"
+            or v4_scope.get("complete") is not True
+        ):
+            continue
         if v4_scope.get("applicable") is True:
             if (
-                v4_scope.get("schema") != "opening_v4_manager_scope.v2"
-                or v4_scope.get("complete") is not True
-                or v4_scope.get("snapshot_coherent") is not True
+                v4_scope.get("snapshot_coherent") is not True
                 or not valid_hex_value(
                     v4_scope.get("configuration_hash"), 64
                 )
                 or not valid_hex_value(
                     v4_scope.get("as_of_block_hash"), 64, "0x"
                 )
+                or v4_as_of_block <= 0
             ):
                 continue
         elif v4_pools:
@@ -726,21 +796,33 @@ def opening_has_verified_liquidity_pool_scope(
         if not all(
             isinstance(pool, dict)
             and valid_hex_value(pool.get("address"), 40, "0x")
+            and str(pool.get("address") or "").lower()
+            != PANCAKE_INFINITY_BIN_POOL_MANAGER
             and str(pool.get("pool_manager") or "").lower()
             == str(pool.get("address") or "").lower()
             and str(pool.get("v4_manager_type") or "").lower() == "cl"
             and valid_hex_value(pool.get("pool_id"), 64, "0x")
-            and {
-                str(pool.get("token0") or "").lower(),
-                str(pool.get("token1") or "").lower(),
-            }
-            == {token, quote}
+            and verified_pool_pair(pool)
             for pool in v4_pools
         ):
             continue
         if v3_pools or v4_pools:
             return True
     return False
+
+
+def opening_liquidity_gap_is_historical_only(
+    opening_path: Path,
+    identity: tuple[str, str],
+    detail: str,
+) -> bool:
+    return bool(
+        detail == "opening liquidity flow coverage incomplete"
+        and opening_has_verified_liquidity_pool_scope(
+            opening_path,
+            identity,
+        )
+    )
 
 
 def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
@@ -899,6 +981,57 @@ def retention_flow_coverage_issue(row: dict[str, Any]) -> str:
     if latest != scan_to:
         return "retention flow checkpoint did not reach scan tip"
     return ""
+
+
+def standalone_liquidity_snapshot_issue(path: Path) -> str:
+    payload = read_json(path, {})
+    if payload.get("schema") != "alpha_liquidity_retention_watch.v1":
+        return "standalone liquidity output schema invalid"
+    if payload.get("status") != "healthy":
+        return "standalone liquidity scan unhealthy"
+    if payload.get("delivery_status") != "complete":
+        return "standalone liquidity alert delivery incomplete"
+    try:
+        issue_count = int(payload.get("issue_count") or 0)
+        required_count = int(payload.get("required_count") or 0)
+        complete_count = int(payload.get("complete_count") or 0)
+        expected_count = int(payload["expected_count"])
+        processed_count = int(payload["processed_count"])
+        dropped_count = int(payload["dropped_count"])
+    except (KeyError, TypeError, ValueError):
+        return "standalone liquidity counters invalid"
+    if (
+        issue_count
+        or min(required_count, complete_count) < 0
+        or required_count != complete_count
+    ):
+        return "standalone liquidity required coverage incomplete"
+    expected_hash = str(payload.get("expected_identity_hash") or "")
+    processed_hash = str(payload.get("processed_identity_hash") or "")
+    if (
+        min(expected_count, processed_count, dropped_count) < 0
+        or dropped_count
+        or expected_count != processed_count
+        or expected_hash != processed_hash
+        or not valid_hex_value(expected_hash, 64)
+    ):
+        return "standalone liquidity eligible identity coverage incomplete"
+    return ""
+
+
+def liquidity_retention_required(
+    opening_path: Path,
+    identity: tuple[str, str],
+    listing: datetime | None,
+    current: datetime,
+) -> bool:
+    return bool(
+        opening_has_verified_liquidity_pool_scope(opening_path, identity)
+        and not (
+            listing is not None
+            and current > listing + timedelta(days=30)
+        )
+    )
 
 
 def liquidity_retention_coverage_issue(row: dict[str, Any]) -> str:
@@ -1121,6 +1254,40 @@ def runtime_watchlist_contracts(path: Path) -> set[tuple[str, str]]:
     return rows
 
 
+def runtime_watchlist_targets(path: Path) -> list[dict[str, Any]]:
+    payload = read_json(path, {})
+    targets: list[dict[str, Any]] = []
+    for item in payload.get("items", []):
+        if not isinstance(item, dict) or item.get("active_monitoring") is False:
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+        for contract in item.get("contracts", []):
+            if not isinstance(contract, dict):
+                continue
+            chain = str(
+                contract.get("chain") or item.get("chain") or ""
+            ).lower()
+            address = str(contract.get("address") or "").lower()
+            if not symbol or not chain or not address:
+                continue
+            targets.append(
+                {
+                    "symbol": symbol,
+                    "chain": chain,
+                    "contract": address,
+                    "listing_time_utc": str(
+                        facts.get("listing_time_utc") or ""
+                    ),
+                    "lifecycle_first_seen_at": str(
+                        facts.get("lifecycle_first_seen_at") or ""
+                    ),
+                    "active_monitoring": True,
+                }
+            )
+    return targets
+
+
 def effective_runtime_watchlist_path(root: Path) -> Path:
     configured = os.environ.get("ALPHA_WATCHLIST_PATH", "").strip()
     if configured:
@@ -1132,7 +1299,83 @@ def effective_runtime_watchlist_path(root: Path) -> Path:
         / "binance_alpha_catalog_watch"
         / "current_watchlist.json"
     )
-    return generated
+    if generated.exists():
+        return generated
+    return root / "config" / "current_alpha_watchlist.json"
+
+
+def monitoring_focus_scope(
+    root: Path,
+    runtime_path: Path,
+) -> tuple[set[str] | None, str]:
+    static_path = root / "config" / "current_alpha_watchlist.json"
+    if not static_path.exists():
+        return set(), "curated Alpha monitoring policy is missing"
+    static_watchlist = read_json(static_path, {})
+    policy = static_watchlist.get("monitoring_policy")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("mode") != "exclusive_symbols"
+        or not isinstance(policy.get("symbols"), list)
+    ):
+        return set(), "curated Alpha monitoring policy invalid"
+    focused = {
+        str(symbol or "").strip().upper()
+        for symbol in policy["symbols"]
+        if str(symbol or "").strip()
+    }
+    if not focused:
+        return set(), "curated Alpha monitoring focus is empty"
+
+    def active_symbols(payload: dict[str, Any]) -> set[str]:
+        return {
+            str(item.get("symbol") or "").strip().upper()
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+            and item.get("active_monitoring") is not False
+            and str(item.get("symbol") or "").strip()
+        }
+
+    if active_symbols(static_watchlist) != focused:
+        return focused, "curated Alpha active symbols differ from monitoring focus"
+    runtime_watchlist = read_json(runtime_path, {})
+    if runtime_path.resolve() == static_path.resolve():
+        return focused, ""
+    try:
+        max_age_seconds = int(
+            os.environ.get(
+                "BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS",
+                "21600",
+            )
+        )
+        age_seconds = max(
+            0,
+            int(time.time() - runtime_path.stat().st_mtime),
+        )
+    except (OSError, ValueError):
+        return focused, "runtime Alpha watchlist freshness invalid"
+    if max_age_seconds < 1 or age_seconds > max_age_seconds:
+        return focused, "runtime Alpha watchlist is stale"
+    canonical_policy = {
+        "mode": "exclusive_symbols",
+        "symbols": sorted(focused),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            canonical_policy,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        runtime_watchlist.get("monitoring_policy") != canonical_policy
+        or runtime_watchlist.get("monitoring_policy_fingerprint")
+        != fingerprint
+        or active_symbols(runtime_watchlist) != focused
+    ):
+        return focused, "runtime Alpha watchlist monitoring policy mismatch"
+    return focused, ""
 
 
 def prelaunch_delivery_issue(
@@ -1322,6 +1565,26 @@ def alpha_coverage_evaluation(
         )
     issues: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    runtime_watchlist_path = effective_runtime_watchlist_path(root)
+    focus_symbols, focus_detail = monitoring_focus_scope(
+        root,
+        runtime_watchlist_path,
+    )
+    if focus_detail:
+        issues.append(
+            issue(
+                "alpha_monitoring_policy_mismatch",
+                "binance_alpha_catalog",
+                focus_detail,
+                f"alpha_monitoring_policy_mismatch:{focus_detail}",
+            )
+        )
+
+    def in_monitoring_focus(row: dict[str, Any]) -> bool:
+        if focus_symbols is None:
+            return row.get("active_monitoring") is not False
+        return str(row.get("symbol") or "").strip().upper() in focus_symbols
+
     static_time_conflicts = [
         row
         for row in catalog.get("static_time_conflicts", [])
@@ -1348,6 +1611,8 @@ def alpha_coverage_evaluation(
             )
         )
     for row in static_time_conflicts:
+        if not in_monitoring_focus(row):
+            continue
         symbol = str(row.get("symbol") or "UNKNOWN").upper()
         static_times = ",".join(
             str(value)
@@ -1372,8 +1637,13 @@ def alpha_coverage_evaluation(
     dropped_count = int(catalog.get("dropped_count") or 0)
     if dropped_count:
         dropped_rows = [
-            row for row in catalog.get("dropped", []) if isinstance(row, dict)
+            row
+            for row in catalog.get("dropped", [])
+            if isinstance(row, dict) and in_monitoring_focus(row)
         ]
+        if focus_symbols is not None and not dropped_rows:
+            dropped_count = 0
+    if dropped_count:
         dropped_symbols = ",".join(
             str(row.get("symbol") or "")
             for row in dropped_rows[:8]
@@ -1399,8 +1669,13 @@ def alpha_coverage_evaluation(
     unsupported_count = int(catalog.get("unsupported_count") or 0)
     if unsupported_count:
         unsupported_rows = [
-            row for row in catalog.get("unsupported", []) if isinstance(row, dict)
+            row
+            for row in catalog.get("unsupported", [])
+            if isinstance(row, dict) and in_monitoring_focus(row)
         ]
+        if focus_symbols is not None:
+            unsupported_count = len(unsupported_rows)
+    if unsupported_count:
         labels = ",".join(
             f"{row.get('symbol')}@{row.get('chain')}"
             for row in unsupported_rows[:8]
@@ -1416,7 +1691,7 @@ def alpha_coverage_evaluation(
     pending_registry = [
         row
         for row in catalog.get("registry_pending", [])
-        if isinstance(row, dict)
+        if isinstance(row, dict) and in_monitoring_focus(row)
     ]
     for row in pending_registry:
         symbol = str(row.get("symbol") or "UNKNOWN").upper()
@@ -1430,28 +1705,76 @@ def alpha_coverage_evaluation(
                 f"alpha_launch_candidate_gap:{project_key}:{reasons}",
             )
         )
-    selected = [
+    catalog_selected = [
         row
         for row in (
             list(catalog.get("selected", []))
             + list(catalog.get("registry_selected", []))
         )
-        if isinstance(row, dict) and row.get("symbol")
+        if isinstance(row, dict)
+        and row.get("symbol")
+        and in_monitoring_focus(row)
+        and row.get("active_monitoring") is not False
+    ]
+    runtime_targets = [
+        row
+        for row in runtime_watchlist_targets(runtime_watchlist_path)
+        if in_monitoring_focus(row)
     ]
     selected_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in selected:
+    for row in runtime_targets:
         identity = (
             str(row.get("chain") or "").lower(),
             str(row.get("contract") or "").lower(),
         )
         if identity[0] and identity[1]:
-            selected_by_identity[identity] = row
+            selected_by_identity[identity] = dict(row)
+    catalog_identities: set[tuple[str, str]] = set()
+    for row in catalog_selected:
+        identity = (
+            str(row.get("chain") or "").lower(),
+            str(row.get("contract") or "").lower(),
+        )
+        if not identity[0] or not identity[1]:
+            continue
+        catalog_identities.add(identity)
+        merged = selected_by_identity.get(identity, {})
+        selected_by_identity[identity] = {
+            **merged,
+            **{
+                key: value
+                for key, value in row.items()
+                if value not in (None, "")
+            },
+        }
+    for row in runtime_targets:
+        identity = (
+            str(row.get("chain") or "").lower(),
+            str(row.get("contract") or "").lower(),
+        )
+        if identity not in catalog_identities:
+            symbol = str(row.get("symbol") or "UNKNOWN").upper()
+            issues.append(
+                issue(
+                    "alpha_catalog_focus_missing",
+                    symbol,
+                    f"{symbol} is active in the runtime focus but absent from the current catalog summary",
+                    f"alpha_catalog_focus_missing:{identity[0]}:{identity[1]}",
+                )
+            )
     selected = list(selected_by_identity.values())
     if not selected:
+        if focus_symbols:
+            issues.append(
+                issue(
+                    "alpha_monitoring_focus_missing",
+                    "binance_alpha_catalog",
+                    "exclusive Alpha monitoring focus has no active contract identity",
+                    "alpha_monitoring_focus_missing",
+                )
+            )
         return issues, warnings
-    runtime_contracts = runtime_watchlist_contracts(
-        effective_runtime_watchlist_path(root)
-    )
+    runtime_contracts = runtime_watchlist_contracts(runtime_watchlist_path)
     current = (
         current or datetime.now(timezone.utc)
     ).astimezone(timezone.utc)
@@ -1463,6 +1786,10 @@ def alpha_coverage_evaluation(
         "intraday_required": root / "output" / "alpha_intraday_flow_watch" / "required_only_latest.json",
         "price": root / "output" / "alpha_price_momentum_watch" / "latest.json",
         "holder": root / "output" / "alpha_holder_concentration_watch" / "latest.json",
+        "liquidity": root
+        / "output"
+        / "alpha_liquidity_retention_watch"
+        / "latest.json",
     }
     for row in selected:
         symbol = str(row.get("symbol") or "").upper()
@@ -1527,6 +1854,31 @@ def alpha_coverage_evaluation(
                 matching,
                 target_contract=contract,
             )
+            if (
+                output_name == "opening"
+                and opening_liquidity_gap_is_historical_only(
+                    output_paths["opening"],
+                    identity,
+                    detail,
+                )
+            ):
+                warnings.append(
+                    issue(
+                        "alpha_coverage_warning",
+                        symbol,
+                        (
+                            f"{symbol} opening: historical liquidity flow "
+                            "coverage incomplete; verified pool scope retained"
+                        ),
+                        (
+                            f"alpha_coverage_warning:{identity_label}:opening:"
+                            "historical_liquidity_flow_incomplete"
+                        ),
+                    )
+                )
+                detail = matching_opening_nonhistorical_coverage_issue(
+                    matching
+                )
             if detail:
                 issues.append(
                     issue(
@@ -1570,18 +1922,19 @@ def alpha_coverage_evaluation(
                         f"alpha_coverage_warning:{identity_label}:{output_name}:{warning_detail}",
                     )
                 )
-            if (
-                output_name == "holder"
-                and retention_flow_required(listing, current)
-            ):
-                retention_details = [
-                    detail
-                    for detail in (
-                        retention_flow_coverage_issue(candidate)
-                        for candidate in matching
-                    )
-                    if detail
-                ]
+            if output_name == "holder":
+                retention_details = (
+                    [
+                        detail
+                        for detail in (
+                            retention_flow_coverage_issue(candidate)
+                            for candidate in matching
+                        )
+                        if detail
+                    ]
+                    if retention_flow_required(listing, current)
+                    else []
+                )
                 if retention_details:
                     detail = retention_details[0]
                     issues.append(
@@ -1592,7 +1945,7 @@ def alpha_coverage_evaluation(
                             f"alpha_coverage_gap:{identity_label}:retention_flow:{detail}",
                         )
                     )
-                else:
+                elif retention_flow_required(listing, current):
                     retention_warnings = [
                         detail
                         for detail in (
@@ -1611,18 +1964,39 @@ def alpha_coverage_evaluation(
                                 f"alpha_coverage_warning:{identity_label}:retention_flow:{detail}",
                             )
                         )
-                if opening_has_verified_liquidity_pool_scope(
+                if liquidity_retention_required(
                     output_paths["opening"],
                     identity,
+                    listing,
+                    current,
                 ):
-                    liquidity_details = [
-                        detail
-                        for detail in (
-                            liquidity_retention_coverage_issue(candidate)
-                            for candidate in matching
+                    standalone_detail = standalone_liquidity_snapshot_issue(
+                        output_paths["liquidity"]
+                    )
+                    liquidity_matching = [
+                        candidate
+                        for candidate in snapshot_rows(
+                            output_paths["liquidity"]
                         )
-                        if detail
+                        if identity
+                        in row_contract_identities(candidate, "liquidity")
                     ]
+                    if standalone_detail:
+                        liquidity_details = [standalone_detail]
+                    elif not liquidity_matching:
+                        liquidity_details = [
+                            "standalone liquidity output does not match "
+                            "official contract"
+                        ]
+                    else:
+                        liquidity_details = [
+                            detail
+                            for detail in (
+                                liquidity_retention_coverage_issue(candidate)
+                                for candidate in liquidity_matching
+                            )
+                            if detail
+                        ]
                     if liquidity_details:
                         detail = liquidity_details[0]
                         issues.append(
@@ -1646,7 +2020,7 @@ def alpha_coverage_evaluation(
                                 liquidity_retention_coverage_warning(
                                     candidate
                                 )
-                                for candidate in matching
+                                for candidate in liquidity_matching
                             )
                             if detail
                         ]

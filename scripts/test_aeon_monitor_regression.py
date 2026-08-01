@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import time
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -644,6 +645,128 @@ Booster 20:10
 
 
 class BinanceAlphaCatalogRegressionTests(unittest.TestCase):
+    def test_exclusive_focus_keeps_only_grvt_active_after_catalog_retention(
+        self,
+    ) -> None:
+        catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
+        current = datetime(2026, 8, 1, 1, 0, tzinfo=timezone.utc)
+        grvt_address = "0x" + "1" * 40
+        aeon_address = "0x" + "2" * 40
+        static = {
+            "monitoring_policy": {
+                "mode": "exclusive_symbols",
+                "symbols": ["GRVT"],
+            },
+            "items": [
+                {
+                    "symbol": "GRVT",
+                    "priority": "P0_DEEP_REVIEW",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": grvt_address}
+                    ],
+                },
+                {
+                    "symbol": "AEON",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": False,
+                    "contracts": [
+                        {"chain": "bsc", "address": aeon_address}
+                    ],
+                },
+            ],
+        }
+        previous = {
+            "items": [
+                {
+                    "symbol": "AEON",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": aeon_address}
+                    ],
+                    "facts": {
+                        "alpha_id": "ALPHA_AEON",
+                        "listing_time_utc": "2026-07-28T01:00:00+00:00",
+                    },
+                }
+            ]
+        }
+        response = {
+            "code": "000000",
+            "success": True,
+            "data": [
+                {
+                    "alphaId": "ALPHA_OLD",
+                    "symbol": "OLD",
+                    "chainId": "56",
+                    "contractAddress": "0x" + "3" * 40,
+                    "listingTime": 1,
+                }
+            ],
+        }
+
+        payload, selected = catalog.build_runtime_watchlist(
+            static,
+            response,
+            current=current,
+            lookback_hours=168,
+            lookahead_hours=48,
+            previous_runtime_watchlist=previous,
+            retention_days=30,
+        )
+        active = [
+            item["symbol"]
+            for item in payload["items"]
+            if item.get("active_monitoring") is not False
+        ]
+        summary = catalog.public_summary(
+            current=current,
+            token_count=0,
+            selected=selected,
+            runtime_watchlist=payload,
+            lookback_hours=168,
+            lookahead_hours=48,
+            max_selected=64,
+        )
+
+        self.assertEqual(active, ["GRVT"])
+        self.assertEqual(payload["active_monitoring_symbols"], ["GRVT"])
+        self.assertFalse(summary["selected"][0]["active_monitoring"])
+        self.assertTrue(catalog.watchlist_policy_compatible(payload, static))
+        tampered = copy.deepcopy(payload)
+        next(
+            item for item in tampered["items"] if item["symbol"] == "AEON"
+        )["active_monitoring"] = True
+        self.assertFalse(catalog.watchlist_policy_compatible(tampered, static))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            static_path = root / "static.json"
+            runtime_path = root / "runtime.json"
+            static_path.write_text(json.dumps(static), encoding="utf-8")
+            runtime_path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(
+                catalog.watchlist_policy_status(runtime_path, static_path),
+                "runtime_valid",
+            )
+            self.assertEqual(
+                catalog.watchlist_policy_status(static_path, static_path),
+                "runtime_valid",
+            )
+            os.utime(runtime_path, (1, 1))
+            self.assertEqual(
+                catalog.watchlist_policy_status(
+                    runtime_path,
+                    static_path,
+                    1,
+                ),
+                "runtime_stale",
+            )
+            runtime_path.write_text(json.dumps(tampered), encoding="utf-8")
+            self.assertEqual(
+                catalog.watchlist_policy_status(runtime_path, static_path),
+                "runtime_invalid",
+            )
+
     def test_verified_pool_replaces_same_window_catalog_placeholder(self) -> None:
         catalog = importlib.import_module("scripts.binance_alpha_catalog_watch")
         placeholder = {
@@ -2389,6 +2512,36 @@ BSC: {contract}
 
 
 class RuntimeIntegrationRegressionTests(unittest.TestCase):
+    @staticmethod
+    def write_focus_config(
+        root: Path,
+        symbol: str,
+        *,
+        contract: str = "",
+        listing_time_utc: str = "",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        policy: dict[str, object] = {
+            "mode": "exclusive_symbols",
+            "symbols": [symbol],
+        }
+        item: dict[str, object] = {
+            "symbol": symbol,
+            "priority": "P0_DEEP_REVIEW",
+            "active_monitoring": True,
+            "contracts": (
+                [{"chain": "bsc", "address": contract}]
+                if contract
+                else []
+            ),
+        }
+        if listing_time_utc:
+            item["facts"] = {"listing_time_utc": listing_time_utc}
+        payload = {"monitoring_policy": policy, "items": [item]}
+        path = root / "config" / "current_alpha_watchlist.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return policy, item
+
     def test_generic_runtime_context_uses_aeon_watch_outputs(self) -> None:
         from scripts.telegram_signal_collector import runtime_context_from_snapshots
 
@@ -2492,6 +2645,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("SIGNAL_RUNTIME_CONTEXT=0", fast)
         self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", fast)
         self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", heavy)
+        self.assertIn("watchlist_policy_status", fast)
+        self.assertIn("watchlist_policy_status", heavy)
+        self.assertIn("runtime_policy_status", fast)
+        self.assertIn("runtime_policy_status", heavy)
+        self.assertIn("configured_policy_status", fast)
+        self.assertIn("configured_policy_status", heavy)
+        self.assertLess(
+            fast.index("configured_policy_status"),
+            fast.index("alpha_prelaunch_watch.py"),
+        )
+        self.assertLess(
+            heavy.index("configured_policy_status"),
+            heavy.index("alpha_project_watch.py"),
+        )
         self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', fast)
         self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', heavy)
         self.assertIn(
@@ -4305,11 +4472,119 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 root / "config" / "custom-alpha.json",
             )
 
+    def test_production_health_fails_when_curated_focus_config_is_missing(
+        self,
+    ) -> None:
+        import scripts.runtime_health_watch as health
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_path = root / "runtime.json"
+            runtime_path.write_text(
+                json.dumps({"items": []}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(health, "ROOT", root):
+                focus, detail = health.monitoring_focus_scope(
+                    root,
+                    runtime_path,
+                )
+
+        self.assertEqual(focus, set())
+        self.assertIn("policy is missing", detail)
+
+    def test_health_requires_focus_when_catalog_contains_only_other_candidates(
+        self,
+    ) -> None:
+        import scripts.binance_alpha_catalog_watch as catalog
+        from scripts.runtime_health_watch import alpha_coverage_issues
+
+        grvt_address = "0x" + "1" * 40
+        aeon_address = "0x" + "2" * 40
+        policy = {"mode": "exclusive_symbols", "symbols": ["GRVT"]}
+        watchlist = {
+            "monitoring_policy": policy,
+            "monitoring_policy_fingerprint": (
+                catalog.monitoring_policy_fingerprint(policy)
+            ),
+            "items": [
+                {
+                    "symbol": "GRVT",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": grvt_address}
+                    ],
+                },
+                {
+                    "symbol": "AEON",
+                    "active_monitoring": False,
+                    "contracts": [
+                        {"chain": "bsc", "address": aeon_address}
+                    ],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def write(relative: str, payload: dict[str, object]) -> None:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            static = copy.deepcopy(watchlist)
+            static.pop("monitoring_policy_fingerprint")
+            write("config/current_alpha_watchlist.json", static)
+            write(
+                "output/binance_alpha_catalog_watch/current_watchlist.json",
+                watchlist,
+            )
+            write(
+                "output/binance_alpha_catalog_watch/latest.json",
+                {
+                    "status": "pass",
+                    "monitoring_policy": policy,
+                    "selected": [
+                        {
+                            "symbol": "AEON",
+                            "chain": "bsc",
+                            "contract": aeon_address,
+                            "active_monitoring": False,
+                        }
+                    ],
+                    "unsupported_count": 1,
+                    "unsupported": [
+                        {"symbol": "AEON", "chain": "base"}
+                    ],
+                    "registry_pending": [
+                        {"symbol": "AEON", "reasons": ["fixture"]}
+                    ],
+                },
+            )
+
+            issues = alpha_coverage_issues(root)
+
+        self.assertTrue(
+            any(
+                row["kind"] == "alpha_catalog_focus_missing"
+                and row["name"] == "GRVT"
+                for row in issues
+            ),
+            issues,
+        )
+        self.assertFalse(any(row.get("name") == "AEON" for row in issues))
+
     def test_health_fails_when_recent_official_token_has_no_runtime_coverage(self) -> None:
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(
+                root,
+                "AEON",
+                contract="0x277add739c6e0477616948357af9e79fe1ec9b80",
+                listing_time_utc="2026-07-27T10:00:00+00:00",
+            )
             catalog_path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
             catalog_path.parent.mkdir(parents=True)
             catalog_path.write_text(
@@ -4348,6 +4623,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(root, "DROP")
             path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
             path.parent.mkdir(parents=True)
             path.write_text(
@@ -4356,13 +4632,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                         "status": "pass",
                         "selected": [],
                         "dropped_count": 2,
+                        "dropped": [
+                            {"symbol": "DROP", "chain": "bsc", "contract": "0x" + "1" * 40},
+                            {"symbol": "OTHER", "chain": "bsc", "contract": "0x" + "2" * 40},
+                        ],
                     }
                 ),
                 encoding="utf-8",
             )
             issues = alpha_coverage_issues(root)
 
-        self.assertEqual(issues[0]["kind"], "alpha_catalog_budget_exceeded")
+        self.assertTrue(
+            any(row["kind"] == "alpha_catalog_budget_exceeded" for row in issues),
+            issues,
+        )
 
     def test_health_reports_static_official_launch_time_conflict(
         self,
@@ -4371,6 +4654,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(root, "GRVT")
             path = (
                 root
                 / "output"
@@ -4402,8 +4686,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
             issues = alpha_coverage_issues(root)
 
-        self.assertEqual(issues[0]["kind"], "alpha_static_time_conflict")
-        self.assertEqual(issues[0]["name"], "GRVT")
+        conflict = next(
+            row for row in issues if row["kind"] == "alpha_static_time_conflict"
+        )
+        self.assertEqual(conflict["name"], "GRVT")
 
     def test_health_rejects_static_time_conflict_summary_mismatch(
         self,
@@ -4412,6 +4698,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(root, "GRVT")
             path = (
                 root
                 / "output"
@@ -4433,9 +4720,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
             issues = alpha_coverage_issues(root)
 
-        self.assertEqual(
-            issues[0]["kind"],
-            "alpha_static_time_conflict_summary_invalid",
+        self.assertTrue(
+            any(
+                row["kind"] == "alpha_static_time_conflict_summary_invalid"
+                for row in issues
+            ),
+            issues,
         )
 
     def test_legacy_prelaunch_receipt_gap_is_explicit_warning_only(self) -> None:
@@ -4500,6 +4790,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(root, "BASEONLY")
             path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
             path.parent.mkdir(parents=True)
             path.write_text(
@@ -4518,14 +4809,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
             issues = alpha_coverage_issues(root)
 
-        self.assertEqual(issues[0]["kind"], "alpha_unsupported_chain")
-        self.assertIn("BASEONLY@base", issues[0]["detail"])
+        unsupported = next(
+            row for row in issues if row["kind"] == "alpha_unsupported_chain"
+        )
+        self.assertIn("BASEONLY@base", unsupported["detail"])
 
     def test_health_reports_unready_launch_candidate(self) -> None:
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_focus_config(root, "GRVT")
             path = root / "output" / "binance_alpha_catalog_watch" / "latest.json"
             path.parent.mkdir(parents=True)
             path.write_text(
@@ -4550,9 +4844,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
             issues = alpha_coverage_issues(root)
 
-        self.assertEqual(issues[0]["kind"], "alpha_launch_candidate_gap")
-        self.assertEqual(issues[0]["name"], "GRVT")
-        self.assertIn("missing_exact_opening_time", issues[0]["detail"])
+        gap = next(
+            row for row in issues if row["kind"] == "alpha_launch_candidate_gap"
+        )
+        self.assertEqual(gap["name"], "GRVT")
+        self.assertIn("missing_exact_opening_time", gap["detail"])
 
     def test_prelaunch_health_requires_successful_delivery_receipt(self) -> None:
         from scripts.runtime_health_watch import prelaunch_delivery_issue
@@ -10861,8 +11157,18 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 raise RuntimeError("private-provider-secret")
             return [
                 {
+                    "address": token,
+                    "blockHash": "0x" + f"{bounds[0]:064x}",
                     "blockNumber": hex(bounds[0]),
+                    "data": "0x" + f"{1:064x}",
+                    "removed": False,
+                    "topics": [
+                        project.TRANSFER_TOPIC,
+                        project.topic_address(watched),
+                        project.topic_address(watched),
+                    ],
                     "transactionHash": "0x" + "3" * 64,
+                    "transactionIndex": "0x0",
                     "logIndex": "0x0",
                 }
             ]
@@ -10917,6 +11223,533 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "private-provider-secret",
             " ".join(result["log_errors"]),
         )
+
+    def test_project_log_row_cap_splits_and_single_block_fails_closed(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        token = "0x" + "1" * 40
+        watched = "0x" + "2" * 40
+        calls: list[tuple[int, int]] = []
+
+        def row(block: int) -> dict[str, object]:
+            return {
+                "address": token,
+                "blockHash": "0x" + f"{block:064x}",
+                "blockNumber": hex(block),
+                "data": "0x" + f"{1:064x}",
+                "removed": False,
+                "topics": [
+                    project.TRANSFER_TOPIC,
+                    project.topic_address(watched),
+                    project.topic_address(watched),
+                ],
+                "transactionHash": "0x" + f"{block:064x}",
+                "transactionIndex": "0x0",
+                "logIndex": "0x0",
+            }
+
+        def split_fetch(chain, method, params):
+            self.assertEqual(method, "eth_getLogs")
+            query = params[0]
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            calls.append((start, end))
+            if (start, end) in {(1, 4), (1, 2), (3, 4)}:
+                return [row(start), row(end)]
+            return [row(start)]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_PROJECT_LOG_CHUNK_BLOCKS": "4",
+                    "ALPHA_PROJECT_PROVIDER_MAX_ROWS_PER_QUERY": "2",
+                },
+            ),
+            mock.patch.object(project, "rpc_call", side_effect=split_fetch),
+        ):
+            rows, errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                1,
+                4,
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual([project.block_number(item) for item in rows], [1, 2, 3, 4])
+        self.assertIn((1, 2), calls)
+        self.assertIn((3, 4), calls)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_PROJECT_PROVIDER_MAX_ROWS_PER_QUERY": "2"},
+            ),
+            mock.patch.object(project, "rpc_call", return_value=[row(5), row(5)]),
+        ):
+            capped_rows, capped_errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                5,
+                5,
+            )
+
+        self.assertEqual(capped_rows, [])
+        self.assertEqual(capped_errors, ["eth_getLogs coverage truncated for 5-5"])
+        failed = project.build_contract_error(
+            {"chain": "bsc", "address": token},
+            RuntimeError("rpc failed"),
+            previous_tip=77,
+        )
+        self.assertEqual(failed["latest_block"], 77)
+        self.assertEqual(failed["from_block"], 78)
+
+        base = row(6)
+        normalized_duplicate = {
+            **base,
+            "address": str(base["address"]).upper(),
+            "blockHash": str(base["blockHash"]).upper(),
+            "blockNumber": "0x06",
+            "data": str(base["data"]).upper(),
+            "topics": [str(topic).upper() for topic in base["topics"]],
+            "transactionHash": str(base["transactionHash"]).upper(),
+            "transactionIndex": "0x00",
+            "logIndex": "0x00",
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_PROJECT_PROVIDER_MAX_ROWS_PER_QUERY": "128"},
+            ),
+            mock.patch.object(
+                project,
+                "rpc_call",
+                side_effect=[[base], [normalized_duplicate]],
+            ),
+        ):
+            normalized_rows, normalized_errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                6,
+                6,
+            )
+        self.assertEqual(normalized_errors, [])
+        self.assertEqual(len(normalized_rows), 1)
+
+        for field, value in (
+            ("blockHash", "0x" + "f" * 64),
+            ("data", "0x" + f"{2:064x}"),
+        ):
+            conflicting = {**base, field: value}
+            with mock.patch.object(
+                project,
+                "rpc_call",
+                side_effect=[[base], [conflicting]],
+            ):
+                conflict_rows, conflict_errors = project.get_transfer_logs(
+                    "bsc",
+                    token,
+                    [watched],
+                    6,
+                    6,
+                )
+            self.assertEqual(conflict_rows, [])
+            self.assertEqual(
+                conflict_errors,
+                ["eth_getLogs conflicting duplicate for 6-6"],
+            )
+
+        malformed = {**base, "transactionHash": ""}
+        with mock.patch.object(project, "rpc_call", return_value=[malformed]):
+            malformed_rows, malformed_errors = project.get_transfer_logs(
+                "bsc",
+                token,
+                [watched],
+                6,
+                6,
+            )
+        self.assertEqual(malformed_rows, [])
+        self.assertEqual(
+            malformed_errors,
+            ["eth_getLogs malformed identity for 6-6"],
+        )
+
+        for invalid_row in (
+            row(7),
+            {
+                **base,
+                "topics": [
+                    project.TRANSFER_TOPIC,
+                    project.topic_address("0x" + "9" * 40),
+                    project.topic_address(watched),
+                ],
+            },
+        ):
+            with mock.patch.object(project, "rpc_call", return_value=[invalid_row]):
+                invalid_rows, invalid_errors = project.get_transfer_logs(
+                    "bsc",
+                    token,
+                    [watched],
+                    6,
+                    6,
+                )
+            self.assertEqual(invalid_rows, [])
+            self.assertEqual(
+                invalid_errors,
+                ["eth_getLogs result outside query for 6-6"],
+            )
+
+        conflicting = {**base, "data": "0x" + f"{2:064x}"}
+        with (
+            mock.patch.object(project, "latest_block", return_value=6),
+            mock.patch.object(project, "token_decimals", return_value=18),
+            mock.patch.object(project, "token_total_supply", return_value="1000"),
+            mock.patch.object(
+                project,
+                "rpc_call",
+                side_effect=[[base], [conflicting]],
+            ),
+            mock.patch.object(
+                project,
+                "build_balances",
+                side_effect=AssertionError("conflicting logs must not advance"),
+            ),
+        ):
+            conflict_result = project.build_contract(
+                "TEST",
+                {"chain": "bsc", "address": token},
+                {
+                    "watch_addresses": [
+                        {"chain": "bsc", "address": watched}
+                    ]
+                },
+                {("TEST", "bsc", token): 5},
+                {},
+                finality=0,
+                lookback=10,
+            )
+        self.assertEqual(conflict_result["latest_block"], 5)
+        self.assertEqual(conflict_result["log_error_count"], 1)
+
+    def test_project_progress_resumes_completed_prefix_and_next_cycle_cursor(
+        self,
+    ) -> None:
+        import scripts.alpha_project_watch as project
+
+        token_a = "0x" + "1" * 40
+        token_b = "0x" + "2" * 40
+        config = {
+            "items": [
+                {
+                    "symbol": "FIRST",
+                    "priority": "P1_MONITOR",
+                    "contracts": [{"chain": "bsc", "address": token_a}],
+                },
+                {
+                    "symbol": "SECOND",
+                    "priority": "P1_MONITOR",
+                    "contracts": [{"chain": "bsc", "address": token_b}],
+                },
+            ]
+        }
+        calls: list[tuple[str, int]] = []
+        interrupt_second = True
+
+        def build_contract(
+            symbol,
+            contract,
+            item,
+            previous_tips,
+            previous_balance_map,
+            finality,
+            lookback,
+        ):
+            nonlocal interrupt_second
+            previous_tip = previous_tips.get(
+                (symbol, contract["chain"], contract["address"]),
+                0,
+            )
+            calls.append((symbol, previous_tip))
+            if symbol == "SECOND" and interrupt_second:
+                interrupt_second = False
+                raise SystemExit(124)
+            return {
+                "chain": contract["chain"],
+                "address": contract["address"],
+                "latest_block": previous_tip + 100,
+                "previous_latest_block": previous_tip,
+                "watch_address_count": 0,
+                "operator_attribution_state": "unresolved",
+                "balances": [],
+                "recent_transfers": [],
+                "alerts": [],
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "watchlist.json"
+            latest_path = root / "latest.json"
+            report_path = root / "latest.md"
+            progress_path = root / "progress.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with (
+                mock.patch.object(project, "CONFIG_PATH", config_path),
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "build_contract", side_effect=build_contract),
+                self.assertRaises(SystemExit),
+            ):
+                project.build_snapshot()
+
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(progress["completed_projects"]), 1)
+            self.assertIsNone(progress["active_project"])
+
+            with (
+                mock.patch.object(project, "CONFIG_PATH", config_path),
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "build_contract", side_effect=build_contract),
+            ):
+                resumed = project.build_snapshot()
+                self.assertTrue(resumed["resumed_from_progress"])
+                with mock.patch.object(project, "maybe_send_telegram"):
+                    project.publish_snapshot(resumed)
+
+            self.assertEqual(calls, [("FIRST", 0), ("SECOND", 0), ("SECOND", 0)])
+            self.assertFalse(progress_path.exists())
+
+            with (
+                mock.patch.object(project, "CONFIG_PATH", config_path),
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "build_contract", side_effect=build_contract),
+            ):
+                next_cycle = project.build_snapshot()
+
+            self.assertFalse(next_cycle["resumed_from_progress"])
+            self.assertEqual(calls[-2:], [("FIRST", 100), ("SECOND", 100)])
+
+    def test_project_publish_keeps_progress_until_delivery_succeeds(self) -> None:
+        import scripts.alpha_project_watch as project
+
+        snapshot = {
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "project_count": 0,
+            "alert_count": 0,
+            "skipped": [],
+            "projects": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            latest_path = root / "latest.json"
+            report_path = root / "latest.md"
+            progress_path = root / "progress.json"
+            latest_path.write_text('{"old": true}', encoding="utf-8")
+            progress_path.write_text('{"partial": true}', encoding="utf-8")
+
+            with (
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(
+                    project,
+                    "maybe_send_telegram",
+                    side_effect=RuntimeError("delivery failed"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "delivery failed"),
+            ):
+                project.publish_snapshot(snapshot)
+
+            self.assertEqual(
+                json.loads(latest_path.read_text(encoding="utf-8")),
+                {"old": True},
+            )
+            self.assertTrue(progress_path.exists())
+            self.assertFalse(report_path.exists())
+
+            with (
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "maybe_send_telegram"),
+            ):
+                project.publish_snapshot(snapshot)
+
+            self.assertEqual(
+                json.loads(latest_path.read_text(encoding="utf-8")),
+                snapshot,
+            )
+            self.assertFalse(progress_path.exists())
+
+    def test_project_missing_telegram_credentials_blocks_pending_publish(
+        self,
+    ) -> None:
+        import scripts.alpha_project_watch as project
+
+        pending_snapshot = {
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "project_count": 1,
+            "alert_count": 1,
+            "skipped": [],
+            "projects": [
+                {
+                    "symbol": "TEST",
+                    "priority": "P1_MONITOR",
+                    "analysis": {},
+                    "alerts": [
+                        {
+                            "type": "LAUNCH_WINDOW",
+                            "symbol": "TEST",
+                            "stage": "PRE_1H",
+                            "pool_id": "1",
+                            "start_time_utc8": "2026-08-01 08:00:00",
+                        }
+                    ],
+                }
+            ],
+        }
+        empty_snapshot = {
+            **pending_snapshot,
+            "project_count": 0,
+            "alert_count": 0,
+            "projects": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            latest_path = root / "latest.json"
+            report_path = root / "latest.md"
+            progress_path = root / "progress.json"
+            seen_path = root / "seen.json"
+            latest_path.write_text('{"old": true}', encoding="utf-8")
+            progress_path.write_text('{"partial": true}', encoding="utf-8")
+            env = {
+                "ALPHA_PROJECT_WATCH_TELEGRAM": "1",
+                "ALPHA_PROJECT_WATCH_FORCE_TELEGRAM": "0",
+                "TELEGRAM_BOT_TOKEN": "",
+                "TELEGRAM_CHAT_ID": "",
+            }
+            with (
+                mock.patch.object(project, "LATEST_PATH", latest_path),
+                mock.patch.object(project, "REPORT_PATH", report_path),
+                mock.patch.object(project, "PROGRESS_PATH", progress_path),
+                mock.patch.object(project, "SEEN_PATH", seen_path),
+                mock.patch.dict(os.environ, env),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "Telegram delivery unavailable",
+                ),
+            ):
+                project.publish_snapshot(pending_snapshot)
+
+            self.assertEqual(
+                json.loads(latest_path.read_text(encoding="utf-8")),
+                {"old": True},
+            )
+            self.assertTrue(progress_path.exists())
+            self.assertFalse(report_path.exists())
+
+            with (
+                mock.patch.object(project, "SEEN_PATH", seen_path),
+                mock.patch.dict(os.environ, env),
+            ):
+                self.assertTrue(project.maybe_send_telegram(empty_snapshot))
+                with mock.patch.dict(
+                    os.environ,
+                    {**env, "ALPHA_PROJECT_WATCH_FORCE_TELEGRAM": "1"},
+                ):
+                    self.assertFalse(
+                        project.maybe_send_telegram(empty_snapshot)
+                    )
+
+    def test_project_new_transfer_key_bypasses_repeat_signature_suppression(
+        self,
+    ) -> None:
+        import scripts.alpha_project_watch as project
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok":true,"result":{"message_id":1}}'
+
+        def snapshot(tx_hash: str) -> dict[str, object]:
+            alert = {
+                "type": "TOKEN_TRANSFER",
+                "symbol": "TEST",
+                "chain": "bsc",
+                "token": "0x" + "1" * 40,
+                "tx": tx_hash,
+                "amount": "100",
+                "level": "HIGH",
+            }
+            return {
+                "generated_at": "2026-08-01T00:00:00+00:00",
+                "project_count": 1,
+                "alert_count": 1,
+                "projects": [
+                    {
+                        "symbol": "TEST",
+                        "priority": "P1_MONITOR",
+                        "analysis": {
+                            "conclusion": "transfer",
+                            "spot_action": "observe",
+                            "perp_action": "wait",
+                        },
+                        "alerts": [alert],
+                    }
+                ],
+            }
+
+        first = snapshot("0x" + "2" * 64)
+        second = snapshot("0x" + "3" * 64)
+        self.assertEqual(
+            project.project_push_signature(first),
+            project.project_push_signature(second),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            seen_path = root / "seen.json"
+            last_push_path = root / "last_push.json"
+            with (
+                mock.patch.object(project, "SEEN_PATH", seen_path),
+                mock.patch.object(project, "LAST_PUSH_PATH", last_push_path),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ALPHA_PROJECT_WATCH_TELEGRAM": "1",
+                        "ALPHA_PROJECT_WATCH_FORCE_TELEGRAM": "0",
+                        "TELEGRAM_BOT_TOKEN": "fixture-token",
+                        "TELEGRAM_CHAT_ID": "fixture-chat",
+                    },
+                ),
+                mock.patch.object(
+                    project.urllib.request,
+                    "urlopen",
+                    side_effect=[Response(), Response()],
+                ) as urlopen,
+            ):
+                self.assertTrue(project.maybe_send_telegram(first))
+                self.assertTrue(project.maybe_send_telegram(second))
+
+            self.assertEqual(urlopen.call_count, 2)
+            self.assertEqual(
+                set(json.loads(seen_path.read_text(encoding="utf-8"))),
+                set(project.alert_keys(first["projects"][0]["alerts"]))
+                | set(project.alert_keys(second["projects"][0]["alerts"])),
+            )
 
     def test_project_attribution_gap_has_a_stable_alert_key(self) -> None:
         import scripts.alpha_project_watch as project
@@ -11311,6 +12144,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
     def test_health_does_not_fall_back_when_new_required_only_omits_target(
         self,
     ) -> None:
+        import scripts.binance_alpha_catalog_watch as catalog
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         contract = "0x" + "a" * 40
@@ -11325,6 +12159,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         listing = current - timedelta(hours=1)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            policy, focus_item = self.write_focus_config(
+                root,
+                "TARGET",
+                contract=contract,
+                listing_time_utc=listing.isoformat(),
+            )
 
             def write(relative: str, payload: dict[str, object]) -> Path:
                 path = root / relative
@@ -11352,14 +12192,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             write(
                 "output/binance_alpha_catalog_watch/current_watchlist.json",
                 {
-                    "items": [
-                        {
-                            "symbol": "TARGET",
-                            "contracts": [
-                                {"chain": "bsc", "address": contract}
-                            ],
-                        }
-                    ]
+                    "monitoring_policy": policy,
+                    "monitoring_policy_fingerprint": (
+                        catalog.monitoring_policy_fingerprint(policy)
+                    ),
+                    "items": [focus_item],
                 },
             )
             write(
@@ -15453,6 +16290,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "ALPHA_HOLDER_TELEGRAM": "1",
                     "TELEGRAM_BOT_TOKEN": "fixture",
                     "TELEGRAM_CHAT_ID": "fixture",
+                    "DISABLE_TELEGRAM": "0",
                 },
             ),
             mock.patch.object(holder, "read_json", return_value=[]),
@@ -15895,11 +16733,19 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
 
     def test_catalog_item_beyond_48h_does_not_require_prelaunch_output(self) -> None:
+        import scripts.binance_alpha_catalog_watch as catalog
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         contract = "0x" + "2" * 40
+        listing_time = "2099-07-28T10:00:00+00:00"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            policy, focus_item = self.write_focus_config(
+                root,
+                "AEON",
+                contract=contract,
+                listing_time_utc=listing_time,
+            )
 
             def write(relative: str, payload: dict[str, object]) -> None:
                 path = root / relative
@@ -15915,7 +16761,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                             "symbol": "AEON",
                             "chain": "bsc",
                             "contract": contract,
-                            "listing_time_utc": "2099-07-28T10:00:00+00:00",
+                            "listing_time_utc": listing_time,
                         }
                     ],
                 },
@@ -15923,12 +16769,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             write(
                 "output/binance_alpha_catalog_watch/current_watchlist.json",
                 {
-                    "items": [
-                        {
-                            "symbol": "LEGACYAEON",
-                            "contracts": [{"chain": "bsc", "address": contract}],
-                        }
-                    ]
+                    "monitoring_policy": policy,
+                    "monitoring_policy_fingerprint": (
+                        catalog.monitoring_policy_fingerprint(policy)
+                    ),
+                    "items": [focus_item],
                 },
             )
             write(
@@ -16009,6 +16854,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(issues, [])
 
     def test_post_72h_catalog_item_requires_retention_flow_health(self) -> None:
+        import scripts.binance_alpha_catalog_watch as catalog
         from scripts.runtime_health_watch import alpha_coverage_issues
 
         contract = "0x" + "8" * 40
@@ -16016,6 +16862,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         listing = current - timedelta(days=4)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            policy, focus_item = self.write_focus_config(
+                root,
+                "TAIL",
+                contract=contract,
+                listing_time_utc=listing.isoformat(),
+            )
 
             def write(relative: str, payload: dict[str, object]) -> None:
                 path = root / relative
@@ -16042,14 +16894,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             write(
                 "output/binance_alpha_catalog_watch/current_watchlist.json",
                 {
-                    "items": [
-                        {
-                            "symbol": "TAIL",
-                            "contracts": [
-                                {"chain": "bsc", "address": contract}
-                            ],
-                        }
-                    ]
+                    "monitoring_policy": policy,
+                    "monitoring_policy_fingerprint": (
+                        catalog.monitoring_policy_fingerprint(policy)
+                    ),
+                    "items": [focus_item],
                 },
             )
             write(
@@ -16279,6 +17128,63 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "_retention_event_kind": event_kind,
         }
 
+    def test_opening_verified_pool_scope_supports_multiple_quote_tokens(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        event = payload["events"][0]
+        token = self._address("1")
+        second_quote = self._address("c")
+        event["opening_v3_pool_scope"]["pools"].append(
+            {
+                "address": self._address("d"),
+                "factory": self._address("4"),
+                "token0": token,
+                "token1": second_quote,
+                "fee": 10000,
+                "quote_token": second_quote,
+                "quote_decimals": 18,
+                "quote_symbol": "WBNB",
+            }
+        )
+
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+
+        self.assertTrue(scope["complete"])
+        self.assertEqual(scope["pool_count"], 3)
+        self.assertEqual(scope["v3_pool_count"], 2)
+        self.assertEqual(
+            {
+                row["quote_token"]
+                for row in scope["pool_scope"]
+                if row["protocol"] == "v3"
+            },
+            {self._address("2"), second_quote},
+        )
+        from scripts.runtime_health_watch import (
+            opening_has_verified_liquidity_pool_scope,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            opening_path = Path(temp_dir) / "opening.json"
+            opening_path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                opening_has_verified_liquidity_pool_scope(
+                    opening_path,
+                    ("bsc", token),
+                )
+            )
+
     def test_opening_verified_pool_scope_is_stable_and_fail_closed(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -16328,10 +17234,29 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(fallback["source"], "state")
         self.assertEqual(fallback["pool_scope"], scope["pool_scope"])
 
-        incomplete = copy.deepcopy(payload)
-        incomplete["events"][0]["opening_liquidity_scope_complete"] = False
+        flow_incomplete = copy.deepcopy(payload)
+        flow_event = flow_incomplete["events"][0]
+        flow_event["opening_liquidity_scope_complete"] = False
+        flow_event["opening_liquidity_scope_status"] = "deadline_exceeded"
+        flow_event["opening_liquidity_coverage_complete"] = False
+        flow_event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        del flow_event["opening_liquidity_watch_scope_hash"]
+        independently_verified = holder.opening_verified_pool_scope(
+            flow_incomplete,
+            "TEST",
+            "bsc",
+            token,
+            persisted_scope=persisted,
+        )
+        self.assertTrue(independently_verified["complete"])
+        self.assertEqual(independently_verified["pool_count"], 2)
+
+        identity_incomplete = copy.deepcopy(flow_incomplete)
+        identity_incomplete["events"][0]["opening_v3_pool_scope"][
+            "complete"
+        ] = False
         rejected = holder.opening_verified_pool_scope(
-            incomplete,
+            identity_incomplete,
             "TEST",
             "bsc",
             token,
@@ -16438,6 +17363,105 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertFalse(rejected_bin["complete"])
         self.assertEqual(rejected_bin["pool_scope"], [])
+
+    def test_health_requires_independently_verified_pool_identity(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        from scripts.runtime_health_watch import (
+            matching_opening_nonhistorical_coverage_issue,
+            opening_liquidity_gap_is_historical_only,
+            opening_has_verified_liquidity_pool_scope,
+        )
+
+        payload = self._opening_payload()
+        event = payload["events"][0]
+        event["opening_liquidity_scope_complete"] = False
+        event["opening_liquidity_scope_status"] = "deadline_exceeded"
+        event["opening_liquidity_coverage_complete"] = False
+        event["opening_liquidity_coverage_status"] = "deadline_exceeded"
+        del event["opening_liquidity_watch_scope_hash"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            opening_path = Path(temp_dir) / "opening.json"
+            opening_path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                opening_has_verified_liquidity_pool_scope(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                )
+            )
+            self.assertTrue(
+                opening_liquidity_gap_is_historical_only(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                    "opening liquidity flow coverage incomplete",
+                )
+            )
+            self.assertFalse(
+                opening_liquidity_gap_is_historical_only(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                    "opening cohort transfer coverage incomplete",
+                )
+            )
+
+            conflicted = copy.deepcopy(payload["events"][0])
+            conflicted["opening_cohort_coverage_complete"] = True
+            conflicted["opening_buyer_scope_complete"] = True
+            conflicted["opening_liquidity_coverage_complete"] = False
+            conflicted["opening_v3_pool_scope"]["complete"] = True
+            conflicted["opening_v4_pool_scope"]["complete"] = True
+            conflicted["cache_identity_status"] = (
+                "metadata_conflict_unresolved"
+            )
+            conflicted["cache_identity_conflict"] = "contract"
+            self.assertIn(
+                "metadata conflict",
+                matching_opening_nonhistorical_coverage_issue([conflicted]),
+            )
+
+            bin_payload = self._opening_payload()
+            bin_event = bin_payload["events"][0]
+            bin_event["opening_v3_pool_scope"]["pools"] = []
+            bin_pool = bin_event["opening_v4_pool_scope"]["pools"][0]
+            bin_pool["address"] = holder.PANCAKE_INFINITY_BIN_POOL_MANAGER
+            bin_pool["pool_manager"] = (
+                holder.PANCAKE_INFINITY_BIN_POOL_MANAGER
+            )
+            bin_pool["v4_manager_type"] = "cl"
+            opening_path.write_text(
+                json.dumps(bin_payload),
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                opening_has_verified_liquidity_pool_scope(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                )
+            )
+
+            event["opening_v3_pool_scope"]["complete"] = False
+            event["opening_v4_pool_scope"]["complete"] = False
+            opening_path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                opening_has_verified_liquidity_pool_scope(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                )
+            )
+            self.assertFalse(
+                opening_liquidity_gap_is_historical_only(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                    "opening liquidity flow coverage incomplete",
+                )
+            )
 
     def test_liquidity_log_queries_use_exact_topics_and_dedupe(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -17899,6 +18923,1080 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 for event in events
             },
         )
+
+class LiquidityFastLaneRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _address(digit: str) -> str:
+        return "0x" + digit * 40
+
+    @staticmethod
+    def _hash(digit: str) -> str:
+        return "0x" + digit * 64
+
+    @staticmethod
+    def _word(value: int, bits: int = 256) -> str:
+        if value < 0:
+            value = (1 << bits) + value
+            if bits < 256:
+                value |= ((1 << (256 - bits)) - 1) << bits
+        return f"{value:064x}"
+
+    @classmethod
+    def _data(cls, *values: tuple[int, int] | int) -> str:
+        return "0x" + "".join(
+            cls._word(value[0], value[1])
+            if isinstance(value, tuple)
+            else cls._word(value)
+            for value in values
+        )
+
+    @classmethod
+    def _opening_payload(cls) -> dict[str, object]:
+        return ContinuousLiquidityRetentionRegressionTests._opening_payload()
+
+    @classmethod
+    def _event_row(
+        cls,
+        pool: dict[str, object],
+        *,
+        block: int,
+        tx_digit: str,
+    ) -> dict[str, object]:
+        return {
+            "address": pool["address"],
+            "blockNumber": hex(block),
+            "blockHash": cls._hash("f"),
+            "logIndex": "0x1",
+            "transactionHash": cls._hash(tx_digit),
+            "topics": [
+                "0x"
+                + "c42079f94a6350d7e6235f291749249f2d8f"
+                "d3f74fc63b6b8f37b6e146156c01"
+            ],
+            "data": cls._data(100_000, -10, 1, 1, 0),
+            "removed": False,
+            "_retention_pool": pool,
+            "_retention_event_kind": "v3_swap",
+        }
+
+    @staticmethod
+    def _coverage_metadata(
+        holder: object,
+        pools: list[dict[str, object]],
+        to_block: int,
+    ) -> dict[str, object]:
+        scope_count = len(holder.retention_liquidity_query_scopes(pools))
+        return {
+            "query_scope_complete": True,
+            "query_count": scope_count,
+            "scope_batch_count": scope_count,
+            "query_chunk_count": 1,
+            "expected_query_count": scope_count,
+            "v4_manager_count": len(
+                {
+                    pool["address"]
+                    for pool in pools
+                    if pool.get("protocol") == "v4_cl"
+                }
+            ),
+            "event_filter_count": sum(
+                4 if pool.get("protocol") == "v3" else 2
+                for pool in pools
+            ),
+            "applicable": True,
+            "active": False,
+            "requested_to_block": to_block,
+            "selected_to_block": to_block,
+            "attempt_count": 1,
+            "complete_selected_window": True,
+            "complete_requested_window": True,
+        }
+
+    def test_fast_liquidity_bootstrap_suppresses_history_then_advances(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        payload = self._opening_payload()
+        item = {
+            "symbol": "TEST",
+            "name": "Test",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": self._address("1"),
+        }
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+        calls: list[tuple[int, int]] = []
+
+        def fetch(
+            _chain: str,
+            pools: list[dict[str, object]],
+            from_block: int,
+            to_block: int,
+            **_kwargs: object,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            calls.append((from_block, to_block))
+            pool = next(
+                row for row in pools if row.get("protocol") == "v3"
+            )
+            block = 115 if from_block <= 115 <= to_block else 125
+            rows = [
+                self._event_row(
+                    pool,
+                    block=block,
+                    tx_digit="a" if block == 115 else "b",
+                )
+            ]
+            return (
+                rows,
+                [],
+                False,
+                to_block,
+                self._coverage_metadata(holder, pools, to_block),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            state_path = temp / "fast_state.json"
+            holder_state_path = temp / "holder_state.json"
+            config_path.write_text('{"items": []}', encoding="utf-8")
+            opening_path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(holder, "STATE_PATH", holder_state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=([item], []),
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={"chain": "bsc"},
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value=active,
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(0, 1_000_000),
+                ),
+                mock.patch.object(
+                    holder,
+                    "latest_block",
+                    side_effect=[120, 130],
+                ),
+                mock.patch.object(
+                    holder,
+                    "bounded_retention_liquidity_logs",
+                    side_effect=fetch,
+                ),
+                mock.patch.object(
+                    holder,
+                    "liquidity_checkpoint_block_hash",
+                    return_value=self._hash("f"),
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS": "10",
+                        "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                    },
+                ),
+            ):
+                first = fast.build_snapshot()
+                holder.atomic_write_json(
+                    state_path,
+                    first["_next_state"],
+                )
+                second = fast.build_snapshot()
+
+            self.assertFalse(holder_state_path.exists())
+
+        self.assertEqual(calls, [(111, 120), (121, 130)])
+        self.assertEqual(first["alert_count"], 0)
+        self.assertEqual(first["alert_ready_count"], 0)
+        self.assertEqual(second["alert_count"], 1)
+        self.assertEqual(second["alert_ready_count"], 1)
+        second_flow = second["projects"][0]["retention_flow"][
+            "liquidity_retention"
+        ]
+        self.assertEqual(second_flow["previous_latest_block"], 120)
+        self.assertEqual(second_flow["scan_from_block"], 121)
+        self.assertTrue(second_flow["continuous"])
+
+    def test_fast_liquidity_caches_tip_once_per_chain(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        items = [
+            {
+                "symbol": symbol,
+                "priority": "P1_MONITOR",
+                "chain": "bsc",
+                "address": self._address(digit),
+            }
+            for symbol, digit in (("ONE", "1"), ("TWO", "2"))
+        ]
+        flow = {
+            "status": "active",
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "complete": True,
+            "selected_window_complete": True,
+            "query_scope_complete": True,
+            "pool_count": 1,
+            "log_error_count": 0,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+        }
+        next_liquidity = {
+            "pool_scope": [{"protocol": "v3"}],
+            "latest_block": 120,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            config_path.write_text('{"items": []}', encoding="utf-8")
+            opening_path.write_text('{"events": []}', encoding="utf-8")
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=(items, []),
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={"chain": "bsc"},
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active"},
+                ),
+                mock.patch.object(
+                    fast,
+                    "matching_opened_event",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    holder,
+                    "opening_verified_pool_scope",
+                    return_value={"complete": True, "pool_scope": [{}]},
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(18, 10**24),
+                ),
+                mock.patch.object(
+                    holder,
+                    "latest_block",
+                    return_value=120,
+                ) as latest,
+                mock.patch.object(
+                    holder,
+                    "build_token_liquidity_retention",
+                    return_value=(flow, next_liquidity),
+                ),
+                mock.patch.object(
+                    holder,
+                    "liquidity_retention_alert_coverage_complete",
+                    return_value=False,
+                ),
+            ):
+                snapshot = fast.build_snapshot()
+
+        self.assertEqual(latest.call_count, 1)
+        self.assertEqual(snapshot["chain_tip_query_count"], 1)
+        self.assertEqual(snapshot["required_count"], 2)
+        self.assertEqual(snapshot["complete_count"], 2)
+
+    def test_fast_liquidity_enumerates_all_supported_contract_identities(
+        self,
+    ) -> None:
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        items = []
+        for index in range(9):
+            contracts = [
+                {
+                    "chain": "bsc",
+                    "address": "0x" + f"{index + 1:040x}",
+                }
+            ]
+            if index == 0:
+                contracts.append(
+                    {
+                        "chain": "base",
+                        "address": self._address("f"),
+                    }
+                )
+            items.append(
+                {
+                    "symbol": f"TOKEN{index}",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": True,
+                    "contracts": contracts,
+                }
+            )
+        config = {"items": items}
+        with mock.patch.dict(
+            os.environ,
+            {"ALPHA_HOLDER_MAX_PROJECTS": "1"},
+        ):
+            rows, issues = fast.eligible_contract_items(config)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(
+            {(row["chain"], row["address"]) for row in rows},
+            {
+                (
+                    str(contract["chain"]),
+                    str(contract["address"]),
+                )
+                for item in items
+                for contract in item["contracts"]
+            },
+        )
+        self.assertEqual(
+            fast.stable_identity_hash(rows),
+            fast.stable_identity_hash(list(reversed(rows))),
+        )
+
+    def test_opened_liquidity_missing_time_fails_closed_until_expired(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        item = {
+            "symbol": "TEST",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": self._address("1"),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            state_path = temp / "state.json"
+            config_path.write_text('{"items": []}', encoding="utf-8")
+            opening_path.write_text(
+                json.dumps(self._opening_payload()),
+                encoding="utf-8",
+            )
+            common = (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=([item], []),
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={"chain": "bsc"},
+                ),
+            )
+            with ExitStack() as stack:
+                for patcher in common:
+                    stack.enter_context(patcher)
+                stack.enter_context(
+                    mock.patch.object(
+                        holder,
+                        "retention_window",
+                        return_value={
+                            "status": "not_required",
+                            "reason": "opening_time_unavailable",
+                            "age_hours": None,
+                        },
+                    )
+                )
+                missing_time = fast.build_snapshot()
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=([item], []),
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={"chain": "bsc"},
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={
+                        "status": "not_required",
+                        "reason": "retention_window_expired",
+                        "age_hours": 721,
+                    },
+                ),
+            ):
+                expired = fast.build_snapshot()
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=([item], []),
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={},
+                ),
+            ):
+                missing_config = fast.build_snapshot()
+
+        self.assertEqual(missing_time["required_count"], 1)
+        self.assertEqual(missing_time["complete_count"], 0)
+        self.assertEqual(missing_time["status"], "unhealthy")
+        self.assertEqual(expired["required_count"], 0)
+        self.assertEqual(expired["status"], "healthy")
+        self.assertEqual(missing_config["required_count"], 1)
+        self.assertEqual(missing_config["status"], "unhealthy")
+        self.assertEqual(
+            missing_config["issues"][0]["detail"],
+            "invalid_runtime_metadata",
+        )
+
+    def test_fast_liquidity_uses_contract_identity_across_symbol_alias(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        config = {
+            "items": [
+                {
+                    "symbol": "ALIAS",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": True,
+                    "contracts": [{"chain": "bsc", "address": token}],
+                }
+            ]
+        }
+        complete_flow = {
+            "status": "active",
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "complete": True,
+            "selected_window_complete": True,
+            "query_scope_complete": True,
+            "pool_count": 1,
+            "log_error_count": 0,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+        }
+        observed_symbols = []
+
+        def build_flow(**kwargs):
+            observed_symbols.append(kwargs["symbol"])
+            return complete_flow, {"pool_scope": [{"protocol": "v3"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            opening_path.write_text(
+                json.dumps(self._opening_payload()),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(holder, "STATE_PATH", temp / "holder.json"),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active", "age_hours": 24},
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(18, 10**24),
+                ),
+                mock.patch.object(holder, "latest_block", return_value=130),
+                mock.patch.object(
+                    holder,
+                    "build_token_liquidity_retention",
+                    side_effect=build_flow,
+                ),
+            ):
+                snapshot = fast.build_snapshot()
+
+        self.assertEqual(snapshot["status"], "healthy")
+        self.assertEqual(snapshot["required_count"], 1)
+        self.assertEqual(snapshot["complete_count"], 1)
+        self.assertEqual(snapshot["projects"][0]["symbol"], "ALIAS")
+        self.assertEqual(snapshot["projects"][0]["opening_symbol"], "TEST")
+        self.assertEqual(observed_symbols, ["TEST"])
+
+    def test_fast_liquidity_active_window_without_scope_fails_closed(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        config = {
+            "items": [
+                {
+                    "symbol": "TEST",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": True,
+                    "contracts": [{"chain": "bsc", "address": token}],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            opening_path.write_text('{"events": []}', encoding="utf-8")
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(holder, "STATE_PATH", temp / "holder.json"),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active", "age_hours": 123},
+                ),
+            ):
+                snapshot = fast.build_snapshot()
+
+        self.assertEqual(snapshot["required_count"], 1)
+        self.assertEqual(snapshot["complete_count"], 0)
+        self.assertEqual(snapshot["status"], "unhealthy")
+        self.assertEqual(
+            snapshot["projects"][0]["retention_flow"][
+                "liquidity_retention"
+            ]["status"],
+            "coverage_gap",
+        )
+
+    def test_fast_liquidity_seeds_verified_holder_checkpoint_continuously(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            self._opening_payload(),
+            "TEST",
+            "bsc",
+            token,
+        )
+        seed = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "pool_count": scope["pool_count"],
+            "scope_coverage_from_block": 101,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("f"),
+            "catchup_active": False,
+        }
+        config = {
+            "items": [
+                {
+                    "symbol": "TEST",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": True,
+                    "contracts": [{"chain": "bsc", "address": token}],
+                }
+            ]
+        }
+
+        def fetch(_chain, pools, from_block, to_block, **_kwargs):
+            self.assertEqual((from_block, to_block), (121, 128))
+            return (
+                [],
+                [],
+                False,
+                to_block,
+                self._coverage_metadata(holder, pools, to_block),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            holder_state_path = temp / "holder.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            opening_path.write_text('{"events": []}', encoding="utf-8")
+            holder_state_path.write_text(
+                json.dumps(
+                    {
+                        "tokens": {
+                            f"bsc:{token}": {
+                                "decimals": 18,
+                                "retention_flow": {"liquidity": seed},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(holder, "STATE_PATH", holder_state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active", "age_hours": 123},
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(18, 10**24),
+                ),
+                mock.patch.object(holder, "latest_block", return_value=130),
+                mock.patch.object(
+                    holder,
+                    "bounded_retention_liquidity_logs",
+                    side_effect=fetch,
+                ),
+                mock.patch.object(
+                    holder,
+                    "liquidity_checkpoint_block_hash",
+                    return_value=self._hash("f"),
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "2"},
+                ),
+            ):
+                snapshot = fast.build_snapshot()
+
+        flow = snapshot["projects"][0]["retention_flow"][
+            "liquidity_retention"
+        ]
+        self.assertEqual(snapshot["status"], "healthy")
+        self.assertEqual(snapshot["required_count"], 1)
+        self.assertEqual(snapshot["complete_count"], 1)
+        self.assertEqual(snapshot["projects"][0]["scope_seed_source"], "holder")
+        self.assertEqual(flow["previous_latest_block"], 120)
+        self.assertEqual(flow["scan_from_block"], 121)
+        self.assertEqual(flow["latest_block"], 128)
+        self.assertTrue(flow["continuous"])
+
+    def test_fast_liquidity_delivery_failure_retains_checkpoint(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+        import scripts.fast_lane_health as health
+
+        next_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {"bsc:fixture": {"liquidity": {"latest_block": 120}}},
+        }
+        snapshot = {
+            "schema": fast.SNAPSHOT_SCHEMA,
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "status": "healthy",
+            "issue_count": 0,
+            "issues": [],
+            "project_count": 0,
+            "expected_count": 0,
+            "processed_count": 0,
+            "dropped_count": 0,
+            "expected_identity_hash": fast.stable_identity_hash([]),
+            "processed_identity_hash": fast.stable_identity_hash([]),
+            "required_count": 0,
+            "complete_count": 0,
+            "alert_ready_count": 0,
+            "alert_count": 0,
+            "projects": [],
+            "_next_state": next_state,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            latest_path = temp / "latest.json"
+            state_path = temp / "state.json"
+            failure_path = temp / "failures.tsv"
+            failure_path.write_text(
+                "1\t40\tpython3 scripts/alpha_liquidity_retention_watch.py\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(fast, "OUT_DIR", temp),
+                mock.patch.object(fast, "LATEST_PATH", latest_path),
+                mock.patch.object(fast, "REPORT_PATH", temp / "latest.md"),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(
+                    fast,
+                    "build_snapshot",
+                    return_value=copy.deepcopy(snapshot),
+                ),
+                mock.patch.object(
+                    holder,
+                    "maybe_send_telegram",
+                    return_value=False,
+                ),
+            ):
+                self.assertEqual(fast.run_once(), 1)
+
+            latest = json.loads(latest_path.read_text(encoding="utf-8"))
+            self.assertFalse(state_path.exists())
+            self.assertEqual(latest["delivery_status"], "failed")
+            self.assertEqual(latest["status"], "unhealthy")
+            self.assertIn("unhealthy", health.liquidity_output_issue(latest_path))
+            failures = health.read_failures(failure_path)
+            self.assertEqual(failures[0]["kind"], "step_failed")
+            self.assertIn("alpha_liquidity", failures[0]["command"])
+
+    def test_holder_and_fast_processes_share_locked_seen_ledger(self) -> None:
+        snapshot = {"projects": [{}]}
+        worker_code = r"""
+import json
+import os
+import sys
+from pathlib import Path
+import scripts.alpha_holder_concentration_watch as holder
+
+snapshot = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+seen_path = Path(sys.argv[2])
+lock_path = Path(sys.argv[3])
+counter_path = Path(sys.argv[4])
+last_push_path = Path(sys.argv[5])
+holder.alert_keys = lambda _snapshot: ['shared-event-key']
+holder.retention_alert_events = lambda _project: [{'type': 'fixture'}]
+holder.retention_event_key = lambda _project, _event: 'shared-event-key'
+holder.retention_telegram_batches = lambda _project, events: [('fixture', events)]
+holder.holder_signal_key = lambda _project: ''
+def fake_send(_text, batch_keys, **kwargs):
+    with counter_path.open('a', encoding='utf-8') as stream:
+        stream.write('sent\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    seen = kwargs['seen']
+    seen.update(batch_keys)
+    holder.atomic_write_json(kwargs['seen_path'], sorted(seen))
+holder.send_telegram_batch = fake_send
+ok = holder.maybe_send_telegram(
+    snapshot,
+    seen_path=seen_path,
+    last_push_path=last_push_path,
+    lock_path=lock_path,
+)
+raise SystemExit(0 if ok else 1)
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            snapshot_path = temp / "snapshot.json"
+            seen_path = temp / "seen.json"
+            lock_path = temp / "alerts.lock"
+            counter_path = temp / "send_count.txt"
+            last_push_path = temp / "last_push.json"
+            snapshot_path.write_text(
+                json.dumps(snapshot),
+                encoding="utf-8",
+            )
+            env = {
+                **os.environ,
+                "ALPHA_HOLDER_TELEGRAM": "1",
+                "TELEGRAM_BOT_TOKEN": "fixture",
+                "TELEGRAM_CHAT_ID": "fixture",
+                "DISABLE_TELEGRAM": "0",
+            }
+            commands = [
+                sys.executable,
+                "-c",
+                worker_code,
+                str(snapshot_path),
+                str(seen_path),
+                str(lock_path),
+                str(counter_path),
+                str(last_push_path),
+            ]
+            workers = [
+                subprocess.Popen(
+                    commands,
+                    cwd=ROOT,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+            results = [worker.communicate(timeout=10) for worker in workers]
+
+            self.assertEqual([worker.returncode for worker in workers], [0, 0], results)
+            self.assertEqual(
+                counter_path.read_text(encoding="utf-8").splitlines(),
+                ["sent"],
+            )
+            self.assertEqual(
+                json.loads(seen_path.read_text(encoding="utf-8")),
+                ["shared-event-key"],
+            )
+
+    def test_fast_liquidity_disable_and_health_contract(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+        import scripts.fast_lane_health as fast_health
+        from scripts.runtime_health_watch import (
+            liquidity_retention_required,
+            standalone_liquidity_snapshot_issue,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DISABLE_TELEGRAM": "1",
+                "ALPHA_HOLDER_TELEGRAM": "1",
+            },
+        ):
+            self.assertTrue(holder.maybe_send_telegram({"projects": []}))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "latest.json"
+            payload = {
+                "schema": "alpha_liquidity_retention_watch.v1",
+                "status": "healthy",
+                "delivery_status": "complete",
+                "issue_count": 0,
+                "required_count": 1,
+                "complete_count": 1,
+                "expected_count": 1,
+                "processed_count": 1,
+                "dropped_count": 0,
+                "expected_identity_hash": fast.stable_identity_hash(
+                    [{"chain": "bsc", "address": self._address("1")}]
+                ),
+                "processed_identity_hash": fast.stable_identity_hash(
+                    [{"chain": "bsc", "address": self._address("1")}]
+                ),
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(fast_health.liquidity_output_issue(path), "")
+            self.assertEqual(standalone_liquidity_snapshot_issue(path), "")
+            payload["delivery_status"] = "failed"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertIn(
+                "delivery",
+                fast_health.liquidity_output_issue(path),
+            )
+            self.assertIn(
+                "delivery",
+                standalone_liquidity_snapshot_issue(path),
+            )
+
+            opening_path = Path(temp_dir) / "opening.json"
+            opening_path.write_text(
+                json.dumps(self._opening_payload()),
+                encoding="utf-8",
+            )
+            identity = ("bsc", self._address("1"))
+            current = datetime(2026, 8, 1, tzinfo=timezone.utc)
+            self.assertTrue(
+                liquidity_retention_required(
+                    opening_path,
+                    identity,
+                    None,
+                    current,
+                )
+            )
+            self.assertFalse(
+                liquidity_retention_required(
+                    opening_path,
+                    identity,
+                    current - timedelta(days=31),
+                    current,
+                )
+            )
+
+        fast_source = (ROOT / "scripts" / "server_fast_lane.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FAST_ALPHA_LIQUIDITY_TIMEOUT_SECONDS:-40", fast_source)
+        self.assertIn("alpha_liquidity_retention_watch.py", fast_source)
+        self.assertIn("liquidity_pid=$!", fast_source)
+        self.assertIn('wait "$liquidity_pid"', fast_source)
+        self.assertIn("ALPHA_HOLDER_TELEGRAM=0", fast_source)
+
+    def test_fast_health_identity_hash_matches_exclusive_grvt_focus(
+        self,
+    ) -> None:
+        import scripts.alpha_liquidity_retention_watch as fast
+        import scripts.binance_alpha_catalog_watch as catalog
+        import scripts.fast_lane_health as health
+
+        grvt_address = self._address("1")
+        policy = {"mode": "exclusive_symbols", "symbols": ["GRVT"]}
+        watchlist = {
+            "monitoring_policy": policy,
+            "monitoring_policy_fingerprint": (
+                catalog.monitoring_policy_fingerprint(policy)
+            ),
+            "items": [
+                {
+                    "symbol": "GRVT",
+                    "priority": "P0_DEEP_REVIEW",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": grvt_address}
+                    ],
+                },
+                {
+                    "symbol": "AEON",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": False,
+                    "contracts": [
+                        {"chain": "bsc", "address": self._address("2")}
+                    ],
+                },
+            ],
+        }
+        expected_hash = fast.stable_identity_hash(
+            [{"chain": "bsc", "address": grvt_address}]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            watchlist_path = root / "watchlist.json"
+            liquidity_path = root / "liquidity.json"
+            watchlist_path.write_text(
+                json.dumps(watchlist),
+                encoding="utf-8",
+            )
+            liquidity_path.write_text(
+                json.dumps({"expected_identity_hash": expected_hash}),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"ALPHA_WATCHLIST_PATH": str(watchlist_path)},
+            ):
+                self.assertEqual(
+                    health.monitoring_scope_issue(liquidity_path),
+                    "",
+                )
+                watchlist["items"][1]["active_monitoring"] = True
+                watchlist_path.write_text(
+                    json.dumps(watchlist),
+                    encoding="utf-8",
+                )
+                self.assertIn(
+                    "curated focus",
+                    health.monitoring_scope_issue(liquidity_path),
+                )
+                wrong_policy = {
+                    "mode": "exclusive_symbols",
+                    "symbols": ["AEON"],
+                }
+                watchlist["monitoring_policy"] = wrong_policy
+                watchlist["monitoring_policy_fingerprint"] = (
+                    catalog.monitoring_policy_fingerprint(wrong_policy)
+                )
+                watchlist["items"][0]["active_monitoring"] = False
+                watchlist["items"][1]["active_monitoring"] = True
+                watchlist_path.write_text(
+                    json.dumps(watchlist),
+                    encoding="utf-8",
+                )
+                liquidity_path.write_text(
+                    json.dumps(
+                        {
+                            "expected_identity_hash": fast.stable_identity_hash(
+                                [
+                                    {
+                                        "chain": "bsc",
+                                        "address": self._address("2"),
+                                    }
+                                ]
+                            )
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertIn(
+                    "curated focus",
+                    health.monitoring_scope_issue(liquidity_path),
+                )
 
 
 if __name__ == "__main__":

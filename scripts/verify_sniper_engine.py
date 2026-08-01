@@ -481,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "sniper_score_local.py",
         ROOT / "scripts" / "alpha_project_watch.py",
         ROOT / "scripts" / "alpha_holder_concentration_watch.py",
+        ROOT / "scripts" / "alpha_liquidity_retention_watch.py",
         ROOT / "scripts" / "alpha_prelaunch_research.py",
         ROOT / "scripts" / "alpha_prelaunch_watch.py",
         ROOT / "scripts" / "alpha_opening_block_watch.py",
@@ -615,6 +616,9 @@ def main(argv: list[str] | None = None) -> int:
         "holder": (
             ROOT / "scripts" / "alpha_holder_concentration_watch.py"
         ).read_text(encoding="utf-8"),
+        "liquidity": (
+            ROOT / "scripts" / "alpha_liquidity_retention_watch.py"
+        ).read_text(encoding="utf-8"),
         "health": (
             ROOT / "scripts" / "runtime_health_watch.py"
         ).read_text(encoding="utf-8"),
@@ -646,12 +650,20 @@ def main(argv: list[str] | None = None) -> int:
             "receipt_quote_recovery",
             "bounded_bootstrap_transfer_logs",
         ),
+        "liquidity": (
+            "build_token_liquidity_retention",
+            "alpha_liquidity_retention_watch.v1",
+            "DEFAULT_BUDGET_SECONDS = 35",
+            "holder.maybe_send_telegram",
+            "holder.SEEN_PATH",
+        ),
         "health": (
             "retention_flow_coverage_issue",
             "historical_prelaunch_delivery_issue",
             "PRELAUNCH_RECEIPT_POLICY_VERSION",
             "opening cohort transfer coverage incomplete",
             "intraday_opening_buyer_scope_issue",
+            "monitoring_focus_scope",
         ),
         "intraday": (
             "DEFAULT_WATCHER_BUDGET_SECONDS = 420",
@@ -667,6 +679,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "catalog": (
             "DEFAULT_MAX_SELECTED = 64",
+            "apply_monitoring_policy",
+            "monitoring_policy_fingerprint",
+            "watchlist_policy_status",
         ),
         "research": (
             'SCHEMA_VERSION = "alpha_prelaunch_research.v1"',
@@ -684,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
             'schema": "sniper_fast_lane_health.v1',
             "CORE_OUTPUTS",
             "atomic_write_json(HEARTBEAT_PATH, snapshot)",
+            "monitoring_scope_issue",
         ),
     }
     lifecycle_missing = [
@@ -2443,13 +2459,26 @@ assert readback_gate['can_follow'] is False, readback_gate
         o_item = next((item for item in items if item.get("symbol") == "O"), {})
         arx_item = next((item for item in items if item.get("symbol") == "ARX"), {})
         nes_item = next((item for item in items if item.get("symbol") == "NES"), {})
+        policy = current.get("monitoring_policy", {})
+        active_symbols = sorted(
+            str(item.get("symbol") or "").upper()
+            for item in items
+            if item.get("active_monitoring") is not False
+        )
         current_watchlist_msg = (
             f"{len(items)} items, O active={o_item.get('active_monitoring')}, "
+            f"active={','.join(active_symbols)}, "
             f"ARX context={bool(arx_item.get('market_context'))}, NES pools={len(nes_item.get('pool_ids', []))}"
         )
         current_watchlist_ok = (
             len(items) > 0
             and o_item.get("active_monitoring") is False
+            and policy == {
+                "mode": "exclusive_symbols",
+                "symbols": ["GRVT"],
+            }
+            and active_symbols == ["GRVT"]
+            and all("active_monitoring" in item for item in items)
             and bool(arx_item.get("market_context"))
             and bool(nes_item.get("contracts"))
             and bool(nes_item.get("pool_ids"))
@@ -2471,6 +2500,7 @@ assert readback_gate['can_follow'] is False, readback_gate
             "prediction_market_watch.py",
             "alpha_prelaunch_watch.py",
             "perp_oi_funding_watch.py",
+            "alpha_liquidity_retention_watch.py",
             "alpha_price_momentum_watch.py",
             "telegram_signal_collector.py --flush-pending",
             "fast_lane_health.py",
@@ -2505,6 +2535,8 @@ assert readback_gate['can_follow'] is False, readback_gate
             in fast_lane_text
             and "FAST_PERP_OI_FUNDING_TIMEOUT_SECONDS:-25"
             in fast_lane_text
+            and "FAST_ALPHA_LIQUIDITY_TIMEOUT_SECONDS:-40"
+            in fast_lane_text
             and "FAST_ALPHA_PRICE_MOMENTUM_TIMEOUT_SECONDS:-25"
             in fast_lane_text
             and "FAST_TELEGRAM_FLUSH_TIMEOUT_SECONDS:-15"
@@ -2514,10 +2546,15 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "prediction_pid=$!" in fast_lane_text
             and "prelaunch_pid=$!" in fast_lane_text
             and "perp_pid=$!" in fast_lane_text
+            and "liquidity_pid=$!" in fast_lane_text
             and 'wait "$perp_pid"' in fast_lane_text
+            and 'wait "$liquidity_pid"' in fast_lane_text
             and "ALPHA_WATCHLIST_PATH" in fast_lane_text
             and "BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS" in fast_lane_text
+            and "watchlist_policy_status" in fast_lane_text
+            and "runtime_policy_status" in fast_lane_text
             and "DISABLE_TELEGRAM" in fast_lane_text
+            and "ALPHA_HOLDER_TELEGRAM=0" in fast_lane_text
             and '--failure-file "$FAST_LANE_FAILURE_FILE"'
             in fast_lane_text
             and '--started-at "$FAST_LANE_STARTED_AT"' in fast_lane_text
@@ -3047,6 +3084,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "sniper_score_local.py"),
         str(ROOT / "scripts" / "alpha_project_watch.py"),
         str(ROOT / "scripts" / "alpha_holder_concentration_watch.py"),
+        str(ROOT / "scripts" / "alpha_liquidity_retention_watch.py"),
         str(ROOT / "scripts" / "alpha_prelaunch_research.py"),
         str(ROOT / "scripts" / "alpha_prelaunch_watch.py"),
         str(ROOT / "scripts" / "alpha_opening_block_watch.py"),
@@ -3212,7 +3250,12 @@ for relative_path in [
     )
     send_block = source.split(send_function, 1)[1].split('\\ndef ', 1)[0]
     receipt_index = send_block.index('receipt = read_telegram_send_receipt(response)')
-    seen_index = send_block.rindex('write_json(SEEN_PATH')
+    seen_write = (
+        'atomic_write_json(resolved_seen_path'
+        if relative_path == 'scripts/alpha_holder_concentration_watch.py'
+        else 'write_json(SEEN_PATH'
+    )
+    seen_index = send_block.rindex(seen_write)
     record_call = 'record_telegram_send_receipt(' if 'record_telegram_send_receipt(' in send_block else 'record_push('
     record_index = send_block.index(record_call)
     assert receipt_index < seen_index < record_index, relative_path

@@ -56,18 +56,38 @@ run_step() {
   fi
 }
 
+runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
 if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
   runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
-  runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
+  curated_watchlist="config/current_alpha_watchlist.json"
   runtime_age="$(
     python3 -c 'import os, sys, time; print(max(0, int(time.time() - os.path.getmtime(sys.argv[1]))))' \
       "$runtime_watchlist" 2>/dev/null || echo "$((runtime_ttl + 1))"
   )"
-  if [[ -s "$runtime_watchlist" ]] && (( runtime_age <= runtime_ttl )); then
+  runtime_policy_status="$(
+    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
+      "$runtime_watchlist" "$curated_watchlist" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
+  )"
+  if [[ "$runtime_policy_status" == "static_invalid" ]]; then
+    echo "server_run_once failed: curated Alpha monitoring policy is invalid" >&2
+    exit 78
+  fi
+  if [[ -s "$runtime_watchlist" ]] \
+    && (( runtime_age <= runtime_ttl )) \
+    && [[ "$runtime_policy_status" == "runtime_valid" ]]; then
     export ALPHA_WATCHLIST_PATH="$runtime_watchlist"
   else
-    export ALPHA_WATCHLIST_PATH="config/current_alpha_watchlist.json"
-    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) catalog runtime watchlist unavailable or stale; using curated config"
+    export ALPHA_WATCHLIST_PATH="$curated_watchlist"
+    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) catalog runtime watchlist unavailable, stale, or policy-mismatched; using curated config"
+  fi
+else
+  configured_policy_status="$(
+    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
+      "$ALPHA_WATCHLIST_PATH" "config/current_alpha_watchlist.json" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
+  )"
+  if [[ "$configured_policy_status" != "runtime_valid" ]]; then
+    echo "server_run_once failed: configured Alpha watchlist violates the curated monitoring policy" >&2
+    exit 78
   fi
 fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -28,6 +29,7 @@ LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
 SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
+PROGRESS_PATH = OUT_DIR / "progress.json"
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO = "0x0000000000000000000000000000000000000000"
@@ -42,6 +44,8 @@ QUOTE_TOKENS_BY_CHAIN = {
 }
 SUPPORTED_CHAINS = {"bsc", "base"}
 TELEGRAM_LIMIT = 3900
+PROGRESS_SCHEMA_VERSION = 1
+PROJECT_PROVIDER_ROW_LIMIT_HARD_CAP = 128
 
 
 def now_utc() -> datetime:
@@ -74,7 +78,20 @@ def read_json(path: Path, default: Any) -> Any:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def decimal_amount(raw: int, decimals: int) -> Decimal:
@@ -212,6 +229,109 @@ def log_index(row: dict[str, Any]) -> int:
     return int(row.get("logIndex") or "0x0", 16)
 
 
+def normalized_hex_bytes(
+    value: Any,
+    byte_length: int,
+    *,
+    allow_zero: bool = True,
+) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    if len(text) != 2 + (byte_length * 2) or not text.startswith("0x"):
+        return ""
+    if any(character not in "0123456789abcdef" for character in text[2:]):
+        return ""
+    if not allow_zero and int(text[2:], 16) == 0:
+        return ""
+    return text
+
+
+def normalized_hex_quantity(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    if not text.startswith("0x") or not text[2:]:
+        return ""
+    if any(character not in "0123456789abcdef" for character in text[2:]):
+        return ""
+    try:
+        return hex(int(text, 16))
+    except ValueError:
+        return ""
+
+
+def normalized_transfer_log(
+    row: dict[str, Any],
+    token_contract: str,
+) -> dict[str, Any] | None:
+    transaction_hash = normalized_hex_bytes(
+        row.get("transactionHash"),
+        32,
+        allow_zero=False,
+    )
+    block_hash = normalized_hex_bytes(
+        row.get("blockHash"),
+        32,
+        allow_zero=False,
+    )
+    block = normalized_hex_quantity(row.get("blockNumber"))
+    transaction_index = normalized_hex_quantity(row.get("transactionIndex"))
+    index = normalized_hex_quantity(row.get("logIndex"))
+    address = norm(str(row.get("address") or ""))
+    topics = row.get("topics")
+    data = normalized_hex_bytes(row.get("data"), 32)
+    if (
+        not transaction_hash
+        or not block_hash
+        or not block
+        or not transaction_index
+        or not index
+        or address != norm(token_contract)
+        or row.get("removed") is not False
+        or not isinstance(topics, list)
+        or len(topics) != 3
+        or not data
+    ):
+        return None
+    normalized_topics = [
+        normalized_hex_bytes(topic, 32) for topic in topics
+    ]
+    if not all(normalized_topics) or normalized_topics[0] != TRANSFER_TOPIC:
+        return None
+    return {
+        **row,
+        "address": address,
+        "blockHash": block_hash,
+        "blockNumber": block,
+        "data": data,
+        "logIndex": index,
+        "removed": False,
+        "topics": normalized_topics,
+        "transactionHash": transaction_hash,
+        "transactionIndex": transaction_index,
+    }
+
+
+def transfer_log_matches_query(
+    row: dict[str, Any],
+    topic_filter: list[Any],
+    selected_start: int,
+    selected_end: int,
+) -> bool:
+    block = int(row["blockNumber"], 16)
+    if block < selected_start or block > selected_end:
+        return False
+    topics = row["topics"]
+    for topic_index in (1, 2):
+        expected = topic_filter[topic_index]
+        if expected is None:
+            continue
+        if not isinstance(expected, list) or topics[topic_index] not in expected:
+            return False
+    return True
+
+
 def get_transfer_logs(
     chain: str,
     token_contract: str,
@@ -229,26 +349,94 @@ def get_transfer_logs(
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     errors: list[str] = []
     chunk_size = max(1, int(os.environ.get("ALPHA_PROJECT_LOG_CHUNK_BLOCKS", "10000")))
+    configured_row_limit = max(
+        1,
+        int(
+            os.environ.get(
+                "ALPHA_PROJECT_PROVIDER_MAX_ROWS_PER_QUERY",
+                str(PROJECT_PROVIDER_ROW_LIMIT_HARD_CAP),
+            )
+        ),
+    )
+    provider_row_limit = min(
+        configured_row_limit,
+        PROJECT_PROVIDER_ROW_LIMIT_HARD_CAP,
+    )
     for start in range(from_block, to_block + 1, chunk_size):
         end = min(to_block, start + chunk_size - 1)
         for topic_filter in queries:
-            query = {
-                "address": token_contract,
-                "fromBlock": hex(start),
-                "toBlock": hex(end),
-                "topics": topic_filter,
-            }
-            try:
-                result = rpc_call(chain, "eth_getLogs", [query])
-            except Exception:
-                errors.append(f"eth_getLogs coverage failed for {start}-{end}")
-                return [], errors
-            if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
-                errors.append(f"eth_getLogs coverage failed for {start}-{end}")
-                return [], errors
-            for row in result:
-                key = (row.get("transactionHash", ""), row.get("logIndex", ""))
-                rows[key] = row
+            pending = [(start, end)]
+            while pending:
+                selected_start, selected_end = pending.pop(0)
+                query = {
+                    "address": token_contract,
+                    "fromBlock": hex(selected_start),
+                    "toBlock": hex(selected_end),
+                    "topics": topic_filter,
+                }
+                try:
+                    result = rpc_call(chain, "eth_getLogs", [query])
+                except Exception:
+                    errors.append(
+                        "eth_getLogs coverage failed for "
+                        f"{selected_start}-{selected_end}"
+                    )
+                    return [], errors
+                if not isinstance(result, list) or any(
+                    not isinstance(row, dict) for row in result
+                ):
+                    errors.append(
+                        "eth_getLogs coverage failed for "
+                        f"{selected_start}-{selected_end}"
+                    )
+                    return [], errors
+                if len(result) >= provider_row_limit:
+                    if selected_start >= selected_end:
+                        errors.append(
+                            "eth_getLogs coverage truncated for "
+                            f"{selected_start}-{selected_end}"
+                        )
+                        return [], errors
+                    midpoint = (selected_start + selected_end) // 2
+                    pending[0:0] = [
+                        (selected_start, midpoint),
+                        (midpoint + 1, selected_end),
+                    ]
+                    continue
+                for row in result:
+                    normalized_row = normalized_transfer_log(
+                        row,
+                        token_contract,
+                    )
+                    if normalized_row is None:
+                        errors.append(
+                            "eth_getLogs malformed identity for "
+                            f"{selected_start}-{selected_end}"
+                        )
+                        return [], errors
+                    if not transfer_log_matches_query(
+                        normalized_row,
+                        topic_filter,
+                        selected_start,
+                        selected_end,
+                    ):
+                        errors.append(
+                            "eth_getLogs result outside query for "
+                            f"{selected_start}-{selected_end}"
+                        )
+                        return [], errors
+                    key = (
+                        normalized_row["transactionHash"],
+                        normalized_row["logIndex"],
+                    )
+                    existing = rows.get(key)
+                    if existing is not None and existing != normalized_row:
+                        errors.append(
+                            "eth_getLogs conflicting duplicate for "
+                            f"{selected_start}-{selected_end}"
+                        )
+                        return [], errors
+                    rows[key] = normalized_row
     ordered = sorted(rows.values(), key=lambda row: (block_number(row), log_index(row)))
     return ordered, errors
 
@@ -465,16 +653,45 @@ def tx_receipts(item: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def build_snapshot() -> dict[str, Any]:
-    config = read_json(CONFIG_PATH, {"items": []})
-    previous = load_previous()
-    previous_tips = previous_contract_tips(previous)
-    previous_balance_map = previous_balances(previous)
-    finality = int(os.environ.get("ALPHA_PROJECT_FINALITY_BLOCKS", "20"))
-    lookback = int(os.environ.get("ALPHA_PROJECT_LOOKBACK_BLOCKS", "50000"))
-    projects = []
-    skipped = []
+def stable_hash(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
+
+def project_item_fingerprint(item: dict[str, Any]) -> str:
+    return stable_hash(item)
+
+
+def contract_checkpoint_key(contract: dict[str, Any]) -> str:
+    return f"{str(contract.get('chain') or '').lower()}:{norm(contract.get('address'))}"
+
+
+def project_scan_fingerprint(
+    config: dict[str, Any],
+    previous: dict[str, Any],
+    finality: int,
+    lookback: int,
+) -> str:
+    return stable_hash(
+        {
+            "config": config,
+            "previous": previous,
+            "finality": finality,
+            "lookback": lookback,
+        }
+    )
+
+
+def eligible_project_items(
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    items: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
     for item in config.get("items", []):
         symbol = str(item.get("symbol") or item.get("name") or "UNKNOWN").upper()
         priority = item.get("priority", "")
@@ -484,9 +701,166 @@ def build_snapshot() -> dict[str, Any]:
         if item.get("project_watch_skip_generic"):
             skipped.append({"symbol": symbol, "reason": "specialized_watch"})
             continue
-        if not str(priority).startswith(("P0", "P1", "P2")):
-            continue
-        projects.append(build_project(item, previous_tips, previous_balance_map, finality, lookback))
+        if str(priority).startswith(("P0", "P1", "P2")):
+            items.append(item)
+    return items, skipped
+
+
+def validated_scan_progress(
+    items: list[dict[str, Any]],
+    scan_fingerprint: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    progress = read_json(PROGRESS_PATH, {})
+    if not isinstance(progress, dict):
+        return [], [], False
+    if progress.get("schema_version") != PROGRESS_SCHEMA_VERSION:
+        return [], [], False
+    if progress.get("scan_fingerprint") != scan_fingerprint:
+        return [], [], False
+    completed_entries = progress.get("completed_projects")
+    if not isinstance(completed_entries, list) or len(completed_entries) > len(items):
+        return [], [], False
+
+    completed_projects: list[dict[str, Any]] = []
+    for index, entry in enumerate(completed_entries):
+        if not isinstance(entry, dict) or index >= len(items):
+            return [], [], False
+        item = items[index]
+        project = entry.get("project")
+        if (
+            entry.get("item_index") != index
+            or entry.get("item_fingerprint") != project_item_fingerprint(item)
+            or not isinstance(project, dict)
+        ):
+            return [], [], False
+        expected_contract_keys = [
+            contract_checkpoint_key(contract) for contract in extract_contracts(item)
+        ]
+        project_contracts = project.get("contracts")
+        if not isinstance(project_contracts, list) or any(
+            not isinstance(contract, dict) for contract in project_contracts
+        ):
+            return [], [], False
+        actual_contract_keys = [
+            contract_checkpoint_key(contract) for contract in project_contracts
+        ]
+        if actual_contract_keys != expected_contract_keys:
+            return [], [], False
+        completed_projects.append(project)
+
+    active_contracts: list[dict[str, Any]] = []
+    active = progress.get("active_project")
+    if active is not None:
+        active_index = len(completed_projects)
+        if (
+            not isinstance(active, dict)
+            or active_index >= len(items)
+            or active.get("item_index") != active_index
+            or active.get("item_fingerprint")
+            != project_item_fingerprint(items[active_index])
+        ):
+            return [], [], False
+        stored_contracts = active.get("contracts")
+        if not isinstance(stored_contracts, list) or any(
+            not isinstance(contract, dict) for contract in stored_contracts
+        ):
+            return [], [], False
+        expected_contract_keys = [
+            contract_checkpoint_key(contract)
+            for contract in extract_contracts(items[active_index])
+        ]
+        actual_contract_keys = [
+            contract_checkpoint_key(contract) for contract in stored_contracts
+        ]
+        if actual_contract_keys != expected_contract_keys[: len(actual_contract_keys)]:
+            return [], [], False
+        active_contracts = stored_contracts
+    return completed_projects, active_contracts, bool(
+        completed_projects or active_contracts
+    )
+
+
+def write_scan_progress(
+    scan_fingerprint: str,
+    items: list[dict[str, Any]],
+    completed_projects: list[dict[str, Any]],
+    active_contracts: list[dict[str, Any]] | None,
+) -> None:
+    completed_entries = [
+        {
+            "item_index": index,
+            "item_fingerprint": project_item_fingerprint(items[index]),
+            "project": project,
+        }
+        for index, project in enumerate(completed_projects)
+    ]
+    active_project = None
+    if active_contracts is not None and len(completed_projects) < len(items):
+        active_index = len(completed_projects)
+        active_project = {
+            "item_index": active_index,
+            "item_fingerprint": project_item_fingerprint(items[active_index]),
+            "contracts": active_contracts,
+        }
+    write_json(
+        PROGRESS_PATH,
+        {
+            "schema_version": PROGRESS_SCHEMA_VERSION,
+            "scan_fingerprint": scan_fingerprint,
+            "completed_projects": completed_entries,
+            "active_project": active_project,
+        },
+    )
+
+
+def build_snapshot() -> dict[str, Any]:
+    config = read_json(CONFIG_PATH, {"items": []})
+    previous = load_previous()
+    previous_tips = previous_contract_tips(previous)
+    previous_balance_map = previous_balances(previous)
+    finality = int(os.environ.get("ALPHA_PROJECT_FINALITY_BLOCKS", "20"))
+    lookback = int(os.environ.get("ALPHA_PROJECT_LOOKBACK_BLOCKS", "50000"))
+    items, skipped = eligible_project_items(config)
+    scan_fingerprint = project_scan_fingerprint(
+        config,
+        previous,
+        finality,
+        lookback,
+    )
+    projects, active_contracts, resumed = validated_scan_progress(
+        items,
+        scan_fingerprint,
+    )
+
+    for item_index in range(len(projects), len(items)):
+        item = items[item_index]
+        resumed_contracts = active_contracts if item_index == len(projects) else []
+
+        def checkpoint_contracts(contracts: list[dict[str, Any]]) -> None:
+            write_scan_progress(
+                scan_fingerprint,
+                items,
+                projects,
+                contracts,
+            )
+
+        project = build_project(
+            item,
+            previous_tips,
+            previous_balance_map,
+            finality,
+            lookback,
+            resumed_contracts=resumed_contracts,
+            on_contract_complete=checkpoint_contracts,
+        )
+        projects.append(project)
+        active_contracts = []
+        write_scan_progress(
+            scan_fingerprint,
+            items,
+            projects,
+            None,
+        )
 
     alerts = [alert for project in projects for alert in project.get("alerts", [])]
     snapshot = {
@@ -494,6 +868,7 @@ def build_snapshot() -> dict[str, Any]:
         "config_path": str(CONFIG_PATH),
         "project_count": len(projects),
         "alert_count": len(alerts),
+        "resumed_from_progress": resumed,
         "skipped": skipped,
         "projects": projects,
     }
@@ -506,19 +881,31 @@ def build_project(
     previous_balance_map: dict[tuple[str, str, str, str], Decimal],
     finality: int,
     lookback: int,
+    *,
+    resumed_contracts: list[dict[str, Any]] | None = None,
+    on_contract_complete: Any = None,
 ) -> dict[str, Any]:
     symbol = str(item.get("symbol") or item.get("name") or "UNKNOWN").upper()
-    contracts = []
+    contracts = list(resumed_contracts or [])
     alerts = []
-    launches = launch_events(item)
-    receipts = tx_receipts(item)
-    for contract in extract_contracts(item):
+    configured_contracts = extract_contracts(item)
+    for contract in configured_contracts[len(contracts) :]:
         try:
             contract_payload = build_contract(symbol, contract, item, previous_tips, previous_balance_map, finality, lookback)
         except Exception as exc:
-            contract_payload = build_contract_error(contract, exc)
+            previous_tip = previous_tips.get(
+                (symbol, contract["chain"], norm(contract["address"])),
+                0,
+            )
+            contract_payload = build_contract_error(contract, exc, previous_tip)
         contracts.append(contract_payload)
+        if on_contract_complete is not None:
+            on_contract_complete(contracts)
+
+    for contract_payload in contracts:
         alerts.extend(contract_payload.get("alerts", []))
+    launches = launch_events(item)
+    receipts = tx_receipts(item)
 
     attribution_gap_states = sorted(
         {
@@ -647,15 +1034,19 @@ def build_contract(
     }
 
 
-def build_contract_error(contract: dict[str, str], exc: Exception) -> dict[str, Any]:
+def build_contract_error(
+    contract: dict[str, str],
+    exc: Exception,
+    previous_tip: int = 0,
+) -> dict[str, Any]:
     return {
         "chain": contract.get("chain", ""),
         "address": norm(contract.get("address")),
         "confidence": contract.get("confidence", ""),
         "raw_latest_block": 0,
-        "latest_block": 0,
-        "previous_latest_block": 0,
-        "from_block": 0,
+        "latest_block": previous_tip,
+        "previous_latest_block": previous_tip,
+        "from_block": previous_tip + 1 if previous_tip else 0,
         "finality_blocks": 0,
         "lookback_blocks": 0,
         "decimals": 18,
@@ -1169,21 +1560,19 @@ def alert_amount_bucket(value: Decimal, step: Decimal) -> str:
     return format((value // step) * step, "f")
 
 
-def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
+def maybe_send_telegram(snapshot: dict[str, Any]) -> bool:
     if os.environ.get("ALPHA_PROJECT_WATCH_TELEGRAM", os.environ.get("SNIPER_MONITOR_TELEGRAM", "0")) != "1":
-        return
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        return
+        return True
     keys = alert_keys([alert for project in snapshot.get("projects", []) for alert in project.get("alerts", [])])
     seen = set(read_json(SEEN_PATH, []))
     new_keys = [key for key in keys if key not in seen]
-    if not new_keys and os.environ.get("ALPHA_PROJECT_WATCH_FORCE_TELEGRAM") != "1":
-        return
-    if suppress_repeat_push(snapshot) and os.environ.get("ALPHA_PROJECT_WATCH_FORCE_TELEGRAM") != "1":
-        write_json(SEEN_PATH, sorted(seen | set(keys)))
-        return
+    force = os.environ.get("ALPHA_PROJECT_WATCH_FORCE_TELEGRAM") == "1"
+    if not new_keys and not force:
+        return True
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
     text = telegram_text(
         {**snapshot, "new_alert_count": len(new_keys), "_telegram_new_alert_keys": new_keys}
     )[:TELEGRAM_LIMIT]
@@ -1197,6 +1586,7 @@ def maybe_send_telegram(snapshot: dict[str, Any]) -> None:
         receipt = read_telegram_send_receipt(response)
     write_json(SEEN_PATH, sorted(seen | set(keys)))
     record_push(snapshot, text, receipt)
+    return True
 
 
 def project_push_signature(snapshot: dict[str, Any]) -> str:
@@ -1234,20 +1624,6 @@ def project_push_signature(snapshot: dict[str, Any]) -> str:
             )
         )
     return "\n".join(parts)
-
-
-def suppress_repeat_push(snapshot: dict[str, Any]) -> bool:
-    ttl_minutes = int(os.environ.get("ALPHA_PROJECT_REPEAT_SUPPRESS_MINUTES", "30"))
-    if ttl_minutes <= 0:
-        return False
-    last = read_json(LAST_PUSH_PATH, {})
-    if last.get("signature") != project_push_signature(snapshot):
-        return False
-    try:
-        sent_at = datetime.fromisoformat(str(last.get("sent_at")).replace("Z", "+00:00"))
-    except Exception:
-        return False
-    return now_utc() - sent_at.astimezone(timezone.utc) < timedelta(minutes=ttl_minutes)
 
 
 def record_push(snapshot: dict[str, Any], text: str, receipt: dict[str, Any]) -> None:
@@ -1512,12 +1888,18 @@ def short_tx(value: str) -> str:
     return short_addr(value)
 
 
+def publish_snapshot(snapshot: dict[str, Any]) -> None:
+    if not maybe_send_telegram(snapshot):
+        raise RuntimeError("alpha project Telegram delivery unavailable")
+    write_text(REPORT_PATH, render(snapshot))
+    write_json(LATEST_PATH, snapshot)
+    PROGRESS_PATH.unlink(missing_ok=True)
+
+
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     snapshot = build_snapshot()
-    write_json(LATEST_PATH, snapshot)
-    REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
-    maybe_send_telegram(snapshot)
+    publish_snapshot(snapshot)
     print(LATEST_PATH)
     print(REPORT_PATH)
     print(f"projects={snapshot['project_count']} alerts={snapshot['alert_count']}")

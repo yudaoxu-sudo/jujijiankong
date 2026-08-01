@@ -1,5 +1,11 @@
 {
-  "generated_at": "2026-07-01T05:59:01+00:00",
+  "generated_at": "2026-08-01T13:35:42+00:00",
+  "monitoring_policy": {
+    "mode": "exclusive_symbols",
+    "symbols": [
+      "GRVT"
+    ]
+  },
   "items": [
     {
       "symbol": "O",
@@ -56,6 +62,7 @@
       "symbol": "RE",
       "name": "Re",
       "priority": "P1_MONITOR",
+      "active_monitoring": false,
       "chain": "unknown",
       "contracts": [],
       "catalysts": [
@@ -75,6 +82,7 @@
       "symbol": "ARX",
       "name": "Arcium",
       "priority": "P0_DEEP_REVIEW",
+      "active_monitoring": false,
       "project_watch_skip_generic": true,
       "market_context": {
         "pool_init_price_usdt_per_arx": "0.13000013",
@@ -173,6 +181,7 @@
       "symbol": "GRAM",
       "name": "GRAM",
       "priority": "P2_PAPER_TRADE",
+      "active_monitoring": false,
       "chain": "unknown",
       "contracts": [],
       "catalysts": [
@@ -189,6 +198,7 @@
       "symbol": "NES",
       "name": "Nesa",
       "priority": "P0_DEEP_REVIEW",
+      "active_monitoring": false,
       "chain": "bsc",
       "contracts": [
         {
@@ -396,6 +406,7 @@
       "symbol": "CAP",
       "name": "CAP",
       "priority": "P1_MONITOR",
+      "active_monitoring": false,
       "chain": "bsc",
       "contracts": [
         {
@@ -526,6 +537,7 @@
       "symbol": "ESPORTS",
       "name": "ESPORTS",
       "priority": "P2_PAPER_TRADE",
+      "active_monitoring": false,
       "chain": "unknown",
       "contracts": [],
       "catalysts": [
@@ -542,6 +554,7 @@
       "symbol": "VELVET",
       "name": "VELVET",
       "priority": "P2_PAPER_TRADE",
+      "active_monitoring": false,
       "chain": "bsc/base",
       "contracts": [
         {
@@ -569,6 +582,7 @@
       "symbol": "NIGHT",
       "name": "NIGHT",
       "priority": "P3_BACKLOG",
+      "active_monitoring": false,
       "chain": "unknown",
       "contracts": [],
       "catalysts": [
@@ -584,6 +598,7 @@
       "symbol": "WDATAIP",
       "name": "🟦 [BN Alpha 新Hook] 设置/更新池子开盘时间",
       "priority": "P0_DEEP_REVIEW",
+      "active_monitoring": false,
       "chain": "bsc",
       "contracts": [
         {
@@ -647,11 +662,15 @@
       "priority": "P0_DEEP_REVIEW",
       "chain": "bsc",
       "active_monitoring": true,
+      "opening_max_age_hours": 720,
+      "opening_liquidity_max_age_seconds": 2592000,
+      "intraday_max_age_hours": 72,
+      "project_lookback_blocks": 50000,
       "contracts": [
         {
           "chain": "bsc",
           "address": "0x46f2564e0fa8248d15125e7e54173cfbdef91be7",
-          "confidence": "social_prelaunch_candidate_requires_runtime_receipt"
+          "confidence": "binance_alpha_public_catalog_contract_match"
         }
       ],
       "catalysts": [
@@ -663,7 +682,7 @@
       "known_times": [
         {
           "time": "2026-07-30 20:00",
-          "reason": "typed_alpha_open_social_candidate"
+          "reason": "binance_alpha_public_catalog_verified_listing"
         }
       ],
       "event_schedule": [
@@ -672,10 +691,10 @@
           "venue": "Binance Alpha",
           "time_utc8": "2026-07-30 20:00",
           "time_precision": "exact",
-          "authority": "social_discovery",
-          "verification_status": "unverified",
+          "authority": "binance_alpha_public_catalog",
+          "verification_status": "verified",
           "evidence_ids": [
-            "grvt-social-prelaunch"
+            "binance-alpha-public-catalog-ALPHA_1067"
           ]
         },
         {
@@ -1250,6 +1269,11 @@
         "project_name": "Grvt",
         "raw_symbol": "GRVT",
         "display_symbol": "GRVT",
+        "source": "binance_alpha_public_catalog",
+        "alpha_id": "ALPHA_1067",
+        "listing_time_utc": "2026-07-30T12:00:00+00:00",
+        "listing_time_utc8": "2026-07-30 20:00",
+        "lifecycle_first_seen_at": "2026-08-01T13:35:42+00:00",
         "total_supply": "1000000000",
         "research_source_policy": "official_onchain_market_social_inference_separated"
       }

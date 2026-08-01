@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, getcontext
 from pathlib import Path
@@ -51,6 +53,19 @@ REPORT_PATH = OUT_DIR / "latest.md"
 STATE_PATH = OUT_DIR / "state.json"
 SEEN_PATH = OUT_DIR / "seen_alerts.json"
 LAST_PUSH_PATH = OUT_DIR / "last_push.json"
+DEFAULT_TELEGRAM_LOCK_PATH = (
+    Path(os.environ["SNIPER_OFFLINE_TMP_ROOT"])
+    / "tmp"
+    / "sniper_alpha_holder_telegram.lock"
+    if os.environ.get("SNIPER_OFFLINE_TMP_ROOT")
+    else Path("/tmp/sniper_alpha_holder_telegram.lock")
+)
+TELEGRAM_LOCK_PATH = Path(
+    os.environ.get(
+        "ALPHA_HOLDER_TELEGRAM_LOCK_FILE",
+        str(DEFAULT_TELEGRAM_LOCK_PATH),
+    )
+)
 SURF_HOLDER_QUOTA_STATE_PATH = OUT_DIR / "surf_holder_quota_state.json"
 PRICE_CONTEXT_PATH = ROOT / "output" / "alpha_price_momentum_watch" / "latest.json"
 FLOW_CONTEXT_PATH = ROOT / "output" / "alpha_intraday_flow_watch" / "latest.json"
@@ -1526,10 +1541,6 @@ def opening_verified_pool_scope(
             quote_decimals = -1
         if (
             event.get("status") != "opened"
-            or event.get("opening_liquidity_scope_complete") is not True
-            or not valid_sha256(
-                event.get("opening_liquidity_watch_scope_hash")
-            )
             or not is_address(quote)
             or quote == norm(token)
             or not quote_symbol
@@ -1590,17 +1601,35 @@ def opening_verified_pool_scope(
                 "v4_pool_count": 0,
                 "scope_hash": "",
             }
-        v3_pools = [
-            {
-                **row,
-                "protocol": "v3",
-                "quote_token": quote,
-                "quote_decimals": quote_decimals,
-                "quote_symbol": quote_symbol,
-            }
-            for row in v3_scope.get("pools", [])
-            if isinstance(row, dict)
-        ]
+        v3_pools = []
+        for row in v3_scope.get("pools", []):
+            if not isinstance(row, dict):
+                continue
+            row_quote = norm(row.get("quote_token"))
+            row_quote_symbol = str(
+                row.get("quote_symbol") or ""
+            ).strip().upper()
+            try:
+                row_quote_decimals = int(row.get("quote_decimals"))
+            except (TypeError, ValueError):
+                row_quote_decimals = -1
+            if not (
+                is_address(row_quote)
+                and row_quote_symbol
+                and 0 <= row_quote_decimals <= 36
+            ):
+                row_quote = quote
+                row_quote_symbol = quote_symbol
+                row_quote_decimals = quote_decimals
+            v3_pools.append(
+                {
+                    **row,
+                    "protocol": "v3",
+                    "quote_token": row_quote,
+                    "quote_decimals": row_quote_decimals,
+                    "quote_symbol": row_quote_symbol,
+                }
+            )
         v4_pools = [
             {
                 **row,
@@ -1629,8 +1658,10 @@ def opening_verified_pool_scope(
                 "scope_hash": "",
             }
         if any(
-            {row.get("token0"), row.get("token1")}
-            != {norm(token), quote}
+            norm(token) not in {row.get("token0"), row.get("token1")}
+            or row.get("quote_token")
+            not in {row.get("token0"), row.get("token1")}
+            or row.get("quote_token") == norm(token)
             for row in normalized
         ):
             return {
@@ -5522,7 +5553,11 @@ def send_telegram_batch(
     token: str,
     chat_id: str,
     seen: set[str],
+    seen_path: Path | None = None,
+    last_push_path: Path | None = None,
 ) -> None:
+    resolved_seen_path = seen_path or SEEN_PATH
+    resolved_last_push_path = last_push_path or LAST_PUSH_PATH
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -5532,9 +5567,9 @@ def send_telegram_batch(
     with urllib.request.urlopen(req, timeout=20) as response:
         receipt = read_telegram_send_receipt(response)
     seen.update(batch_keys)
-    write_json(SEEN_PATH, sorted(seen))
+    atomic_write_json(resolved_seen_path, sorted(seen))
     record_telegram_send_receipt(
-        LAST_PUSH_PATH,
+        resolved_last_push_path,
         sent_at=now_iso(),
         signature="\n".join(sorted(batch_keys)),
         text=text,
@@ -5677,84 +5712,117 @@ def holder_only_project(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def maybe_send_telegram(snapshot: dict[str, Any]) -> bool:
+@contextmanager
+def telegram_delivery_lock(
+    lock_path: Path | None = None,
+) -> Any:
+    resolved_path = lock_path or TELEGRAM_LOCK_PATH
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    with resolved_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def maybe_send_telegram(
+    snapshot: dict[str, Any],
+    *,
+    seen_path: Path | None = None,
+    last_push_path: Path | None = None,
+    lock_path: Path | None = None,
+) -> bool:
+    if os.environ.get("DISABLE_TELEGRAM", "0") == "1":
+        return True
     if os.environ.get("ALPHA_HOLDER_TELEGRAM", os.environ.get("SNIPER_MONITOR_TELEGRAM", "0")) != "1":
         return True
-    keys = alert_keys(snapshot)
-    seen = set(read_json(SEEN_PATH, []))
-    force = os.environ.get("ALPHA_HOLDER_FORCE_TELEGRAM") == "1"
-    pending = set(keys if force else (key for key in keys if key not in seen))
-    if not pending and not force:
-        return True
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        return False
+    resolved_seen_path = seen_path or SEEN_PATH
+    resolved_last_push_path = last_push_path or LAST_PUSH_PATH
+    with telegram_delivery_lock(lock_path):
+        keys = alert_keys(snapshot)
+        seen = set(read_json(resolved_seen_path, []))
+        force = os.environ.get("ALPHA_HOLDER_FORCE_TELEGRAM") == "1"
+        pending = set(
+            keys if force else (key for key in keys if key not in seen)
+        )
+        if not pending and not force:
+            return True
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            return False
 
-    for project in snapshot.get("projects", []):
-        events = [
-            event
-            for event in retention_alert_events(project)
-            if retention_event_key(project, event) in pending
-        ]
-        if not events:
-            continue
-        for text, batch_events in retention_telegram_batches(
-            project,
-            events,
-        ):
-            batch_keys = [
-                retention_event_key(project, event)
-                for event in batch_events
+        for project in snapshot.get("projects", []):
+            events = [
+                event
+                for event in retention_alert_events(project)
+                if retention_event_key(project, event) in pending
             ]
+            if not events:
+                continue
+            for text, batch_events in retention_telegram_batches(
+                project,
+                events,
+            ):
+                batch_keys = [
+                    retention_event_key(project, event)
+                    for event in batch_events
+                ]
+                send_telegram_batch(
+                    text,
+                    batch_keys,
+                    token=token,
+                    chat_id=chat_id,
+                    seen=seen,
+                    seen_path=resolved_seen_path,
+                    last_push_path=resolved_last_push_path,
+                )
+
+        holder_projects = [
+            holder_only_project(project)
+            for project in snapshot.get("projects", [])
+            if holder_signal_key(project) in pending
+        ]
+        for start in range(0, len(holder_projects), 2):
+            batch = holder_projects[start : start + 2]
+            batch_keys = [
+                holder_signal_key(project)
+                for project in batch
+                if holder_signal_key(project)
+            ]
+            text = telegram_text(
+                {
+                    **snapshot,
+                    "alert_count": len(batch),
+                    "new_alert_count": len(batch_keys),
+                    "_telegram_new_alert_keys": batch_keys,
+                    "projects": batch,
+                }
+            )[:TELEGRAM_LIMIT]
             send_telegram_batch(
                 text,
                 batch_keys,
                 token=token,
                 chat_id=chat_id,
                 seen=seen,
+                seen_path=resolved_seen_path,
+                last_push_path=resolved_last_push_path,
             )
 
-    holder_projects = [
-        holder_only_project(project)
-        for project in snapshot.get("projects", [])
-        if holder_signal_key(project) in pending
-    ]
-    for start in range(0, len(holder_projects), 2):
-        batch = holder_projects[start : start + 2]
-        batch_keys = [
-            holder_signal_key(project)
-            for project in batch
-            if holder_signal_key(project)
-        ]
-        text = telegram_text(
-            {
-                **snapshot,
-                "alert_count": len(batch),
-                "new_alert_count": len(batch_keys),
-                "_telegram_new_alert_keys": batch_keys,
-                "projects": batch,
-            }
-        )[:TELEGRAM_LIMIT]
-        send_telegram_batch(
-            text,
-            batch_keys,
-            token=token,
-            chat_id=chat_id,
-            seen=seen,
-        )
-
-    if force and not keys:
-        send_telegram_batch(
-            telegram_text({**snapshot, "projects": []}),
-            [],
-            token=token,
-            chat_id=chat_id,
-            seen=seen,
-        )
-    if pending - seen:
-        return False
-    return True
+        if force and not keys:
+            send_telegram_batch(
+                telegram_text({**snapshot, "projects": []}),
+                [],
+                token=token,
+                chat_id=chat_id,
+                seen=seen,
+                seen_path=resolved_seen_path,
+                last_push_path=resolved_last_push_path,
+            )
+        if pending - seen:
+            return False
+        return True
 
 
 def telegram_text(snapshot: dict[str, Any]) -> str:
