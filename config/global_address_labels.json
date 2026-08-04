@@ -259,6 +259,21 @@
         "class": "lp_position_manager"
       },
       {
+        "address": "0xdb1d10011ad0ff90774d0c6bb92e5c5c8b4461f7",
+        "label": "Uniswap V3 Factory",
+        "class": "v3_factory",
+        "protocol": "uniswap_v3",
+        "fee_tiers": [100, 500, 3000, 10000],
+        "scope": "tracked_quote_token_fee_matrix",
+        "evidence": "Uniswap official BNB Chain V3 deployment; factory matrix validation still requires runtime code, token pair, factory and fee at a coherent block."
+      },
+      {
+        "address": "0x7b8a01b39d58278b5de7e48c8449c9f4f5170613",
+        "label": "Uniswap V3 Position Manager",
+        "class": "lp_position_manager",
+        "evidence": "Uniswap official BNB Chain V3 deployment."
+      },
+      {
         "address": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
         "label": "PancakeSwap Infinity CLPoolManager",
         "class": "pool_manager",

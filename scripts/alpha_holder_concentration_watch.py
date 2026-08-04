@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sniper_engine.address_labels import global_address_label, global_address_labels
-from sniper_engine.rpc import rpc_call
+from sniper_engine.rpc import RpcDeadlineExceeded, rpc_call
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 from scripts.alpha_opening_block_watch import (
     MODIFY_LIQUIDITY_TOPIC,
@@ -106,6 +106,7 @@ BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
 RETENTION_SCOPE_STATE_SCHEMA_VERSION = 1
 LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION = 2
 LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP = 128
+LIQUIDITY_RECONCILIATION_SCHEMA = "liquidity_reconciliation.v1"
 RETENTION_PROJECT_ROLES = {
     "contract_owner",
     "deployer",
@@ -2272,6 +2273,15 @@ def targeted_retention_liquidity_logs(
                     "eth_getLogs",
                     [query],
                 )
+            except RpcDeadlineExceeded:
+                metadata["deadline_exceeded"] = True
+                metadata["range_shrink_retryable"] = False
+                return (
+                    [],
+                    ["liquidity retention RPC deadline exceeded"],
+                    False,
+                    metadata,
+                )
             except Exception:
                 metadata["range_shrink_retryable"] = True
                 return (
@@ -2499,7 +2509,7 @@ def bounded_retention_liquidity_logs(
         int(
             os.environ.get(
                 "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS",
-                "16",
+                "1",
             )
         ),
     )
@@ -2582,6 +2592,15 @@ def bounded_retention_liquidity_logs(
         if complete_selected
         else 0
     )
+    retry_window_blocks = (
+        max(
+            min_window,
+            (selected_to - from_block + 1) // 2,
+        )
+        if metadata.get("deadline_exceeded") is True
+        and selected_to >= from_block
+        else 0
+    )
     metadata.update(
         {
             "applicable": True,
@@ -2596,6 +2615,10 @@ def bounded_retention_liquidity_logs(
                 if complete_selected
                 and selected_to < requested_to_block
                 else 0
+            ),
+            "retry_window_blocks": retry_window_blocks,
+            "deadline_exceeded": bool(
+                metadata.get("deadline_exceeded") is True
             ),
             "raw_truncation_shrink_count": (
                 raw_truncation_shrink_count
@@ -2832,7 +2855,10 @@ def retention_liquidity_events(
         )
 
     swaps: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    v3_lp: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    v3_lp: dict[
+        tuple[str, str, str, str, str, int | None, int | None],
+        dict[str, Any],
+    ] = {}
     v4_liquidity: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row in logs:
         pool = row.get("_retention_pool")
@@ -2903,6 +2929,29 @@ def retention_liquidity_events(
                 group["latest_order"] = order
                 group["latest_row"] = row
         elif event_kind in {"v3_mint", "v3_burn", "v3_collect"}:
+            topics = row.get("topics")
+            topics = topics if isinstance(topics, list) else []
+            owner_word = (
+                strict_indexed_event_word(topics[1], 160)
+                if len(topics) > 1
+                else None
+            )
+            tick_lower = (
+                strict_indexed_event_word(topics[2], 24)
+                if len(topics) > 2
+                else None
+            )
+            tick_upper = (
+                strict_indexed_event_word(topics[3], 24)
+                if len(topics) > 3
+                else None
+            )
+            owner = (
+                f"0x{owner_word:040x}"
+                if owner_word is not None
+                else ""
+            )
+            lp_key = (*key, owner, tick_lower, tick_upper)
             first_amount_slot = 2 if event_kind == "v3_mint" else 1
             amounts_raw = [
                 uint_slot(
@@ -2912,16 +2961,21 @@ def retention_liquidity_events(
                 for slot in (0, 1)
             ]
             group = v3_lp.setdefault(
-                key,
+                lp_key,
                 {
                     "mint_raw": [0, 0],
                     "burn_raw": [0, 0],
                     "collect_raw": [0, 0],
+                    "latest_mint_order": (-1, -1),
+                    "latest_mint_row": None,
                     "latest_burn_order": (-1, -1),
                     "latest_burn_row": None,
                     "latest_collect_order": (-1, -1),
                     "latest_collect_row": None,
                     "pool": pool,
+                    "lp_owner": owner,
+                    "tick_lower": tick_lower,
+                    "tick_upper": tick_upper,
                 },
             )
             if event_kind == "v3_mint":
@@ -2929,6 +2983,9 @@ def retention_liquidity_events(
                     int(group["mint_raw"][slot]) + amounts_raw[slot]
                     for slot in (0, 1)
                 ]
+                if order >= group["latest_mint_order"]:
+                    group["latest_mint_order"] = order
+                    group["latest_mint_row"] = row
             elif event_kind == "v3_burn":
                 group["burn_raw"] = [
                     int(group["burn_raw"][slot]) + amounts_raw[slot]
@@ -2984,7 +3041,7 @@ def retention_liquidity_events(
         )
 
     def base_event(
-        key: tuple[str, str, str, str],
+        key: tuple[Any, ...],
         row: dict[str, Any],
         pool: dict[str, Any],
     ) -> dict[str, Any]:
@@ -2998,10 +3055,14 @@ def retention_liquidity_events(
             "pool": key[1],
             "pool_id": key[2],
             "block": block,
+            "block_hash": norm(row.get("blockHash")),
             "tx": key[3],
             "log_index": log_index(row),
             "token0": pool.get("token0"),
             "token1": pool.get("token1"),
+            "quote_token": pool.get("quote_token"),
+            "quote_symbol": pool.get("quote_symbol"),
+            "quote_decimals": pool.get("quote_decimals"),
             "historical_catchup": historical,
             "alert_eligible": not historical,
         }
@@ -3009,6 +3070,7 @@ def retention_liquidity_events(
     events: list[dict[str, Any]] = []
     handled_swap_keys: set[tuple[str, str, str, str]] = set()
     for key, lp in v3_lp.items():
+        swap_key = key[:4]
         pool = lp["pool"]
         target_slot = (
             0 if norm(token) == norm(pool.get("token0")) else 1
@@ -3100,9 +3162,20 @@ def retention_liquidity_events(
             ),
             "quote_collected_token": pool.get("quote_token"),
             "quote_collected_symbol": pool.get("quote_symbol"),
+            "collected_amount_raw": str(collect_target_raw),
+            "quote_collected_amount_raw": str(collect_quote_raw),
+        }
+        position_fields = {
+            "lp_owner": lp.get("lp_owner") or "",
+            "tick_lower": lp.get("tick_lower"),
+            "tick_upper": lp.get("tick_upper"),
         }
         burn_row = lp.get("latest_burn_row")
-        swap = swaps.get(key)
+        swap = (
+            swaps.get(swap_key)
+            if swap_key not in handled_swap_keys
+            else None
+        )
         removal_event_emitted = False
         if (
             (net_remove_raw > 0 or quote_remove_raw > 0)
@@ -3187,9 +3260,14 @@ def retention_liquidity_events(
                     "quote_amount_raw": str(
                         max(0, int(swap["quote_net_raw"]))
                     ),
+                    "lp_removed_amount_raw": str(net_remove_raw),
+                    "lp_added_amount_raw": str(net_add_raw),
+                    "quote_removed_amount_raw": str(quote_remove_raw),
+                    "quote_added_amount_raw": str(quote_add_raw),
+                    **position_fields,
                 }
                 events.append(event)
-                handled_swap_keys.add(key)
+                handled_swap_keys.add(swap_key)
                 removal_event_emitted = True
             elif (
                 lp_bps >= Decimal(min_supply_bps)
@@ -3258,11 +3336,57 @@ def retention_liquidity_events(
                         ),
                         "quote_added_token": pool.get("quote_token"),
                         "quote_added_symbol": pool.get("quote_symbol"),
+                        "lp_removed_amount_raw": str(net_remove_raw),
+                        "lp_added_amount_raw": str(net_add_raw),
+                        "quote_removed_amount_raw": str(
+                            quote_remove_raw
+                        ),
+                        "quote_added_amount_raw": str(quote_add_raw),
+                        **position_fields,
                         **collect_fields,
                     }
                 )
                 removal_event_emitted = True
         if removal_event_emitted:
+            continue
+        mint_row = lp.get("latest_mint_row")
+        if (
+            (net_add_raw > 0 or quote_add_raw > 0)
+            and isinstance(mint_row, dict)
+        ):
+            events.append(
+                {
+                    **base_event(key, mint_row, pool),
+                    "type": "lp_add_observation",
+                    "level": "INFO",
+                    "direction": "liquidity_add",
+                    "evidence_level": "v3_mint_same_pool_tx",
+                    "amount": str(
+                        decimal_amount(net_add_raw, decimals)
+                    ) if net_add_raw > 0 else "",
+                    "amount_supply_bps": (
+                        str(lp_added_bps) if net_add_raw > 0 else ""
+                    ),
+                    "lp_added_amount": (
+                        str(decimal_amount(net_add_raw, decimals))
+                        if net_add_raw > 0
+                        else ""
+                    ),
+                    "lp_added_supply_bps": (
+                        str(lp_added_bps) if net_add_raw > 0 else ""
+                    ),
+                    "quote_added_amount": (
+                        str(quote_added_amount)
+                        if quote_add_raw > 0 and quote_decimals >= 0
+                        else ""
+                    ),
+                    "quote_added_token": pool.get("quote_token"),
+                    "quote_added_symbol": pool.get("quote_symbol"),
+                    "lp_added_amount_raw": str(net_add_raw),
+                    "quote_added_amount_raw": str(quote_add_raw),
+                    **position_fields,
+                }
+            )
             continue
         collect_material = bool(
             collect_target_bps >= Decimal(min_supply_bps)
@@ -3301,6 +3425,7 @@ def retention_liquidity_events(
                 "amount_supply_bps": collect_fields[
                     "collected_supply_bps"
                 ],
+                **position_fields,
                 **collect_fields,
             }
         )
@@ -3473,6 +3598,601 @@ def retention_liquidity_events(
     return retained_events, event_count, events_truncated
 
 
+LIQUIDITY_RECONCILIATION_REMOVAL_TYPES = {
+    "lp_remove_observation",
+    "lp_partial_remove_observation",
+}
+LIQUIDITY_RECONCILIATION_SELL_TYPES = {
+    "liquidity_exit_with_sell",
+    "liquidity_partial_remove_with_sell",
+    "liquidity_rebalance_with_sell",
+}
+LIQUIDITY_RELIABLE_OPERATOR_BASES = {
+    "pool_event_owner_eoa",
+    "transaction_sender_eoa",
+}
+
+
+def liquidity_reconciliation_id(event: dict[str, Any]) -> str:
+    payload = "|".join(
+        [
+            norm(event.get("pool")),
+            norm(event.get("tx")),
+            str(int(event.get("log_index") or 0)),
+            norm(event.get("lp_owner")),
+            str(event.get("tick_lower")),
+            str(event.get("tick_upper")),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def annotate_liquidity_event_operators(
+    chain: str,
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    candidate_types = (
+        LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+        | {"lp_add_observation"}
+    )
+    labels = global_address_labels(chain)
+    transaction_senders: dict[str, str] = {}
+    eoa_status: dict[str, bool] = {}
+    failed_queries: set[str] = set()
+
+    def is_verified_eoa(address: str, block: int) -> bool:
+        if address in eoa_status:
+            return eoa_status[address]
+        try:
+            code = holder_rpc_call(
+                chain,
+                "eth_getCode",
+                [address, hex(max(0, block))],
+            )
+            text = norm(code)
+            if re.fullmatch(r"0x[0-9a-f]*", text) is None:
+                raise ValueError("contract code response invalid")
+            eoa_status[address] = not text[2:] or int(text[2:], 16) == 0
+        except Exception:
+            failed_queries.add(f"code:{address}")
+            eoa_status[address] = False
+        return eoa_status[address]
+
+    annotated: list[dict[str, Any]] = []
+    for raw_event in events:
+        event = copy.deepcopy(raw_event)
+        event_type = str(event.get("type") or "")
+        if (
+            str(event.get("protocol") or "") != "v3"
+            or event_type not in candidate_types
+            or (
+                event.get("historical_catchup") is True
+                and event_type != "lp_add_observation"
+            )
+        ):
+            annotated.append(event)
+            continue
+        owner = norm(event.get("lp_owner"))
+        owner_class = str(
+            (labels.get(owner) or {}).get("class") or ""
+        ).lower()
+        block = int(event.get("block") or 0)
+        if (
+            is_address(owner)
+            and owner_class not in INFRA_CLASSES
+            and is_verified_eoa(owner, block)
+        ):
+            operator = owner
+            basis = "pool_event_owner_eoa"
+            confidence = "high"
+            operator_class = owner_class or "unlabeled_address"
+        else:
+            tx_hash = norm(event.get("tx"))
+            if (
+                valid_hash32(tx_hash)
+                and tx_hash not in transaction_senders
+                and f"tx:{tx_hash}" not in failed_queries
+            ):
+                try:
+                    transaction = holder_rpc_call(
+                        chain,
+                        "eth_getTransactionByHash",
+                        [tx_hash],
+                    )
+                    sender = (
+                        norm(transaction.get("from"))
+                        if isinstance(transaction, dict)
+                        else ""
+                    )
+                    if is_address(sender):
+                        transaction_senders[tx_hash] = sender
+                    else:
+                        failed_queries.add(f"tx:{tx_hash}")
+                except Exception:
+                    failed_queries.add(f"tx:{tx_hash}")
+            sender = transaction_senders.get(tx_hash, "")
+            sender_class = str(
+                (labels.get(sender) or {}).get("class") or ""
+            ).lower()
+            if (
+                is_address(sender)
+                and sender_class not in INFRA_CLASSES
+                and is_verified_eoa(sender, block)
+            ):
+                operator = sender
+                basis = "transaction_sender_eoa"
+                confidence = "high"
+                operator_class = sender_class or "unlabeled_address"
+            else:
+                operator = ""
+                basis = "unattributed"
+                confidence = "low"
+                operator_class = ""
+        event.update(
+            {
+                "liquidity_operator": operator,
+                "liquidity_operator_basis": basis,
+                "liquidity_operator_confidence": confidence,
+                "liquidity_operator_class": operator_class,
+            }
+        )
+        annotated.append(event)
+    return annotated, len(failed_queries)
+
+
+def reconcile_liquidity_events(
+    events: list[dict[str, Any]],
+    previous_state: dict[str, Any] | None,
+    *,
+    token_decimals: int,
+    observed_at: datetime | None = None,
+    coverage_complete: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    current = (observed_at or now_utc()).astimezone(timezone.utc).replace(
+        microsecond=0
+    )
+    try:
+        minimum_seconds = max(
+            0,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_RECONCILE_MIN_SECONDS",
+                    "300",
+                )
+            ),
+        )
+    except ValueError:
+        minimum_seconds = 300
+    try:
+        maximum_seconds = max(
+            minimum_seconds,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_RECONCILE_MAX_SECONDS",
+                    "900",
+                )
+            ),
+        )
+    except ValueError:
+        maximum_seconds = max(minimum_seconds, 900)
+    try:
+        restore_ratio_min = min(
+            Decimal(1),
+            max(
+                Decimal(0),
+                Decimal(
+                    os.environ.get(
+                        "ALPHA_RETENTION_LIQUIDITY_RESTORE_RATIO",
+                        "0.8",
+                    )
+                ),
+            ),
+        )
+    except (InvalidOperation, ValueError):
+        restore_ratio_min = Decimal("0.8")
+
+    state = previous_state if isinstance(previous_state, dict) else {}
+    pending = (
+        copy.deepcopy(state.get("pending"))
+        if state.get("schema") == LIQUIDITY_RECONCILIATION_SCHEMA
+        and isinstance(state.get("pending"), list)
+        else []
+    )
+    pending = [row for row in pending if isinstance(row, dict)]
+    completed_rows = (
+        copy.deepcopy(state.get("completed"))
+        if state.get("schema") == LIQUIDITY_RECONCILIATION_SCHEMA
+        and isinstance(state.get("completed"), list)
+        else []
+    )
+    completed_rows = [
+        row for row in completed_rows if isinstance(row, dict)
+    ][-500:]
+    completed_ids = {
+        str(row.get("reconcile_id") or "")
+        for row in completed_rows
+        if str(row.get("reconcile_id") or "")
+    }
+    pending_by_id = {
+        str(row.get("reconcile_id") or ""): row
+        for row in pending
+        if str(row.get("reconcile_id") or "")
+    }
+    output_events: list[dict[str, Any]] = []
+
+    for raw_event in sorted(
+        events,
+        key=lambda row: (
+            int(row.get("block") or 0),
+            int(row.get("log_index") or 0),
+            str(row.get("type") or ""),
+        ),
+    ):
+        event = copy.deepcopy(raw_event)
+        event_type = str(event.get("type") or "")
+        if (
+            str(event.get("protocol") or "") != "v3"
+            or (
+                event.get("historical_catchup") is True
+                and event_type != "lp_add_observation"
+            )
+        ):
+            output_events.append(event)
+            continue
+        reconcile_id = liquidity_reconciliation_id(event)
+        if event_type in LIQUIDITY_RECONCILIATION_SELL_TYPES:
+            event.update(
+                {
+                    "classification": "removed_plus_sold",
+                    "reconcile_id": reconcile_id,
+                    "reconciliation_status": "final",
+                    "reconciliation_final": True,
+                    "notify": True,
+                }
+            )
+            output_events.append(event)
+            continue
+        if event_type in LIQUIDITY_RECONCILIATION_REMOVAL_TYPES:
+            event.update(
+                {
+                    "reconcile_id": reconcile_id,
+                    "reconciliation_status": (
+                        "completed_replay"
+                        if reconcile_id in completed_ids
+                        else "pending"
+                    ),
+                    "alert_eligible": False,
+                    "level": "INFO",
+                }
+            )
+            output_events.append(event)
+            if reconcile_id in completed_ids or reconcile_id in pending_by_id:
+                continue
+            removed_target_raw = max(
+                0, int(event.get("lp_removed_amount_raw") or 0)
+            )
+            removed_quote_raw = max(
+                0, int(event.get("quote_removed_amount_raw") or 0)
+            )
+            if removed_target_raw <= 0 and removed_quote_raw <= 0:
+                continue
+            pending_row = {
+                "reconcile_id": reconcile_id,
+                "first_seen_at": current.isoformat(),
+                "last_updated_at": current.isoformat(),
+                "operator": (
+                    norm(event.get("liquidity_operator"))
+                    if str(
+                        event.get("liquidity_operator_basis") or ""
+                    ) in LIQUIDITY_RELIABLE_OPERATOR_BASES
+                    else ""
+                ),
+                "operator_basis": str(
+                    event.get("liquidity_operator_basis") or "unattributed"
+                ),
+                "operator_confidence": str(
+                    event.get("liquidity_operator_confidence") or "low"
+                ),
+                "operator_class": str(
+                    event.get("liquidity_operator_class") or ""
+                ),
+                "source_pool": norm(event.get("pool")),
+                "source_block": int(event.get("block") or 0),
+                "source_log_index": int(event.get("log_index") or 0),
+                "source_block_hash": norm(event.get("block_hash")),
+                "quote_token": norm(event.get("quote_token")),
+                "quote_symbol": str(event.get("quote_symbol") or ""),
+                "quote_decimals": int(event.get("quote_decimals") or 0),
+                "removed_target_raw": removed_target_raw,
+                "removed_quote_raw": removed_quote_raw,
+                "added_target_raw": 0,
+                "added_quote_raw": 0,
+                "destination_pools": [],
+                "add_transactions": [],
+                "source_event": event,
+            }
+            pending.append(pending_row)
+            pending_by_id[reconcile_id] = pending_row
+            continue
+        if event_type != "lp_add_observation":
+            output_events.append(event)
+            continue
+        event.update(
+            {
+                "reconciliation_status": "candidate_add",
+                "alert_eligible": False,
+            }
+        )
+        output_events.append(event)
+        operator = norm(event.get("liquidity_operator"))
+        quote_token = norm(event.get("quote_token"))
+        if (
+            not is_address(operator)
+            or str(event.get("liquidity_operator_basis") or "")
+            not in LIQUIDITY_RELIABLE_OPERATOR_BASES
+        ):
+            continue
+        remaining_target = max(
+            0, int(event.get("lp_added_amount_raw") or 0)
+        )
+        remaining_quote = max(
+            0, int(event.get("quote_added_amount_raw") or 0)
+        )
+        for pending_row in sorted(
+            pending,
+            key=lambda row: str(row.get("first_seen_at") or ""),
+        ):
+            if (
+                norm(pending_row.get("operator")) != operator
+                or norm(pending_row.get("quote_token")) != quote_token
+            ):
+                continue
+            source_order = (
+                int(pending_row.get("source_block") or 0),
+                int(pending_row.get("source_log_index") or 0),
+            )
+            add_order = (
+                int(event.get("block") or 0),
+                int(event.get("log_index") or 0),
+            )
+            if add_order <= source_order:
+                continue
+            first_seen = parse_iso(pending_row.get("first_seen_at"))
+            if (
+                first_seen is None
+                or (current - first_seen).total_seconds()
+                > maximum_seconds
+            ):
+                continue
+            target_needed = max(
+                0,
+                int(pending_row.get("removed_target_raw") or 0)
+                - int(pending_row.get("added_target_raw") or 0),
+            )
+            quote_needed = max(
+                0,
+                int(pending_row.get("removed_quote_raw") or 0)
+                - int(pending_row.get("added_quote_raw") or 0),
+            )
+            allocated_target = min(remaining_target, target_needed)
+            allocated_quote = min(remaining_quote, quote_needed)
+            if allocated_target <= 0 and allocated_quote <= 0:
+                continue
+            pending_row["added_target_raw"] = int(
+                pending_row.get("added_target_raw") or 0
+            ) + allocated_target
+            pending_row["added_quote_raw"] = int(
+                pending_row.get("added_quote_raw") or 0
+            ) + allocated_quote
+            pending_row["last_updated_at"] = current.isoformat()
+            destination_pool = norm(event.get("pool"))
+            destinations = pending_row.setdefault(
+                "destination_pools", []
+            )
+            if is_address(destination_pool) and destination_pool not in destinations:
+                destinations.append(destination_pool)
+            add_tx = norm(event.get("tx"))
+            add_transactions = pending_row.setdefault(
+                "add_transactions", []
+            )
+            if valid_hash32(add_tx) and add_tx not in add_transactions:
+                add_transactions.append(add_tx)
+            remaining_target -= allocated_target
+            remaining_quote -= allocated_quote
+            if remaining_target <= 0 and remaining_quote <= 0:
+                break
+
+    finalized_ids: set[str] = set()
+    finalized_events: list[dict[str, Any]] = []
+    for pending_row in pending:
+        first_seen = parse_iso(pending_row.get("first_seen_at"))
+        elapsed_seconds = int(
+            max(0, (current - first_seen).total_seconds())
+        ) if first_seen is not None else 0
+        removed_target_raw = max(
+            0, int(pending_row.get("removed_target_raw") or 0)
+        )
+        removed_quote_raw = max(
+            0, int(pending_row.get("removed_quote_raw") or 0)
+        )
+        added_target_raw = max(
+            0, int(pending_row.get("added_target_raw") or 0)
+        )
+        added_quote_raw = max(
+            0, int(pending_row.get("added_quote_raw") or 0)
+        )
+        restored_ratios = []
+        if removed_target_raw > 0:
+            restored_ratios.append(
+                min(
+                    Decimal(1),
+                    Decimal(added_target_raw)
+                    / Decimal(removed_target_raw),
+                )
+            )
+        if removed_quote_raw > 0:
+            restored_ratios.append(
+                min(
+                    Decimal(1),
+                    Decimal(added_quote_raw)
+                    / Decimal(removed_quote_raw),
+                )
+            )
+        restored_ratio = (
+            min(restored_ratios) if restored_ratios else Decimal(0)
+        )
+        destinations = sorted(
+            {
+                norm(value)
+                for value in pending_row.get("destination_pools", [])
+                if is_address(norm(value))
+            }
+        )
+        classification = ""
+        if (
+            coverage_complete
+            and elapsed_seconds >= maximum_seconds
+            and is_address(norm(pending_row.get("operator")))
+            and str(pending_row.get("operator_basis") or "")
+            in LIQUIDITY_RELIABLE_OPERATOR_BASES
+        ):
+            if restored_ratio >= restore_ratio_min:
+                classification = (
+                    "re_added"
+                    if destinations
+                    and set(destinations)
+                    == {norm(pending_row.get("source_pool"))}
+                    else "migrated"
+                )
+            else:
+                classification = "net_removed"
+        if not classification:
+            continue
+        reconcile_id = str(pending_row.get("reconcile_id") or "")
+        source_event = (
+            pending_row.get("source_event")
+            if isinstance(pending_row.get("source_event"), dict)
+            else {}
+        )
+        net_target_raw = max(0, removed_target_raw - added_target_raw)
+        net_quote_raw = max(0, removed_quote_raw - added_quote_raw)
+        try:
+            quote_decimals = int(pending_row.get("quote_decimals") or 0)
+        except (TypeError, ValueError):
+            quote_decimals = 0
+        level = "HIGH" if classification == "net_removed" else "INFO"
+        finalized_events.append(
+            {
+                **source_event,
+                "type": "liquidity_reconciliation",
+                "classification": classification,
+                "direction": f"liquidity_{classification}",
+                "level": level,
+                "notify": True,
+                "alert_eligible": True,
+                "historical_catchup": False,
+                "reconcile_id": reconcile_id,
+                "reconciliation_status": "final",
+                "reconciliation_final": True,
+                "reconciliation_window_seconds": elapsed_seconds,
+                "restored_ratio": str(restored_ratio),
+                "source_pool": pending_row.get("source_pool"),
+                "destination_pool": (
+                    destinations[0] if destinations else ""
+                ),
+                "destination_pools": destinations,
+                "liquidity_operator": pending_row.get("operator"),
+                "liquidity_operator_basis": pending_row.get(
+                    "operator_basis"
+                ),
+                "liquidity_operator_confidence": pending_row.get(
+                    "operator_confidence"
+                ),
+                "liquidity_operator_class": pending_row.get(
+                    "operator_class"
+                ),
+                "evidence_level": (
+                    "verified_v3_operator_5_15m_reconciliation"
+                ),
+                "amount": str(
+                    decimal_amount(
+                        net_target_raw
+                        if classification == "net_removed"
+                        else removed_target_raw,
+                        token_decimals,
+                    )
+                ) if removed_target_raw > 0 else "",
+                "lp_removed_amount": str(
+                    decimal_amount(removed_target_raw, token_decimals)
+                ) if removed_target_raw > 0 else "",
+                "lp_added_amount": str(
+                    decimal_amount(added_target_raw, token_decimals)
+                ) if added_target_raw > 0 else "",
+                "lp_net_removed_amount": str(
+                    decimal_amount(net_target_raw, token_decimals)
+                ) if net_target_raw > 0 else "",
+                "quote_removed_amount": str(
+                    decimal_amount(removed_quote_raw, quote_decimals)
+                ) if removed_quote_raw > 0 else "",
+                "quote_added_amount": str(
+                    decimal_amount(added_quote_raw, quote_decimals)
+                ) if added_quote_raw > 0 else "",
+                "quote_net_removed_amount": str(
+                    decimal_amount(net_quote_raw, quote_decimals)
+                ) if net_quote_raw > 0 else "",
+                "quote_removed_symbol": pending_row.get("quote_symbol"),
+                "quote_added_symbol": pending_row.get("quote_symbol"),
+                "transfer_count": 1
+                + len(pending_row.get("add_transactions", [])),
+            }
+        )
+        finalized_ids.add(reconcile_id)
+        completed_rows.append(
+            {
+                "reconcile_id": reconcile_id,
+                "classification": classification,
+                "completed_at": current.isoformat(),
+            }
+        )
+
+    remaining_pending = [
+        row
+        for row in pending
+        if str(row.get("reconcile_id") or "") not in finalized_ids
+    ]
+    if len(remaining_pending) > 500:
+        raise RuntimeError("liquidity reconciliation pending limit exceeded")
+    output_events.extend(finalized_events)
+    output_events.sort(
+        key=lambda row: (
+            int(row.get("block") or 0),
+            int(row.get("log_index") or 0),
+            str(row.get("type") or ""),
+        )
+    )
+    next_state = {
+        "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
+        "pending": remaining_pending,
+        "completed": completed_rows[-500:],
+        "updated_at": current.isoformat(),
+    }
+    metadata = {
+        "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
+        "window_min_seconds": minimum_seconds,
+        "window_max_seconds": maximum_seconds,
+        "restore_ratio_min": str(restore_ratio_min),
+        "pending_count": len(remaining_pending),
+        "finalized_count": len(finalized_events),
+        "completed_count": len(next_state["completed"]),
+        "finalization_eligible": coverage_complete,
+        "unattributed_pending_count": sum(
+            not is_address(norm(row.get("operator")))
+            for row in remaining_pending
+        ),
+    }
+    return output_events, next_state, metadata
+
+
 def build_liquidity_retention(
     *,
     item: dict[str, Any],
@@ -3615,6 +4335,8 @@ def build_liquidity_retention(
                 "initial_window_blocks",
                 "successful_window_blocks",
                 "next_window_blocks",
+                "retry_window_blocks",
+                "deadline_exceeded",
                 "raw_truncation_shrink_count",
                 "rpc_error_shrink_count",
                 "derived_event_shrink_count",
@@ -3705,6 +4427,58 @@ def build_token_liquidity_retention(
         )
     except (TypeError, ValueError):
         state_schema_version = 0
+    scope_expansion = False
+    if (
+        previous_latest > 0
+        and state_schema_version
+        == LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        and previous_scope_hash
+        and previous_scope_hash != current_scope_hash
+    ):
+        previous_pools = normalized_verified_liquidity_pools(
+            liquidity_state.get("pool_scope"),
+            token,
+        )
+
+        def scope_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+            return (
+                str(row.get("protocol") or ""),
+                norm(row.get("address")),
+                norm(row.get("pool_id")),
+            )
+
+        previous_by_identity = {
+            scope_identity(row): row for row in previous_pools or []
+        }
+        current_by_identity = {
+            scope_identity(row): row for row in pools
+        }
+        scope_expansion = bool(
+            previous_pools
+            and liquidity_pool_scope_hash(previous_pools)
+            == previous_scope_hash
+            and len(current_by_identity) > len(previous_by_identity)
+            and all(
+                current_by_identity.get(identity) == row
+                for identity, row in previous_by_identity.items()
+            )
+        )
+        if not scope_expansion:
+            return {
+                **window,
+                "status": "coverage_gap",
+                "reason": "liquidity_scope_not_strict_expansion",
+                "coverage_mode": "verified_pool_indexed_topics",
+                "scope_complete": False,
+                "scope_hash": current_scope_hash,
+                "pool_count": len(pools),
+                "complete": False,
+                "selected_window_complete": False,
+                "log_error_count": 1,
+                "truncated": False,
+                "events_truncated": False,
+                "events": [],
+            }, None
     scope_rebaseline = bool(
         previous_latest <= 0
         or state_schema_version
@@ -3712,6 +4486,7 @@ def build_token_liquidity_retention(
         or not previous_scope_hash
         or previous_scope_hash != current_scope_hash
     )
+    scope_changed = scope_expansion
     bootstrap_blocks = max(
         1,
         int(
@@ -3737,12 +4512,45 @@ def build_token_liquidity_retention(
     except ValueError:
         confirmation_blocks = 2
     confirmed_tip = max(0, tip - confirmation_blocks)
+    reconciliation_payload = (
+        liquidity_state.get("reconciliation")
+        if isinstance(liquidity_state.get("reconciliation"), dict)
+        else {}
+    )
+    pending_source_blocks = [
+        int(row.get("source_block") or 0)
+        for row in reconciliation_payload.get("pending", [])
+        if isinstance(row, dict) and int(row.get("source_block") or 0) > 0
+    ]
+    earliest_pending_block = (
+        min(pending_source_blocks) if pending_source_blocks else 0
+    )
     checkpoint_reorg_recovery = False
     checkpoint_refresh = False
     effective_previous_latest = previous_latest
     verified_previous_hash = ""
     if scope_rebaseline:
-        scan_from = max(0, confirmed_tip - bootstrap_blocks + 1)
+        if scope_changed:
+            try:
+                scope_change_rescan_blocks = max(
+                    1,
+                    int(
+                        os.environ.get(
+                            "ALPHA_RETENTION_LIQUIDITY_SCOPE_CHANGE_RESCAN_BLOCKS",
+                            "2400",
+                        )
+                    ),
+                )
+            except ValueError:
+                scope_change_rescan_blocks = 2400
+            scan_from = max(
+                0,
+                confirmed_tip - scope_change_rescan_blocks + 1,
+            )
+        else:
+            scan_from = max(
+                0, confirmed_tip - bootstrap_blocks + 1
+            )
         scope_coverage_from = scan_from
     else:
         previous_block_hash = str(
@@ -3786,9 +4594,17 @@ def build_token_liquidity_retention(
                 )
             except ValueError:
                 reorg_rescan_blocks = 2400
+            configured_reorg_start = (
+                previous_latest - reorg_rescan_blocks + 1
+            )
             scan_from = max(
                 scope_coverage_from,
-                previous_latest - reorg_rescan_blocks + 1,
+                min(
+                    configured_reorg_start,
+                    earliest_pending_block
+                    if earliest_pending_block > 0
+                    else configured_reorg_start,
+                ),
             )
             effective_previous_latest = max(0, scan_from - 1)
         elif previous_latest >= confirmed_tip:
@@ -3817,7 +4633,11 @@ def build_token_liquidity_retention(
             scan_from = previous_latest + 1
     alert_watermark_reinitialized = False
     if scope_rebaseline:
-        alert_from = confirmed_tip + 1
+        alert_from = (
+            max(scan_from, previous_latest + 1)
+            if scope_changed
+            else confirmed_tip + 1
+        )
     elif previous_catchup_active:
         try:
             persisted_alert_from = int(
@@ -3929,6 +4749,138 @@ def build_token_liquidity_retention(
         coverage_metadata=coverage_metadata,
         alert_from_block=alert_from,
     )
+    next_reconciliation_state: dict[str, Any] | None = None
+    if flow.get("selected_window_complete") is True:
+        reconciliation_seed = (
+            {}
+            if checkpoint_reorg_recovery
+            else liquidity_state.get("reconciliation")
+            if isinstance(liquidity_state.get("reconciliation"), dict)
+            else {}
+        )
+        has_pending_reconciliation = bool(
+            isinstance(reconciliation_seed.get("pending"), list)
+            and reconciliation_seed.get("pending")
+        )
+        has_new_removal = any(
+            str(event.get("type") or "")
+            in LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+            for event in flow.get("events", [])
+            if isinstance(event, dict)
+        )
+        deferred_events = (
+            reconciliation_seed.get("deferred_events")
+            if isinstance(
+                reconciliation_seed.get("deferred_events"), list
+            )
+            else []
+        )
+        current_reconciliation_events = [
+            event
+            for event in flow.get("events", [])
+            if str(event.get("type") or "") != "lp_add_observation"
+            or has_pending_reconciliation
+            or has_new_removal
+        ]
+        events_for_reconciliation_by_identity = {
+            (
+                norm(event.get("tx")),
+                int(event.get("log_index") or 0),
+                str(event.get("type") or ""),
+                norm(event.get("pool")),
+            ): event
+            for event in [
+                *deferred_events,
+                *current_reconciliation_events,
+            ]
+            if isinstance(event, dict)
+        }
+        events_for_reconciliation = list(
+            events_for_reconciliation_by_identity.values()
+        )
+        annotated_events, attribution_error_count = (
+            annotate_liquidity_event_operators(
+                chain,
+                events_for_reconciliation,
+            )
+        )
+        flow["raw_event_count"] = int(flow.get("event_count") or 0)
+        if attribution_error_count:
+            candidate_types = (
+                LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+                | {"lp_add_observation"}
+            )
+            deferred_next = [
+                event
+                for event in annotated_events
+                if str(event.get("type") or "") in candidate_types
+            ]
+            if len(deferred_next) > 500:
+                raise RuntimeError(
+                    "liquidity attribution deferred limit exceeded"
+                )
+            safe_events = []
+            for event in annotated_events:
+                if str(event.get("type") or "") in candidate_types:
+                    event = {
+                        **event,
+                        "alert_eligible": False,
+                        "level": "INFO",
+                        "reconciliation_status": "attribution_pending",
+                    }
+                safe_events.append(event)
+            next_reconciliation_state = {
+                "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": copy.deepcopy(
+                    reconciliation_seed.get("pending") or []
+                ),
+                "completed": copy.deepcopy(
+                    reconciliation_seed.get("completed") or []
+                ),
+                "deferred_events": deferred_next,
+                "updated_at": now_iso(),
+            }
+            flow["events"] = safe_events
+            flow["event_count"] = len(safe_events)
+            flow["alert_event_count"] = sum(
+                event.get("historical_catchup") is not True
+                and event.get("alert_eligible") is not False
+                for event in safe_events
+            )
+            flow["attribution_query_error_count"] = (
+                attribution_error_count
+            )
+            flow["reconciliation"] = {
+                "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending_count": len(
+                    next_reconciliation_state["pending"]
+                ),
+                "deferred_count": len(deferred_next),
+                "finalization_eligible": False,
+                "attribution_query_error_count": attribution_error_count,
+            }
+        else:
+            (
+                reconciled_events,
+                next_reconciliation_state,
+                reconciliation_metadata,
+            ) = reconcile_liquidity_events(
+                annotated_events,
+                reconciliation_seed,
+                token_decimals=decimals,
+                coverage_complete=flow.get("complete") is True,
+            )
+            flow["events"] = reconciled_events
+            flow["event_count"] = len(reconciled_events)
+            flow["alert_event_count"] = sum(
+                event.get("historical_catchup") is not True
+                and event.get("alert_eligible") is not False
+                for event in reconciled_events
+            )
+            flow["reconciliation"] = {
+                **reconciliation_metadata,
+                "attribution_query_error_count": 0,
+            }
     flow.update(
         {
             "observed_latest_block": tip,
@@ -3943,6 +4895,7 @@ def build_token_liquidity_retention(
             "alert_watermark_reinitialized": (
                 alert_watermark_reinitialized
             ),
+            "scope_changed": scope_changed,
             "replaced_checkpoint_block": (
                 previous_latest if checkpoint_reorg_recovery else 0
             ),
@@ -3966,6 +4919,8 @@ def build_token_liquidity_retention(
             "latest_block_hash": checkpoint_hash,
             "catchup_active": catchup_active,
         }
+        if next_reconciliation_state is not None:
+            next_state["reconciliation"] = next_reconciliation_state
         if catchup_active:
             next_state["catchup_live_from_block"] = alert_from
             next_window_blocks = int(
@@ -3978,6 +4933,55 @@ def build_token_liquidity_retention(
                 next_state["next_catchup_window_blocks"] = (
                     next_window_blocks
                 )
+    elif (
+        previous_latest > 0
+        and (flow.get("incremental_catchup") or {}).get(
+            "deadline_exceeded"
+        ) is True
+    ):
+        retry_window_blocks = int(
+            (flow.get("incremental_catchup") or {}).get(
+                "retry_window_blocks"
+            )
+            or 0
+        )
+        persisted_pools = normalized_verified_liquidity_pools(
+            liquidity_state.get("pool_scope"),
+            token,
+        )
+        persisted_hash = str(liquidity_state.get("scope_hash") or "")
+        if (
+            retry_window_blocks > 0
+            and persisted_pools
+            and liquidity_pool_scope_hash(persisted_pools)
+            == persisted_hash
+            and valid_hash32(liquidity_state.get("latest_block_hash"))
+        ):
+            next_state = {
+                "scope_state_schema_version": (
+                    LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+                ),
+                "scope_hash": persisted_hash,
+                "pool_scope": persisted_pools,
+                "pool_count": len(persisted_pools),
+                "scope_coverage_from_block": int(
+                    liquidity_state.get("scope_coverage_from_block") or 0
+                ),
+                "latest_block": previous_latest,
+                "latest_block_hash": str(
+                    liquidity_state.get("latest_block_hash") or ""
+                ),
+                "catchup_active": bool(
+                    liquidity_state.get("catchup_active") is True
+                ),
+                "next_catchup_window_blocks": retry_window_blocks,
+            }
+            for key in (
+                "catchup_live_from_block",
+                "reconciliation",
+            ):
+                if key in liquidity_state:
+                    next_state[key] = copy.deepcopy(liquidity_state[key])
     return flow, next_state
 
 
@@ -5728,8 +6732,14 @@ def retention_alert_events(project: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(event, dict)
         and event.get("historical_catchup") is not True
         and event.get("alert_eligible") is not False
-        and str(event.get("level") or "").upper()
-        in {"HIGH", "CRITICAL"}
+        and (
+            str(event.get("level") or "").upper()
+            in {"HIGH", "CRITICAL"}
+            or (
+                event.get("reconciliation_final") is True
+                and event.get("notify") is True
+            )
+        )
     ]
 
 
@@ -5761,6 +6771,19 @@ def retention_event_key(
     project: dict[str, Any],
     event: dict[str, Any],
 ) -> str:
+    if (
+        str(event.get("type") or "") == "liquidity_reconciliation"
+        and str(event.get("reconcile_id") or "")
+        and str(event.get("classification") or "")
+    ):
+        return "|".join(
+            [
+                str(project.get("chain") or ""),
+                str(project.get("address") or ""),
+                "liquidity_reconciliation",
+                str(event.get("reconcile_id") or ""),
+            ]
+        )
     parts = [
         str(project.get("chain") or ""),
         str(project.get("address") or ""),
@@ -5864,11 +6887,17 @@ def retention_event_amount_text(event: dict[str, Any]) -> str:
     return "；".join(parts) if parts else "金额未归因"
 
 
-def retention_telegram_text(
-    project: dict[str, Any],
-    events: list[dict[str, Any]],
-) -> str:
-    event_labels = {
+def retention_event_label(event: dict[str, Any]) -> str:
+    if str(event.get("type") or "") == "liquidity_reconciliation":
+        return {
+            "re_added": "撤池后原池重加",
+            "migrated": "撤池后迁移新池",
+            "net_removed": "15分钟确认净撤池",
+        }.get(
+            str(event.get("classification") or ""),
+            "流动性归因结论",
+        )
+    return {
         "realized_sell": "收据确认卖出",
         "cex_inflow_transfer_risk": "CEX 入金风险",
         "opening_buyer_outflow_transfer_risk": "首批狙击地址转出",
@@ -5885,7 +6914,13 @@ def retention_telegram_text(
         "liquidity_exit_with_sell": "撤池并卖出复合风险",
         "liquidity_partial_remove_with_sell": "部分撤池并卖出复合风险",
         "liquidity_rebalance_with_sell": "调池并卖出复合风险",
-    }
+    }.get(str(event.get("type") or ""), str(event.get("type") or "转移风险"))
+
+
+def retention_telegram_text(
+    project: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> str:
     lines = [
         (
             f"Alpha 30天流向｜{project.get('symbol')} "
@@ -5897,14 +6932,14 @@ def retention_telegram_text(
         lines.extend(
             [
                 (
-                    f"{marker}{event_labels.get(str(event.get('type') or ''), str(event.get('type') or '转移风险'))}"
+                    f"{marker}{retention_event_label(event)}"
                     f"｜{int(event.get('transfer_count') or 1)}笔"
                     f"｜{retention_event_amount_text(event)}"
                     f"｜{event.get('evidence_level')}"
                 ),
                 (
-                    f"样本 {short_addr(str(event.get('pool') or event.get('sample_from') or event.get('from') or ''))} → "
-                    f"{short_addr(str(event.get('sample_to') or event.get('to') or project.get('address') or ''))}｜"
+                    f"样本 {short_addr(str(event.get('source_pool') or event.get('pool') or event.get('sample_from') or event.get('from') or ''))} → "
+                    f"{short_addr(str(event.get('destination_pool') or event.get('sample_to') or event.get('to') or ''))}｜"
                     f"tx {short_addr(str(event.get('sample_tx') or event.get('tx') or ''))}"
                 ),
             ]
@@ -6106,24 +7141,6 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
             lines.append("")
         if retention_events:
             event = retention_events[-1]
-            event_labels = {
-                "realized_sell": "收据确认卖出",
-                "cex_inflow_transfer_risk": "CEX 入金风险",
-                "opening_buyer_outflow_transfer_risk": "首批狙击地址转出",
-                "opening_cohort_recipient_outflow_transfer_risk": (
-                    "开盘接收地址转出"
-                ),
-                "project_or_mm_outflow_transfer_risk": "项目/做市地址外流",
-                "verified_pool_sell_pressure": "已验证池大额卖压",
-                "lp_remove_observation": "LP 撤出观察",
-                "lp_partial_remove_observation": "LP 部分撤出观察",
-                "lp_collect_observation": "LP 提取观察",
-                "lp_rebalance_collect_observation": "LP 调仓提取观察",
-                "lp_rebalance_observation": "LP 调仓观察",
-                "liquidity_exit_with_sell": "撤池并卖出复合风险",
-                "liquidity_partial_remove_with_sell": "部分撤池并卖出复合风险",
-                "liquidity_rebalance_with_sell": "调池并卖出复合风险",
-            }
             lines.extend(
                 [
                     (
@@ -6131,14 +7148,14 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
                         f"｜30天流向｜{effective_level}"
                     ),
                     (
-                        f"信号：{event_labels.get(str(event.get('type') or ''), str(event.get('type') or '转移风险'))}"
+                        f"信号：{retention_event_label(event)}"
                         f"｜{int(event.get('transfer_count') or 1)}笔｜"
                         f"{retention_event_amount_text(event)}"
                         f"｜证据 {event.get('evidence_level')}"
                     ),
                     (
-                        f"样本路径：{short_addr(str(event.get('pool') or event.get('sample_from') or event.get('from') or ''))}"
-                        f" → {short_addr(str(event.get('sample_to') or event.get('to') or project.get('address') or ''))}"
+                        f"样本路径：{short_addr(str(event.get('source_pool') or event.get('pool') or event.get('sample_from') or event.get('from') or ''))}"
+                        f" → {short_addr(str(event.get('destination_pool') or event.get('sample_to') or event.get('to') or ''))}"
                         f"｜tx {short_addr(str(event.get('sample_tx') or event.get('tx') or ''))}"
                     ),
                 ]

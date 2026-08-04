@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -39,6 +40,10 @@ STATE_SCHEMA = "alpha_liquidity_retention_state.v1"
 SNAPSHOT_SCHEMA = "alpha_liquidity_retention_watch.v1"
 DEFAULT_BUDGET_SECONDS = 35
 MAX_BUDGET_SECONDS = 35
+
+
+class ReconciliationStateInvalid(ValueError):
+    pass
 
 
 def configured_budget_seconds() -> int:
@@ -271,6 +276,47 @@ def validated_liquidity_seed(
         "pool_scope": pools,
         "pool_count": len(pools),
     }
+    reconciliation = payload.get("reconciliation")
+    reconciliation_valid = bool(
+        isinstance(reconciliation, dict)
+        and reconciliation.get("schema")
+        == holder.LIQUIDITY_RECONCILIATION_SCHEMA
+        and isinstance(reconciliation.get("pending"), list)
+        and isinstance(reconciliation.get("completed"), list)
+        and isinstance(
+            reconciliation.get("deferred_events", []), list
+        )
+        and len(reconciliation["pending"]) <= 500
+        and len(reconciliation["completed"]) <= 500
+        and len(reconciliation.get("deferred_events", [])) <= 500
+        and all(
+            isinstance(row, dict)
+            and holder.valid_sha256(row.get("reconcile_id"))
+            and holder.parse_iso(row.get("first_seen_at")) is not None
+            and isinstance(row.get("source_event"), dict)
+            for row in reconciliation["pending"]
+        )
+        and all(
+            isinstance(row, dict)
+            and holder.valid_sha256(row.get("reconcile_id"))
+            and holder.parse_iso(row.get("completed_at")) is not None
+            for row in reconciliation["completed"]
+        )
+        and all(
+            isinstance(row, dict)
+            and holder.valid_hash32(row.get("tx"))
+            and str(row.get("type") or "")
+            in (
+                holder.LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+                | {"lp_add_observation"}
+            )
+            for row in reconciliation.get("deferred_events", [])
+        )
+    )
+    if reconciliation_valid:
+        seed["reconciliation"] = copy.deepcopy(reconciliation)
+    elif "reconciliation" in payload:
+        seed["reconciliation_state_invalid"] = True
     try:
         latest_block = int(payload.get("latest_block") or 0)
         coverage_from = int(payload.get("scope_coverage_from_block") or 0)
@@ -336,6 +382,8 @@ def holder_liquidity_seed(
 
 
 def safe_error_message(exc: Exception) -> str:
+    if isinstance(exc, ReconciliationStateInvalid):
+        return "liquidity_reconciliation_state_invalid"
     if isinstance(exc, TimeoutError):
         return "deadline_exceeded"
     if isinstance(exc, (ValueError, TypeError, KeyError)):
@@ -376,16 +424,25 @@ def liquidity_operational_issue(
         return f"status={flow.get('status', 'missing')}"
     if int(flow.get("pool_count") or 0) <= 0:
         return "verified pool scope empty"
-    if flow.get("complete") is not True:
-        return "confirmed-tip coverage incomplete"
-    if flow.get("selected_window_complete") is not True:
-        return "selected window incomplete"
-    if flow.get("query_scope_complete") is not True:
-        return "indexed query scope incomplete"
+    if int(flow.get("attribution_query_error_count") or 0):
+        return "liquidity operator attribution failed"
     if int(flow.get("log_error_count") or 0):
         return "indexed log query failed"
     if flow.get("truncated") or flow.get("events_truncated"):
         return "indexed log result truncated"
+    if flow.get("selected_window_complete") is not True:
+        return "selected window incomplete"
+    if flow.get("query_scope_complete") is not True:
+        return "indexed query scope incomplete"
+    if flow.get("complete") is not True:
+        catchup = flow.get("incremental_catchup") or {}
+        if isinstance(catchup, dict) and catchup.get("active") is True:
+            return (
+                "catchup active "
+                f"{catchup.get('selected_to_block', '?')}/"
+                f"{catchup.get('requested_to_block', '?')}"
+            )
+        return "confirmed-tip coverage incomplete"
     if next_state is None:
         return "checkpoint unavailable"
     return ""
@@ -487,6 +544,12 @@ def build_snapshot() -> dict[str, Any]:
             required = opened_obligation or persisted_obligation
             exception_recorded = False
             try:
+                if persisted_liquidity.get(
+                    "reconciliation_state_invalid"
+                ) is True:
+                    raise ReconciliationStateInvalid(
+                        "liquidity reconciliation state invalid"
+                    )
                 config_item = config_item_for_identity(
                     config,
                     chain,

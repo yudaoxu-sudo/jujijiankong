@@ -573,6 +573,15 @@ def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
 
 def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any]:
     cached = event.get("opening_v3_pool_scope") or {}
+    last_verified_scope = (
+        cached
+        if isinstance(cached, dict) and cached.get("complete") is True
+        else cached.get("last_verified_pool_scope")
+        if isinstance(cached, dict)
+        and isinstance(cached.get("last_verified_pool_scope"), dict)
+        and cached["last_verified_pool_scope"].get("complete") is True
+        else {}
+    )
     chain = str(event.get("chain") or "")
     token = norm((event.get("token") or {}).get("address"))
     event_quote = norm((event.get("quote") or {}).get("address"))
@@ -689,6 +698,18 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             ) from None
 
     cached_as_of = int(cached.get("as_of_block") or 0)
+    try:
+        scope_refresh_blocks = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_OPENING_V3_SCOPE_REFRESH_BLOCKS",
+                    "60",
+                )
+            ),
+        )
+    except ValueError:
+        scope_refresh_blocks = 60
     if (
         cached.get("schema") == "opening_v3_factory_matrix.v2"
         and cached.get("configuration_hash") == configuration_hash
@@ -697,6 +718,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         and isinstance(cached.get("pools"), list)
         and 0 < cached_as_of <= latest
         and cached_as_of >= required_as_of_block
+        and latest - cached_as_of < scope_refresh_blocks
         and strict_block_hash(cached.get("as_of_block_hash"))
     ):
         try:
@@ -840,12 +862,45 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             errors += 1
     if not snapshot_coherent:
         pools.clear()
+    cached_identities = {
+        (
+            norm(row.get("address")),
+            norm(row.get("factory")),
+            norm(row.get("token0")),
+            norm(row.get("token1")),
+            int(row.get("fee") or 0),
+        )
+        for row in (
+            last_verified_scope.get("pools", [])
+            if last_verified_scope.get("schema")
+            == "opening_v3_factory_matrix.v2"
+            and isinstance(last_verified_scope.get("pools"), list)
+            else []
+        )
+        if isinstance(row, dict)
+    }
+    current_identities = {
+        (
+            norm(row.get("address")),
+            norm(row.get("factory")),
+            norm(row.get("token0")),
+            norm(row.get("token1")),
+            int(row.get("fee") or 0),
+        )
+        for row in pools.values()
+    }
+    scope_conflict_count = len(cached_identities - current_identities)
+    if snapshot_coherent and scope_conflict_count:
+        errors += scope_conflict_count
+        pools.clear()
     complete = bool(fee_rows and attempted == len(fee_rows) and errors == 0)
-    return {
+    result = {
         "schema": "opening_v3_factory_matrix.v2",
         "status": (
             "complete_tracked_factory_matrix"
             if complete
+            else "factory_matrix_scope_conflict"
+            if scope_conflict_count
             else "factory_matrix_partial"
             if fee_rows
             else "factory_matrix_config_invalid"
@@ -862,9 +917,19 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         "expected_query_count": len(fee_rows),
         "attempted_query_count": attempted,
         "validation_error_count": errors,
+        "scope_conflict_count": scope_conflict_count,
         "complete": complete,
         "pools": list(pools.values()),
     }
+    if not complete and last_verified_scope:
+        result["last_verified_pool_scope"] = copy.deepcopy(
+            {
+                key: value
+                for key, value in last_verified_scope.items()
+                if key != "last_verified_pool_scope"
+            }
+        )
+    return result
 
 
 def strict_v4_pool_key_return(data: Any) -> dict[str, Any] | None:
