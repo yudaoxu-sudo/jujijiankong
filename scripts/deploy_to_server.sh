@@ -35,4 +35,14 @@ if ! "${ssh_cmd[@]}" "$remote_target" \
   exit 1
 fi
 
-printf '%s\n' 'deploy=pass cron_install=pass'
+if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
+  if ! "${ssh_cmd[@]}" "$remote_target" \
+    "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 bash scripts/server_run_once.sh" \
+    >/dev/null 2>&1; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail' >&2
+    exit 1
+  fi
+  printf '%s\n' 'deploy=pass cron_install=pass remote_no_telegram_cycle=pass'
+else
+  printf '%s\n' 'deploy=pass cron_install=pass'
+fi
