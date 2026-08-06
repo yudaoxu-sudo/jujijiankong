@@ -133,6 +133,14 @@ ok = (
     and fail_count == 0
     and item_count > 0
     and parity_matches == len(expected_hashes)
+    and liquidity.get("status") == "healthy"
+    and int(liquidity.get("issue_count") or 0) == 0
+    and int(liquidity.get("complete_count") or 0) == 1
+    and int(liquidity.get("alert_ready_count") or 0) == 1
+    and grvt_flow.get("continuous") is True
+    and int(grvt_flow.get("latest_block") or 0) > 0
+    and int(grvt_flow.get("latest_block") or 0)
+    == int(grvt_flow.get("target_latest_block") or 0)
 )
 print(json.dumps({
     "schema": "sniper_remote_health_acceptance.v1",
