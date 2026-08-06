@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -17,15 +18,23 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "project_continuity.json"
+DEPLOY_PARITY_PATHS = (
+    "scripts/alpha_holder_concentration_watch.py",
+    "scripts/test_aeon_monitor_regression.py",
+    "scripts/deploy_to_server.sh",
+    "scripts/project_continuity_acceptance.py",
+)
 
 REMOTE_PROBE = r"""
 import json
+import hashlib
 import sys
 import time
 from pathlib import Path
 
 root = Path(sys.argv[1])
 max_age = int(sys.argv[2])
+expected_hashes = json.loads(sys.argv[3])
 
 def read_json(path):
     try:
@@ -45,6 +54,35 @@ except OSError:
 fail_count = sum(1 for line in verification_text.splitlines() if "| FAIL |" in line)
 watchlist = read_json(root / "config" / "current_alpha_watchlist.json")
 item_count = len(watchlist.get("items", [])) if isinstance(watchlist.get("items", []), list) else 0
+parity_matches = 0
+for relative_path, expected_hash in expected_hashes.items():
+    try:
+        actual_hash = hashlib.sha256((root / relative_path).read_bytes()).hexdigest()
+    except OSError:
+        actual_hash = ""
+    parity_matches += actual_hash == expected_hash
+liquidity = read_json(root / "output" / "alpha_liquidity_retention_watch" / "latest.json")
+grvt_projects = [
+    row for row in liquidity.get("projects", [])
+    if isinstance(row, dict) and str(row.get("symbol") or "").upper() == "GRVT"
+]
+grvt_flow = {}
+if len(grvt_projects) == 1:
+    retention = grvt_projects[0].get("retention_flow") or {}
+    grvt_flow = retention.get("liquidity_retention") or {}
+liquidity_state = read_json(root / "output" / "alpha_liquidity_retention_watch" / "state.json")
+reconciliations = []
+for token_state in (liquidity_state.get("tokens") or {}).values():
+    if isinstance(token_state, dict):
+        reconciliation = (token_state.get("liquidity") or {}).get("reconciliation")
+        if isinstance(reconciliation, dict):
+            reconciliations.append(reconciliation)
+pending_count = sum(len(row.get("pending") or []) for row in reconciliations)
+completed_rows = [item for row in reconciliations for item in (row.get("completed") or []) if isinstance(item, dict)]
+completed_classes = {}
+for row in completed_rows:
+    classification = str(row.get("classification") or "unknown")
+    completed_classes[classification] = completed_classes.get(classification, 0) + 1
 ok = (
     health.get("schema") == "runtime_health.v1"
     and health.get("status") == "healthy"
@@ -53,6 +91,7 @@ ok = (
     and verification_path.exists()
     and fail_count == 0
     and item_count > 0
+    and parity_matches == len(expected_hashes)
 )
 print(json.dumps({
     "schema": "sniper_remote_health_acceptance.v1",
@@ -64,6 +103,22 @@ print(json.dumps({
     "verification_exists": verification_path.exists(),
     "verification_fail_count": fail_count,
     "watchlist_item_count": item_count,
+    "deployed_hash_parity_count": parity_matches,
+    "deployed_hash_expected_count": len(expected_hashes),
+    "grvt_liquidity": {
+        "status": liquidity.get("status", "missing"),
+        "issue_count": liquidity.get("issue_count"),
+        "alert_ready_count": liquidity.get("alert_ready_count"),
+        "alert_count": liquidity.get("alert_count"),
+        "complete_count": liquidity.get("complete_count"),
+        "cursor": grvt_flow.get("latest_block"),
+        "confirmed_tip": grvt_flow.get("target_latest_block"),
+        "continuous": grvt_flow.get("continuous"),
+        "pool_count": grvt_flow.get("pool_count"),
+        "pending_count": pending_count,
+        "completed_count": len(completed_rows),
+        "completed_classes": completed_classes,
+    },
 }, ensure_ascii=False))
 """.strip()
 
@@ -219,6 +274,12 @@ def build_remote_command(config_path: Path, remote: dict[str, Any]) -> list[str]
     if not identity.is_file() or not known_hosts.is_file():
         raise FileNotFoundError("remote SSH identity or known-hosts file is missing")
     max_age = int(remote.get("max_cycle_age_seconds", 1200))
+    expected_hashes = {
+        relative_path: hashlib.sha256(
+            (ROOT / relative_path).read_bytes()
+        ).hexdigest()
+        for relative_path in DEPLOY_PARITY_PATHS
+    }
     remote_command = " ".join(
         [
             "python3",
@@ -226,6 +287,7 @@ def build_remote_command(config_path: Path, remote: dict[str, Any]) -> list[str]
             shlex.quote(REMOTE_PROBE),
             shlex.quote(remote_root),
             str(max_age),
+            shlex.quote(json.dumps(expected_hashes, sort_keys=True)),
         ]
     )
     return [
