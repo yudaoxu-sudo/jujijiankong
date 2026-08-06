@@ -3631,6 +3631,20 @@ V3_SLOT0_SELECTOR = "0x3850c7bd"
 V3_LIQUIDITY_SELECTOR = "0x1a686502"
 
 
+def liquidity_evidence_error_code(exc: Exception) -> str:
+    if isinstance(exc, RpcDeadlineExceeded):
+        return "deadline_exceeded"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return "invalid_runtime_metadata"
+    if isinstance(exc, RuntimeError):
+        return "runtime_dependency_failed"
+    if isinstance(exc, OSError):
+        return "runtime_io_failed"
+    return "unexpected_runtime_error"
+
+
 def _canonical_block(chain: str, block: int) -> dict[str, Any]:
     payload = holder_rpc_call(
         chain, "eth_getBlockByNumber", [hex(max(0, block)), False]
@@ -3903,7 +3917,7 @@ def collect_liquidity_verdict_evidence(
             "evidence_level": "receipt_canonical_bounded_15m",
         }
     except Exception as exc:
-        issues.append(safe_error_message(exc))
+        issues.append(liquidity_evidence_error_code(exc))
         return {
             "coverage_complete": False,
             "coverage_issues": issues,
@@ -6701,7 +6715,17 @@ def build_snapshot_within_deadline() -> dict[str, Any]:
             project["decision_context"] = holder_decision_context(project, market_context)
             projects.append(project)
         except Exception as exc:
-            project = {**item, "error": str(exc), "metrics": {}, "signal": {"level": "ERROR", "action": "holder扫描失败", "reason": str(exc)}}
+            error_code = liquidity_evidence_error_code(exc)
+            project = {
+                **item,
+                "error": error_code,
+                "metrics": {},
+                "signal": {
+                    "level": "ERROR",
+                    "action": "holder扫描失败",
+                    "reason": error_code,
+                },
+            }
             project["decision_context"] = holder_decision_context(project, market_context)
             projects.append(project)
     snapshot = {

@@ -18275,6 +18275,27 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertFalse(truncated)
 
+    def test_liquidity_evidence_failure_returns_safe_coverage_gap(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        result = holder.collect_liquidity_verdict_evidence(
+            "bsc",
+            self._address("1"),
+            18,
+            [],
+            {
+                "source_pool": self._address("3"),
+                "source_event": {"tx": self._hash("a")},
+            },
+            100,
+        )
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(
+            result["coverage_issues"],
+            ["invalid_runtime_metadata"],
+        )
+        self.assertEqual(result["evidence_level"], "coverage_incomplete")
+
     @classmethod
     def _event_row(
         cls,

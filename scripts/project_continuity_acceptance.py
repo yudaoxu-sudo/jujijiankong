@@ -28,6 +28,7 @@ DEPLOY_PARITY_PATHS = (
 REMOTE_PROBE = r"""
 import json
 import hashlib
+import re
 import sys
 import time
 from pathlib import Path
@@ -71,6 +72,17 @@ if len(grvt_projects) == 1:
     retention = grvt_projects[0].get("retention_flow") or {}
     grvt_flow = retention.get("liquidity_retention") or {}
 liquidity_state = read_json(root / "output" / "alpha_liquidity_retention_watch" / "state.json")
+holder_snapshot = read_json(root / "output" / "alpha_holder_concentration_watch" / "latest.json")
+grvt_holder_rows = [
+    row for row in holder_snapshot.get("projects", [])
+    if isinstance(row, dict) and str(row.get("symbol") or "").upper() == "GRVT"
+]
+grvt_holder = grvt_holder_rows[0] if len(grvt_holder_rows) == 1 else {}
+grvt_holder_error_safe = re.sub(
+    r"0x[0-9a-fA-F]+", "HEX_REDACTED", str(grvt_holder.get("error") or "")
+)
+grvt_holder_error_safe = re.sub(r"\S+://\S+", "URL_REDACTED", grvt_holder_error_safe)
+grvt_holder_error_safe = re.sub(r"\S+@\S+", "IDENTITY_REDACTED", grvt_holder_error_safe)[:180]
 reconciliations = []
 for token_state in (liquidity_state.get("tokens") or {}).values():
     if isinstance(token_state, dict):
@@ -151,6 +163,46 @@ print(json.dumps({
         "completed_classes": completed_classes,
         "first_completed_at": completed_times[0] if completed_times else "",
         "last_completed_at": completed_times[-1] if completed_times else "",
+    },
+    "grvt_holder": {
+        "fields": sorted(grvt_holder),
+        "project_count": len(holder_snapshot.get("projects") or []),
+        "symbols": sorted({
+            str(row.get("symbol") or "").upper()
+            for row in (holder_snapshot.get("projects") or [])
+            if isinstance(row, dict)
+        }),
+        "scan_from_block": grvt_holder.get("scan_from_block"),
+        "scan_to_block": grvt_holder.get("scan_to_block"),
+        "previous_latest_block": grvt_holder.get("previous_latest_block"),
+        "latest_block": grvt_holder.get("latest_block"),
+        "target_latest_block": grvt_holder.get("target_latest_block"),
+        "log_error_count": grvt_holder.get("log_error_count"),
+        "coverage_note": grvt_holder.get("coverage_note"),
+        "error": (
+            grvt_holder_error_safe
+            if all(
+                character.isalnum() or character in " _:=/.-"
+                for character in grvt_holder_error_safe
+            )
+            else "redacted_unsafe_detail"
+        ),
+        "error_code": next(
+            (
+                code
+                for marker, code in (
+                    ("eth_getLogs coverage failed", "eth_getlogs_coverage_failed"),
+                    ("holder transfer coverage", "holder_transfer_coverage_failed"),
+                    ("holder scan", "holder_scan_failed"),
+                    ("deadline", "deadline_exceeded"),
+                    ("timed out", "timeout"),
+                    ("provider", "provider_error"),
+                )
+                if marker.lower() in str(grvt_holder.get("error") or "").lower()
+            ),
+            "other",
+        ),
+        "incremental_catchup": grvt_holder.get("incremental_catchup"),
     },
 }, ensure_ascii=False))
 """.strip()
