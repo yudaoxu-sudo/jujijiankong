@@ -531,25 +531,41 @@ def transfer_logs(chain: str, token: str, from_block: int, to_block: int) -> tup
     max_logs = max(1, int(os.environ.get("ALPHA_HOLDER_MAX_LOGS_PER_TOKEN", "30000")))
     for start in range(from_block, to_block + 1, chunk_size):
         end = min(to_block, start + chunk_size - 1)
-        query = {
-            "address": token,
-            "fromBlock": hex(start),
-            "toBlock": hex(end),
-            "topics": [TRANSFER_TOPIC],
-        }
-        try:
-            result = holder_rpc_call(
-                chain,
-                "eth_getLogs",
-                [query],
-            )
-        except Exception:
-            return [], [f"eth_getLogs coverage failed for {start}-{end}"], False
-        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
-            return [], [f"eth_getLogs coverage failed for {start}-{end}"], False
-        rows.extend(result)
-        if len(rows) >= max_logs:
-            truncated = True
+        pending_ranges = [(start, end)]
+        while pending_ranges:
+            selected_start, selected_end = pending_ranges.pop()
+            query = {
+                "address": token,
+                "fromBlock": hex(selected_start),
+                "toBlock": hex(selected_end),
+                "topics": [TRANSFER_TOPIC],
+            }
+            try:
+                result = holder_rpc_call(
+                    chain,
+                    "eth_getLogs",
+                    [query],
+                )
+            except Exception:
+                result = None
+            if not isinstance(result, list) or any(
+                not isinstance(row, dict) for row in result
+            ):
+                if selected_start >= selected_end:
+                    return [], [
+                        "eth_getLogs coverage failed for "
+                        f"{selected_start}-{selected_end}"
+                    ], False
+                middle = (selected_start + selected_end) // 2
+                pending_ranges.extend(
+                    [(middle + 1, selected_end), (selected_start, middle)]
+                )
+                continue
+            rows.extend(result)
+            if len(rows) >= max_logs:
+                truncated = True
+                break
+        if truncated:
             break
     if truncated:
         return [], [], True

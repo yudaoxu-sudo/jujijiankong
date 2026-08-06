@@ -14606,7 +14606,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 int(query["toBlock"], 16),
             )
             calls.append(bounds)
-            if bounds == (103, 104):
+            if bounds[0] >= 103:
                 raise RuntimeError("private-provider-secret")
             return [{"blockNumber": hex(bounds[0]), "logIndex": "0x0"}]
 
@@ -14646,7 +14646,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 state,
             )
 
-        self.assertEqual(calls, [(101, 102), (103, 104)])
+        self.assertEqual(
+            calls,
+            [(101, 102), (103, 104), (103, 103)],
+        )
         self.assertEqual(state, before)
         self.assertEqual(result["raw_latest_block"], 106)
         self.assertEqual(result["latest_block"], 100)
@@ -18225,6 +18228,52 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 }
             ]
         }
+
+    def test_holder_transfer_logs_split_provider_rejected_windows(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        calls: list[tuple[int, int]] = []
+
+        def rpc(_chain: str, _method: str, params: list[object]) -> list[object]:
+            query = params[0]
+            assert isinstance(query, dict)
+            start = int(str(query["fromBlock"]), 16)
+            end = int(str(query["toBlock"]), 16)
+            calls.append((start, end))
+            if end - start + 1 > 2:
+                raise RuntimeError("provider rejected range")
+            return []
+
+        with (
+            mock.patch.object(holder, "holder_rpc_call", side_effect=rpc),
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_HOLDER_LOG_CHUNK_BLOCKS": "8"},
+            ),
+        ):
+            rows, errors, truncated = holder.transfer_logs(
+                "bsc", self._address("1"), 1, 8
+            )
+        self.assertEqual(rows, [])
+        self.assertEqual(errors, [])
+        self.assertFalse(truncated)
+        self.assertIn((1, 8), calls)
+        self.assertIn((1, 2), calls)
+        self.assertIn((7, 8), calls)
+
+        with mock.patch.object(
+            holder,
+            "holder_rpc_call",
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            rows, errors, truncated = holder.transfer_logs(
+                "bsc", self._address("1"), 5, 5
+            )
+        self.assertEqual(rows, [])
+        self.assertEqual(
+            errors, ["eth_getLogs coverage failed for 5-5"]
+        )
+        self.assertFalse(truncated)
 
     @classmethod
     def _event_row(

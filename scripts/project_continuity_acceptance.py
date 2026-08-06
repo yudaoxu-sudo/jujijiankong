@@ -97,6 +97,17 @@ runtime_issue_summaries = [
     {
         "kind": str(row.get("kind") or row.get("code") or "unknown"),
         "name": str(row.get("name") or "")[:80],
+        "detail": (
+            str(row.get("detail") or "")[:180]
+            if all(
+                character.isalnum() or character in " _:=/.-"
+                for character in str(row.get("detail") or "")[:180]
+            )
+            and "//" not in str(row.get("detail") or "")[:180]
+            and "0x" not in str(row.get("detail") or "")[:180].lower()
+            and "@" not in str(row.get("detail") or "")[:180]
+            else "redacted_unsafe_detail"
+        ),
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
