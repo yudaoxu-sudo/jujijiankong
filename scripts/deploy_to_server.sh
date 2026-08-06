@@ -9,6 +9,8 @@ ssh_cmd=(
   -i .deploy/sniper_server_ed25519
   -o UserKnownHostsFile=.deploy/known_hosts
   -o StrictHostKeyChecking=yes
+  -o ServerAliveInterval=15
+  -o ServerAliveCountMax=40
 )
 
 rsync -az \
