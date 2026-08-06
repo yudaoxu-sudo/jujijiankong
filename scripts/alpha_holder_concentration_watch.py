@@ -3894,6 +3894,9 @@ def collect_liquidity_verdict_evidence(
             "coverage_complete": True,
             "coverage_issues": [],
             "source_receipt_canonical": True,
+            "source_event_utc": datetime.fromtimestamp(
+                source_block["timestamp"], timezone.utc
+            ).replace(microsecond=0).isoformat(),
             "active_range_vs_spot": active_range,
             "spot_tick": spot_tick,
             "pool_liquidity_before": str(before_state["liquidity"]),
@@ -3945,6 +3948,7 @@ def annotate_liquidity_event_operators(
 ) -> tuple[list[dict[str, Any]], int]:
     candidate_types = (
         LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+        | LIQUIDITY_RECONCILIATION_SELL_TYPES
         | {"lp_add_observation"}
     )
     labels = global_address_labels(chain)
@@ -4156,14 +4160,64 @@ def reconcile_liquidity_events(
         if event_type in LIQUIDITY_RECONCILIATION_SELL_TYPES:
             event.update(
                 {
-                    "classification": "removed_plus_sold",
                     "reconcile_id": reconcile_id,
-                    "reconciliation_status": "final",
-                    "reconciliation_final": True,
-                    "notify": True,
+                    "reconciliation_status": (
+                        "completed_replay"
+                        if reconcile_id in completed_ids
+                        else "pending"
+                    ),
+                    "reconciliation_final": False,
+                    "notify": False,
+                    "alert_eligible": False,
+                    "level": "INFO",
                 }
             )
             output_events.append(event)
+            if reconcile_id in completed_ids or reconcile_id in pending_by_id:
+                continue
+            removed_target_raw = max(
+                0, int(event.get("lp_removed_amount_raw") or 0)
+            )
+            removed_quote_raw = max(
+                0, int(event.get("quote_removed_amount_raw") or 0)
+            )
+            pending_row = {
+                "reconcile_id": reconcile_id,
+                "first_seen_at": current.isoformat(),
+                "last_updated_at": current.isoformat(),
+                "operator": (
+                    norm(event.get("liquidity_operator"))
+                    if str(event.get("liquidity_operator_basis") or "")
+                    in LIQUIDITY_RELIABLE_OPERATOR_BASES
+                    else ""
+                ),
+                "operator_basis": str(
+                    event.get("liquidity_operator_basis") or "unattributed"
+                ),
+                "operator_confidence": str(
+                    event.get("liquidity_operator_confidence") or "low"
+                ),
+                "operator_class": str(
+                    event.get("liquidity_operator_class") or ""
+                ),
+                "source_pool": norm(event.get("pool")),
+                "source_block": int(event.get("block") or 0),
+                "source_log_index": int(event.get("log_index") or 0),
+                "source_block_hash": norm(event.get("block_hash")),
+                "quote_token": norm(event.get("quote_token")),
+                "quote_symbol": str(event.get("quote_symbol") or ""),
+                "quote_decimals": int(event.get("quote_decimals") or 0),
+                "removed_target_raw": removed_target_raw,
+                "removed_quote_raw": removed_quote_raw,
+                "added_target_raw": 0,
+                "added_quote_raw": 0,
+                "destination_pools": [],
+                "add_transactions": [],
+                "forced_classification": "removed_plus_sold",
+                "source_event": event,
+            }
+            pending.append(pending_row)
+            pending_by_id[reconcile_id] = pending_row
             continue
         if event_type in LIQUIDITY_RECONCILIATION_REMOVAL_TYPES:
             event.update(
@@ -4370,7 +4424,12 @@ def reconcile_liquidity_events(
             and str(pending_row.get("operator_basis") or "")
             in LIQUIDITY_RELIABLE_OPERATOR_BASES
         ):
-            if restored_ratio >= restore_ratio_min:
+            if (
+                pending_row.get("forced_classification")
+                == "removed_plus_sold"
+            ):
+                classification = "removed_plus_sold"
+            elif restored_ratio >= restore_ratio_min:
                 classification = (
                     "re_added"
                     if destinations
@@ -4426,6 +4485,7 @@ def reconcile_liquidity_events(
                 "reconciliation_status": "final",
                 "reconciliation_final": True,
                 "reconciliation_window_seconds": elapsed_seconds,
+                "raw_removal_alert_eligible": False,
                 "restored_ratio": str(restored_ratio),
                 "source_pool": pending_row.get("source_pool"),
                 "destination_pool": (
@@ -4503,6 +4563,55 @@ def reconcile_liquidity_events(
                 "reconcile_id": reconcile_id,
                 "classification": classification,
                 "completed_at": current.isoformat(),
+                "first_seen_at": str(
+                    pending_row.get("first_seen_at") or ""
+                ),
+                "source_event_utc": str(
+                    enrichment.get("source_event_utc") or ""
+                ) if isinstance(enrichment, dict) else "",
+                "source_block": int(
+                    pending_row.get("source_block") or 0
+                ),
+                "source_log_index": int(
+                    pending_row.get("source_log_index") or 0
+                ),
+                "source_tx": norm(source_event.get("tx")),
+                "source_pool": norm(
+                    pending_row.get("source_pool")
+                ),
+                "reconciliation_window_seconds": elapsed_seconds,
+                "enrichment_coverage_complete": bool(
+                    isinstance(enrichment, dict)
+                    and enrichment.get("coverage_complete") is True
+                ),
+                "active_range_vs_spot": (
+                    enrichment.get("active_range_vs_spot")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
+                "pool_liquidity_before": (
+                    enrichment.get("pool_liquidity_before")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
+                "pool_liquidity_after": (
+                    enrichment.get("pool_liquidity_after")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
+                "recipient_next_hop": copy.deepcopy(
+                    enrichment.get("recipient_next_hop")
+                ) if isinstance(enrichment, dict) else None,
+                "price_reaction_5m_pct": (
+                    enrichment.get("price_reaction_5m_pct")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
+                "price_reaction_15m_pct": (
+                    enrichment.get("price_reaction_15m_pct")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
             }
         )
 

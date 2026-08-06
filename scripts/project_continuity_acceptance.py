@@ -44,6 +44,13 @@ def read_json(path):
     except (OSError, json.JSONDecodeError):
         return {}
 
+def read_list(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
 health_path = root / "output" / "runtime_health" / "last_cycle.json"
 health = read_json(health_path)
 age = max(0, int(time.time() - health_path.stat().st_mtime)) if health_path.exists() else None
@@ -84,11 +91,14 @@ grvt_holder_error_safe = re.sub(
 grvt_holder_error_safe = re.sub(r"\S+://\S+", "URL_REDACTED", grvt_holder_error_safe)
 grvt_holder_error_safe = re.sub(r"\S+@\S+", "IDENTITY_REDACTED", grvt_holder_error_safe)[:180]
 reconciliations = []
-for token_state in (liquidity_state.get("tokens") or {}).values():
+reconciliation_scopes = []
+for token_key, token_state in (liquidity_state.get("tokens") or {}).items():
     if isinstance(token_state, dict):
         reconciliation = (token_state.get("liquidity") or {}).get("reconciliation")
         if isinstance(reconciliation, dict):
             reconciliations.append(reconciliation)
+            chain, _, token = str(token_key).partition(":")
+            reconciliation_scopes.append((chain, token, reconciliation))
 pending_count = sum(len(row.get("pending") or []) for row in reconciliations)
 completed_rows = [item for row in reconciliations for item in (row.get("completed") or []) if isinstance(item, dict)]
 completed_classes = {}
@@ -100,6 +110,75 @@ completed_times = sorted(
     for row in completed_rows
     if str(row.get("completed_at") or "")
 )
+seen_alerts = set(read_list(root / "output" / "alpha_holder_concentration_watch" / "seen_alerts.json"))
+last_push = read_json(root / "output" / "alpha_liquidity_retention_watch" / "last_push.json")
+last_push_keys = set(str(last_push.get("signature") or "").splitlines())
+grvt_reconciliation_events = []
+for chain, token, reconciliation in reconciliation_scopes:
+    for row in reconciliation.get("pending") or []:
+        if not isinstance(row, dict):
+            continue
+        first_seen = str(row.get("first_seen_at") or "")
+        if not first_seen.startswith("2026-08-06"):
+            continue
+        reconcile_id = str(row.get("reconcile_id") or "")
+        key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
+        source = row.get("source_event") if isinstance(row.get("source_event"), dict) else {}
+        grvt_reconciliation_events.append({
+            "reconcile_id_prefix": reconcile_id[:12],
+            "status": "pending",
+            "source_event_utc": str(row.get("source_event_utc") or ""),
+            "source_block": row.get("source_block"),
+            "source_tx_prefix": str(source.get("tx") or "")[:12],
+            "classification": "",
+            "pending_at": first_seen,
+            "final_at": "",
+            "window_seconds": None,
+            "alert_key": "liquidity_reconciliation/" + reconcile_id[:12],
+            "alert_sent_count": int(key in seen_alerts),
+            "last_push_receipt_match": key in last_push_keys,
+            "raw_removal_alert_eligible": False,
+            "enrichment_coverage_complete": False,
+            "enriched_fields_present": {
+                "active_range_vs_spot": False,
+                "pool_liquidity_boundary": False,
+                "recipient_next_hop": False,
+                "price_reaction_5m": False,
+                "price_reaction_15m": False,
+            },
+        })
+    for row in reconciliation.get("completed") or []:
+        if not isinstance(row, dict):
+            continue
+        completed_at = str(row.get("completed_at") or "")
+        if not completed_at.startswith("2026-08-06"):
+            continue
+        reconcile_id = str(row.get("reconcile_id") or "")
+        key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
+        grvt_reconciliation_events.append({
+            "reconcile_id_prefix": reconcile_id[:12],
+            "status": "final",
+            "source_event_utc": str(row.get("source_event_utc") or ""),
+            "source_block": row.get("source_block"),
+            "source_tx_prefix": str(row.get("source_tx") or "")[:12],
+            "classification": str(row.get("classification") or "unknown"),
+            "pending_at": str(row.get("first_seen_at") or ""),
+            "final_at": completed_at,
+            "window_seconds": row.get("reconciliation_window_seconds"),
+            "alert_key": "liquidity_reconciliation/" + reconcile_id[:12],
+            "alert_sent_count": int(key in seen_alerts),
+            "last_push_receipt_match": key in last_push_keys,
+            "raw_removal_alert_eligible": row.get("raw_removal_alert_eligible"),
+            "enrichment_coverage_complete": row.get("enrichment_coverage_complete") is True,
+            "enriched_fields_present": {
+                "active_range_vs_spot": row.get("active_range_vs_spot") is not None,
+                "pool_liquidity_boundary": row.get("pool_liquidity_before") is not None and row.get("pool_liquidity_after") is not None,
+                "recipient_next_hop": isinstance(row.get("recipient_next_hop"), dict),
+                "price_reaction_5m": row.get("price_reaction_5m_pct") is not None,
+                "price_reaction_15m": row.get("price_reaction_15m_pct") is not None,
+            },
+        })
+grvt_reconciliation_events.sort(key=lambda row: (str(row.get("final_at") or row.get("pending_at") or ""), str(row.get("reconcile_id_prefix") or "")))
 runtime_issue_codes = sorted({
     str(row.get("kind") or row.get("code") or row.get("name") or "unknown")
     for row in (health.get("issues") or [])
@@ -171,6 +250,10 @@ print(json.dumps({
         "completed_classes": completed_classes,
         "first_completed_at": completed_times[0] if completed_times else "",
         "last_completed_at": completed_times[-1] if completed_times else "",
+        "reconciliation_events_2026_08_06": grvt_reconciliation_events,
+        "reconciliation_event_count_2026_08_06": len(grvt_reconciliation_events),
+        "telegram_seen_ledger_count": len(seen_alerts),
+        "telegram_last_push_sent_at": str(last_push.get("sent_at") or ""),
     },
     "grvt_holder": {
         "fields": sorted(grvt_holder),

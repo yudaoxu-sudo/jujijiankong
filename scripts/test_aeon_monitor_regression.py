@@ -20458,7 +20458,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertEqual(partial_events[0]["restored_ratio"], "0")
 
-        sold_events, _, _ = holder.reconcile_liquidity_events(
+        sold_events, sold_state, _ = holder.reconcile_liquidity_events(
             [
                 {
                     **removal,
@@ -20471,8 +20471,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             token_decimals=0,
             observed_at=started,
         )
+        self.assertEqual(sold_events[0]["reconciliation_status"], "pending")
+        self.assertFalse(sold_events[0]["alert_eligible"])
         self.assertEqual(
-            sold_events[0]["classification"],
+            sold_state["pending"][0]["forced_classification"],
             "removed_plus_sold",
         )
 
@@ -20529,6 +20531,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         evidence = {
             "coverage_complete": True,
             "source_receipt_canonical": True,
+            "source_event_utc": "2026-08-04T00:00:00+00:00",
             "active_range_vs_spot": "active",
             "spot_tick": 0,
             "pool_liquidity_before": "1000",
@@ -20559,6 +20562,20 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(final_events[0]["price_reaction_15m_pct"], "-3.5")
         self.assertTrue(final_events[0]["recipient_next_hop"]["coverage_complete"])
         self.assertEqual(final_state["pending"], [])
+        self.assertEqual(
+            final_state["completed"][0]["source_event_utc"],
+            "2026-08-04T00:00:00+00:00",
+        )
+        self.assertEqual(
+            final_state["completed"][0]["source_block"], 101
+        )
+        self.assertEqual(
+            final_state["completed"][0]["first_seen_at"],
+            started.isoformat(),
+        )
+        self.assertTrue(
+            final_state["completed"][0]["enrichment_coverage_complete"]
+        )
         self.assertEqual(final_metadata["evidence_blocked_count"], 0)
         telegram_text = holder.retention_telegram_text(
             {"symbol": "TEST", "priority": "P1"}, final_events
@@ -20580,6 +20597,66 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(replay_events[0]["reconciliation_status"], "completed_replay")
         self.assertFalse(replay_events[0]["alert_eligible"])
         self.assertEqual(replay_state["pending"], [])
+
+    def test_removed_plus_sold_is_persisted_for_acceptance(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        event = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 2,
+            "block": 101,
+            "block_hash": self._hash("f"),
+            "type": "liquidity_exit_with_sell",
+            "historical_catchup": False,
+            "liquidity_operator": self._address("5"),
+            "liquidity_operator_basis": "transaction_sender_eoa",
+            "liquidity_operator_confidence": "high",
+            "quote_token": self._address("2"),
+            "quote_symbol": "USDT",
+            "quote_decimals": 18,
+            "lp_removed_amount_raw": "100",
+            "quote_removed_amount_raw": "200",
+        }
+        started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+        events, pending_state, _ = holder.reconcile_liquidity_events(
+            [event],
+            {},
+            token_decimals=18,
+            observed_at=started,
+        )
+        self.assertEqual(events[0]["reconciliation_status"], "pending")
+        reconcile_id = pending_state["pending"][0]["reconcile_id"]
+        evidence = {
+            "coverage_complete": True,
+            "source_event_utc": started.isoformat(),
+            "source_receipt_canonical": True,
+            "active_range_vs_spot": "active",
+            "spot_tick": 0,
+            "pool_liquidity_before": "1000",
+            "pool_liquidity_after": "900",
+            "recipient_next_hop": {"coverage_complete": True},
+            "price_reaction_5m_pct": "-1",
+            "price_reaction_15m_pct": "-2",
+            "evidence_level": "receipt_canonical_bounded_15m",
+        }
+        final_events, state, _ = holder.reconcile_liquidity_events(
+            [],
+            pending_state,
+            token_decimals=18,
+            observed_at=started + timedelta(minutes=15),
+            evidence_by_id={reconcile_id: evidence},
+        )
+        self.assertEqual(
+            final_events[0]["classification"], "removed_plus_sold"
+        )
+        self.assertEqual(len(state["completed"]), 1)
+        self.assertEqual(
+            state["completed"][0]["classification"],
+            "removed_plus_sold",
+        )
+        self.assertTrue(state["completed"][0]["enrichment_coverage_complete"])
 
     def test_v4_modify_is_unattributed_or_combined_with_verified_sell(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
