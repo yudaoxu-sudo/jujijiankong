@@ -83,6 +83,24 @@ completed_classes = {}
 for row in completed_rows:
     classification = str(row.get("classification") or "unknown")
     completed_classes[classification] = completed_classes.get(classification, 0) + 1
+completed_times = sorted(
+    str(row.get("completed_at") or "")
+    for row in completed_rows
+    if str(row.get("completed_at") or "")
+)
+runtime_issue_codes = sorted({
+    str(row.get("kind") or row.get("code") or row.get("name") or "unknown")
+    for row in (health.get("issues") or [])
+    if isinstance(row, dict)
+})
+runtime_issue_summaries = [
+    {
+        "kind": str(row.get("kind") or row.get("code") or "unknown"),
+        "name": str(row.get("name") or "")[:80],
+    }
+    for row in (health.get("issues") or [])
+    if isinstance(row, dict)
+][:20]
 ok = (
     health.get("schema") == "runtime_health.v1"
     and health.get("status") == "healthy"
@@ -100,6 +118,8 @@ print(json.dumps({
     "runtime_generated_at": health.get("generated_at", ""),
     "runtime_age_seconds": age,
     "runtime_issue_count": health.get("issue_count"),
+    "runtime_issue_codes": runtime_issue_codes,
+    "runtime_issue_summaries": runtime_issue_summaries,
     "verification_exists": verification_path.exists(),
     "verification_fail_count": fail_count,
     "watchlist_item_count": item_count,
@@ -118,6 +138,8 @@ print(json.dumps({
         "pending_count": pending_count,
         "completed_count": len(completed_rows),
         "completed_classes": completed_classes,
+        "first_completed_at": completed_times[0] if completed_times else "",
+        "last_completed_at": completed_times[-1] if completed_times else "",
     },
 }, ensure_ascii=False))
 """.strip()
