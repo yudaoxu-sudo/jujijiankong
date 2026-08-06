@@ -3611,6 +3611,288 @@ LIQUIDITY_RELIABLE_OPERATOR_BASES = {
     "pool_event_owner_eoa",
     "transaction_sender_eoa",
 }
+V3_SLOT0_SELECTOR = "0x3850c7bd"
+V3_LIQUIDITY_SELECTOR = "0x1a686502"
+
+
+def _canonical_block(chain: str, block: int) -> dict[str, Any]:
+    payload = holder_rpc_call(
+        chain, "eth_getBlockByNumber", [hex(max(0, block)), False]
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("block unavailable")
+    block_hash = norm(payload.get("hash"))
+    if not valid_hash32(block_hash) or int(block_hash[2:], 16) == 0:
+        raise ValueError("block hash unavailable")
+    return {
+        "number": int(payload.get("number") or "0x0", 16),
+        "hash": block_hash,
+        "timestamp": int(payload.get("timestamp") or "0x0", 16),
+    }
+
+
+def _block_at_or_after_timestamp(
+    chain: str,
+    low: int,
+    high: int,
+    target_timestamp: int,
+) -> dict[str, Any]:
+    if low > high:
+        raise ValueError("timestamp window unavailable")
+    selected: dict[str, Any] | None = None
+    while low <= high:
+        middle = (low + high) // 2
+        block = _canonical_block(chain, middle)
+        if block["timestamp"] >= target_timestamp:
+            selected = block
+            high = middle - 1
+        else:
+            low = middle + 1
+    if selected is None:
+        raise ValueError("timestamp target unavailable")
+    return selected
+
+
+def _v3_state_at(chain: str, pool: str, block: int) -> dict[str, int]:
+    block_tag = hex(block)
+    slot0 = str(
+        holder_rpc_call(
+            chain,
+            "eth_call",
+            [{"to": pool, "data": V3_SLOT0_SELECTOR}, block_tag],
+        )
+        or ""
+    )
+    liquidity = str(
+        holder_rpc_call(
+            chain,
+            "eth_call",
+            [{"to": pool, "data": V3_LIQUIDITY_SELECTOR}, block_tag],
+        )
+        or ""
+    )
+    if (
+        not slot0.startswith("0x")
+        or len(slot0) < 2 + 64 * 2
+        or not liquidity.startswith("0x")
+        or len(liquidity) < 3
+    ):
+        raise ValueError("v3 state unavailable")
+    sqrt_price_x96 = int(slot0[2:66], 16)
+    tick_word = int(slot0[66:130], 16)
+    tick = tick_word & ((1 << 24) - 1)
+    if tick >= 1 << 23:
+        tick -= 1 << 24
+    if sqrt_price_x96 <= 0:
+        raise ValueError("v3 price unavailable")
+    return {
+        "sqrt_price_x96": sqrt_price_x96,
+        "tick": tick,
+        "liquidity": int(liquidity, 16),
+    }
+
+
+def _v3_quote_price(
+    state: dict[str, int],
+    pool: dict[str, Any],
+    token: str,
+    token_decimals: int,
+) -> Decimal:
+    ratio = Decimal(state["sqrt_price_x96"]) ** 2 / Decimal(2**192)
+    quote_decimals = int(pool.get("quote_decimals") or 0)
+    if norm(pool.get("token0")) == token:
+        return ratio * (Decimal(10) ** (token_decimals - quote_decimals))
+    if norm(pool.get("token1")) == token and ratio > 0:
+        return (Decimal(1) / ratio) * (
+            Decimal(10) ** (token_decimals - quote_decimals)
+        )
+    raise ValueError("pool token orientation invalid")
+
+
+def collect_liquidity_verdict_evidence(
+    chain: str,
+    token: str,
+    token_decimals: int,
+    pools: list[dict[str, Any]],
+    pending_row: dict[str, Any],
+    confirmed_tip: int,
+) -> dict[str, Any]:
+    issues: list[str] = []
+    try:
+        source_pool = norm(pending_row.get("source_pool"))
+        pool_matches = [
+            row
+            for row in pools
+            if row.get("protocol") == "v3"
+            and norm(row.get("address")) == source_pool
+        ]
+        if len(pool_matches) != 1:
+            raise ValueError("source pool scope unavailable")
+        pool = pool_matches[0]
+        source_block_number = int(pending_row.get("source_block") or 0)
+        source_block = _canonical_block(chain, source_block_number)
+        if source_block["hash"] != norm(
+            pending_row.get("source_block_hash")
+        ):
+            raise ValueError("source block is not canonical")
+        receipt = holder_rpc_call(
+            chain,
+            "eth_getTransactionReceipt",
+            [norm(pending_row.get("source_event", {}).get("tx"))],
+        )
+        if (
+            not isinstance(receipt, dict)
+            or int(receipt.get("status") or "0x0", 16) != 1
+            or norm(receipt.get("blockHash")) != source_block["hash"]
+            or int(receipt.get("blockNumber") or "0x0", 16)
+            != source_block_number
+        ):
+            raise ValueError("source receipt is not canonical")
+        source_tx = norm(pending_row.get("source_event", {}).get("tx"))
+        block_pool_state_logs = holder_rpc_call(
+            chain,
+            "eth_getLogs",
+            [
+                {
+                    "address": source_pool,
+                    "fromBlock": hex(source_block_number),
+                    "toBlock": hex(source_block_number),
+                    "topics": [[V3_MINT_TOPIC, V3_BURN_TOPIC, V3_SWAP_TOPIC]],
+                }
+            ],
+        )
+        if (
+            not isinstance(block_pool_state_logs, list)
+            or not block_pool_state_logs
+            or len(block_pool_state_logs) >= 128
+            or any(
+                not isinstance(row, dict)
+                or norm(row.get("transactionHash")) != source_tx
+                or norm(row.get("blockHash")) != source_block["hash"]
+                for row in block_pool_state_logs
+            )
+        ):
+            raise ValueError("exact pool liquidity boundary unavailable")
+        five_minute_block = _block_at_or_after_timestamp(
+            chain,
+            source_block_number,
+            confirmed_tip,
+            source_block["timestamp"] + 300,
+        )
+        fifteen_minute_block = _block_at_or_after_timestamp(
+            chain,
+            five_minute_block["number"],
+            confirmed_tip,
+            source_block["timestamp"] + 900,
+        )
+        before_state = _v3_state_at(
+            chain, source_pool, max(0, source_block_number - 1)
+        )
+        source_state = _v3_state_at(chain, source_pool, source_block_number)
+        five_state = _v3_state_at(
+            chain, source_pool, five_minute_block["number"]
+        )
+        fifteen_state = _v3_state_at(
+            chain, source_pool, fifteen_minute_block["number"]
+        )
+        source_price = _v3_quote_price(
+            source_state, pool, token, token_decimals
+        )
+        five_price = _v3_quote_price(five_state, pool, token, token_decimals)
+        fifteen_price = _v3_quote_price(
+            fifteen_state, pool, token, token_decimals
+        )
+        if source_price <= 0:
+            raise ValueError("source price unavailable")
+        recipients: set[str] = set()
+        for log in receipt.get("logs") or []:
+            topics = log.get("topics") if isinstance(log, dict) else None
+            if (
+                not isinstance(topics, list)
+                or len(topics) < 3
+                or norm(topics[0]) != TRANSFER_TOPIC
+                or norm(log.get("address")) not in {token, norm(pool.get("quote_token"))}
+                or address_from_topic(str(topics[1])) != source_pool
+            ):
+                continue
+            recipient = address_from_topic(str(topics[2]))
+            if recipient not in {source_pool, ZERO_ADDRESS}:
+                recipients.add(recipient)
+        if len(recipients) > 8:
+            raise ValueError("recipient scope exceeded")
+        next_hop_transactions: set[str] = set()
+        for recipient in sorted(recipients):
+            for asset in (token, norm(pool.get("quote_token"))):
+                rows = holder_rpc_call(
+                    chain,
+                    "eth_getLogs",
+                    [
+                        {
+                            "address": asset,
+                            "fromBlock": hex(source_block_number + 1),
+                            "toBlock": hex(fifteen_minute_block["number"]),
+                            "topics": [TRANSFER_TOPIC, topic_address(recipient)],
+                        }
+                    ],
+                )
+                if not isinstance(rows, list) or len(rows) >= 128:
+                    raise ValueError("recipient next-hop coverage incomplete")
+                for row in rows:
+                    tx_hash = norm(row.get("transactionHash"))
+                    if not valid_hash32(tx_hash):
+                        raise ValueError("recipient next-hop identity invalid")
+                    next_receipt = holder_rpc_call(
+                        chain, "eth_getTransactionReceipt", [tx_hash]
+                    )
+                    if (
+                        not isinstance(next_receipt, dict)
+                        or int(next_receipt.get("status") or "0x0", 16) != 1
+                        or norm(next_receipt.get("blockHash"))
+                        != norm(row.get("blockHash"))
+                    ):
+                        raise ValueError("recipient next-hop receipt invalid")
+                    next_hop_transactions.add(tx_hash)
+                    if len(next_hop_transactions) > 16:
+                        raise ValueError("recipient next-hop scope exceeded")
+        tick_lower = int(pending_row.get("source_event", {}).get("tick_lower"))
+        tick_upper = int(pending_row.get("source_event", {}).get("tick_upper"))
+        spot_tick = source_state["tick"]
+        active_range = (
+            "active" if tick_lower <= spot_tick < tick_upper else "out_of_range"
+        )
+        return {
+            "coverage_complete": True,
+            "coverage_issues": [],
+            "source_receipt_canonical": True,
+            "active_range_vs_spot": active_range,
+            "spot_tick": spot_tick,
+            "pool_liquidity_before": str(before_state["liquidity"]),
+            "pool_liquidity_after": str(source_state["liquidity"]),
+            "recipient_next_hop": {
+                "status": (
+                    "outbound_observed"
+                    if next_hop_transactions
+                    else "no_outbound_observed"
+                ),
+                "coverage_complete": True,
+                "recipient_count": len(recipients),
+                "transaction_count": len(next_hop_transactions),
+            },
+            "price_reaction_5m_pct": str(
+                ((five_price / source_price) - 1) * 100
+            ),
+            "price_reaction_15m_pct": str(
+                ((fifteen_price / source_price) - 1) * 100
+            ),
+            "evidence_level": "receipt_canonical_bounded_15m",
+        }
+    except Exception as exc:
+        issues.append(safe_error_message(exc))
+        return {
+            "coverage_complete": False,
+            "coverage_issues": issues,
+            "evidence_level": "coverage_incomplete",
+        }
 
 
 def liquidity_reconciliation_id(event: dict[str, Any]) -> str:
@@ -3747,6 +4029,7 @@ def reconcile_liquidity_events(
     token_decimals: int,
     observed_at: datetime | None = None,
     coverage_complete: bool = True,
+    evidence_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     current = (observed_at or now_utc()).astimezone(timezone.utc).replace(
         microsecond=0
@@ -4004,6 +4287,7 @@ def reconcile_liquidity_events(
 
     finalized_ids: set[str] = set()
     finalized_events: list[dict[str, Any]] = []
+    evidence_blocked_count = 0
     for pending_row in pending:
         first_seen = parse_iso(pending_row.get("first_seen_at"))
         elapsed_seconds = int(
@@ -4069,6 +4353,23 @@ def reconcile_liquidity_events(
         if not classification:
             continue
         reconcile_id = str(pending_row.get("reconcile_id") or "")
+        enrichment = (
+            evidence_by_id.get(reconcile_id, {})
+            if isinstance(evidence_by_id, dict)
+            else None
+        )
+        if (
+            enrichment is not None
+            and enrichment.get("coverage_complete") is not True
+        ):
+            pending_row["evidence_coverage_issues"] = list(
+                enrichment.get("coverage_issues") or [
+                    "liquidity_verdict_evidence_incomplete"
+                ]
+            )[:8]
+            pending_row["last_updated_at"] = current.isoformat()
+            evidence_blocked_count += 1
+            continue
         source_event = (
             pending_row.get("source_event")
             if isinstance(pending_row.get("source_event"), dict)
@@ -4112,7 +4413,27 @@ def reconcile_liquidity_events(
                     "operator_class"
                 ),
                 "evidence_level": (
-                    "verified_v3_operator_5_15m_reconciliation"
+                    str(enrichment.get("evidence_level"))
+                    if isinstance(enrichment, dict)
+                    else "verified_v3_operator_5_15m_reconciliation"
+                ),
+                **(
+                    {
+                        key: copy.deepcopy(enrichment[key])
+                        for key in (
+                            "source_receipt_canonical",
+                            "active_range_vs_spot",
+                            "spot_tick",
+                            "pool_liquidity_before",
+                            "pool_liquidity_after",
+                            "recipient_next_hop",
+                            "price_reaction_5m_pct",
+                            "price_reaction_15m_pct",
+                        )
+                        if key in enrichment
+                    }
+                    if isinstance(enrichment, dict)
+                    else {}
                 ),
                 "amount": str(
                     decimal_amount(
@@ -4189,6 +4510,7 @@ def reconcile_liquidity_events(
             not is_address(norm(row.get("operator")))
             for row in remaining_pending
         ),
+        "evidence_blocked_count": evidence_blocked_count,
     }
     return output_events, next_state, metadata
 
@@ -4860,6 +5182,53 @@ def build_token_liquidity_retention(
                 "attribution_query_error_count": attribution_error_count,
             }
         else:
+            evidence_by_id: dict[str, dict[str, Any]] = {}
+            try:
+                evidence_min_age_seconds = max(
+                    0,
+                    int(
+                        os.environ.get(
+                            "ALPHA_RETENTION_LIQUIDITY_RECONCILE_MAX_SECONDS",
+                            "900",
+                        )
+                    ),
+                )
+            except ValueError:
+                evidence_min_age_seconds = 900
+            evidence_now = now_utc()
+            evidence_pending = [
+                row
+                for row in reconciliation_seed.get("pending", [])
+                if isinstance(row, dict)
+                and parse_iso(row.get("first_seen_at")) is not None
+                and (
+                    evidence_now - parse_iso(row.get("first_seen_at"))
+                ).total_seconds()
+                >= evidence_min_age_seconds
+            ]
+            evidence_limit = 8
+            for pending_row in evidence_pending[:evidence_limit]:
+                reconcile_id = str(pending_row.get("reconcile_id") or "")
+                if valid_sha256(reconcile_id):
+                    evidence_by_id[reconcile_id] = (
+                        collect_liquidity_verdict_evidence(
+                            chain,
+                            token,
+                            decimals,
+                            pools,
+                            pending_row,
+                            confirmed_tip,
+                        )
+                    )
+            for pending_row in evidence_pending[evidence_limit:]:
+                reconcile_id = str(pending_row.get("reconcile_id") or "")
+                if valid_sha256(reconcile_id):
+                    evidence_by_id[reconcile_id] = {
+                        "coverage_complete": False,
+                        "coverage_issues": [
+                            "liquidity_evidence_cycle_limit"
+                        ],
+                    }
             (
                 reconciled_events,
                 next_reconciliation_state,
@@ -4869,6 +5238,7 @@ def build_token_liquidity_retention(
                 reconciliation_seed,
                 token_decimals=decimals,
                 coverage_complete=flow.get("complete") is True,
+                evidence_by_id=evidence_by_id,
             )
             flow["events"] = reconciled_events
             flow["event_count"] = len(reconciled_events)
@@ -6917,6 +7287,25 @@ def retention_event_label(event: dict[str, Any]) -> str:
     }.get(str(event.get("type") or ""), str(event.get("type") or "转移风险"))
 
 
+def liquidity_verdict_evidence_text(event: dict[str, Any]) -> str:
+    if str(event.get("type") or "") != "liquidity_reconciliation":
+        return ""
+    next_hop = (
+        event.get("recipient_next_hop")
+        if isinstance(event.get("recipient_next_hop"), dict)
+        else {}
+    )
+    return (
+        f"区间 {event.get('active_range_vs_spot')}"
+        f"（spot tick {event.get('spot_tick')}）｜池流动性 "
+        f"{event.get('pool_liquidity_before')} → "
+        f"{event.get('pool_liquidity_after')}｜recipient next-hop "
+        f"{next_hop.get('status')}（{int(next_hop.get('transaction_count') or 0)}笔）｜"
+        f"价格 5m {format_signed_pct(event.get('price_reaction_5m_pct'))} / "
+        f"15m {format_signed_pct(event.get('price_reaction_15m_pct'))}"
+    )
+
+
 def retention_telegram_text(
     project: dict[str, Any],
     events: list[dict[str, Any]],
@@ -6944,6 +7333,9 @@ def retention_telegram_text(
                 ),
             ]
         )
+        evidence_text = liquidity_verdict_evidence_text(event)
+        if evidence_text:
+            lines.append(evidence_text)
     return "\n".join(lines)
 
 
@@ -7160,6 +7552,9 @@ def telegram_text(snapshot: dict[str, Any]) -> str:
                     ),
                 ]
             )
+            evidence_text = liquidity_verdict_evidence_text(event)
+            if evidence_text:
+                lines.append(evidence_text)
         else:
             lines.extend(
                 [

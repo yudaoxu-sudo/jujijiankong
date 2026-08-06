@@ -20406,6 +20406,111 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "removed_plus_sold",
         )
 
+    def test_v3_reconciliation_final_verdict_requires_complete_enrichment(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        removal = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "block": 101,
+            "block_hash": self._hash("f"),
+            "type": "lp_remove_observation",
+            "lp_owner": self._address("6"),
+            "tick_lower": -100,
+            "tick_upper": 100,
+            "liquidity_operator": self._address("5"),
+            "liquidity_operator_basis": "transaction_sender_eoa",
+            "liquidity_operator_confidence": "high",
+            "quote_token": self._address("2"),
+            "quote_symbol": "USDT",
+            "quote_decimals": 0,
+            "lp_removed_amount_raw": "100",
+            "quote_removed_amount_raw": "200",
+            "historical_catchup": False,
+        }
+        _, pending_state, _ = holder.reconcile_liquidity_events(
+            [removal], {}, token_decimals=0, observed_at=started
+        )
+        reconcile_id = pending_state["pending"][0]["reconcile_id"]
+
+        blocked_events, blocked_state, blocked_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                pending_state,
+                token_decimals=0,
+                observed_at=started + timedelta(minutes=15),
+                evidence_by_id={
+                    reconcile_id: {
+                        "coverage_complete": False,
+                        "coverage_issues": ["price_15m_unavailable"],
+                    }
+                },
+            )
+        )
+        self.assertEqual(blocked_events, [])
+        self.assertEqual(len(blocked_state["pending"]), 1)
+        self.assertEqual(blocked_metadata["evidence_blocked_count"], 1)
+
+        evidence = {
+            "coverage_complete": True,
+            "source_receipt_canonical": True,
+            "active_range_vs_spot": "active",
+            "spot_tick": 0,
+            "pool_liquidity_before": "1000",
+            "pool_liquidity_after": "900",
+            "recipient_next_hop": {
+                "status": "no_outbound_observed",
+                "coverage_complete": True,
+                "recipient_count": 1,
+            },
+            "price_reaction_5m_pct": "-1.25",
+            "price_reaction_15m_pct": "-3.5",
+            "evidence_level": "receipt_canonical_bounded_15m",
+        }
+        final_events, final_state, final_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                blocked_state,
+                token_decimals=0,
+                observed_at=started + timedelta(minutes=16),
+                evidence_by_id={reconcile_id: evidence},
+            )
+        )
+        self.assertEqual(len(final_events), 1)
+        self.assertEqual(final_events[0]["classification"], "net_removed")
+        self.assertEqual(final_events[0]["active_range_vs_spot"], "active")
+        self.assertEqual(final_events[0]["pool_liquidity_before"], "1000")
+        self.assertEqual(final_events[0]["pool_liquidity_after"], "900")
+        self.assertEqual(final_events[0]["price_reaction_15m_pct"], "-3.5")
+        self.assertTrue(final_events[0]["recipient_next_hop"]["coverage_complete"])
+        self.assertEqual(final_state["pending"], [])
+        self.assertEqual(final_metadata["evidence_blocked_count"], 0)
+        telegram_text = holder.retention_telegram_text(
+            {"symbol": "TEST", "priority": "P1"}, final_events
+        )
+        self.assertIn("区间 active", telegram_text)
+        self.assertIn("池流动性 1000 → 900", telegram_text)
+        self.assertIn("recipient next-hop no_outbound_observed", telegram_text)
+        self.assertIn("价格 5m", telegram_text)
+        self.assertIn("15m", telegram_text)
+
+        replay_events, replay_state, _ = holder.reconcile_liquidity_events(
+            [removal],
+            final_state,
+            token_decimals=0,
+            observed_at=started + timedelta(minutes=17),
+            evidence_by_id={reconcile_id: evidence},
+        )
+        self.assertEqual(len(replay_events), 1)
+        self.assertEqual(replay_events[0]["reconciliation_status"], "completed_replay")
+        self.assertFalse(replay_events[0]["alert_eligible"])
+        self.assertEqual(replay_state["pending"], [])
+
     def test_v4_modify_is_unattributed_or_combined_with_verified_sell(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
