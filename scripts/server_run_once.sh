@@ -168,6 +168,12 @@ run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_spri
 run_step "${ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-360}" env ALPHA_INTRADAY_REQUIRED_ONLY=1 ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS="${ALPHA_INTRADAY_POST_OPENING_WATCHER_BUDGET_SECONDS:-330}" python3 scripts/alpha_intraday_flow_watch.py
 run_step "${OPENING_COHORT_FUNDER_TIMEOUT_SECONDS:-90}" python3 scripts/review_opening_cohort_funders.py --lookback-blocks "${OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS:-120}" --max-scan-seconds "${OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS:-25}"
 run_step "${ALPHA_HOLDER_TIMEOUT_SECONDS:-240}" python3 scripts/alpha_holder_concentration_watch.py
+if [[ "${RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE:-0}" == "1" ]]; then
+  run_step "${GRVT_LIQUIDITY_REPLAY_ACCEPTANCE_TIMEOUT_SECONDS:-240}" \
+    python3 scripts/grvt_liquidity_replay_acceptance.py \
+      --rpc-mode runtime \
+      --output output/grvt_liquidity_replay_acceptance/latest.json
+fi
 run_step "${SURF_AUX_MARKET_TIMEOUT_SECONDS:-180}" python3 scripts/surf_aux_market_watch.py
 if [[ "${RUN_ARX_OPENING_REFRESH:-0}" == "1" || ! -s output/arx_opening_block_watch/latest.json ]]; then
   run_step "${ARX_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/arx_opening_sprint.sh

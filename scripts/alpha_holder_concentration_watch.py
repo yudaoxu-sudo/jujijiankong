@@ -106,7 +106,8 @@ BOUNDED_BOOTSTRAP_UNRELIABLE = "bounded_bootstrap_unreliable"
 RETENTION_SCOPE_STATE_SCHEMA_VERSION = 1
 LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION = 2
 LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP = 128
-LIQUIDITY_RECONCILIATION_SCHEMA = "liquidity_reconciliation.v1"
+LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA = "liquidity_reconciliation.v1"
+LIQUIDITY_RECONCILIATION_SCHEMA = "liquidity_reconciliation.v2"
 RETENTION_PROJECT_ROLES = {
     "contract_owner",
     "deployer",
@@ -2493,6 +2494,350 @@ def targeted_retention_liquidity_logs(
     return rows, [], False, metadata
 
 
+def liquidity_quote_min_amount(pool: dict[str, Any]) -> Decimal:
+    configured = os.environ.get(
+        "ALPHA_RETENTION_LIQUIDITY_QUOTE_MIN_AMOUNT"
+    )
+    if configured is not None:
+        parsed = decimal_from(configured, "-1")
+        if parsed >= 0:
+            return parsed
+    return (
+        Decimal("10")
+        if str(pool.get("quote_symbol") or "").upper()
+        in {"WBNB", "WETH"}
+        else Decimal("10000")
+    )
+
+
+def liquidity_quote_relative_min_bps() -> Decimal:
+    try:
+        return max(
+            Decimal(0),
+            Decimal(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_QUOTE_RELATIVE_MIN_BPS",
+                    "500",
+                )
+            ),
+        )
+    except (InvalidOperation, ValueError):
+        return Decimal(500)
+
+
+def attach_v3_quote_balance_boundaries(
+    chain: str,
+    logs: list[dict[str, Any]],
+    cache: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    enriched = copy.deepcopy(logs)
+    rpc_cache = cache if isinstance(cache, dict) else {}
+    try:
+        query_limit = max(
+            1,
+            int(
+                os.environ.get(
+                    "ALPHA_RETENTION_LIQUIDITY_QUOTE_BOUNDARY_MAX_QUERIES",
+                    "64",
+                )
+            ),
+        )
+    except ValueError:
+        query_limit = 64
+    metadata: dict[str, Any] = {
+        "quote_boundary_complete": True,
+        "quote_boundary_query_count": 0,
+        "quote_boundary_cache_hit_count": 0,
+        "quote_boundary_candidate_count": 0,
+        "quote_boundary_error_count": 0,
+        "quote_boundary_issue_codes": [],
+        "range_shrink_retryable": False,
+    }
+
+    def fail(code: str, *, retryable: bool) -> tuple[
+        list[dict[str, Any]], list[str], dict[str, Any]
+    ]:
+        metadata["quote_boundary_complete"] = False
+        metadata["quote_boundary_error_count"] = 1
+        metadata["quote_boundary_issue_codes"] = [code]
+        metadata["range_shrink_retryable"] = retryable
+        return enriched, [code], metadata
+
+    def cached_rpc(
+        key: tuple[Any, ...],
+        method: str,
+        params: list[Any],
+        issue_code: str,
+    ) -> Any:
+        cached = rpc_cache.get(key)
+        if isinstance(cached, dict):
+            metadata["quote_boundary_cache_hit_count"] += 1
+            if cached.get("ok") is not True:
+                raise RuntimeError(str(cached.get("issue") or issue_code))
+            return copy.deepcopy(cached.get("value"))
+        if metadata["quote_boundary_query_count"] >= query_limit:
+            raise RuntimeError("liquidity_quote_boundary_query_limit")
+        metadata["quote_boundary_query_count"] += 1
+        try:
+            value = holder_rpc_call(chain, method, params)
+        except Exception:
+            rpc_cache[key] = {"ok": False, "issue": issue_code}
+            raise RuntimeError(issue_code)
+        rpc_cache[key] = {"ok": True, "value": copy.deepcopy(value)}
+        return value
+
+    grouped: dict[
+        tuple[str, str, int, str],
+        dict[str, Any],
+    ] = {}
+    for row in enriched:
+        if row.get("_retention_event_kind") != "v3_burn":
+            continue
+        pool = row.get("_retention_pool")
+        if not isinstance(pool, dict):
+            return fail(
+                "liquidity_quote_boundary_pool_metadata_invalid",
+                retryable=False,
+            )
+        quote_token = norm(pool.get("quote_token"))
+        pool_address = norm(pool.get("address"))
+        token0 = norm(pool.get("token0"))
+        token1 = norm(pool.get("token1"))
+        block = block_number(row)
+        tx_hash = norm(row.get("transactionHash"))
+        if (
+            not is_address(quote_token)
+            or not is_address(pool_address)
+            or quote_token not in {token0, token1}
+            or block <= 0
+            or not valid_hash32(tx_hash)
+        ):
+            return fail(
+                "liquidity_quote_boundary_identity_invalid",
+                retryable=False,
+            )
+        quote_slot = 0 if quote_token == token0 else 1
+        quote_raw = strict_unsigned_event_word(
+            row.get("data"), 1 + quote_slot, 256
+        )
+        if quote_raw is None:
+            return fail(
+                "liquidity_quote_boundary_burn_abi_invalid",
+                retryable=False,
+            )
+        key = (quote_token, pool_address, block, tx_hash)
+        group = grouped.setdefault(
+            key,
+            {
+                "pool": pool,
+                "rows": [],
+                "quote_removed_raw": 0,
+                "anchor": row,
+            },
+        )
+        group["rows"].append(row)
+        group["quote_removed_raw"] += int(quote_raw)
+        if log_index(row) < log_index(group["anchor"]):
+            group["anchor"] = row
+
+    mint_operation_keys: set[tuple[str, str, int, str]] = set()
+    for row in enriched:
+        if row.get("_retention_event_kind") != "v3_mint":
+            continue
+        pool = row.get("_retention_pool")
+        if not isinstance(pool, dict):
+            continue
+        operation_key = (
+            norm(pool.get("quote_token")),
+            norm(pool.get("address")),
+            block_number(row),
+            norm(row.get("transactionHash")),
+        )
+        if operation_key in grouped:
+            mint_operation_keys.add(operation_key)
+
+    for operation_key, group in grouped.items():
+        quote_token, pool_address, block, tx_hash = operation_key
+        pool = group["pool"]
+        quote_removed_raw = int(group["quote_removed_raw"])
+        try:
+            quote_decimals = int(pool.get("quote_decimals"))
+        except (TypeError, ValueError):
+            return fail(
+                "liquidity_quote_boundary_decimals_invalid",
+                retryable=False,
+            )
+        if quote_decimals < 0:
+            return fail(
+                "liquidity_quote_boundary_decimals_invalid",
+                retryable=False,
+            )
+        quote_removed_amount = decimal_amount(
+            quote_removed_raw, quote_decimals
+        )
+        absolute_min = liquidity_quote_min_amount(pool)
+        relative_floor = absolute_min / Decimal(10)
+        for row in group["rows"]:
+            row["_retention_quote_group_removed_raw"] = str(
+                quote_removed_raw
+            )
+            row["_retention_quote_group_position_count"] = len(
+                group["rows"]
+            )
+        if (
+            quote_removed_raw <= 0
+            or quote_removed_amount < relative_floor
+            or (
+                quote_removed_amount >= absolute_min
+                and operation_key not in mint_operation_keys
+            )
+        ):
+            continue
+        metadata["quote_boundary_candidate_count"] += 1
+        anchor = group["anchor"]
+        anchor_log_index = log_index(anchor)
+        expected_block_hash = norm(anchor.get("blockHash"))
+        try:
+            canonical = cached_rpc(
+                ("block", chain, block),
+                "eth_getBlockByNumber",
+                [hex(block), False],
+                "liquidity_quote_boundary_block_unavailable",
+            )
+            if (
+                not isinstance(canonical, dict)
+                or int(str(canonical.get("number") or "0x0"), 16)
+                != block
+                or norm(canonical.get("hash")) != expected_block_hash
+            ):
+                return fail(
+                    "liquidity_quote_boundary_block_mismatch",
+                    retryable=False,
+                )
+            balance = cached_rpc(
+                ("balance", chain, quote_token, pool_address, block - 1),
+                "eth_call",
+                [
+                    {
+                        "to": quote_token,
+                        "data": (
+                            "0x70a08231"
+                            + "0" * 24
+                            + pool_address[2:]
+                        ),
+                    },
+                    hex(block - 1),
+                ],
+                "liquidity_quote_boundary_balance_unavailable",
+            )
+            if re.fullmatch(r"0x[0-9a-fA-F]+", str(balance)) is None:
+                return fail(
+                    "liquidity_quote_boundary_balance_invalid",
+                    retryable=False,
+                )
+            before_raw = int(str(balance), 16)
+            transfer_rows: dict[tuple[str, int], dict[str, Any]] = {}
+            for direction, topics in (
+                ("from", [TRANSFER_TOPIC, topic_address(pool_address)]),
+                ("to", [TRANSFER_TOPIC, None, topic_address(pool_address)]),
+            ):
+                query = {
+                    "address": quote_token,
+                    "fromBlock": hex(block),
+                    "toBlock": hex(block),
+                    "topics": topics,
+                }
+                rows = cached_rpc(
+                    (
+                        "transfers",
+                        chain,
+                        quote_token,
+                        pool_address,
+                        block,
+                        direction,
+                    ),
+                    "eth_getLogs",
+                    [query],
+                    "liquidity_quote_boundary_transfer_unavailable",
+                )
+                if (
+                    not isinstance(rows, list)
+                    or len(rows) >= LIQUIDITY_PROVIDER_ROW_LIMIT_HARD_CAP
+                ):
+                    return fail(
+                        "liquidity_quote_boundary_transfer_incomplete",
+                        retryable=True,
+                    )
+                for transfer in rows:
+                    identity = strict_rpc_log_identity(transfer, query)
+                    transfer_topics = (
+                        transfer.get("topics")
+                        if isinstance(transfer, dict)
+                        else None
+                    )
+                    if (
+                        identity is None
+                        or not isinstance(transfer_topics, list)
+                        or len(transfer_topics) != 3
+                        or strict_abi_event_word_count(
+                            transfer.get("data")
+                        )
+                        != 1
+                        or norm(transfer.get("blockHash"))
+                        != expected_block_hash
+                    ):
+                        return fail(
+                            "liquidity_quote_boundary_transfer_invalid",
+                            retryable=False,
+                        )
+                    order, transfer_tx, _ = identity
+                    dedupe_key = (transfer_tx, order[1])
+                    previous = transfer_rows.get(dedupe_key)
+                    if previous is not None and previous != transfer:
+                        return fail(
+                            "liquidity_quote_boundary_transfer_conflict",
+                            retryable=False,
+                        )
+                    transfer_rows[dedupe_key] = transfer
+            for transfer in sorted(
+                transfer_rows.values(), key=log_index
+            ):
+                if log_index(transfer) >= anchor_log_index:
+                    continue
+                transfer_topics = transfer["topics"]
+                amount_raw = int(str(transfer.get("data")), 16)
+                from_address = address_from_topic(transfer_topics[1])
+                to_address = address_from_topic(transfer_topics[2])
+                if to_address == pool_address:
+                    before_raw += amount_raw
+                if from_address == pool_address:
+                    before_raw -= amount_raw
+            if before_raw <= 0:
+                return fail(
+                    "liquidity_quote_boundary_balance_nonpositive",
+                    retryable=False,
+                )
+        except RuntimeError as exc:
+            issue = str(exc)
+            return fail(
+                issue,
+                retryable=issue
+                in {
+                    "liquidity_quote_boundary_query_limit",
+                    "liquidity_quote_boundary_block_unavailable",
+                    "liquidity_quote_boundary_balance_unavailable",
+                    "liquidity_quote_boundary_transfer_unavailable",
+                },
+            )
+        for row in group["rows"]:
+            row["_retention_quote_balance_before_raw"] = str(before_raw)
+            row["_retention_quote_boundary_complete"] = True
+            row["_retention_quote_boundary_anchor_log_index"] = (
+                anchor_log_index
+            )
+    return enriched, [], metadata
+
+
 def bounded_retention_liquidity_logs(
     chain: str,
     pools: list[dict[str, Any]],
@@ -2557,6 +2902,7 @@ def bounded_retention_liquidity_logs(
     historical_event_truncation_count = 0
     raw_truncation_shrink_count = 0
     rpc_error_shrink_count = 0
+    quote_boundary_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     while attempts < max_attempts:
         attempts += 1
         logs, errors, raw_truncated, metadata = (
@@ -2567,6 +2913,18 @@ def bounded_retention_liquidity_logs(
                 selected_to,
             )
         )
+        boundary_metadata: dict[str, Any] = {}
+        if not errors and not raw_truncated:
+            logs, boundary_errors, boundary_metadata = (
+                attach_v3_quote_balance_boundaries(
+                    chain,
+                    logs,
+                    quote_boundary_cache,
+                )
+            )
+            errors = [*errors, *boundary_errors]
+            if boundary_metadata.get("range_shrink_retryable") is True:
+                metadata["range_shrink_retryable"] = True
         event_coverage: dict[str, Any] = {}
         alert_events_truncated = False
         if not errors and not raw_truncated and token:
@@ -2644,6 +3002,7 @@ def bounded_retention_liquidity_logs(
             "historical_event_truncation_count": (
                 historical_event_truncation_count
             ),
+            **boundary_metadata,
             **event_coverage,
             "complete_selected_window": complete_selected,
             "complete_requested_window": bool(
@@ -2854,22 +3213,6 @@ def retention_liquidity_events(
         )
     except ValueError:
         min_supply_bps = 5
-    configured_quote_min = os.environ.get(
-        "ALPHA_RETENTION_LIQUIDITY_QUOTE_MIN_AMOUNT"
-    )
-
-    def quote_min_amount(pool: dict[str, Any]) -> Decimal:
-        if configured_quote_min is not None:
-            parsed = decimal_from(configured_quote_min, "-1")
-            if parsed >= 0:
-                return parsed
-        return (
-            Decimal("10")
-            if str(pool.get("quote_symbol") or "").upper()
-            in {"WBNB", "WETH"}
-            else Decimal("10000")
-        )
-
     swaps: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     v3_lp: dict[
         tuple[str, str, str, str, str, int | None, int | None],
@@ -3047,6 +3390,134 @@ def retention_liquidity_events(
                     group["latest_order"] = order
                     group["latest_row"] = row
 
+    v3_operations: dict[
+        tuple[str, str, str, str], dict[str, Any]
+    ] = {}
+    for position_key, position in v3_lp.items():
+        operation_key = position_key[:4]
+        position_remove_raw = [
+            max(
+                0,
+                int(position["burn_raw"][slot])
+                - int(position["mint_raw"][slot]),
+            )
+            for slot in (0, 1)
+        ]
+        position_add_raw = [
+            max(
+                0,
+                int(position["mint_raw"][slot])
+                - int(position["burn_raw"][slot]),
+            )
+            for slot in (0, 1)
+        ]
+        operation = v3_operations.setdefault(
+            operation_key,
+            {
+                "net_remove_raw": [0, 0],
+                "net_add_raw": [0, 0],
+                "collect_raw": [0, 0],
+                "latest_mint_order": (-1, -1),
+                "latest_mint_row": None,
+                "earliest_burn_order": (2**63 - 1, 2**63 - 1),
+                "latest_burn_order": (-1, -1),
+                "latest_burn_row": None,
+                "latest_collect_order": (-1, -1),
+                "latest_collect_row": None,
+                "pool": position["pool"],
+                "lp_owners": set(),
+                "source_ranges": [],
+                "destination_ranges": [],
+                "saw_mint": False,
+                "saw_burn": False,
+            },
+        )
+        operation["net_remove_raw"] = [
+            int(operation["net_remove_raw"][slot])
+            + position_remove_raw[slot]
+            for slot in (0, 1)
+        ]
+        operation["net_add_raw"] = [
+            int(operation["net_add_raw"][slot]) + position_add_raw[slot]
+            for slot in (0, 1)
+        ]
+        operation["collect_raw"] = [
+            int(operation["collect_raw"][slot])
+            + int(position["collect_raw"][slot])
+            for slot in (0, 1)
+        ]
+        owner = norm(position.get("lp_owner"))
+        if is_address(owner) and (
+            any(position_remove_raw)
+            or any(position_add_raw)
+            or any(int(value) > 0 for value in position["collect_raw"])
+        ):
+            operation["lp_owners"].add(owner)
+        common_range = {
+            "pool": operation_key[1],
+            "lp_owner": owner,
+            "tick_lower": position.get("tick_lower"),
+            "tick_upper": position.get("tick_upper"),
+        }
+        if any(position_remove_raw):
+            operation["source_ranges"].append(
+                {
+                    **common_range,
+                    "amount0_raw": str(position_remove_raw[0]),
+                    "amount1_raw": str(position_remove_raw[1]),
+                }
+            )
+        if any(position_add_raw):
+            operation["destination_ranges"].append(
+                {
+                    **common_range,
+                    "amount0_raw": str(position_add_raw[0]),
+                    "amount1_raw": str(position_add_raw[1]),
+                }
+            )
+        if any(int(value) > 0 for value in position["mint_raw"]):
+            operation["saw_mint"] = True
+        if any(int(value) > 0 for value in position["burn_raw"]):
+            operation["saw_burn"] = True
+        mint_order = position["latest_mint_order"]
+        if mint_order >= operation["latest_mint_order"]:
+            operation["latest_mint_order"] = mint_order
+            operation["latest_mint_row"] = position["latest_mint_row"]
+        burn_order = position["latest_burn_order"]
+        if burn_order >= (0, 0):
+            operation["latest_burn_order"] = max(
+                operation["latest_burn_order"], burn_order
+            )
+            if burn_order < operation["earliest_burn_order"]:
+                operation["earliest_burn_order"] = burn_order
+                operation["latest_burn_row"] = position[
+                    "latest_burn_row"
+                ]
+        collect_order = position["latest_collect_order"]
+        if collect_order >= operation["latest_collect_order"]:
+            operation["latest_collect_order"] = collect_order
+            operation["latest_collect_row"] = position[
+                "latest_collect_row"
+            ]
+
+    for operation in v3_operations.values():
+        operation["source_ranges"] = sorted(
+            operation["source_ranges"],
+            key=lambda row: (
+                str(row.get("lp_owner") or ""),
+                int(row.get("tick_lower") or 0),
+                int(row.get("tick_upper") or 0),
+            ),
+        )
+        operation["destination_ranges"] = sorted(
+            operation["destination_ranges"],
+            key=lambda row: (
+                str(row.get("lp_owner") or ""),
+                int(row.get("tick_lower") or 0),
+                int(row.get("tick_upper") or 0),
+            ),
+        )
+
     def supply_bps(amount_raw: int) -> Decimal:
         if supply_raw <= 0:
             return Decimal(0)
@@ -3085,29 +3556,15 @@ def retention_liquidity_events(
 
     events: list[dict[str, Any]] = []
     handled_swap_keys: set[tuple[str, str, str, str]] = set()
-    for key, lp in v3_lp.items():
-        swap_key = key[:4]
+    for key, lp in v3_operations.items():
+        swap_key = key
         pool = lp["pool"]
         target_slot = (
             0 if norm(token) == norm(pool.get("token0")) else 1
         )
         quote_slot = 1 - target_slot
-        net_remove_by_slot = [
-            max(
-                0,
-                int(lp["burn_raw"][slot])
-                - int(lp["mint_raw"][slot]),
-            )
-            for slot in (0, 1)
-        ]
-        net_add_by_slot = [
-            max(
-                0,
-                int(lp["mint_raw"][slot])
-                - int(lp["burn_raw"][slot]),
-            )
-            for slot in (0, 1)
-        ]
+        net_remove_by_slot = lp["net_remove_raw"]
+        net_add_by_slot = lp["net_add_raw"]
         net_remove_raw = net_remove_by_slot[target_slot]
         quote_remove_raw = net_remove_by_slot[quote_slot]
         net_add_raw = net_add_by_slot[target_slot]
@@ -3128,23 +3585,58 @@ def retention_liquidity_events(
         )
         lp_bps = supply_bps(net_remove_raw)
         lp_added_bps = supply_bps(net_add_raw)
-        quote_remove_material = bool(
+        burn_row = lp.get("latest_burn_row")
+        try:
+            quote_pool_balance_before_raw = max(
+                0,
+                int(
+                    burn_row.get(
+                        "_retention_quote_balance_before_raw", 0
+                    )
+                    if isinstance(burn_row, dict)
+                    else 0
+                ),
+            )
+        except (TypeError, ValueError):
+            quote_pool_balance_before_raw = 0
+        quote_removed_pool_bps = (
+            Decimal(quote_remove_raw)
+            * Decimal(10_000)
+            / Decimal(quote_pool_balance_before_raw)
+            if quote_remove_raw > 0
+            and quote_pool_balance_before_raw > 0
+            else Decimal(0)
+        )
+        relative_quote_min_bps = liquidity_quote_relative_min_bps()
+        relative_quote_floor = liquidity_quote_min_amount(pool) / Decimal(10)
+        quote_remove_candidate = bool(
             quote_remove_raw > 0
             and quote_decimals >= 0
-            and quote_removed_amount >= quote_min_amount(pool)
+            and quote_removed_amount >= relative_quote_floor
+        )
+        quote_remove_absolute_material = bool(
+            quote_removed_amount >= liquidity_quote_min_amount(pool)
+        )
+        quote_remove_relative_material = bool(
+            quote_pool_balance_before_raw > 0
+            and quote_removed_pool_bps >= relative_quote_min_bps
+        )
+        quote_remove_material = bool(
+            quote_remove_candidate
+            and (
+                quote_remove_absolute_material
+                or quote_remove_relative_material
+            )
         )
         material_net_add = bool(
             lp_added_bps >= Decimal(min_supply_bps)
             or (
                 quote_add_raw > 0
                 and quote_decimals >= 0
-                and quote_added_amount >= quote_min_amount(pool)
+                and quote_added_amount >= liquidity_quote_min_amount(pool)
             )
         )
-        saw_mint_burn = bool(
-            any(int(value) > 0 for value in lp["mint_raw"])
-            and any(int(value) > 0 for value in lp["burn_raw"])
-        )
+        saw_mint_burn = bool(lp["saw_mint"] and lp["saw_burn"])
         mixed_mode = (
             "rebalance"
             if saw_mint_burn and material_net_add
@@ -3181,12 +3673,28 @@ def retention_liquidity_events(
             "collected_amount_raw": str(collect_target_raw),
             "quote_collected_amount_raw": str(collect_quote_raw),
         }
+        source_ranges = copy.deepcopy(lp.get("source_ranges") or [])
+        destination_ranges = copy.deepcopy(
+            lp.get("destination_ranges") or []
+        )
+        primary_range = (
+            source_ranges[0]
+            if len(source_ranges) == 1
+            else destination_ranges[0]
+            if len(destination_ranges) == 1
+            else {}
+        )
+        owners = sorted(lp.get("lp_owners") or [])
         position_fields = {
-            "lp_owner": lp.get("lp_owner") or "",
-            "tick_lower": lp.get("tick_lower"),
-            "tick_upper": lp.get("tick_upper"),
+            "lp_owner": owners[0] if len(owners) == 1 else "",
+            "tick_lower": primary_range.get("tick_lower"),
+            "tick_upper": primary_range.get("tick_upper"),
+            "source_ranges": source_ranges,
+            "destination_ranges": destination_ranges,
+            "position_count": max(
+                len(source_ranges), len(destination_ranges), 1
+            ),
         }
-        burn_row = lp.get("latest_burn_row")
         swap = (
             swaps.get(swap_key)
             if swap_key not in handled_swap_keys
@@ -3279,6 +3787,18 @@ def retention_liquidity_events(
                     "lp_removed_amount_raw": str(net_remove_raw),
                     "lp_added_amount_raw": str(net_add_raw),
                     "quote_removed_amount_raw": str(quote_remove_raw),
+                    "quote_pool_balance_before_raw": str(
+                        quote_pool_balance_before_raw
+                    ),
+                    "quote_removed_pool_bps": str(
+                        quote_removed_pool_bps
+                    ),
+                    "quote_removed_absolute_material": (
+                        quote_remove_absolute_material
+                    ),
+                    "quote_removed_relative_material": (
+                        quote_remove_relative_material
+                    ),
                     "quote_added_amount_raw": str(quote_add_raw),
                     **position_fields,
                 }
@@ -3357,6 +3877,18 @@ def retention_liquidity_events(
                         "quote_removed_amount_raw": str(
                             quote_remove_raw
                         ),
+                        "quote_pool_balance_before_raw": str(
+                            quote_pool_balance_before_raw
+                        ),
+                        "quote_removed_pool_bps": str(
+                            quote_removed_pool_bps
+                        ),
+                        "quote_removed_absolute_material": (
+                            quote_remove_absolute_material
+                        ),
+                        "quote_removed_relative_material": (
+                            quote_remove_relative_material
+                        ),
                         "quote_added_amount_raw": str(quote_add_raw),
                         **position_fields,
                         **collect_fields,
@@ -3409,7 +3941,7 @@ def retention_liquidity_events(
             or (
                 collect_quote_raw > 0
                 and quote_decimals >= 0
-                and quote_collected_amount >= quote_min_amount(pool)
+                and quote_collected_amount >= liquidity_quote_min_amount(pool)
             )
         )
         collect_row = lp.get("latest_collect_row")
@@ -3929,6 +4461,17 @@ def collect_liquidity_verdict_evidence(
 
 
 def liquidity_reconciliation_id(event: dict[str, Any]) -> str:
+    source_ranges = event.get("source_ranges")
+    range_identity = ""
+    if isinstance(source_ranges, list) and len(source_ranges) > 1:
+        range_identity = hashlib.sha256(
+            json.dumps(
+                source_ranges,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
     payload = "|".join(
         [
             norm(event.get("pool")),
@@ -3937,9 +4480,22 @@ def liquidity_reconciliation_id(event: dict[str, Any]) -> str:
             norm(event.get("lp_owner")),
             str(event.get("tick_lower")),
             str(event.get("tick_upper")),
+            range_identity,
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def transaction_origin_code(value: Any) -> bool:
+    text = norm(value)
+    if re.fullmatch(r"0x[0-9a-f]*", text) is None:
+        return False
+    payload = text[2:]
+    return not payload or bool(
+        len(payload) == 46
+        and payload.startswith("ef0100")
+        and is_address("0x" + payload[6:])
+    )
 
 
 def annotate_liquidity_event_operators(
@@ -3968,7 +4524,7 @@ def annotate_liquidity_event_operators(
             text = norm(code)
             if re.fullmatch(r"0x[0-9a-f]*", text) is None:
                 raise ValueError("contract code response invalid")
-            eoa_status[address] = not text[2:] or int(text[2:], 16) == 0
+            eoa_status[address] = transaction_origin_code(text)
         except Exception:
             failed_queries.add(f"code:{address}")
             eoa_status[address] = False
@@ -4056,6 +4612,214 @@ def annotate_liquidity_event_operators(
     return annotated, len(failed_queries)
 
 
+def attach_canonical_liquidity_timestamps(
+    chain: str,
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    candidate_types = (
+        LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+        | LIQUIDITY_RECONCILIATION_SELL_TYPES
+        | {"lp_add_observation"}
+    )
+    block_cache: dict[int, dict[str, Any] | None] = {}
+    failures = 0
+    enriched: list[dict[str, Any]] = []
+    for raw_event in events:
+        event = copy.deepcopy(raw_event)
+        if (
+            str(event.get("protocol") or "") != "v3"
+            or str(event.get("type") or "") not in candidate_types
+        ):
+            enriched.append(event)
+            continue
+        block = int(event.get("block") or 0)
+        expected_hash = norm(event.get("block_hash"))
+        if block <= 0 or not valid_hash32(expected_hash):
+            failures += 1
+            enriched.append(event)
+            continue
+        if block not in block_cache:
+            try:
+                block_cache[block] = _canonical_block(chain, block)
+            except Exception:
+                block_cache[block] = None
+        canonical = block_cache[block]
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("number") != block
+            or norm(canonical.get("hash")) != expected_hash
+            or int(canonical.get("timestamp") or 0) <= 0
+        ):
+            failures += 1
+            enriched.append(event)
+            continue
+        event["chain_timestamp"] = datetime.fromtimestamp(
+            int(canonical["timestamp"]), timezone.utc
+        ).replace(microsecond=0).isoformat()
+        event["chain_timestamp_basis"] = "canonical_block"
+        enriched.append(event)
+    return enriched, failures
+
+
+def liquidity_event_ranges(
+    event: dict[str, Any],
+    field: str,
+) -> list[dict[str, Any]]:
+    raw_ranges = event.get(field)
+    rows = (
+        copy.deepcopy(raw_ranges)
+        if isinstance(raw_ranges, list)
+        else []
+    )
+    if not rows and event.get("tick_lower") is not None and event.get(
+        "tick_upper"
+    ) is not None:
+        rows = [
+            {
+                "pool": norm(event.get("pool")),
+                "lp_owner": norm(event.get("lp_owner")),
+                "tick_lower": int(event.get("tick_lower")),
+                "tick_upper": int(event.get("tick_upper")),
+            }
+        ]
+    normalized: dict[tuple[str, str, int, int], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pool = norm(row.get("pool") or event.get("pool"))
+        owner = norm(row.get("lp_owner") or event.get("lp_owner"))
+        try:
+            tick_lower = int(row.get("tick_lower"))
+            tick_upper = int(row.get("tick_upper"))
+        except (TypeError, ValueError):
+            continue
+        if not is_address(pool) or tick_lower >= tick_upper:
+            continue
+        identity = (pool, owner, tick_lower, tick_upper)
+        normalized[identity] = {
+            "pool": pool,
+            "lp_owner": owner,
+            "tick_lower": tick_lower,
+            "tick_upper": tick_upper,
+        }
+    return [normalized[key] for key in sorted(normalized)]
+
+
+def migrate_liquidity_reconciliation_state(
+    payload: Any,
+    *,
+    maximum_seconds: int,
+) -> dict[str, Any]:
+    def fresh_state(*, invalid: bool = False) -> dict[str, Any]:
+        state = {
+            "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
+            "pending": [],
+            "completed": [],
+            "deferred_events": [],
+        }
+        if invalid:
+            state["state_invalid"] = True
+            state["state_invalid_code"] = (
+                "liquidity_reconciliation_state_invalid"
+            )
+        return state
+
+    if payload is None:
+        payload = {}
+    elif not isinstance(payload, dict):
+        return fresh_state(invalid=True)
+    schema = str(payload.get("schema") or "")
+    if schema not in {
+        LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA,
+        LIQUIDITY_RECONCILIATION_SCHEMA,
+    }:
+        return fresh_state(invalid=bool(payload))
+    collection_values: dict[str, list[dict[str, Any]]] = {}
+    for field in ("pending", "completed", "deferred_events"):
+        raw_value = payload.get(field, [])
+        if not isinstance(raw_value, list) or any(
+            not isinstance(row, dict) for row in raw_value
+        ):
+            return fresh_state(invalid=True)
+        collection_values[field] = raw_value
+    numeric_pending_fields = (
+        "source_block",
+        "source_log_index",
+        "quote_decimals",
+        "removed_target_raw",
+        "removed_quote_raw",
+        "added_target_raw",
+        "added_quote_raw",
+        "paired_chain_elapsed_seconds",
+    )
+    for row in collection_values["pending"]:
+        for field in numeric_pending_fields:
+            if field not in row:
+                continue
+            value = row.get(field)
+            if isinstance(value, bool):
+                return fresh_state(invalid=True)
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return fresh_state(invalid=True)
+            if parsed < 0:
+                return fresh_state(invalid=True)
+    migrated = copy.deepcopy(payload)
+    pending = copy.deepcopy(collection_values["pending"])
+    expiry_seconds = max(3600, maximum_seconds * 4)
+    for row in pending:
+        source_event = (
+            row.get("source_event")
+            if isinstance(row.get("source_event"), dict)
+            else {}
+        )
+        if not str(row.get("materiality_basis") or ""):
+            if row.get("forced_classification") == "removed_plus_sold":
+                basis = "forced_sell"
+            elif source_event.get("quote_removed_absolute_material") is True:
+                basis = "quote_absolute"
+            elif source_event.get("quote_removed_relative_material") is True:
+                basis = "quote_relative"
+            elif int(row.get("removed_target_raw") or 0) > 0:
+                basis = (
+                    "legacy_v1_target_material"
+                    if schema == LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA
+                    else "target_supply"
+                )
+            elif (
+                schema == LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA
+                and int(row.get("removed_quote_raw") or 0) > 0
+            ):
+                basis = "legacy_v1_quote_absolute_material"
+            else:
+                basis = "unverified"
+            row["materiality_basis"] = basis
+        source_timestamp = str(
+            row.get("source_chain_timestamp")
+            or source_event.get("chain_timestamp")
+            or ""
+        )
+        if parse_iso(source_timestamp) is not None:
+            row["source_chain_timestamp"] = source_timestamp
+        first_seen = parse_iso(row.get("first_seen_at"))
+        if first_seen is not None and parse_iso(row.get("expires_at")) is None:
+            row["expires_at"] = (
+                first_seen + timedelta(seconds=expiry_seconds)
+            ).isoformat()
+        if schema == LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA:
+            row["migration_version"] = "v1_to_v2"
+    migrated["schema"] = LIQUIDITY_RECONCILIATION_SCHEMA
+    migrated["pending"] = pending
+    migrated["completed"] = copy.deepcopy(
+        collection_values["completed"][-500:]
+    )
+    migrated["deferred_events"] = copy.deepcopy(
+        collection_values["deferred_events"][-500:]
+    )
+    return migrated
+
+
 def reconcile_liquidity_events(
     events: list[dict[str, Any]],
     previous_state: dict[str, Any] | None,
@@ -4108,23 +4872,14 @@ def reconcile_liquidity_events(
     except (InvalidOperation, ValueError):
         restore_ratio_min = Decimal("0.8")
 
-    state = previous_state if isinstance(previous_state, dict) else {}
-    pending = (
-        copy.deepcopy(state.get("pending"))
-        if state.get("schema") == LIQUIDITY_RECONCILIATION_SCHEMA
-        and isinstance(state.get("pending"), list)
-        else []
+    state = migrate_liquidity_reconciliation_state(
+        previous_state,
+        maximum_seconds=maximum_seconds,
     )
-    pending = [row for row in pending if isinstance(row, dict)]
-    completed_rows = (
-        copy.deepcopy(state.get("completed"))
-        if state.get("schema") == LIQUIDITY_RECONCILIATION_SCHEMA
-        and isinstance(state.get("completed"), list)
-        else []
-    )
-    completed_rows = [
-        row for row in completed_rows if isinstance(row, dict)
-    ][-500:]
+    if state.get("state_invalid") is True:
+        raise RuntimeError("liquidity reconciliation state invalid")
+    pending = copy.deepcopy(state.get("pending") or [])
+    completed_rows = copy.deepcopy(state.get("completed") or [])[-500:]
     completed_ids = {
         str(row.get("reconcile_id") or "")
         for row in completed_rows
@@ -4136,6 +4891,45 @@ def reconcile_liquidity_events(
         if str(row.get("reconcile_id") or "")
     }
     output_events: list[dict[str, Any]] = []
+    expiry_seconds = max(3600, maximum_seconds * 4)
+
+    def event_materiality_basis(event: dict[str, Any]) -> str:
+        if event.get("quote_removed_absolute_material") is True:
+            return "quote_absolute"
+        if event.get("quote_removed_relative_material") is True:
+            return "quote_relative"
+        if int(event.get("lp_removed_amount_raw") or 0) > 0:
+            return "target_supply"
+        try:
+            quote_decimals = int(event.get("quote_decimals") or 0)
+            quote_removed = decimal_amount(
+                int(event.get("quote_removed_amount_raw") or 0),
+                quote_decimals,
+            )
+        except (TypeError, ValueError):
+            quote_removed = Decimal(0)
+        return (
+            "quote_absolute"
+            if quote_removed >= liquidity_quote_min_amount(event)
+            else "unverified"
+        )
+
+    def pending_time_fields(event: dict[str, Any]) -> dict[str, str]:
+        canonical = parse_iso(event.get("chain_timestamp"))
+        source_time = canonical or current
+        return {
+            "source_chain_timestamp": source_time.isoformat(),
+            "source_chain_timestamp_basis": (
+                "canonical_block"
+                if canonical is not None
+                and event.get("chain_timestamp_basis")
+                == "canonical_block"
+                else "observed_fallback"
+            ),
+            "expires_at": (
+                current + timedelta(seconds=expiry_seconds)
+            ).isoformat(),
+        }
 
     for raw_event in sorted(
         events,
@@ -4214,6 +5008,12 @@ def reconcile_liquidity_events(
                 "destination_pools": [],
                 "add_transactions": [],
                 "forced_classification": "removed_plus_sold",
+                "materiality_basis": "forced_sell",
+                "source_ranges": liquidity_event_ranges(
+                    event, "source_ranges"
+                ),
+                "destination_ranges": [],
+                **pending_time_fields(event),
                 "source_event": event,
             }
             pending.append(pending_row)
@@ -4276,6 +5076,12 @@ def reconcile_liquidity_events(
                 "added_quote_raw": 0,
                 "destination_pools": [],
                 "add_transactions": [],
+                "materiality_basis": event_materiality_basis(event),
+                "source_ranges": liquidity_event_ranges(
+                    event, "source_ranges"
+                ),
+                "destination_ranges": [],
+                **pending_time_fields(event),
                 "source_event": event,
             }
             pending.append(pending_row)
@@ -4305,9 +5111,24 @@ def reconcile_liquidity_events(
         remaining_quote = max(
             0, int(event.get("quote_added_amount_raw") or 0)
         )
+        add_chain_time = parse_iso(event.get("chain_timestamp"))
+        add_chain_time_basis = (
+            "canonical_block"
+            if add_chain_time is not None
+            and event.get("chain_timestamp_basis") == "canonical_block"
+            else "observed_fallback"
+        )
+        if add_chain_time is None:
+            add_chain_time = current
+        eligible_candidates: list[
+            tuple[dict[str, Any], int, int, int]
+        ] = []
         for pending_row in sorted(
             pending,
-            key=lambda row: str(row.get("first_seen_at") or ""),
+            key=lambda row: (
+                int(row.get("source_block") or 0),
+                int(row.get("source_log_index") or 0),
+            ),
         ):
             if (
                 norm(pending_row.get("operator")) != operator
@@ -4324,12 +5145,23 @@ def reconcile_liquidity_events(
             )
             if add_order <= source_order:
                 continue
-            first_seen = parse_iso(pending_row.get("first_seen_at"))
+            source_chain_time = parse_iso(
+                pending_row.get("source_chain_timestamp")
+            )
             if (
-                first_seen is None
-                or (current - first_seen).total_seconds()
-                > maximum_seconds
+                source_chain_time is None
+                or add_chain_time is None
             ):
+                continue
+            chain_elapsed_seconds = int(
+                (add_chain_time - source_chain_time).total_seconds()
+            )
+            if not 0 < chain_elapsed_seconds <= maximum_seconds:
+                continue
+            if (
+                pending_row.get("source_chain_timestamp_basis")
+                == "canonical_block"
+            ) != (add_chain_time_basis == "canonical_block"):
                 continue
             target_needed = max(
                 0,
@@ -4345,38 +5177,93 @@ def reconcile_liquidity_events(
             allocated_quote = min(remaining_quote, quote_needed)
             if allocated_target <= 0 and allocated_quote <= 0:
                 continue
-            pending_row["added_target_raw"] = int(
-                pending_row.get("added_target_raw") or 0
-            ) + allocated_target
-            pending_row["added_quote_raw"] = int(
-                pending_row.get("added_quote_raw") or 0
-            ) + allocated_quote
-            pending_row["last_updated_at"] = current.isoformat()
-            destination_pool = norm(event.get("pool"))
-            destinations = pending_row.setdefault(
-                "destination_pools", []
+            eligible_candidates.append(
+                (
+                    pending_row,
+                    allocated_target,
+                    allocated_quote,
+                    chain_elapsed_seconds,
+                )
             )
-            if is_address(destination_pool) and destination_pool not in destinations:
-                destinations.append(destination_pool)
-            add_tx = norm(event.get("tx"))
-            add_transactions = pending_row.setdefault(
-                "add_transactions", []
+        destination_pool = norm(event.get("pool"))
+        if len(eligible_candidates) != 1:
+            if len(eligible_candidates) > 1:
+                for pending_row, *_rest in eligible_candidates:
+                    pending_row["pairing_ambiguous"] = True
+                    pending_row["last_updated_at"] = current.isoformat()
+            continue
+        (
+            pending_row,
+            allocated_target,
+            allocated_quote,
+            chain_elapsed_seconds,
+        ) = eligible_candidates[0]
+        pending_row["added_target_raw"] = int(
+            pending_row.get("added_target_raw") or 0
+        ) + allocated_target
+        pending_row["added_quote_raw"] = int(
+            pending_row.get("added_quote_raw") or 0
+        ) + allocated_quote
+        pending_row["last_updated_at"] = current.isoformat()
+        destinations = pending_row.setdefault(
+            "destination_pools", []
+        )
+        if is_address(destination_pool) and destination_pool not in destinations:
+            destinations.append(destination_pool)
+        add_tx = norm(event.get("tx"))
+        add_transactions = pending_row.setdefault(
+            "add_transactions", []
+        )
+        if valid_hash32(add_tx) and add_tx not in add_transactions:
+            add_transactions.append(add_tx)
+        pending_row["paired_chain_elapsed_seconds"] = max(
+            int(
+                pending_row.get("paired_chain_elapsed_seconds") or 0
+            ),
+            chain_elapsed_seconds,
+        )
+        destination_ranges = pending_row.setdefault(
+            "destination_ranges", []
+        )
+        for destination_range in liquidity_event_ranges(
+            event, "destination_ranges"
+        ):
+            identity = (
+                norm(destination_range.get("pool")),
+                norm(destination_range.get("lp_owner")),
+                int(destination_range.get("tick_lower") or 0),
+                int(destination_range.get("tick_upper") or 0),
             )
-            if valid_hash32(add_tx) and add_tx not in add_transactions:
-                add_transactions.append(add_tx)
-            remaining_target -= allocated_target
-            remaining_quote -= allocated_quote
-            if remaining_target <= 0 and remaining_quote <= 0:
-                break
+            existing = {
+                (
+                    norm(row.get("pool")),
+                    norm(row.get("lp_owner")),
+                    int(row.get("tick_lower") or 0),
+                    int(row.get("tick_upper") or 0),
+                )
+                for row in destination_ranges
+                if isinstance(row, dict)
+            }
+            if identity not in existing:
+                destination_ranges.append(destination_range)
 
     finalized_ids: set[str] = set()
     finalized_events: list[dict[str, Any]] = []
     evidence_blocked_count = 0
+    unresolved_coverage_count = 0
     for pending_row in pending:
         first_seen = parse_iso(pending_row.get("first_seen_at"))
-        elapsed_seconds = int(
+        observation_age_seconds = int(
             max(0, (current - first_seen).total_seconds())
         ) if first_seen is not None else 0
+        source_chain_time = parse_iso(
+            pending_row.get("source_chain_timestamp")
+        )
+        chain_age_seconds = int(
+            max(0, (current - source_chain_time).total_seconds())
+        ) if source_chain_time is not None else 0
+        expires_at = parse_iso(pending_row.get("expires_at"))
+        expired = bool(expires_at is not None and current >= expires_at)
         removed_target_raw = max(
             0, int(pending_row.get("removed_target_raw") or 0)
         )
@@ -4416,10 +5303,43 @@ def reconcile_liquidity_events(
                 if is_address(norm(value))
             }
         )
+        source_ranges = [
+            row
+            for row in pending_row.get("source_ranges", [])
+            if isinstance(row, dict)
+        ]
+        destination_ranges = [
+            row
+            for row in pending_row.get("destination_ranges", [])
+            if isinstance(row, dict)
+        ]
+        source_range_keys = {
+            (
+                norm(row.get("pool")),
+                int(row.get("tick_lower") or 0),
+                int(row.get("tick_upper") or 0),
+            )
+            for row in source_ranges
+        }
+        destination_range_keys = {
+            (
+                norm(row.get("pool")),
+                int(row.get("tick_lower") or 0),
+                int(row.get("tick_upper") or 0),
+            )
+            for row in destination_ranges
+        }
+        range_changed = bool(
+            source_range_keys
+            and destination_range_keys
+            and source_range_keys != destination_range_keys
+        )
+        pending_row["range_changed"] = range_changed
         classification = ""
         if (
             coverage_complete
-            and elapsed_seconds >= maximum_seconds
+            and chain_age_seconds >= maximum_seconds
+            and pending_row.get("pairing_ambiguous") is not True
             and is_address(norm(pending_row.get("operator")))
             and str(pending_row.get("operator_basis") or "")
             in LIQUIDITY_RELIABLE_OPERATOR_BASES
@@ -4430,16 +5350,57 @@ def reconcile_liquidity_events(
             ):
                 classification = "removed_plus_sold"
             elif restored_ratio >= restore_ratio_min:
-                classification = (
-                    "re_added"
-                    if destinations
+                same_pool = bool(
+                    destinations
                     and set(destinations)
                     == {norm(pending_row.get("source_pool"))}
+                )
+                classification = (
+                    "range_repositioned"
+                    if same_pool and range_changed
+                    else "re_added"
+                    if same_pool
                     else "migrated"
                 )
-            else:
+            elif (
+                str(pending_row.get("materiality_basis") or "")
+                in {
+                    "forced_sell",
+                    "quote_absolute",
+                    "quote_relative",
+                    "target_supply",
+                    "legacy_v1_target_material",
+                    "legacy_v1_quote_absolute_material",
+                }
+            ):
                 classification = "net_removed"
         if not classification:
+            if expired:
+                reconcile_id = str(
+                    pending_row.get("reconcile_id") or ""
+                )
+                completed_rows.append(
+                    {
+                        "reconcile_id": reconcile_id,
+                        "classification": "unresolved_coverage",
+                        "completed_at": current.isoformat(),
+                        "first_seen_at": str(
+                            pending_row.get("first_seen_at") or ""
+                        ),
+                        "source_block": int(
+                            pending_row.get("source_block") or 0
+                        ),
+                        "source_tx": norm(
+                            pending_row.get("source_event", {}).get("tx")
+                        ),
+                        "notify": False,
+                        "coverage_issue_code": (
+                            "liquidity_reconciliation_expired_incomplete"
+                        ),
+                    }
+                )
+                finalized_ids.add(reconcile_id)
+                unresolved_coverage_count += 1
             continue
         reconcile_id = str(pending_row.get("reconcile_id") or "")
         enrichment = (
@@ -4451,6 +5412,30 @@ def reconcile_liquidity_events(
             enrichment is not None
             and enrichment.get("coverage_complete") is not True
         ):
+            if expired:
+                completed_rows.append(
+                    {
+                        "reconcile_id": reconcile_id,
+                        "classification": "unresolved_coverage",
+                        "completed_at": current.isoformat(),
+                        "first_seen_at": str(
+                            pending_row.get("first_seen_at") or ""
+                        ),
+                        "source_block": int(
+                            pending_row.get("source_block") or 0
+                        ),
+                        "source_tx": norm(
+                            pending_row.get("source_event", {}).get("tx")
+                        ),
+                        "notify": False,
+                        "coverage_issue_code": (
+                            "liquidity_verdict_evidence_expired_incomplete"
+                        ),
+                    }
+                )
+                finalized_ids.add(reconcile_id)
+                unresolved_coverage_count += 1
+                continue
             pending_row["evidence_coverage_issues"] = list(
                 enrichment.get("coverage_issues") or [
                     "liquidity_verdict_evidence_incomplete"
@@ -4484,7 +5469,12 @@ def reconcile_liquidity_events(
                 "reconcile_id": reconcile_id,
                 "reconciliation_status": "final",
                 "reconciliation_final": True,
-                "reconciliation_window_seconds": elapsed_seconds,
+                "reconciliation_window_seconds": maximum_seconds,
+                "observation_age_seconds": observation_age_seconds,
+                "chain_age_seconds": chain_age_seconds,
+                "paired_chain_elapsed_seconds": int(
+                    pending_row.get("paired_chain_elapsed_seconds") or 0
+                ),
                 "raw_removal_alert_eligible": False,
                 "restored_ratio": str(restored_ratio),
                 "source_pool": pending_row.get("source_pool"),
@@ -4492,6 +5482,9 @@ def reconcile_liquidity_events(
                     destinations[0] if destinations else ""
                 ),
                 "destination_pools": destinations,
+                "range_changed": range_changed,
+                "source_ranges": source_ranges,
+                "destination_ranges": destination_ranges,
                 "liquidity_operator": pending_row.get("operator"),
                 "liquidity_operator_basis": pending_row.get(
                     "operator_basis"
@@ -4579,7 +5572,13 @@ def reconcile_liquidity_events(
                 "source_pool": norm(
                     pending_row.get("source_pool")
                 ),
-                "reconciliation_window_seconds": elapsed_seconds,
+                "reconciliation_window_seconds": maximum_seconds,
+                "observation_age_seconds": observation_age_seconds,
+                "chain_age_seconds": chain_age_seconds,
+                "paired_chain_elapsed_seconds": int(
+                    pending_row.get("paired_chain_elapsed_seconds") or 0
+                ),
+                "range_changed": range_changed,
                 "enrichment_coverage_complete": bool(
                     isinstance(enrichment, dict)
                     and enrichment.get("coverage_complete") is True
@@ -4650,6 +5649,11 @@ def reconcile_liquidity_events(
             for row in remaining_pending
         ),
         "evidence_blocked_count": evidence_blocked_count,
+        "pairing_ambiguous_count": sum(
+            row.get("pairing_ambiguous") is True
+            for row in remaining_pending
+        ),
+        "unresolved_coverage_count": unresolved_coverage_count,
     }
     return output_events, next_state, metadata
 
@@ -4777,6 +5781,24 @@ def build_liquidity_retention(
             coverage_metadata.get("query_chunk_blocks") or 0
         ),
         "expected_query_count": expected_query_count,
+        "quote_boundary_complete": (
+            coverage_metadata.get("quote_boundary_complete") is True
+        ),
+        "quote_boundary_query_count": int(
+            coverage_metadata.get("quote_boundary_query_count") or 0
+        ),
+        "quote_boundary_cache_hit_count": int(
+            coverage_metadata.get("quote_boundary_cache_hit_count") or 0
+        ),
+        "quote_boundary_candidate_count": int(
+            coverage_metadata.get("quote_boundary_candidate_count") or 0
+        ),
+        "quote_boundary_error_count": int(
+            coverage_metadata.get("quote_boundary_error_count") or 0
+        ),
+        "quote_boundary_issue_codes": list(
+            coverage_metadata.get("quote_boundary_issue_codes") or []
+        )[:8],
         "log_count": len(logs),
         "log_error_count": len(errors),
         "log_errors": errors[:3],
@@ -4973,14 +5995,15 @@ def build_token_liquidity_retention(
     except ValueError:
         confirmation_blocks = 2
     confirmed_tip = max(0, tip - confirmation_blocks)
-    reconciliation_payload = (
-        liquidity_state.get("reconciliation")
-        if isinstance(liquidity_state.get("reconciliation"), dict)
-        else {}
+    stored_reconciliation_seed = migrate_liquidity_reconciliation_state(
+        liquidity_state.get("reconciliation"),
+        maximum_seconds=900,
     )
+    if stored_reconciliation_seed.get("state_invalid") is True:
+        raise RuntimeError("liquidity reconciliation state invalid")
     pending_source_blocks = [
         int(row.get("source_block") or 0)
-        for row in reconciliation_payload.get("pending", [])
+        for row in stored_reconciliation_seed.get("pending", [])
         if isinstance(row, dict) and int(row.get("source_block") or 0) > 0
     ]
     earliest_pending_block = (
@@ -5213,11 +6236,11 @@ def build_token_liquidity_retention(
     next_reconciliation_state: dict[str, Any] | None = None
     if flow.get("selected_window_complete") is True:
         reconciliation_seed = (
-            {}
+            migrate_liquidity_reconciliation_state(
+                {}, maximum_seconds=900
+            )
             if checkpoint_reorg_recovery
-            else liquidity_state.get("reconciliation")
-            if isinstance(liquidity_state.get("reconciliation"), dict)
-            else {}
+            else stored_reconciliation_seed
         )
         has_pending_reconciliation = bool(
             isinstance(reconciliation_seed.get("pending"), list)
@@ -5265,10 +6288,17 @@ def build_token_liquidity_retention(
                 events_for_reconciliation,
             )
         )
+        annotated_events, timestamp_error_count = (
+            attach_canonical_liquidity_timestamps(
+                chain,
+                annotated_events,
+            )
+        )
         flow["raw_event_count"] = int(flow.get("event_count") or 0)
-        if attribution_error_count:
+        if attribution_error_count or timestamp_error_count:
             candidate_types = (
                 LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+                | LIQUIDITY_RECONCILIATION_SELL_TYPES
                 | {"lp_add_observation"}
             )
             deferred_next = [
@@ -5311,6 +6341,7 @@ def build_token_liquidity_retention(
             flow["attribution_query_error_count"] = (
                 attribution_error_count
             )
+            flow["timestamp_query_error_count"] = timestamp_error_count
             flow["reconciliation"] = {
                 "schema": LIQUIDITY_RECONCILIATION_SCHEMA,
                 "pending_count": len(
@@ -5319,6 +6350,7 @@ def build_token_liquidity_retention(
                 "deferred_count": len(deferred_next),
                 "finalization_eligible": False,
                 "attribution_query_error_count": attribution_error_count,
+                "timestamp_query_error_count": timestamp_error_count,
             }
         else:
             evidence_by_id: dict[str, dict[str, Any]] = {}
@@ -5339,9 +6371,17 @@ def build_token_liquidity_retention(
                 row
                 for row in reconciliation_seed.get("pending", [])
                 if isinstance(row, dict)
-                and parse_iso(row.get("first_seen_at")) is not None
                 and (
-                    evidence_now - parse_iso(row.get("first_seen_at"))
+                    parse_iso(row.get("source_chain_timestamp"))
+                    or parse_iso(row.get("first_seen_at"))
+                )
+                is not None
+                and (
+                    evidence_now
+                    - (
+                        parse_iso(row.get("source_chain_timestamp"))
+                        or parse_iso(row.get("first_seen_at"))
+                    )
                 ).total_seconds()
                 >= evidence_min_age_seconds
             ]
@@ -5389,6 +6429,7 @@ def build_token_liquidity_retention(
             flow["reconciliation"] = {
                 **reconciliation_metadata,
                 "attribution_query_error_count": 0,
+                "timestamp_query_error_count": 0,
             }
     flow.update(
         {
@@ -7410,6 +8451,7 @@ def retention_event_label(event: dict[str, Any]) -> str:
     if str(event.get("type") or "") == "liquidity_reconciliation":
         return {
             "re_added": "撤池后原池重加",
+            "range_repositioned": "撤池后原池改区间",
             "migrated": "撤池后迁移新池",
             "net_removed": "15分钟确认净撤池",
         }.get(
@@ -7444,8 +8486,28 @@ def liquidity_verdict_evidence_text(event: dict[str, Any]) -> str:
         if isinstance(event.get("recipient_next_hop"), dict)
         else {}
     )
+    source_ranges = [
+        f"[{row.get('tick_lower')},{row.get('tick_upper')})"
+        for row in event.get("source_ranges", [])
+        if isinstance(row, dict)
+    ]
+    destination_ranges = [
+        f"[{row.get('tick_lower')},{row.get('tick_upper')})"
+        for row in event.get("destination_ranges", [])
+        if isinstance(row, dict)
+    ]
+    range_text = (
+        "原区间 "
+        + ",".join(source_ranges)
+        + " → 新区间 "
+        + ",".join(destination_ranges)
+        + "｜"
+        if source_ranges and destination_ranges
+        else ""
+    )
     return (
-        f"区间 {event.get('active_range_vs_spot')}"
+        range_text
+        + f"区间 {event.get('active_range_vs_spot')}"
         f"（spot tick {event.get('spot_tick')}）｜池流动性 "
         f"{event.get('pool_liquidity_before')} → "
         f"{event.get('pool_liquidity_after')}｜recipient next-hop "

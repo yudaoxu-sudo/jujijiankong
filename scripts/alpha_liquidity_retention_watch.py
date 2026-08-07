@@ -276,11 +276,25 @@ def validated_liquidity_seed(
         "pool_scope": pools,
         "pool_count": len(pools),
     }
-    reconciliation = payload.get("reconciliation")
+    raw_reconciliation = payload.get("reconciliation")
+    reconciliation = (
+        holder.migrate_liquidity_reconciliation_state(
+            raw_reconciliation,
+            maximum_seconds=900,
+        )
+        if isinstance(raw_reconciliation, dict)
+        and raw_reconciliation.get("schema")
+        in {
+            holder.LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA,
+            holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+        }
+        else raw_reconciliation
+    )
     reconciliation_valid = bool(
         isinstance(reconciliation, dict)
         and reconciliation.get("schema")
         == holder.LIQUIDITY_RECONCILIATION_SCHEMA
+        and reconciliation.get("state_invalid") is not True
         and isinstance(reconciliation.get("pending"), list)
         and isinstance(reconciliation.get("completed"), list)
         and isinstance(

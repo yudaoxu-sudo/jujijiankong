@@ -1,16 +1,142 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from project_continuity_acceptance import (
+    REMOTE_PROBE,
     build_remote_command,
     evaluate,
     path_matches_any,
     render_markdown,
 )
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
+    parity_paths = (
+        "scripts/alpha_holder_concentration_watch.py",
+        "scripts/grvt_liquidity_replay_acceptance.py",
+        "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
+    )
+    expected_hashes: dict[str, str] = {}
+    for index, relative_path in enumerate(parity_paths):
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture-{index}\n", encoding="utf-8")
+        expected_hashes[relative_path] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+    write_json(
+        root / "output/runtime_health/last_cycle.json",
+        {
+            "schema": "runtime_health.v1",
+            "status": "healthy",
+            "generated_at": "2026-08-07T00:00:00+00:00",
+            "issue_count": 0,
+            "issues": [],
+        },
+    )
+    verification = root / "output/sniper_engine/verification_report.md"
+    verification.parent.mkdir(parents=True, exist_ok=True)
+    verification.write_text("| fixture | PASS | ok |\n", encoding="utf-8")
+    write_json(
+        root / "config/current_alpha_watchlist.json",
+        {"items": [{"symbol": "GRVT"}]},
+    )
+    write_json(
+        root / "output/alpha_liquidity_retention_watch/latest.json",
+        {
+            "status": "healthy",
+            "issue_count": 0,
+            "complete_count": 1,
+            "alert_ready_count": 1,
+            "projects": [
+                {
+                    "symbol": "GRVT",
+                    "retention_flow": {
+                        "liquidity_retention": {
+                            "continuous": True,
+                            "latest_block": 1,
+                            "target_latest_block": 1,
+                        }
+                    },
+                }
+            ],
+        },
+    )
+    write_json(
+        root / "output/alpha_liquidity_retention_watch/state.json",
+        {"tokens": {}},
+    )
+    write_json(
+        root / "output/alpha_holder_concentration_watch/latest.json",
+        {"projects": []},
+    )
+    write_json(
+        root / "output/alpha_holder_concentration_watch/seen_alerts.json",
+        [],
+    )
+    write_json(
+        root / "output/alpha_liquidity_retention_watch/last_push.json",
+        {},
+    )
+    replay_path = (
+        root / "output/grvt_liquidity_replay_acceptance/latest.json"
+    )
+    write_json(
+        replay_path,
+        {
+            "schema": "grvt_liquidity_replay_acceptance.v1",
+            "status": "pass",
+            "issues": [],
+            "generated_at": "2026-08-07T00:00:00+00:00",
+            "receipt_count": 2,
+            "elapsed_seconds": 80,
+            "classification": "range_repositioned",
+            "range_changed": True,
+            "source_pool_equals_destination_pool": True,
+            "operator_basis": "transaction_sender_eoa",
+            "quote_boundary_complete": True,
+            "relative_materiality_proven": True,
+            "raw_removal_alert_eligible": False,
+            "pending_count": 0,
+            "normal_replay_dedup_pass": True,
+            "first_send_count": 1,
+            "replay_duplicate_send_count": 0,
+            "code_hashes": expected_hashes,
+        },
+    )
+    return expected_hashes, replay_path
+
+
+def run_remote_probe(root: Path, expected_hashes: dict[str, str]) -> dict:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            REMOTE_PROBE,
+            str(root),
+            "1200",
+            json.dumps(expected_hashes, sort_keys=True),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def healthy_snapshot() -> dict:
@@ -118,6 +244,44 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertNotIn("find ", rendered)
         self.assertNotIn("rg ", rendered)
         self.assertNotIn("cat ", rendered)
+
+    def test_remote_probe_requires_fresh_complete_grvt_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "pass")
+        self.assertTrue(payload["grvt_replay_acceptance"]["contract_pass"])
+
+    def test_remote_probe_rejects_false_grvt_predicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            replay = json.loads(replay_path.read_text(encoding="utf-8"))
+            replay["range_changed"] = False
+            write_json(replay_path, replay)
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertFalse(payload["grvt_replay_acceptance"]["contract_pass"])
+
+    def test_remote_probe_rejects_stale_grvt_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            stale = time.time() - 1201
+            os.utime(replay_path, (stale, stale))
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertGreater(
+            payload["grvt_replay_acceptance"]["age_seconds"], 1200
+        )
+
+    def test_deploy_gate_requires_healthy_cycle_and_new_replay(self) -> None:
+        deploy = (
+            Path(__file__).resolve().parent / "deploy_to_server.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('health_status_after" != "healthy', deploy)
+        self.assertIn("replay_artifact_not_refreshed=1", deploy)
 
     def test_markdown_reports_machine_result(self) -> None:
         payload = evaluate(healthy_snapshot(), allow_dirty=False, remote_required=False)

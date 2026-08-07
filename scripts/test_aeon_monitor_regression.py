@@ -20101,6 +20101,680 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertEqual(events[5]["quote_removed_amount"], "199")
 
+    def test_real_grvt_quote_only_removal_uses_relative_pool_boundary(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        fixture = json.loads(
+            (
+                ROOT
+                / "scripts"
+                / "fixtures"
+                / "grvt_v3_quote_only_removal_receipt_2026-08-07.json"
+            ).read_text(encoding="utf-8")
+        )
+        pool = fixture["pool"]
+        rows = []
+        for raw in fixture["logs"]:
+            row = copy.deepcopy(raw)
+            row["_retention_pool"] = copy.deepcopy(pool)
+            row["_retention_event_kind"] = {
+                holder.V3_BURN_TOPIC: "v3_burn",
+                holder.V3_COLLECT_TOPIC: "v3_collect",
+            }[row["topics"][0]]
+            rows.append(row)
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            if method == "eth_getBlockByNumber":
+                return {
+                    "number": hex(fixture["block_number"]),
+                    "hash": fixture["block_hash"],
+                }
+            if method == "eth_call":
+                return hex(100_000 * 10**18)
+            if method == "eth_getLogs":
+                return []
+            raise AssertionError(method)
+
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            rows, errors, metadata = (
+                holder.attach_v3_quote_balance_boundaries("bsc", rows)
+            )
+        self.assertEqual(errors, [])
+        self.assertTrue(metadata["quote_boundary_complete"])
+
+        events, _, _ = holder.retention_liquidity_events(
+            rows,
+            pool["token0"],
+            18,
+            10**27,
+            alert_from_block=fixture["block_number"],
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "lp_remove_observation")
+        self.assertEqual(events[0]["lp_removed_amount_raw"], "0")
+        self.assertEqual(
+            events[0]["quote_removed_amount_raw"],
+            "9421707586615691799812",
+        )
+        self.assertEqual(events[0]["quote_pool_balance_before_raw"], str(100_000 * 10**18))
+        self.assertGreaterEqual(
+            float(events[0]["quote_removed_pool_bps"]), 500
+        )
+
+    def test_quote_boundary_failure_is_fail_closed_and_cached(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+        }
+        row = self._event_row(
+            pool=pool,
+            event_kind="v3_burn",
+            topic=holder.V3_BURN_TOPIC,
+            data=self._data(1, 0, 5_000),
+            tx_digit="a",
+            block=101,
+            index=10,
+        )
+        rpc_calls = 0
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            nonlocal rpc_calls
+            rpc_calls += 1
+            if method == "eth_getBlockByNumber":
+                return {
+                    "number": hex(101),
+                    "hash": row["blockHash"],
+                }
+            if method == "eth_call":
+                raise RuntimeError("archive unavailable")
+            raise AssertionError(method)
+
+        cache: dict[tuple[object, ...], dict[str, object]] = {}
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            _, first_errors, first_metadata = (
+                holder.attach_v3_quote_balance_boundaries(
+                    "bsc", [row], cache
+                )
+            )
+            first_rpc_calls = rpc_calls
+            _, second_errors, second_metadata = (
+                holder.attach_v3_quote_balance_boundaries(
+                    "bsc", [row], cache
+                )
+            )
+        self.assertEqual(
+            first_errors,
+            ["liquidity_quote_boundary_balance_unavailable"],
+        )
+        self.assertEqual(second_errors, first_errors)
+        self.assertFalse(first_metadata["quote_boundary_complete"])
+        self.assertEqual(rpc_calls, first_rpc_calls)
+        self.assertGreater(second_metadata["quote_boundary_cache_hit_count"], 0)
+
+    def test_quote_boundary_reconstructs_same_block_pre_burn_balance(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool_address = self._address("3")
+        pool = {
+            "protocol": "v3",
+            "address": pool_address,
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+        }
+        burn = self._event_row(
+            pool=pool,
+            event_kind="v3_burn",
+            topic=holder.V3_BURN_TOPIC,
+            data=self._data(1, 0, 5_000),
+            tx_digit="a",
+            block=101,
+            index=10,
+        )
+
+        def transfer(
+            *, index: int, source: str, destination: str, amount: int
+        ) -> dict[str, object]:
+            return {
+                "address": quote,
+                "blockNumber": hex(101),
+                "blockHash": burn["blockHash"],
+                "logIndex": hex(index),
+                "transactionHash": self._hash(str(index)),
+                "topics": [
+                    holder.TRANSFER_TOPIC,
+                    holder.topic_address(source),
+                    holder.topic_address(destination),
+                ],
+                "data": self._data(amount),
+                "removed": False,
+            }
+
+        inbound = transfer(
+            index=1,
+            source=self._address("4"),
+            destination=pool_address,
+            amount=20_000,
+        )
+        outbound = transfer(
+            index=2,
+            source=pool_address,
+            destination=self._address("5"),
+            amount=5_000,
+        )
+
+        def rpc(_chain: str, method: str, params: list[object]) -> object:
+            if method == "eth_getBlockByNumber":
+                return {
+                    "number": hex(101),
+                    "hash": burn["blockHash"],
+                }
+            if method == "eth_call":
+                return hex(100_000)
+            if method == "eth_getLogs":
+                query = params[0]
+                return [
+                    outbound
+                    if len(query["topics"]) == 2
+                    else inbound
+                ]
+            raise AssertionError(method)
+
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            rows, errors, metadata = (
+                holder.attach_v3_quote_balance_boundaries("bsc", [burn])
+            )
+        self.assertEqual(errors, [])
+        self.assertTrue(metadata["quote_boundary_complete"])
+        self.assertEqual(
+            rows[0]["_retention_quote_balance_before_raw"], "115000"
+        )
+
+    def test_quote_boundary_covers_gross_absolute_burn_with_same_tx_mint(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+        }
+        burn = self._event_row(
+            pool=pool,
+            event_kind="v3_burn",
+            topic=holder.V3_BURN_TOPIC,
+            data=self._data(0, 0, 12_000),
+            tx_digit="a",
+            block=101,
+            index=10,
+        )
+        mint = self._event_row(
+            pool=pool,
+            event_kind="v3_mint",
+            topic=holder.V3_MINT_TOPIC,
+            data=self._data(0, 0, 0, 6_000),
+            tx_digit="a",
+            block=101,
+            index=11,
+        )
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            if method == "eth_getBlockByNumber":
+                return {"number": hex(101), "hash": burn["blockHash"]}
+            if method == "eth_call":
+                return hex(50_000)
+            if method == "eth_getLogs":
+                return []
+            raise AssertionError(method)
+
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            rows, errors, metadata = (
+                holder.attach_v3_quote_balance_boundaries(
+                    "bsc", [burn, mint]
+                )
+            )
+        self.assertEqual(errors, [])
+        self.assertTrue(metadata["quote_boundary_complete"])
+        events, _, _ = holder.retention_liquidity_events(
+            rows, token, 0, 1_000_000
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["quote_removed_amount_raw"], "6000")
+        self.assertTrue(events[0]["quote_removed_relative_material"])
+        self.assertEqual(events[0]["quote_removed_pool_bps"], "1200")
+
+    def test_v3_multi_position_quote_removal_aggregates_once(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = {
+            "protocol": "v3",
+            "address": self._address("3"),
+            "token0": token,
+            "token1": quote,
+            "quote_token": quote,
+            "quote_decimals": 0,
+            "quote_symbol": "USDT",
+        }
+        rows = []
+        for index, ticks in enumerate(((-200, -100), (-100, 0)), 1):
+            row = self._event_row(
+                pool=pool,
+                event_kind="v3_burn",
+                topic=holder.V3_BURN_TOPIC,
+                data=self._data(1, 0, 600),
+                tx_digit="a",
+                block=101,
+                index=index,
+            )
+            row["topics"] = [
+                holder.V3_BURN_TOPIC,
+                holder.topic_address(self._address("5")),
+                "0x" + self._word(ticks[0], 24),
+                "0x" + self._word(ticks[1], 24),
+            ]
+            row["_retention_quote_balance_before_raw"] = "10000"
+            row["_retention_quote_boundary_complete"] = True
+            rows.append(row)
+        events, _, _ = holder.retention_liquidity_events(
+            rows, token, 0, 1_000_000
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["quote_removed_amount_raw"], "1200")
+        self.assertEqual(len(events[0]["source_ranges"]), 2)
+        self.assertTrue(events[0]["quote_removed_relative_material"])
+
+    def test_reconciliation_v1_pending_expires_without_alert(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 7, tzinfo=timezone.utc)
+        source_event = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "block": 101,
+            "type": "lp_remove_observation",
+            "quote_token": self._address("2"),
+            "quote_symbol": "USDT",
+            "quote_decimals": 0,
+            "lp_removed_amount_raw": "0",
+            "quote_removed_amount_raw": "20000",
+        }
+        reconcile_id = holder.liquidity_reconciliation_id(source_event)
+        legacy = {
+            "schema": holder.LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA,
+            "pending": [
+                {
+                    "reconcile_id": reconcile_id,
+                    "first_seen_at": started.isoformat(),
+                    "source_block": 101,
+                    "source_log_index": 1,
+                    "removed_target_raw": 0,
+                    "removed_quote_raw": 20000,
+                    "operator": "",
+                    "source_event": source_event,
+                }
+            ],
+            "completed": [],
+        }
+        events, state, metadata = holder.reconcile_liquidity_events(
+            [],
+            legacy,
+            token_decimals=0,
+            observed_at=started + timedelta(seconds=3601),
+        )
+        self.assertEqual(events, [])
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(
+            state["completed"][0]["classification"],
+            "unresolved_coverage",
+        )
+        self.assertFalse(state["completed"][0]["notify"])
+        self.assertEqual(metadata["unresolved_coverage_count"], 1)
+
+    def test_reconciliation_migration_marks_invalid_collections_and_numbers(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        invalid_collection = holder.migrate_liquidity_reconciliation_state(
+            {
+                "schema": holder.LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": None,
+                "completed": [],
+            },
+            maximum_seconds=900,
+        )
+        self.assertTrue(invalid_collection["state_invalid"])
+        invalid_number = holder.migrate_liquidity_reconciliation_state(
+            {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": [
+                    {
+                        "removed_target_raw": "not-an-integer",
+                        "source_event": {},
+                    }
+                ],
+                "completed": [],
+                "deferred_events": [],
+            },
+            maximum_seconds=900,
+        )
+        self.assertTrue(invalid_number["state_invalid"])
+        unknown_schema = holder.migrate_liquidity_reconciliation_state(
+            {"schema": "liquidity_reconciliation.unknown"},
+            maximum_seconds=900,
+        )
+        self.assertTrue(unknown_schema["state_invalid"])
+
+    def test_reconciliation_ambiguous_double_remove_keeps_both_pending(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 7, tzinfo=timezone.utc)
+        operator = self._address("5")
+        pool_one = self._address("3")
+        pool_two = self._address("4")
+        quote = self._address("2")
+
+        def removal(
+            tx_digit: str,
+            block: int,
+            seconds: int,
+            pool: str,
+        ) -> dict:
+            return {
+                "protocol": "v3",
+                "pool": pool,
+                "tx": self._hash(tx_digit),
+                "log_index": 1,
+                "block": block,
+                "type": "lp_remove_observation",
+                "liquidity_operator": operator,
+                "liquidity_operator_basis": "transaction_sender_eoa",
+                "quote_token": quote,
+                "quote_decimals": 0,
+                "lp_removed_amount_raw": "100",
+                "quote_removed_amount_raw": "20000",
+                "quote_removed_absolute_material": True,
+                "chain_timestamp": (
+                    started + timedelta(seconds=seconds)
+                ).isoformat(),
+                "chain_timestamp_basis": "canonical_block",
+            }
+
+        removals = [
+            removal("a", 101, 0, pool_one),
+            removal("b", 102, 30, pool_two),
+        ]
+        _, state, _ = holder.reconcile_liquidity_events(
+            removals,
+            {},
+            token_decimals=0,
+            observed_at=started + timedelta(seconds=30),
+            evidence_by_id={},
+        )
+        add = {
+            **removal("c", 103, 60, pool_one),
+            "type": "lp_add_observation",
+            "lp_added_amount_raw": "100",
+            "quote_added_amount_raw": "20000",
+        }
+        _, state, metadata = holder.reconcile_liquidity_events(
+            [add],
+            state,
+            token_decimals=0,
+            observed_at=started + timedelta(seconds=60),
+            evidence_by_id={},
+        )
+        self.assertEqual(len(state["pending"]), 2)
+        self.assertTrue(
+            all(row.get("pairing_ambiguous") for row in state["pending"])
+        )
+        self.assertTrue(
+            all(
+                int(row.get("added_target_raw") or 0) == 0
+                and int(row.get("added_quote_raw") or 0) == 0
+                for row in state["pending"]
+            )
+        )
+        self.assertEqual(metadata["pairing_ambiguous_count"], 2)
+
+    def test_chain_timestamp_rejects_out_of_window_add_in_delayed_scan(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 7, tzinfo=timezone.utc)
+        removal = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "block": 101,
+            "type": "lp_remove_observation",
+            "liquidity_operator": self._address("5"),
+            "liquidity_operator_basis": "transaction_sender_eoa",
+            "quote_token": self._address("2"),
+            "quote_decimals": 0,
+            "lp_removed_amount_raw": "100",
+            "quote_removed_amount_raw": "20000",
+            "chain_timestamp": started.isoformat(),
+            "chain_timestamp_basis": "canonical_block",
+        }
+        add = {
+            **removal,
+            "tx": self._hash("b"),
+            "log_index": 2,
+            "block": 102,
+            "type": "lp_add_observation",
+            "lp_added_amount_raw": "100",
+            "quote_added_amount_raw": "20000",
+            "chain_timestamp": (
+                started + timedelta(seconds=901)
+            ).isoformat(),
+        }
+        _, state, _ = holder.reconcile_liquidity_events(
+            [removal],
+            {},
+            token_decimals=0,
+            observed_at=started + timedelta(minutes=20),
+            evidence_by_id={},
+        )
+        _, state, _ = holder.reconcile_liquidity_events(
+            [add],
+            state,
+            token_decimals=0,
+            observed_at=started + timedelta(minutes=20),
+            evidence_by_id={},
+        )
+        self.assertEqual(state["pending"][0]["added_target_raw"], 0)
+        self.assertEqual(state["pending"][0]["added_quote_raw"], 0)
+
+    def test_real_grvt_postboundary_pair_replays_as_range_reposition(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        fixture = json.loads(
+            (
+                ROOT
+                / "scripts"
+                / "fixtures"
+                / "grvt_v3_quote_only_removal_receipt_2026-08-07.json"
+            ).read_text(encoding="utf-8")
+        )
+        pool = fixture["pool"]
+        kind_by_topic = {
+            holder.V3_BURN_TOPIC: "v3_burn",
+            holder.V3_COLLECT_TOPIC: "v3_collect",
+            holder.V3_MINT_TOPIC: "v3_mint",
+        }
+        rows = []
+        for raw in [*fixture["logs"], fixture["paired_mint"]["log"]]:
+            row = copy.deepcopy(raw)
+            row["_retention_pool"] = copy.deepcopy(pool)
+            row["_retention_event_kind"] = kind_by_topic[
+                row["topics"][0]
+            ]
+            rows.append(row)
+        removal_rows = rows[:2]
+        mint_rows = rows[2:]
+        def boundary_rpc(
+            _chain: str, method: str, _params: list[object]
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                return {
+                    "number": hex(fixture["block_number"]),
+                    "hash": fixture["block_hash"],
+                }
+            if method == "eth_call":
+                return hex(100_000 * 10**18)
+            if method == "eth_getLogs":
+                return []
+            raise AssertionError(method)
+
+        with mock.patch.object(
+            holder, "holder_rpc_call", side_effect=boundary_rpc
+        ):
+            removal_rows, boundary_errors, _ = (
+                holder.attach_v3_quote_balance_boundaries(
+                    "bsc", removal_rows
+                )
+            )
+        self.assertEqual(boundary_errors, [])
+        removal_events, _, _ = holder.retention_liquidity_events(
+            removal_rows,
+            pool["token0"],
+            18,
+            10**27,
+            alert_from_block=fixture["block_number"],
+        )
+        mint_events, _, _ = holder.retention_liquidity_events(
+            mint_rows,
+            pool["token0"],
+            18,
+            10**27,
+            alert_from_block=fixture["block_number"],
+        )
+
+        sender = fixture["transaction_from"]
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            if method == "eth_getTransactionByHash":
+                return {"from": sender}
+            if method == "eth_getCode":
+                return "0xef0100" + "11" * 20
+            raise AssertionError(method)
+
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            removal_events, removal_errors = (
+                holder.annotate_liquidity_event_operators(
+                    "bsc", removal_events
+                )
+            )
+            mint_events, mint_errors = holder.annotate_liquidity_event_operators(
+                "bsc", mint_events
+            )
+        self.assertEqual((removal_errors, mint_errors), (0, 0))
+        started = datetime(2026, 8, 7, 5, 45, 12, tzinfo=timezone.utc)
+        paired_at = started + timedelta(seconds=80)
+        for event in removal_events:
+            event["chain_timestamp"] = started.isoformat()
+            event["chain_timestamp_basis"] = "canonical_block"
+        for event in mint_events:
+            event["chain_timestamp"] = paired_at.isoformat()
+            event["chain_timestamp_basis"] = "canonical_block"
+        delayed_poll = started + timedelta(minutes=20)
+        first_events, state, _ = holder.reconcile_liquidity_events(
+            removal_events,
+            {},
+            token_decimals=18,
+            observed_at=delayed_poll,
+            evidence_by_id={},
+        )
+        self.assertFalse(first_events[0]["alert_eligible"])
+        self.assertEqual(len(state["pending"]), 1)
+        _, state, _ = holder.reconcile_liquidity_events(
+            mint_events,
+            state,
+            token_decimals=18,
+            observed_at=delayed_poll,
+            evidence_by_id={},
+        )
+        reconcile_id = state["pending"][0]["reconcile_id"]
+        evidence = {
+            "coverage_complete": True,
+            "source_receipt_canonical": True,
+            "evidence_level": "receipt_canonical_bounded_15m",
+            "active_range_vs_spot": "out_of_range",
+            "spot_tick": -12000,
+            "pool_liquidity_before": "100",
+            "pool_liquidity_after": "80",
+            "recipient_next_hop": {
+                "status": "no_outbound_observed",
+                "coverage_complete": True,
+                "recipient_count": 1,
+                "transaction_count": 0,
+            },
+            "price_reaction_5m_pct": "0",
+            "price_reaction_15m_pct": "0",
+        }
+        final_events, state, _ = holder.reconcile_liquidity_events(
+            [],
+            state,
+            token_decimals=18,
+            observed_at=delayed_poll,
+            evidence_by_id={reconcile_id: evidence},
+        )
+        verdicts = [
+            event
+            for event in final_events
+            if event.get("type") == "liquidity_reconciliation"
+        ]
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(
+            verdicts[0]["classification"], "range_repositioned"
+        )
+        self.assertEqual(verdicts[0]["destination_pool"], pool["address"])
+        self.assertEqual(verdicts[0]["paired_chain_elapsed_seconds"], 80)
+        self.assertNotEqual(
+            verdicts[0]["source_ranges"],
+            verdicts[0]["destination_ranges"],
+        )
+        replay_events, _, _ = holder.reconcile_liquidity_events(
+            removal_events,
+            state,
+            token_decimals=18,
+            observed_at=delayed_poll + timedelta(seconds=1),
+        )
+        self.assertFalse(
+            any(
+                event.get("type") == "liquidity_reconciliation"
+                for event in replay_events
+            )
+        )
+
     def test_v3_positions_do_not_net_across_owner_and_tick_range(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -20175,7 +20849,9 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["type"], "lp_remove_observation")
+        self.assertEqual(
+            events[0]["type"], "lp_partial_remove_observation"
+        )
         self.assertEqual(events[0]["amount"], "100")
         self.assertEqual(events[0]["lp_owner"], owner_two)
         self.assertEqual(events[0]["tick_lower"], -100)
@@ -20280,6 +20956,56 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "unattributed",
         )
         self.assertEqual(annotated[0]["liquidity_operator"], "")
+
+    def test_transaction_origin_code_accepts_only_strict_eip7702_designator(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        delegate = "11" * 20
+        self.assertTrue(holder.transaction_origin_code("0x"))
+        self.assertTrue(
+            holder.transaction_origin_code("0xef0100" + delegate)
+        )
+        self.assertFalse(
+            holder.transaction_origin_code("0xef0100" + "11" * 19)
+        )
+        self.assertFalse(
+            holder.transaction_origin_code("0xef0101" + delegate)
+        )
+        self.assertFalse(holder.transaction_origin_code("0x60006000"))
+
+    def test_v3_operator_accepts_strict_eip7702_transaction_sender(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        sender = "0xa15696e6cc76c709c1608c8247ff2f5e412b24d9"
+        event = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 103,
+            "block": 114491221,
+            "type": "lp_remove_observation",
+            "lp_owner": "0x7b8a01b39d58278b5de7e48c8449c9f4f5170613",
+            "historical_catchup": False,
+        }
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            if method == "eth_getTransactionByHash":
+                return {"from": sender}
+            if method == "eth_getCode":
+                return "0xef0100" + "11" * 20
+            raise AssertionError(method)
+
+        with mock.patch.object(holder, "holder_rpc_call", side_effect=rpc):
+            annotated, error_count = holder.annotate_liquidity_event_operators(
+                "bsc", [event]
+            )
+
+        self.assertEqual(error_count, 0)
+        self.assertEqual(annotated[0]["liquidity_operator"], sender)
+        self.assertEqual(
+            annotated[0]["liquidity_operator_basis"],
+            "transaction_sender_eoa",
+        )
 
     def test_v3_reconciliation_migrates_then_expires_net_removal(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -21317,6 +22043,34 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             pending_reorg_next_state["reconciliation"]["pending"],
             [],
         )
+
+        malformed_reconciliation_state = {
+            **state,
+            "reconciliation": {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": None,
+                "completed": [],
+                "deferred_events": [],
+            },
+        }
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "liquidity reconciliation state invalid",
+            ),
+        ):
+            holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=malformed_reconciliation_state,
+            )
 
         catchup_state = {
             **state,
@@ -22667,6 +23421,23 @@ raise SystemExit(0 if ok else 1)
         )
         self.assertTrue(invalid_seed["reconciliation_state_invalid"])
         self.assertNotIn("reconciliation", invalid_seed)
+        malformed_seed = fast.validated_liquidity_seed(
+            {
+                "scope_state_schema_version": (
+                    holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+                ),
+                "scope_hash": opening_scope["scope_hash"],
+                "pool_scope": opening_scope["pool_scope"],
+                "reconciliation": {
+                    "schema": holder.LEGACY_LIQUIDITY_RECONCILIATION_SCHEMA,
+                    "pending": None,
+                    "completed": [],
+                },
+            },
+            self._address("1"),
+        )
+        self.assertTrue(malformed_seed["reconciliation_state_invalid"])
+        self.assertNotIn("reconciliation", malformed_seed)
         self.assertEqual(
             fast.safe_error_message(
                 fast.ReconciliationStateInvalid("invalid")

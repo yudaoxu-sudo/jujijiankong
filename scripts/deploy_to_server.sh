@@ -38,17 +38,35 @@ if ! "${ssh_cmd[@]}" "$remote_target" \
 fi
 
 if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
+  grvt_replay_acceptance="${SNIPER_DEPLOY_RUN_GRVT_REPLAY_ACCEPTANCE:-0}"
+  if [[ "$grvt_replay_acceptance" != "0" && "$grvt_replay_acceptance" != "1" ]]; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail invalid_grvt_replay_acceptance_flag=1' >&2
+    exit 64
+  fi
   heartbeat_command="cd $remote_dir_quoted && python3 -c 'import json; print(json.load(open(\"output/runtime_health/last_cycle.json\")).get(\"generated_at\", \"\"))'"
+  health_status_command="cd $remote_dir_quoted && python3 -c 'import json; print(json.load(open(\"output/runtime_health/last_cycle.json\")).get(\"status\", \"\"))'"
+  replay_revision_command="cd $remote_dir_quoted && python3 -c 'from pathlib import Path; p=Path(\"output/grvt_liquidity_replay_acceptance/latest.json\"); print(p.stat().st_mtime_ns if p.exists() else \"\")'"
   heartbeat_before=$("${ssh_cmd[@]}" "$remote_target" "$heartbeat_command" 2>/dev/null) || {
     printf '%s\n' 'remote_no_telegram_cycle=fail' >&2
     exit 1
   }
+  replay_revision_before=""
+  if [[ "$grvt_replay_acceptance" == "1" ]]; then
+    replay_revision_before=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
+      printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_before_failed=1' >&2
+      exit 1
+    }
+  fi
   remote_cycle_status=0
   "${ssh_cmd[@]}" "$remote_target" \
-    "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 bash scripts/server_run_once.sh" \
+    "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE=$grvt_replay_acceptance bash scripts/server_run_once.sh" \
     >/dev/null 2>&1 || remote_cycle_status=$?
   heartbeat_after=$("${ssh_cmd[@]}" "$remote_target" "$heartbeat_command" 2>/dev/null) || {
     printf '%s\n' 'remote_no_telegram_cycle=fail' >&2
+    exit 1
+  }
+  health_status_after=$("${ssh_cmd[@]}" "$remote_target" "$health_status_command" 2>/dev/null) || {
+    printf '%s\n' 'remote_no_telegram_cycle=fail health_probe_failed=1' >&2
     exit 1
   }
   if [[ -z "$heartbeat_after" || "$heartbeat_after" == "$heartbeat_before" ]]; then
@@ -58,6 +76,20 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
   if (( remote_cycle_status != 0 )); then
     printf '%s\n' "remote_no_telegram_cycle=fail heartbeat_unchanged=0 cycle_status=$remote_cycle_status" >&2
     exit 1
+  fi
+  if [[ "$health_status_after" != "healthy" ]]; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail runtime_status_unhealthy=1' >&2
+    exit 1
+  fi
+  if [[ "$grvt_replay_acceptance" == "1" ]]; then
+    replay_revision_after=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
+      printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_after_failed=1' >&2
+      exit 1
+    }
+    if [[ -z "$replay_revision_after" || "$replay_revision_after" == "$replay_revision_before" ]]; then
+      printf '%s\n' 'remote_no_telegram_cycle=fail replay_artifact_not_refreshed=1' >&2
+      exit 1
+    fi
   fi
   printf '%s\n' 'deploy=pass cron_install=pass remote_no_telegram_cycle=pass'
 else

@@ -20,7 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "project_continuity.json"
 DEPLOY_PARITY_PATHS = (
     "scripts/alpha_holder_concentration_watch.py",
+    "scripts/alpha_liquidity_retention_watch.py",
     "scripts/test_aeon_monitor_regression.py",
+    "scripts/grvt_liquidity_replay_acceptance.py",
+    "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
+    "scripts/server_run_once.sh",
     "scripts/deploy_to_server.sh",
     "scripts/project_continuity_acceptance.py",
 )
@@ -61,6 +65,45 @@ try:
 except OSError:
     verification_text = ""
 fail_count = sum(1 for line in verification_text.splitlines() if "| FAIL |" in line)
+grvt_replay_path = root / "output" / "grvt_liquidity_replay_acceptance" / "latest.json"
+grvt_replay = read_json(grvt_replay_path)
+grvt_replay_age = max(0, int(time.time() - grvt_replay_path.stat().st_mtime)) if grvt_replay_path.exists() else None
+grvt_replay_hashes = grvt_replay.get("code_hashes") if isinstance(grvt_replay.get("code_hashes"), dict) else {}
+grvt_replay_hash_parity = all(
+    grvt_replay_hashes.get(relative_path) == expected_hashes.get(relative_path)
+    for relative_path in (
+        "scripts/alpha_holder_concentration_watch.py",
+        "scripts/grvt_liquidity_replay_acceptance.py",
+        "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
+    )
+)
+grvt_replay_contract = (
+    grvt_replay.get("schema") == "grvt_liquidity_replay_acceptance.v1"
+    and grvt_replay.get("status") == "pass"
+    and grvt_replay.get("issues") == []
+    and isinstance(grvt_replay.get("generated_at"), str)
+    and bool(grvt_replay.get("generated_at"))
+    and grvt_replay_age is not None
+    and grvt_replay_age <= max_age
+    and int(grvt_replay.get("receipt_count") or 0) == 2
+    and int(grvt_replay.get("elapsed_seconds") or 0) == 80
+    and grvt_replay.get("classification") == "range_repositioned"
+    and grvt_replay.get("range_changed") is True
+    and grvt_replay.get("source_pool_equals_destination_pool") is True
+    and grvt_replay.get("operator_basis") == "transaction_sender_eoa"
+    and grvt_replay.get("quote_boundary_complete") is True
+    and grvt_replay.get("relative_materiality_proven") is True
+    and grvt_replay.get("raw_removal_alert_eligible") is False
+    and int(grvt_replay.get("pending_count") or 0) == 0
+    and grvt_replay.get("normal_replay_dedup_pass") is True
+    and int(grvt_replay.get("first_send_count") or 0) == 1
+    and int(
+        grvt_replay.get("replay_duplicate_send_count")
+        if grvt_replay.get("replay_duplicate_send_count") is not None
+        else -1
+    ) == 0
+    and grvt_replay_hash_parity
+)
 watchlist = read_json(root / "config" / "current_alpha_watchlist.json")
 item_count = len(watchlist.get("items", [])) if isinstance(watchlist.get("items", []), list) else 0
 parity_matches = 0
@@ -213,6 +256,7 @@ ok = (
     and fail_count == 0
     and item_count > 0
     and parity_matches == len(expected_hashes)
+    and grvt_replay_contract
     and liquidity.get("status") == "healthy"
     and int(liquidity.get("issue_count") or 0) == 0
     and int(liquidity.get("complete_count") or 0) == 1
@@ -236,6 +280,21 @@ print(json.dumps({
     "watchlist_item_count": item_count,
     "deployed_hash_parity_count": parity_matches,
     "deployed_hash_expected_count": len(expected_hashes),
+    "grvt_replay_acceptance": {
+        "status": grvt_replay.get("status", "missing"),
+        "issues": grvt_replay.get("issues", []),
+        "generated_at": grvt_replay.get("generated_at", ""),
+        "age_seconds": grvt_replay_age,
+        "contract_pass": grvt_replay_contract,
+        "classification": grvt_replay.get("classification"),
+        "range_changed": grvt_replay.get("range_changed"),
+        "source_pool_equals_destination_pool": grvt_replay.get("source_pool_equals_destination_pool"),
+        "quote_boundary_complete": grvt_replay.get("quote_boundary_complete"),
+        "relative_materiality_proven": grvt_replay.get("relative_materiality_proven"),
+        "normal_replay_dedup_pass": grvt_replay.get("normal_replay_dedup_pass"),
+        "replay_duplicate_send_count": grvt_replay.get("replay_duplicate_send_count"),
+        "code_hash_parity": grvt_replay_hash_parity,
+    },
     "grvt_liquidity": {
         "status": liquidity.get("status", "missing"),
         "issue_count": liquidity.get("issue_count"),
