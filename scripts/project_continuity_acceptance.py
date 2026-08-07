@@ -36,6 +36,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 max_age = int(sys.argv[2])
 expected_hashes = json.loads(sys.argv[3])
+enriched_deploy_boundary = "2026-08-06T15:33:40+00:00"
 
 def read_json(path):
     try:
@@ -119,7 +120,7 @@ for chain, token, reconciliation in reconciliation_scopes:
         if not isinstance(row, dict):
             continue
         first_seen = str(row.get("first_seen_at") or "")
-        if not first_seen.startswith("2026-08-06"):
+        if first_seen < enriched_deploy_boundary:
             continue
         reconcile_id = str(row.get("reconcile_id") or "")
         key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
@@ -151,7 +152,7 @@ for chain, token, reconciliation in reconciliation_scopes:
         if not isinstance(row, dict):
             continue
         completed_at = str(row.get("completed_at") or "")
-        if not completed_at.startswith("2026-08-06"):
+        if completed_at < enriched_deploy_boundary:
             continue
         reconcile_id = str(row.get("reconcile_id") or "")
         key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
@@ -250,8 +251,9 @@ print(json.dumps({
         "completed_classes": completed_classes,
         "first_completed_at": completed_times[0] if completed_times else "",
         "last_completed_at": completed_times[-1] if completed_times else "",
-        "reconciliation_events_2026_08_06": grvt_reconciliation_events,
-        "reconciliation_event_count_2026_08_06": len(grvt_reconciliation_events),
+        "enriched_deploy_boundary_utc": enriched_deploy_boundary,
+        "reconciliation_events_since_enriched_deploy": grvt_reconciliation_events,
+        "reconciliation_event_count_since_enriched_deploy": len(grvt_reconciliation_events),
         "telegram_seen_ledger_count": len(seen_alerts),
         "telegram_last_push_sent_at": str(last_push.get("sent_at") or ""),
     },
