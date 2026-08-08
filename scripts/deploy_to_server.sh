@@ -57,10 +57,23 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
       exit 1
     }
   fi
-  remote_cycle_status=0
-  "${ssh_cmd[@]}" "$remote_target" \
-    "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE=$grvt_replay_acceptance bash scripts/server_run_once.sh" \
-    >/dev/null 2>&1 || remote_cycle_status=$?
+  remote_cycle_status=75
+  overlap_attempt=0
+  overlap_attempt_limit=12
+  while (( remote_cycle_status == 75 && overlap_attempt < overlap_attempt_limit )); do
+    overlap_attempt=$((overlap_attempt + 1))
+    remote_cycle_status=0
+    "${ssh_cmd[@]}" "$remote_target" \
+      "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE=$grvt_replay_acceptance SNIPER_OVERLAP_SKIP_EXIT_CODE=75 bash scripts/server_run_once.sh" \
+      >/dev/null 2>&1 || remote_cycle_status=$?
+    if (( remote_cycle_status == 75 && overlap_attempt < overlap_attempt_limit )); then
+      sleep 10
+    fi
+  done
+  if (( remote_cycle_status == 75 )); then
+    printf '%s\n' "remote_no_telegram_cycle=fail overlap_lock_busy=1 attempts=$overlap_attempt" >&2
+    exit 1
+  fi
   heartbeat_after=$("${ssh_cmd[@]}" "$remote_target" "$heartbeat_command" 2>/dev/null) || {
     printf '%s\n' 'remote_no_telegram_cycle=fail' >&2
     exit 1
@@ -91,7 +104,7 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
       exit 1
     fi
   fi
-  printf '%s\n' 'deploy=pass cron_install=pass remote_no_telegram_cycle=pass'
+  printf '%s\n' "deploy=pass cron_install=pass remote_no_telegram_cycle=pass overlap_attempts=$overlap_attempt"
 else
   printf '%s\n' 'deploy=pass cron_install=pass'
 fi

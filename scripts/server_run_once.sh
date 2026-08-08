@@ -16,7 +16,7 @@ if command -v flock >/dev/null 2>&1; then
     if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
       exit 75
     fi
-    exit 0
+    exit "${SNIPER_OVERLAP_SKIP_EXIT_CODE:-0}"
   fi
 else
   echo "server_run_once warning: flock unavailable; continuing without overlap lock"

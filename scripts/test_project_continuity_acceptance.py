@@ -330,6 +330,12 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('health_status_after" != "healthy', deploy)
         self.assertIn("replay_artifact_not_refreshed=1", deploy)
+        self.assertIn("SNIPER_OVERLAP_SKIP_EXIT_CODE=75", deploy)
+        self.assertIn("overlap_attempt_limit=12", deploy)
+        server_run = (
+            Path(__file__).resolve().parent / "server_run_once.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('SNIPER_OVERLAP_SKIP_EXIT_CODE:-0', server_run)
 
     def test_markdown_reports_machine_result(self) -> None:
         payload = evaluate(healthy_snapshot(), allow_dirty=False, remote_required=False)
