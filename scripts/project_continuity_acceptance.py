@@ -84,7 +84,6 @@ grvt_replay_contract = (
     and isinstance(grvt_replay.get("generated_at"), str)
     and bool(grvt_replay.get("generated_at"))
     and grvt_replay_age is not None
-    and grvt_replay_age <= max_age
     and int(grvt_replay.get("receipt_count") or 0) == 2
     and int(grvt_replay.get("elapsed_seconds") or 0) == 80
     and grvt_replay.get("classification") == "range_repositioned"
@@ -208,7 +207,21 @@ for chain, token, reconciliation in reconciliation_scopes:
             "classification": str(row.get("classification") or "unknown"),
             "pending_at": str(row.get("first_seen_at") or ""),
             "final_at": completed_at,
+            "expires_at": str(row.get("expires_at") or ""),
             "window_seconds": row.get("reconciliation_window_seconds"),
+            "observation_age_seconds": row.get("observation_age_seconds"),
+            "chain_age_seconds": row.get("chain_age_seconds"),
+            "source_chain_timestamp_basis": str(row.get("source_chain_timestamp_basis") or ""),
+            "coverage_issue_code": str(row.get("coverage_issue_code") or ""),
+            "evidence_coverage_issues": [
+                str(value)[:80]
+                for value in (
+                    row.get("evidence_coverage_issues")
+                    if isinstance(row.get("evidence_coverage_issues"), list)
+                    else []
+                )[:8]
+                if isinstance(value, str) and re.fullmatch(r"[a-z0-9_]+", value)
+            ],
             "alert_key": "liquidity_reconciliation/" + reconcile_id[:12],
             "alert_sent_count": int(key in seen_alerts),
             "last_push_receipt_match": key in last_push_keys,

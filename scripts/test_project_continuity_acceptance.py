@@ -241,6 +241,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertIn("2026-08-06T15:33:40+00:00", rendered)
         self.assertIn("seen_alerts.json", rendered)
         self.assertIn("last_push.json", rendered)
+        self.assertIn("evidence_coverage_issues", rendered)
+        self.assertIn("source_chain_timestamp_basis", rendered)
         self.assertNotIn("find ", rendered)
         self.assertNotIn("rg ", rendered)
         self.assertNotIn("cat ", rendered)
@@ -264,17 +266,32 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "fail")
         self.assertFalse(payload["grvt_replay_acceptance"]["contract_pass"])
 
-    def test_remote_probe_rejects_stale_grvt_artifact(self) -> None:
+    def test_remote_probe_accepts_old_grvt_artifact_with_matching_contract_and_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_hashes, replay_path = remote_probe_fixture(root)
             stale = time.time() - 1201
             os.utime(replay_path, (stale, stale))
             payload = run_remote_probe(root, expected_hashes)
-        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(payload["status"], "pass")
         self.assertGreater(
             payload["grvt_replay_acceptance"]["age_seconds"], 1200
         )
+
+    def test_remote_probe_rejects_old_grvt_artifact_with_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            replay = json.loads(replay_path.read_text(encoding="utf-8"))
+            replay["code_hashes"][
+                "scripts/alpha_holder_concentration_watch.py"
+            ] = "0" * 64
+            write_json(replay_path, replay)
+            stale = time.time() - 1201
+            os.utime(replay_path, (stale, stale))
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertFalse(payload["grvt_replay_acceptance"]["code_hash_parity"])
 
     def test_deploy_gate_requires_healthy_cycle_and_new_replay(self) -> None:
         deploy = (

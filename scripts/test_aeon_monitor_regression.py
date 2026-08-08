@@ -18292,9 +18292,91 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertFalse(result["coverage_complete"])
         self.assertEqual(
             result["coverage_issues"],
-            ["invalid_runtime_metadata"],
+            ["source_pool_scope_unavailable"],
         )
         self.assertEqual(result["evidence_level"], "coverage_incomplete")
+
+    def test_liquidity_evidence_allows_other_transactions_in_source_block(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = self._address("3")
+        source_tx = self._hash("a")
+        block_hash = self._hash("f")
+        source_log = {
+            "transactionHash": source_tx,
+            "blockHash": block_hash,
+        }
+        other_log = {
+            "transactionHash": self._hash("b"),
+            "blockHash": block_hash,
+        }
+
+        def rpc(_chain: str, method: str, _params: list[object]) -> object:
+            if method == "eth_getTransactionReceipt":
+                return {
+                    "status": "0x1",
+                    "blockHash": block_hash,
+                    "blockNumber": "0x64",
+                    "logs": [],
+                }
+            if method == "eth_getLogs":
+                return [source_log, other_log]
+            raise AssertionError(method)
+
+        with (
+            mock.patch.object(holder, "holder_rpc_call", side_effect=rpc),
+            mock.patch.object(
+                holder,
+                "_canonical_block",
+                return_value={"number": 100, "hash": block_hash, "timestamp": 1000},
+            ),
+            mock.patch.object(
+                holder,
+                "_block_at_or_after_timestamp",
+                side_effect=[
+                    {"number": 110, "hash": self._hash("c"), "timestamp": 1300},
+                    {"number": 130, "hash": self._hash("d"), "timestamp": 1900},
+                ],
+            ),
+            mock.patch.object(
+                holder,
+                "_v3_state_at",
+                side_effect=[
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 1000},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                ],
+            ),
+        ):
+            result = holder.collect_liquidity_verdict_evidence(
+                "bsc",
+                token,
+                0,
+                [{
+                    "protocol": "v3",
+                    "address": pool,
+                    "token0": token,
+                    "token1": quote,
+                    "quote_token": quote,
+                    "quote_decimals": 0,
+                }],
+                {
+                    "source_pool": pool,
+                    "source_block": 100,
+                    "source_block_hash": block_hash,
+                    "source_event": {
+                        "tx": source_tx,
+                        "tick_lower": -100,
+                        "tick_upper": 100,
+                    },
+                },
+                130,
+            )
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["coverage_issues"], [])
 
     @classmethod
     def _event_row(
@@ -20453,6 +20535,17 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "unresolved_coverage",
         )
         self.assertFalse(state["completed"][0]["notify"])
+        self.assertIn(
+            "liquidity_operator_unavailable",
+            state["completed"][0]["evidence_coverage_issues"],
+        )
+        self.assertEqual(
+            state["completed"][0]["reconciliation_window_seconds"], 900
+        )
+        self.assertEqual(
+            state["completed"][0]["source_event_utc"], ""
+        )
+        self.assertTrue(state["completed"][0]["expires_at"])
         self.assertEqual(metadata["unresolved_coverage_count"], 1)
 
     def test_reconciliation_migration_marks_invalid_collections_and_numbers(

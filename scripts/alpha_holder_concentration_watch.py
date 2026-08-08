@@ -4169,7 +4169,24 @@ def liquidity_evidence_error_code(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         return "timeout"
     if isinstance(exc, (ValueError, TypeError, KeyError)):
-        return "invalid_runtime_metadata"
+        safe_codes = {
+            "source pool scope unavailable": "source_pool_scope_unavailable",
+            "source block is not canonical": "source_block_not_canonical",
+            "source receipt is not canonical": "source_receipt_not_canonical",
+            "exact pool liquidity boundary unavailable": "pool_liquidity_boundary_unavailable",
+            "timestamp window unavailable": "timestamp_window_unavailable",
+            "timestamp target unavailable": "timestamp_target_unavailable",
+            "v3 state unavailable": "v3_state_unavailable",
+            "v3 price unavailable": "v3_price_unavailable",
+            "source price unavailable": "source_price_unavailable",
+            "recipient scope exceeded": "recipient_scope_exceeded",
+            "recipient next-hop coverage incomplete": "recipient_next_hop_coverage_incomplete",
+            "recipient next-hop identity invalid": "recipient_next_hop_identity_invalid",
+            "recipient next-hop receipt invalid": "recipient_next_hop_receipt_invalid",
+            "recipient next-hop scope exceeded": "recipient_next_hop_scope_exceeded",
+            "pool token orientation invalid": "pool_token_orientation_invalid",
+        }
+        return safe_codes.get(str(exc), "invalid_runtime_metadata")
     if isinstance(exc, RuntimeError):
         return "runtime_dependency_failed"
     if isinstance(exc, OSError):
@@ -4323,17 +4340,19 @@ def collect_liquidity_verdict_evidence(
                 }
             ],
         )
-        if (
-            not isinstance(block_pool_state_logs, list)
-            or not block_pool_state_logs
-            or len(block_pool_state_logs) >= 128
-            or any(
+        if not isinstance(block_pool_state_logs, list) or len(block_pool_state_logs) >= 128:
+            raise ValueError("exact pool liquidity boundary unavailable")
+        source_transaction_logs = []
+        for row in block_pool_state_logs:
+            if (
                 not isinstance(row, dict)
-                or norm(row.get("transactionHash")) != source_tx
+                or not valid_hash32(norm(row.get("transactionHash")))
                 or norm(row.get("blockHash")) != source_block["hash"]
-                for row in block_pool_state_logs
-            )
-        ):
+            ):
+                raise ValueError("exact pool liquidity boundary unavailable")
+            if norm(row.get("transactionHash")) == source_tx:
+                source_transaction_logs.append(row)
+        if not source_transaction_logs:
             raise ValueError("exact pool liquidity boundary unavailable")
         five_minute_block = _block_at_or_after_timestamp(
             chain,
@@ -5251,6 +5270,43 @@ def reconcile_liquidity_events(
     finalized_events: list[dict[str, Any]] = []
     evidence_blocked_count = 0
     unresolved_coverage_count = 0
+
+    def unresolved_row(
+        pending_row: dict[str, Any],
+        issue_code: str,
+        evidence_issues: list[str],
+        observation_age_seconds: int,
+        chain_age_seconds: int,
+    ) -> dict[str, Any]:
+        source_event = (
+            pending_row.get("source_event")
+            if isinstance(pending_row.get("source_event"), dict)
+            else {}
+        )
+        return {
+            "reconcile_id": str(pending_row.get("reconcile_id") or ""),
+            "classification": "unresolved_coverage",
+            "completed_at": current.isoformat(),
+            "first_seen_at": str(pending_row.get("first_seen_at") or ""),
+            "expires_at": str(pending_row.get("expires_at") or ""),
+            "source_event_utc": str(
+                pending_row.get("source_event_utc")
+                or pending_row.get("source_chain_timestamp")
+                or ""
+            ),
+            "source_chain_timestamp_basis": str(
+                pending_row.get("source_chain_timestamp_basis") or ""
+            ),
+            "source_block": int(pending_row.get("source_block") or 0),
+            "source_tx": norm(source_event.get("tx")),
+            "reconciliation_window_seconds": maximum_seconds,
+            "observation_age_seconds": observation_age_seconds,
+            "chain_age_seconds": chain_age_seconds,
+            "notify": False,
+            "coverage_issue_code": issue_code,
+            "evidence_coverage_issues": list(dict.fromkeys(evidence_issues))[:8],
+        }
+
     for pending_row in pending:
         first_seen = parse_iso(pending_row.get("first_seen_at"))
         observation_age_seconds = int(
@@ -5379,26 +5435,30 @@ def reconcile_liquidity_events(
                 reconcile_id = str(
                     pending_row.get("reconcile_id") or ""
                 )
-                completed_rows.append(
-                    {
-                        "reconcile_id": reconcile_id,
-                        "classification": "unresolved_coverage",
-                        "completed_at": current.isoformat(),
-                        "first_seen_at": str(
-                            pending_row.get("first_seen_at") or ""
-                        ),
-                        "source_block": int(
-                            pending_row.get("source_block") or 0
-                        ),
-                        "source_tx": norm(
-                            pending_row.get("source_event", {}).get("tx")
-                        ),
-                        "notify": False,
-                        "coverage_issue_code": (
-                            "liquidity_reconciliation_expired_incomplete"
-                        ),
-                    }
+                reconciliation_issues = list(
+                    pending_row.get("evidence_coverage_issues") or []
                 )
+                if coverage_complete is not True:
+                    reconciliation_issues.append("liquidity_flow_coverage_incomplete")
+                if pending_row.get("pairing_ambiguous") is True:
+                    reconciliation_issues.append("liquidity_pairing_ambiguous")
+                if not is_address(norm(pending_row.get("operator"))):
+                    reconciliation_issues.append("liquidity_operator_unavailable")
+                elif str(pending_row.get("operator_basis") or "") not in LIQUIDITY_RELIABLE_OPERATOR_BASES:
+                    reconciliation_issues.append("liquidity_operator_basis_unreliable")
+                if source_chain_time is None:
+                    reconciliation_issues.append("source_chain_timestamp_unavailable")
+                if str(pending_row.get("materiality_basis") or "") == "unverified":
+                    reconciliation_issues.append("liquidity_materiality_unverified")
+                if not reconciliation_issues:
+                    reconciliation_issues.append("liquidity_reconciliation_incomplete")
+                completed_rows.append(unresolved_row(
+                    pending_row,
+                    "liquidity_reconciliation_expired_incomplete",
+                    reconciliation_issues,
+                    observation_age_seconds,
+                    chain_age_seconds,
+                ))
                 finalized_ids.add(reconcile_id)
                 unresolved_coverage_count += 1
             continue
@@ -5413,26 +5473,15 @@ def reconcile_liquidity_events(
             and enrichment.get("coverage_complete") is not True
         ):
             if expired:
-                completed_rows.append(
-                    {
-                        "reconcile_id": reconcile_id,
-                        "classification": "unresolved_coverage",
-                        "completed_at": current.isoformat(),
-                        "first_seen_at": str(
-                            pending_row.get("first_seen_at") or ""
-                        ),
-                        "source_block": int(
-                            pending_row.get("source_block") or 0
-                        ),
-                        "source_tx": norm(
-                            pending_row.get("source_event", {}).get("tx")
-                        ),
-                        "notify": False,
-                        "coverage_issue_code": (
-                            "liquidity_verdict_evidence_expired_incomplete"
-                        ),
-                    }
-                )
+                completed_rows.append(unresolved_row(
+                    pending_row,
+                    "liquidity_verdict_evidence_expired_incomplete",
+                    list(enrichment.get("coverage_issues") or [
+                        "liquidity_verdict_evidence_incomplete"
+                    ]),
+                    observation_age_seconds,
+                    chain_age_seconds,
+                ))
                 finalized_ids.add(reconcile_id)
                 unresolved_coverage_count += 1
                 continue
