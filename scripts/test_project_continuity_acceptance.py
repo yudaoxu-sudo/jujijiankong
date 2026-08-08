@@ -243,6 +243,9 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertIn("last_push.json", rendered)
         self.assertIn("evidence_coverage_issues", rendered)
         self.assertIn("source_chain_timestamp_basis", rendered)
+        self.assertIn("natural_evidence_watch", rendered)
+        self.assertIn("cex_micro_gas_candidate_history", rendered)
+        self.assertIn("withdrawal_candidate_history", rendered)
         self.assertNotIn("find ", rendered)
         self.assertNotIn("rg ", rendered)
         self.assertNotIn("cat ", rendered)
@@ -254,6 +257,34 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             payload = run_remote_probe(root, expected_hashes)
         self.assertEqual(payload["status"], "pass")
         self.assertTrue(payload["grvt_replay_acceptance"]["contract_pass"])
+        self.assertTrue(
+            payload["natural_evidence_watch"]
+            ["cex_micro_gas_candidate_history"]["valid"]
+        )
+        self.assertEqual(
+            payload["natural_evidence_watch"]
+            ["cex_withdrawal_candidate_history"]["candidate_count"],
+            0,
+        )
+
+    def test_remote_probe_rejects_malformed_natural_candidate_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            write_json(
+                root / "output/alpha_intraday_flow_watch/cex_micro_gas_candidate_history.json",
+                {
+                    "schema": "cex_micro_gas_candidate_history.v1",
+                    "candidate_count": 2,
+                    "candidates": [{}],
+                },
+            )
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertFalse(
+            payload["natural_evidence_watch"]
+            ["cex_micro_gas_candidate_history"]["valid"]
+        )
 
     def test_remote_probe_rejects_false_grvt_predicate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

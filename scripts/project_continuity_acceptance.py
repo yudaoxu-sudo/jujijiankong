@@ -56,6 +56,30 @@ def read_list(path):
     except (OSError, json.JSONDecodeError):
         return []
 
+def candidate_history(path, *, schema=None, schema_version=None):
+    exists = path.exists()
+    if not exists:
+        return {"exists": False, "valid": True, "candidate_count": 0, "updated_at": ""}
+    payload = read_json(path)
+    candidates = payload.get("candidates")
+    try:
+        declared_count = int(payload.get("candidate_count"))
+    except (TypeError, ValueError):
+        declared_count = -1
+    valid = (
+        isinstance(candidates, list)
+        and all(isinstance(row, dict) for row in candidates)
+        and declared_count == len(candidates)
+        and (schema is None or payload.get("schema") == schema)
+        and (schema_version is None or payload.get("schema_version") == schema_version)
+    )
+    return {
+        "exists": True,
+        "valid": valid,
+        "candidate_count": len(candidates) if isinstance(candidates, list) else 0,
+        "updated_at": str(payload.get("updated_at") or payload.get("last_scan_at") or ""),
+    }
+
 health_path = root / "output" / "runtime_health" / "last_cycle.json"
 health = read_json(health_path)
 age = max(0, int(time.time() - health_path.stat().st_mtime)) if health_path.exists() else None
@@ -156,6 +180,15 @@ completed_times = sorted(
 seen_alerts = set(read_list(root / "output" / "alpha_holder_concentration_watch" / "seen_alerts.json"))
 last_push = read_json(root / "output" / "alpha_liquidity_retention_watch" / "last_push.json")
 last_push_keys = set(str(last_push.get("signature") or "").splitlines())
+intraday = read_json(root / "output" / "alpha_intraday_flow_watch" / "latest.json")
+micro_gas_history = candidate_history(
+    root / "output" / "alpha_intraday_flow_watch" / "cex_micro_gas_candidate_history.json",
+    schema="cex_micro_gas_candidate_history.v1",
+)
+withdrawal_history = candidate_history(
+    root / "output" / "alpha_intraday_flow_watch" / "withdrawal_candidate_history.json",
+    schema_version=1,
+)
 grvt_reconciliation_events = []
 for chain, token, reconciliation in reconciliation_scopes:
     for row in reconciliation.get("pending") or []:
@@ -278,6 +311,8 @@ ok = (
     and int(grvt_flow.get("latest_block") or 0) > 0
     and int(grvt_flow.get("latest_block") or 0)
     == int(grvt_flow.get("target_latest_block") or 0)
+    and micro_gas_history["valid"]
+    and withdrawal_history["valid"]
 )
 print(json.dumps({
     "schema": "sniper_remote_health_acceptance.v1",
@@ -368,6 +403,13 @@ print(json.dumps({
             "other",
         ),
         "incremental_catchup": grvt_holder.get("incremental_catchup"),
+    },
+    "natural_evidence_watch": {
+        "intraday_generated_at": str(intraday.get("generated_at") or ""),
+        "intraday_event_count": int(intraday.get("event_count") or 0),
+        "intraday_alert_count": int(intraday.get("alert_count") or 0),
+        "cex_micro_gas_candidate_history": micro_gas_history,
+        "cex_withdrawal_candidate_history": withdrawal_history,
     },
 }, ensure_ascii=False))
 """.strip()
