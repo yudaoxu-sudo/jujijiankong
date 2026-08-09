@@ -27,6 +27,7 @@ DEPLOY_PARITY_PATHS = (
     "scripts/server_run_once.sh",
     "scripts/deploy_to_server.sh",
     "scripts/project_continuity_acceptance.py",
+    "scripts/test_project_continuity_acceptance.py",
 )
 
 REMOTE_PROBE = r"""
@@ -382,6 +383,23 @@ grvt_replay_contract = (
 )
 watchlist = read_json(root / "config" / "current_alpha_watchlist.json")
 item_count = len(watchlist.get("items", [])) if isinstance(watchlist.get("items", []), list) else 0
+grvt_scope_keys = set()
+for watch_item in watchlist.get("items", []):
+    if (
+        not isinstance(watch_item, dict)
+        or str(watch_item.get("symbol") or "").upper() != "GRVT"
+    ):
+        continue
+    for contract in watch_item.get("contracts") or []:
+        if not isinstance(contract, dict):
+            continue
+        contract_chain = str(contract.get("chain") or "").lower()
+        contract_address = str(contract.get("address") or "").lower()
+        if (
+            re.fullmatch(r"[a-z0-9_-]{1,32}", contract_chain)
+            and re.fullmatch(r"0x[0-9a-f]{40}", contract_address)
+        ):
+            grvt_scope_keys.add((contract_chain, contract_address))
 parity_matches = 0
 for relative_path, expected_hash in expected_hashes.items():
     try:
@@ -480,6 +498,17 @@ v2_invalid_or_unsent_final_count = 0
 v2_invalid_pending_count = 0
 missing_contract_version_count = 0
 unsupported_contract_version_count = 0
+historical_scope_id_occurrences = {}
+for _chain, _token, reconciliation in reconciliation_scopes:
+    for collection_name in ("pending", "completed"):
+        for row in reconciliation.get(collection_name) or []:
+            if not isinstance(row, dict):
+                continue
+            reconcile_id = str(row.get("reconcile_id") or "")
+            if reconcile_id in historical_scope_reconcile_ids:
+                historical_scope_id_occurrences[reconcile_id] = (
+                    historical_scope_id_occurrences.get(reconcile_id, 0) + 1
+                )
 for chain, token, reconciliation in reconciliation_scopes:
     for row in reconciliation.get("pending") or []:
         if not isinstance(row, dict):
@@ -585,6 +614,11 @@ for chain, token, reconciliation in reconciliation_scopes:
                 and valid_reconcile_id(row.get("reconcile_id"))
                 and str(row.get("reconcile_id"))
                 in historical_scope_reconcile_ids
+                and historical_scope_id_occurrences.get(
+                    str(row.get("reconcile_id")), 0
+                ) == 1
+                and (str(chain).lower(), str(token).lower())
+                in grvt_scope_keys
             ):
                 historical_unversioned_scope_count += 1
             else:
@@ -970,7 +1004,550 @@ def safe_command_error(value: Any) -> str:
     return "operation_failed"
 
 
-def evaluate(snapshot: dict[str, Any], allow_dirty: bool, remote_required: bool) -> dict[str, Any]:
+def strict_remote_int(value: Any, *, optional: bool = False) -> int | None:
+    if value is None and optional:
+        return None
+    return value if type(value) is int and value >= 0 else None
+
+
+def strict_remote_bool(value: Any, *, optional: bool = False) -> bool | None:
+    if value is None and optional:
+        return None
+    return value if type(value) is bool else None
+
+
+def strict_remote_code(
+    value: Any,
+    allowed: set[str],
+) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value if value in allowed else None
+
+
+def strict_remote_timestamp(
+    value: Any,
+    *,
+    optional: bool = False,
+) -> str | None:
+    if value == "" and optional:
+        return ""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
+def sanitize_remote_runtime(
+    value: Any,
+    *,
+    max_age_seconds: int = 1200,
+) -> tuple[dict[str, Any], bool]:
+    error_payload = {
+        "schema": "sniper_remote_health_acceptance.v1",
+        "status": "error",
+    }
+    if type(max_age_seconds) is not int or max_age_seconds <= 0:
+        return error_payload, False
+    if isinstance(value, dict) and set(value) == {"status"}:
+        status = value.get("status")
+        if status in {"not_requested", "fail", "error"}:
+            return {"status": status}, True
+    top_keys = {
+        "schema",
+        "status",
+        "runtime_status",
+        "runtime_generated_at",
+        "runtime_age_seconds",
+        "runtime_issue_count",
+        "runtime_issue_codes",
+        "runtime_issue_summaries",
+        "verification_exists",
+        "verification_fail_count",
+        "watchlist_item_count",
+        "deployed_hash_parity_count",
+        "deployed_hash_expected_count",
+        "grvt_replay_acceptance",
+        "grvt_liquidity",
+        "grvt_holder",
+        "natural_evidence_watch",
+    }
+    replay_keys = {
+        "status",
+        "issues",
+        "age_seconds",
+        "generated_at",
+        "classification",
+        "code_hash_parity",
+        "contract_pass",
+        "normal_replay_dedup_pass",
+        "replay_duplicate_send_count",
+        "quote_boundary_complete",
+        "range_changed",
+        "relative_materiality_proven",
+        "source_pool_equals_destination_pool",
+    }
+    liquidity_keys = {
+        "status",
+        "issue_count",
+        "alert_ready_count",
+        "alert_count",
+        "complete_count",
+        "cursor",
+        "confirmed_tip",
+        "continuous",
+        "pool_count",
+        "pending_count",
+        "completed_count",
+        "completed_classes",
+        "first_completed_at",
+        "last_completed_at",
+        "enriched_deploy_boundary_utc",
+        "reconciliation_events_since_enriched_deploy",
+        "reconciliation_event_count_since_enriched_deploy",
+        "telegram_seen_ledger_count",
+        "telegram_last_push_sent_at",
+        "verdict_coverage_contract",
+    }
+    contract_keys = {
+        "version",
+        "activated_at_utc",
+        "historical_unversioned_scope_count",
+        "v2_scope_pending_count",
+        "v2_scope_unresolved_count",
+        "v2_scope_legal_final_count",
+        "v2_full_final_count",
+        "v2_invalid_or_unsent_final_count",
+        "v2_invalid_pending_count",
+        "missing_contract_version_count",
+        "unsupported_contract_version_count",
+        "reconciliation_shape_invalid_count",
+        "pass",
+    }
+    holder_keys = {
+        "project_count",
+        "latest_block",
+        "previous_latest_block",
+        "scan_from_block",
+        "scan_to_block",
+        "target_latest_block",
+        "log_error_count",
+        "error_code",
+    }
+    natural_keys = {
+        "intraday_generated_at",
+        "intraday_event_count",
+        "intraday_alert_count",
+        "cex_micro_gas_candidate_history",
+        "cex_withdrawal_candidate_history",
+    }
+    history_keys = {"exists", "valid", "candidate_count", "updated_at"}
+    if not isinstance(value, dict) or set(value) != top_keys:
+        return error_payload, False
+    replay = value.get("grvt_replay_acceptance")
+    liquidity = value.get("grvt_liquidity")
+    holder = value.get("grvt_holder")
+    natural = value.get("natural_evidence_watch")
+    contract = (
+        liquidity.get("verdict_coverage_contract")
+        if isinstance(liquidity, dict)
+        else None
+    )
+    histories = []
+    if isinstance(natural, dict):
+        histories = [
+            natural.get("cex_micro_gas_candidate_history"),
+            natural.get("cex_withdrawal_candidate_history"),
+        ]
+    if (
+        value.get("schema") != "sniper_remote_health_acceptance.v1"
+        or value.get("status") not in {"pass", "fail"}
+        or not isinstance(replay, dict)
+        or set(replay) != replay_keys
+        or not isinstance(liquidity, dict)
+        or set(liquidity) != liquidity_keys
+        or not isinstance(contract, dict)
+        or set(contract) != contract_keys
+        or not isinstance(holder, dict)
+        or set(holder) != holder_keys
+        or not isinstance(natural, dict)
+        or set(natural) != natural_keys
+        or len(histories) != 2
+        or any(not isinstance(row, dict) or set(row) != history_keys for row in histories)
+    ):
+        return error_payload, False
+
+    runtime_status = strict_remote_code(
+        value.get("runtime_status"),
+        {"healthy", "unhealthy", "missing", "error"},
+    )
+    runtime_generated_at = strict_remote_timestamp(
+        value.get("runtime_generated_at"), optional=True
+    )
+    runtime_age = strict_remote_int(
+        value.get("runtime_age_seconds"), optional=True
+    )
+    runtime_issue_count = strict_remote_int(
+        value.get("runtime_issue_count"), optional=True
+    )
+    raw_runtime_issue_codes = value.get("runtime_issue_codes")
+    if (
+        not isinstance(raw_runtime_issue_codes, list)
+        or len(raw_runtime_issue_codes) > 20
+        or any(not isinstance(item, str) for item in raw_runtime_issue_codes)
+    ):
+        return error_payload, False
+    runtime_issue_codes = (
+        [] if not raw_runtime_issue_codes else ["issue_present"]
+    )
+    issue_summaries = value.get("runtime_issue_summaries")
+    if not isinstance(issue_summaries, list) or len(issue_summaries) > 20:
+        return error_payload, False
+    safe_issue_summaries = []
+    for row in issue_summaries:
+        if not isinstance(row, dict) or set(row) != {"kind"}:
+            return error_payload, False
+        if not isinstance(row.get("kind"), str):
+            return error_payload, False
+        safe_issue_summaries.append({"kind": "issue_present"})
+    verification_exists = strict_remote_bool(value.get("verification_exists"))
+    verification_fail_count = strict_remote_int(
+        value.get("verification_fail_count")
+    )
+    watchlist_item_count = strict_remote_int(value.get("watchlist_item_count"))
+    parity_count = strict_remote_int(value.get("deployed_hash_parity_count"))
+    parity_expected = strict_remote_int(value.get("deployed_hash_expected_count"))
+
+    replay_status = strict_remote_code(
+        replay.get("status"),
+        {"pass", "fail", "missing", "error"},
+    )
+    raw_replay_issues = replay.get("issues")
+    if (
+        not isinstance(raw_replay_issues, list)
+        or len(raw_replay_issues) > 20
+        or any(not isinstance(item, str) for item in raw_replay_issues)
+    ):
+        return error_payload, False
+    replay_issues = [] if not raw_replay_issues else ["issue_present"]
+    replay_age = strict_remote_int(replay.get("age_seconds"), optional=True)
+    replay_generated_at = strict_remote_timestamp(
+        replay.get("generated_at"), optional=True
+    )
+    replay_classification = strict_remote_code(
+        replay.get("classification"),
+        {
+            "range_repositioned",
+            "net_removed",
+            "re_added",
+            "migrated",
+            "removed_plus_sold",
+            "missing",
+            "unknown",
+        },
+    )
+    replay_duplicate_count = strict_remote_int(
+        replay.get("replay_duplicate_send_count"), optional=True
+    )
+    replay_bools = {
+        key: strict_remote_bool(replay.get(key), optional=True)
+        for key in (
+            "code_hash_parity",
+            "contract_pass",
+            "normal_replay_dedup_pass",
+            "quote_boundary_complete",
+            "range_changed",
+            "relative_materiality_proven",
+            "source_pool_equals_destination_pool",
+        )
+    }
+
+    liquidity_status = strict_remote_code(
+        liquidity.get("status"),
+        {"healthy", "unhealthy", "missing", "error"},
+    )
+    liquidity_int_keys = (
+        "issue_count",
+        "alert_ready_count",
+        "alert_count",
+        "complete_count",
+        "cursor",
+        "confirmed_tip",
+        "pool_count",
+        "pending_count",
+        "completed_count",
+        "reconciliation_event_count_since_enriched_deploy",
+        "telegram_seen_ledger_count",
+    )
+    liquidity_ints = {
+        key: strict_remote_int(liquidity.get(key), optional=True)
+        for key in liquidity_int_keys
+    }
+    if any(
+        liquidity.get(key) is not None and liquidity_ints[key] is None
+        for key in liquidity_int_keys
+    ):
+        return error_payload, False
+    liquidity_timestamps = {
+        key: strict_remote_timestamp(
+            liquidity.get(key),
+            optional=key != "enriched_deploy_boundary_utc",
+        )
+        for key in (
+            "first_completed_at",
+            "last_completed_at",
+            "enriched_deploy_boundary_utc",
+            "telegram_last_push_sent_at",
+        )
+    }
+    completed_classes = liquidity.get("completed_classes")
+    reconciliation_events = liquidity.get(
+        "reconciliation_events_since_enriched_deploy"
+    )
+    if (
+        any(item is None for item in liquidity_timestamps.values())
+        or liquidity_timestamps["enriched_deploy_boundary_utc"]
+        != "2026-08-06T15:33:40+00:00"
+        or not isinstance(completed_classes, dict)
+        or any(
+            key not in {
+                "net_removed",
+                "range_repositioned",
+                "re_added",
+                "migrated",
+                "removed_plus_sold",
+                "unresolved_coverage",
+                "unknown",
+            }
+            or strict_remote_int(count) is None
+            for key, count in completed_classes.items()
+        )
+        or not isinstance(reconciliation_events, list)
+        or any(not isinstance(row, dict) for row in reconciliation_events)
+        or liquidity_ints[
+            "reconciliation_event_count_since_enriched_deploy"
+        ] != len(reconciliation_events)
+    ):
+        return error_payload, False
+    continuous = strict_remote_bool(liquidity.get("continuous"), optional=True)
+
+    contract_counts = {
+        key: strict_remote_int(contract.get(key))
+        for key in contract_keys
+        if key not in {"version", "activated_at_utc", "pass"}
+    }
+    contract_pass_flag = strict_remote_bool(contract.get("pass"))
+    contract_activated_at = strict_remote_timestamp(
+        contract.get("activated_at_utc")
+    )
+
+    holder_ints = {
+        key: strict_remote_int(holder.get(key), optional=True)
+        for key in holder_keys
+        if key != "error_code"
+    }
+    if any(
+        holder.get(key) is not None and holder_ints[key] is None
+        for key in holder_ints
+    ):
+        return error_payload, False
+    holder_error_code = strict_remote_code(
+        holder.get("error_code"),
+        {
+            "eth_getlogs_coverage_failed",
+            "holder_transfer_coverage_failed",
+            "holder_scan_failed",
+            "deadline_exceeded",
+            "timeout",
+            "provider_error",
+            "other",
+        },
+    )
+
+    intraday_generated_at = strict_remote_timestamp(
+        natural.get("intraday_generated_at"), optional=True
+    )
+    intraday_event_count = strict_remote_int(
+        natural.get("intraday_event_count"), optional=True
+    )
+    intraday_alert_count = strict_remote_int(
+        natural.get("intraday_alert_count"), optional=True
+    )
+    safe_histories = []
+    for row in histories:
+        exists = strict_remote_bool(row.get("exists"))
+        valid = strict_remote_bool(row.get("valid"))
+        candidate_count = strict_remote_int(row.get("candidate_count"))
+        updated_at = strict_remote_timestamp(
+            row.get("updated_at"), optional=True
+        )
+        if None in (exists, valid, candidate_count, updated_at):
+            return error_payload, False
+        safe_histories.append(
+            {
+                "exists": exists,
+                "valid": valid,
+                "candidate_count": candidate_count,
+                "updated_at": updated_at,
+            }
+        )
+
+    required_values = (
+        runtime_status,
+        runtime_generated_at,
+        runtime_age,
+        runtime_issue_count,
+        runtime_issue_codes,
+        verification_exists,
+        verification_fail_count,
+        watchlist_item_count,
+        parity_count,
+        parity_expected,
+        replay_status,
+        replay_issues,
+        replay_age,
+        replay_generated_at,
+        replay_classification,
+        replay_duplicate_count,
+        liquidity_status,
+        continuous,
+        contract_pass_flag,
+        contract_activated_at,
+        holder_error_code,
+        intraday_generated_at,
+        intraday_event_count,
+        intraday_alert_count,
+    )
+    if (
+        any(item is None for item in required_values)
+        or any(item is None for item in replay_bools.values())
+        or any(
+            liquidity_ints[key] is None
+            for key in (
+                "issue_count",
+                "alert_ready_count",
+                "complete_count",
+                "cursor",
+                "confirmed_tip",
+            )
+        )
+        or any(item is None for item in contract_counts.values())
+        or contract.get("version") != "liquidity_verdict_coverage.v2"
+        or contract_activated_at != "2026-08-09T12:41:07+00:00"
+    ):
+        return error_payload, False
+
+    contract_recomputed = (
+        contract_counts["historical_unversioned_scope_count"] <= 3
+        and contract_counts["v2_scope_pending_count"] == 0
+        and contract_counts["v2_scope_unresolved_count"] == 0
+        and contract_counts["v2_invalid_or_unsent_final_count"] == 0
+        and contract_counts["v2_invalid_pending_count"] == 0
+        and contract_counts["missing_contract_version_count"] == 0
+        and contract_counts["unsupported_contract_version_count"] == 0
+        and contract_counts["reconciliation_shape_invalid_count"] == 0
+    )
+    replay_recomputed = (
+        replay_status == "pass"
+        and replay_issues == []
+        and replay_classification == "range_repositioned"
+        and replay_bools["code_hash_parity"] is True
+        and replay_bools["contract_pass"] is True
+        and replay_bools["normal_replay_dedup_pass"] is True
+        and replay_duplicate_count == 0
+        and replay_bools["quote_boundary_complete"] is True
+        and replay_bools["range_changed"] is True
+        and replay_bools["relative_materiality_proven"] is True
+        and replay_bools["source_pool_equals_destination_pool"] is True
+    )
+    remote_recomputed = (
+        runtime_status == "healthy"
+        and runtime_age <= max_age_seconds
+        and runtime_issue_count == 0
+        and runtime_issue_codes == []
+        and safe_issue_summaries == []
+        and verification_exists is True
+        and verification_fail_count == 0
+        and watchlist_item_count > 0
+        and parity_expected == len(DEPLOY_PARITY_PATHS)
+        and parity_count == parity_expected
+        and replay_recomputed
+        and liquidity_status == "healthy"
+        and liquidity_ints["issue_count"] == 0
+        and liquidity_ints["complete_count"] == 1
+        and liquidity_ints["alert_ready_count"] == 1
+        and continuous is True
+        and liquidity_ints["cursor"] > 0
+        and liquidity_ints["cursor"] == liquidity_ints["confirmed_tip"]
+        and contract_pass_flag is True
+        and contract_recomputed
+        and all(row["valid"] is True for row in safe_histories)
+    )
+    safe_contract = {
+        "version": "liquidity_verdict_coverage.v2",
+        "activated_at_utc": contract_activated_at,
+        **contract_counts,
+        "pass": contract_pass_flag,
+    }
+    safe_value = {
+        "schema": "sniper_remote_health_acceptance.v1",
+        "status": (
+            "pass"
+            if value.get("status") == "pass" and remote_recomputed
+            else "fail"
+        ),
+        "runtime_status": runtime_status,
+        "runtime_generated_at": runtime_generated_at,
+        "runtime_age_seconds": runtime_age,
+        "runtime_issue_count": runtime_issue_count,
+        "runtime_issue_codes": runtime_issue_codes,
+        "runtime_issue_summaries": safe_issue_summaries,
+        "verification_exists": verification_exists,
+        "verification_fail_count": verification_fail_count,
+        "watchlist_item_count": watchlist_item_count,
+        "deployed_hash_parity_count": parity_count,
+        "deployed_hash_expected_count": parity_expected,
+        "grvt_replay_acceptance": {
+            "status": replay_status,
+            "issues": replay_issues,
+            "age_seconds": replay_age,
+            "generated_at": replay_generated_at,
+            "classification": replay_classification,
+            **replay_bools,
+            "replay_duplicate_send_count": replay_duplicate_count,
+        },
+        "grvt_liquidity": {
+            "status": liquidity_status,
+            **liquidity_ints,
+            "continuous": continuous,
+            "verdict_coverage_contract": safe_contract,
+        },
+        "grvt_holder": {
+            **holder_ints,
+            "error_code": holder_error_code,
+        },
+        "natural_evidence_watch": {
+            "intraday_generated_at": intraday_generated_at,
+            "intraday_event_count": intraday_event_count,
+            "intraday_alert_count": intraday_alert_count,
+            "cex_micro_gas_candidate_history": safe_histories[0],
+            "cex_withdrawal_candidate_history": safe_histories[1],
+        },
+    }
+    return safe_value, True
+
+
+def evaluate(
+    snapshot: dict[str, Any],
+    allow_dirty: bool,
+    remote_required: bool,
+    remote_max_age_seconds: int = 1200,
+) -> dict[str, Any]:
     issues = [
         issue("command_error", safe_command_error(detail))
         for detail in snapshot.pop("command_errors", [])
@@ -1010,8 +1587,14 @@ def evaluate(snapshot: dict[str, Any], allow_dirty: bool, remote_required: bool)
     if not remote_required and local_runtime.get("runtime_status") != "healthy":
         issues.append(issue("local_runtime_unhealthy", f"status={local_runtime.get('runtime_status', 'missing')}"))
 
-    remote_runtime = snapshot.get("remote_runtime", {"status": "not_requested"})
-    if remote_required and remote_runtime.get("status") != "pass":
+    remote_runtime, remote_payload_valid = sanitize_remote_runtime(
+        snapshot.get("remote_runtime", {"status": "not_requested"}),
+        max_age_seconds=remote_max_age_seconds,
+    )
+    snapshot["remote_runtime"] = remote_runtime
+    if remote_required and (
+        not remote_payload_valid or remote_runtime.get("status") != "pass"
+    ):
         issues.append(issue("remote_runtime_failed", f"status={remote_runtime.get('status', 'missing')}"))
 
     snapshot["status"] = "pass" if not issues else "fail"
@@ -1181,7 +1764,19 @@ def main() -> int:
             snapshot["remote_runtime"] = {"status": "error"}
             snapshot["command_errors"].append("remote: setup_failed")
 
-    payload = evaluate(snapshot, allow_dirty=args.allow_dirty, remote_required=args.remote)
+    remote_policy = policy.get("remote_health", {})
+    try:
+        remote_max_age_seconds = int(
+            remote_policy.get("max_cycle_age_seconds", 1200)
+        )
+    except (AttributeError, TypeError, ValueError):
+        remote_max_age_seconds = 0
+    payload = evaluate(
+        snapshot,
+        allow_dirty=args.allow_dirty,
+        remote_required=args.remote,
+        remote_max_age_seconds=remote_max_age_seconds,
+    )
     configured_output = Path(str(policy.get("output_dir", "../output/project_continuity_acceptance"))).expanduser()
     output_dir = Path(args.output_dir).expanduser() if args.output_dir else configured_output
     if not output_dir.is_absolute():

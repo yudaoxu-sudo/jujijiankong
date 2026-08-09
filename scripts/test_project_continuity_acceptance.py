@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from project_continuity_acceptance import (
+    DEPLOY_PARITY_PATHS,
     REMOTE_PROBE,
     build_remote_command,
     evaluate,
@@ -34,13 +35,8 @@ def write_json(path: Path, payload: object) -> None:
 
 
 def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
-    parity_paths = (
-        "scripts/alpha_holder_concentration_watch.py",
-        "scripts/grvt_liquidity_replay_acceptance.py",
-        "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
-    )
     expected_hashes: dict[str, str] = {}
-    for index, relative_path in enumerate(parity_paths):
+    for index, relative_path in enumerate(DEPLOY_PARITY_PATHS):
         path = root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"fixture-{index}\n", encoding="utf-8")
@@ -62,7 +58,20 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
     verification.write_text("| fixture | PASS | ok |\n", encoding="utf-8")
     write_json(
         root / "config/current_alpha_watchlist.json",
-        {"items": [{"symbol": "GRVT"}]},
+        {
+            "items": [
+                {
+                    "symbol": "GRVT",
+                    "contracts": [
+                        {
+                            "chain": "bsc",
+                            "address": "0x" + "a" * 40,
+                            "confidence": "high",
+                        }
+                    ],
+                }
+            ]
+        },
     )
     write_json(
         root / "output/alpha_liquidity_retention_watch/latest.json",
@@ -171,7 +180,7 @@ def write_reconciliation_fixture(
     sent_reconcile_ids: list[str] | None = None,
 ) -> None:
     chain = "bsc"
-    token = "fixture-token"
+    token = "0x" + "a" * 40
     write_json(
         root / "output/alpha_liquidity_retention_watch/state.json",
         {
@@ -334,6 +343,160 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "fail")
         self.assertIn("remote_runtime_failed", {row["code"] for row in payload["issues"]})
 
+    def test_remote_payload_is_allowlisted_before_persistence(self) -> None:
+        marker = "sensitive-connection-material"
+        snapshot = healthy_snapshot()
+        snapshot["remote_runtime"] = {
+            "status": "pass",
+            "secret_free_text": marker,
+        }
+        payload = evaluate(snapshot, allow_dirty=False, remote_required=True)
+        self.assertEqual(payload["status"], "fail")
+        self.assertIn(
+            "remote_runtime_failed",
+            {row["code"] for row in payload["issues"]},
+        )
+        self.assertNotIn(marker, json.dumps(payload, sort_keys=True))
+        self.assertEqual(
+            payload["remote_runtime"],
+            {
+                "schema": "sniper_remote_health_acceptance.v1",
+                "status": "error",
+            },
+        )
+
+    def test_valid_remote_probe_survives_outer_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            remote_payload = run_remote_probe(root, expected_hashes)
+        snapshot = healthy_snapshot()
+        snapshot["remote_runtime"] = remote_payload
+        payload = evaluate(snapshot, allow_dirty=False, remote_required=True)
+        self.assertEqual(payload["status"], "pass")
+        self.assertEqual(payload["issues"], [])
+        self.assertEqual(
+            payload["remote_runtime"]["schema"],
+            "sniper_remote_health_acceptance.v1",
+        )
+
+    def test_remote_nested_free_text_never_persists(self) -> None:
+        marker = "synthetic_secret_api_key_abc123"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            remote_payload = run_remote_probe(root, expected_hashes)
+
+        holder_payload = json.loads(json.dumps(remote_payload))
+        holder_payload["grvt_holder"]["error_code"] = marker
+        holder_snapshot = healthy_snapshot()
+        holder_snapshot["remote_runtime"] = holder_payload
+        holder_result = evaluate(
+            holder_snapshot,
+            allow_dirty=False,
+            remote_required=True,
+        )
+        self.assertEqual(holder_result["status"], "fail")
+        self.assertNotIn(marker, json.dumps(holder_result, sort_keys=True))
+
+        issue_payload = json.loads(json.dumps(remote_payload))
+        issue_payload["status"] = "fail"
+        issue_payload["runtime_issue_count"] = 1
+        issue_payload["runtime_issue_codes"] = [marker]
+        issue_payload["runtime_issue_summaries"] = [{"kind": marker}]
+        issue_payload["grvt_replay_acceptance"]["status"] = "fail"
+        issue_payload["grvt_replay_acceptance"]["issues"] = [marker]
+        issue_snapshot = healthy_snapshot()
+        issue_snapshot["remote_runtime"] = issue_payload
+        issue_result = evaluate(
+            issue_snapshot,
+            allow_dirty=False,
+            remote_required=True,
+        )
+        self.assertEqual(issue_result["status"], "fail")
+        rendered = json.dumps(issue_result, sort_keys=True)
+        self.assertNotIn(marker, rendered)
+        self.assertIn("issue_present", rendered)
+
+    def test_outer_remote_contract_rejects_forged_typed_fields(self) -> None:
+        marker = "synthetic_private_key_material"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            remote_payload = run_remote_probe(root, expected_hashes)
+
+        mutations = {
+            "runtime_age": lambda row: row.update(
+                {"runtime_age_seconds": 1201}
+            ),
+            "parity_count": lambda row: row.update(
+                {
+                    "deployed_hash_expected_count": 1,
+                    "deployed_hash_parity_count": 1,
+                }
+            ),
+            "activation_time": lambda row: row["grvt_liquidity"][
+                "verdict_coverage_contract"
+            ].update({"activated_at_utc": "2030-01-01T00:00:00+00:00"}),
+            "optional_int": lambda row: row["grvt_liquidity"].update(
+                {"alert_count": marker}
+            ),
+            "holder_int": lambda row: row["grvt_holder"].update(
+                {"latest_block": {"value": marker}}
+            ),
+            "timestamp_overflow": lambda row: row.update(
+                {"runtime_generated_at": "0001-01-01T00:00:00+14:00"}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                candidate = json.loads(json.dumps(remote_payload))
+                mutate(candidate)
+                snapshot = healthy_snapshot()
+                snapshot["remote_runtime"] = candidate
+                result = evaluate(
+                    snapshot,
+                    allow_dirty=False,
+                    remote_required=True,
+                )
+                self.assertEqual(result["status"], "fail")
+                self.assertNotIn(
+                    marker,
+                    json.dumps(result, sort_keys=True),
+                )
+
+    def test_outer_remote_runtime_age_uses_policy_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            remote_payload = run_remote_probe(root, expected_hashes)
+        remote_payload["runtime_age_seconds"] = 11
+        snapshot = healthy_snapshot()
+        snapshot["remote_runtime"] = remote_payload
+        payload = evaluate(
+            snapshot,
+            allow_dirty=False,
+            remote_required=True,
+            remote_max_age_seconds=10,
+        )
+        self.assertEqual(payload["status"], "fail")
+
+    def test_outer_accepts_old_replay_when_contract_hashes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            stale = time.time() - 86400
+            os.utime(replay_path, (stale, stale))
+            remote_payload = run_remote_probe(root, expected_hashes)
+        self.assertGreater(
+            remote_payload["grvt_replay_acceptance"]["age_seconds"],
+            1200,
+        )
+        snapshot = healthy_snapshot()
+        snapshot["remote_runtime"] = remote_payload
+        payload = evaluate(snapshot, allow_dirty=False, remote_required=True)
+        self.assertEqual(payload["status"], "pass")
+
     def test_missing_local_verification_fails(self) -> None:
         snapshot = healthy_snapshot()
         snapshot["local_runtime"]["verification_exists"] = False
@@ -474,6 +637,93 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 ],
             }
             write_reconciliation_fixture(root, completed=[row])
+            payload = run_remote_probe(root, expected_hashes)
+        contract = payload["grvt_liquidity"]["verdict_coverage_contract"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(contract["historical_unversioned_scope_count"], 0)
+        self.assertEqual(contract["missing_contract_version_count"], 1)
+
+    def test_remote_probe_rejects_duplicate_historical_scope_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            row = {
+                "reconcile_id": HISTORICAL_SCOPE_RECONCILE_IDS[0],
+                "classification": "unresolved_coverage",
+                "completed_at": "2026-08-08T01:00:00+00:00",
+                "evidence_coverage_issues": [
+                    "recipient_next_hop_scope_exceeded"
+                ],
+            }
+            write_reconciliation_fixture(
+                root,
+                completed=[dict(row), dict(row)],
+            )
+            payload = run_remote_probe(root, expected_hashes)
+        contract = payload["grvt_liquidity"]["verdict_coverage_contract"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(contract["historical_unversioned_scope_count"], 0)
+        self.assertEqual(contract["missing_contract_version_count"], 2)
+
+    def test_remote_probe_rejects_historical_id_reused_by_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            reconcile_id = HISTORICAL_SCOPE_RECONCILE_IDS[0]
+            completed = {
+                "reconcile_id": reconcile_id,
+                "classification": "unresolved_coverage",
+                "completed_at": "2026-08-08T01:00:00+00:00",
+                "evidence_coverage_issues": [
+                    "recipient_next_hop_scope_exceeded"
+                ],
+            }
+            pending = {
+                "reconcile_id": reconcile_id,
+                "verdict_coverage_contract_version": (
+                    "liquidity_verdict_coverage.v2"
+                ),
+                "first_seen_at": "2026-08-09T13:00:00+00:00",
+                "evidence_coverage_issues": [],
+            }
+            write_reconciliation_fixture(
+                root,
+                pending=[pending],
+                completed=[completed],
+            )
+            payload = run_remote_probe(root, expected_hashes)
+        contract = payload["grvt_liquidity"]["verdict_coverage_contract"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(contract["historical_unversioned_scope_count"], 0)
+        self.assertEqual(contract["missing_contract_version_count"], 1)
+
+    def test_remote_probe_rejects_historical_id_outside_grvt_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            row = {
+                "reconcile_id": HISTORICAL_SCOPE_RECONCILE_IDS[0],
+                "classification": "unresolved_coverage",
+                "completed_at": "2026-08-08T01:00:00+00:00",
+                "evidence_coverage_issues": [
+                    "recipient_next_hop_scope_exceeded"
+                ],
+            }
+            write_json(
+                root / "output/alpha_liquidity_retention_watch/state.json",
+                {
+                    "tokens": {
+                        "ethereum:0x" + "b" * 40: {
+                            "liquidity": {
+                                "reconciliation": {
+                                    "pending": [],
+                                    "completed": [row],
+                                }
+                            }
+                        }
+                    }
+                },
+            )
             payload = run_remote_probe(root, expected_hashes)
         contract = payload["grvt_liquidity"]["verdict_coverage_contract"]
         self.assertEqual(payload["status"], "fail")
