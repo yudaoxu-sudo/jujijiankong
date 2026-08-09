@@ -19,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "project_continuity.json"
 DEPLOY_PARITY_PATHS = (
+    "config/current_alpha_watchlist.json",
     "scripts/alpha_holder_concentration_watch.py",
     "scripts/alpha_liquidity_retention_watch.py",
     "scripts/test_aeon_monitor_regression.py",
@@ -28,6 +29,7 @@ DEPLOY_PARITY_PATHS = (
     "scripts/deploy_to_server.sh",
     "scripts/project_continuity_acceptance.py",
     "scripts/test_project_continuity_acceptance.py",
+    "scripts/verify_sniper_engine.py",
 )
 
 REMOTE_PROBE = r"""

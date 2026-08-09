@@ -73,6 +73,11 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
             ]
         },
     )
+    watchlist_path = root / "config/current_alpha_watchlist.json"
+    if "config/current_alpha_watchlist.json" in expected_hashes:
+        expected_hashes["config/current_alpha_watchlist.json"] = (
+            hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+        )
     write_json(
         root / "output/alpha_liquidity_retention_watch/latest.json",
         {

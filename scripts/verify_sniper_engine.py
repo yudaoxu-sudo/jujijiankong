@@ -2476,9 +2476,9 @@ assert readback_gate['can_follow'] is False, readback_gate
             and o_item.get("active_monitoring") is False
             and policy == {
                 "mode": "exclusive_symbols",
-                "symbols": ["GRVT"],
+                "symbols": ["DOS", "GRVT"],
             }
-            and active_symbols == ["GRVT"]
+            and active_symbols == ["DOS", "GRVT"]
             and all("active_monitoring" in item for item in items)
             and bool(arx_item.get("market_context"))
             and bool(nes_item.get("contracts"))

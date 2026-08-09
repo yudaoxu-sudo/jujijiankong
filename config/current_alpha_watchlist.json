@@ -1,8 +1,9 @@
 {
-  "generated_at": "2026-08-01T13:35:42+00:00",
+  "generated_at": "2026-08-09T16:13:15+00:00",
   "monitoring_policy": {
     "mode": "exclusive_symbols",
     "symbols": [
+      "DOS",
       "GRVT"
     ]
   },
@@ -654,6 +655,310 @@
         "project_name": "Data Network",
         "raw_symbol": "WDATAIP",
         "display_symbol": "DATA"
+      }
+    },
+    {
+      "symbol": "DOS",
+      "name": "DAPPOS",
+      "priority": "P0_PRELAUNCH",
+      "chain": "bsc",
+      "active_monitoring": true,
+      "opening_max_age_hours": 720,
+      "opening_liquidity_max_age_seconds": 2592000,
+      "intraday_max_age_hours": 72,
+      "project_lookback_blocks": 250000,
+      "project_operator_probe": "owner",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+          "confidence": "canonical_pancake_pool_key_match_official_catalog_pending"
+        }
+      ],
+      "pool_ids": [
+        {
+          "chain": "bsc",
+          "pool_id": "0x2e9c6c234e0a93c85979ae939561543186fa6341cb52b00323eb99cfc8d98ac8",
+          "start_time_utc8": "2026-08-10 17:00:00",
+          "hook": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+          "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+          "pair": "USDT/DOS",
+          "confirmation": "canonical Pancake Infinity CL pool key and hook timestamp verified; official Binance catalog mapping pending"
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha first feature",
+        "Binance Alpha Points airdrop",
+        "DAPPOS airdrop"
+      ],
+      "known_times": [
+        {
+          "time": "2026-08-10 17:00",
+          "reason": "canonical_pool_hook_timestamp_official_venue_time_pending"
+        }
+      ],
+      "event_schedule": [
+        {
+          "event_type": "alpha_open",
+          "venue": "Binance Alpha",
+          "time_utc8": "2026-08-10 17:00",
+          "time_precision": "exact",
+          "authority": "onchain_canonical_pool_hook",
+          "verification_status": "verified_pool_key_and_hook_timestamp_official_venue_time_pending",
+          "evidence_ids": [
+            "dos-onchain-pool-start",
+            "dos-onchain-pool-initialize"
+          ]
+        },
+        {
+          "event_type": "airdrop_claim",
+          "venue": "Binance Alpha",
+          "time_utc8": "2026-08-10 17:00",
+          "time_precision": "exact",
+          "authority": "binance_wallet_official",
+          "verification_status": "verified_date_claim_on_open_time_from_canonical_pool_hook",
+          "evidence_ids": [
+            "dos-binance-wallet-official",
+            "dos-onchain-pool-start",
+            "dos-onchain-pool-initialize"
+          ]
+        }
+      ],
+      "required_checks": [
+        "official_catalog_contract_match",
+        "official_trading_pair_and_time",
+        "receipt_verified_pool",
+        "pool_active_range_depth",
+        "buy_depth_simulation",
+        "sellability",
+        "supply_bucket_address_map",
+        "airdrop_unlock_and_claim",
+        "cross_chain_inventory",
+        "cex_deposit_and_trading_status",
+        "opening_forecast_vs_actual"
+      ],
+      "prelaunch_research": {
+        "schema_version": "alpha_prelaunch_research.v1",
+        "revision": 2,
+        "as_of": "2026-08-09T16:13:15+00:00",
+        "research_status": "blocked",
+        "evidence": [
+          {
+            "evidence_id": "dos-binance-wallet-official",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/BinanceWallet/status/2086355840311926814",
+            "published_at": "2026-08-09T07:36:09+00:00",
+            "observed_at": "2026-08-09T14:35:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "dos-dappos-official-retweet",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/BinanceWallet/status/2086355840311926814",
+            "observed_at": "2026-08-09T14:35:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "dos-onchain-pool-start",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:0xa02d27fee945c0263ae1771447635480d8186a0b67289bee11f881f369c29c03",
+            "observed_at": "2026-08-09T14:40:00+00:00",
+            "verification_status": "verified_receipt"
+          },
+          {
+            "evidence_id": "dos-onchain-pool-initialize",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:0xece2c54ca2f6d05c6d05b08c78e0793d13bdf19d26b4ef0d7c0654febc887fa4",
+            "published_at": "2026-08-09T08:10:50+00:00",
+            "observed_at": "2026-08-09T15:25:41+00:00",
+            "verification_status": "verified_receipt_and_canonical_pool_key"
+          },
+          {
+            "evidence_id": "dos-onchain-pool-state",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:pool-state:0x2e9c6c234e0a93c85979ae939561543186fa6341cb52b00323eb99cfc8d98ac8:114958833",
+            "observed_at": "2026-08-09T16:13:15+00:00",
+            "verification_status": "verified_coherent_block_read"
+          },
+          {
+            "evidence_id": "dos-social-anchor",
+            "evidence_kind": "social",
+            "source_ref": "https://x.com/2024macbookpro/status/2086066151042560401",
+            "published_at": "2026-08-08T12:25:02+00:00",
+            "observed_at": "2026-08-09T14:35:00+00:00",
+            "verification_status": "unverified_claims_only"
+          }
+        ],
+        "identity": {
+          "chain": "bsc",
+          "contract": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+          "name": "DAPPOS",
+          "symbol": "DOS",
+          "decimals": 18,
+          "total_supply": "45000000",
+          "owner": "0x19a94d621eb4c337e91cef3c72f015a43d341e62",
+          "paused": false,
+          "source_status": "unverified",
+          "proxy_status": "no_eip1967_implementation_readback_unresolved",
+          "mint_status": "unresolved",
+          "blacklist_status": "unresolved",
+          "verification_status": "canonical_pool_key_match_official_contract_pending",
+          "evidence_ids": [
+            "dos-onchain-pool-start",
+            "dos-onchain-pool-initialize"
+          ]
+        },
+        "timeline": [
+          {
+            "event": "alpha_open",
+            "venue": "Binance Alpha",
+            "time_utc": "2026-08-10T09:00:00+00:00",
+            "time_utc8": "2026-08-10 17:00",
+            "time_precision": "exact",
+            "authority": "onchain_canonical_pool_hook",
+            "verification_status": "verified_pool_key_and_hook_timestamp_official_venue_time_pending",
+            "evidence_ids": [
+              "dos-onchain-pool-start",
+              "dos-onchain-pool-initialize"
+            ]
+          }
+        ],
+        "pool": {
+          "pool_model": "pancakeswap_infinity_cl_manager_pool_id",
+          "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+          "hook": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+          "pool_id": "0x2e9c6c234e0a93c85979ae939561543186fa6341cb52b00323eb99cfc8d98ac8",
+          "opening_timestamp_utc": "2026-08-10T09:00:00+00:00",
+          "opening_timestamp_utc8": "2026-08-10 17:00",
+          "setter_transaction": "0xa02d27fee945c0263ae1771447635480d8186a0b67289bee11f881f369c29c03",
+          "setter_transaction_index": 38,
+          "setter_function_selector": "0x70e2af29",
+          "setter_function_candidate": "setPoolStartedTimestamp(bytes32,uint256)",
+          "receipt_status": "success",
+          "actual_pool_address": "",
+          "pool_locator_status": "canonical_manager_pool_id",
+          "pair": "USDT/DOS",
+          "dex": "PancakeSwap Infinity CL",
+          "pool_key": {
+            "token0": "0x55d398326f99059ff775485246999027b3197955",
+            "token1": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+            "hook": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+            "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+            "fee": 67,
+            "parameters": "0x00000000000000000000000000000000000000000000000000000000000a0045"
+          },
+          "initialization": {
+            "transaction": "0xece2c54ca2f6d05c6d05b08c78e0793d13bdf19d26b4ef0d7c0654febc887fa4",
+            "block": 114894536,
+            "block_hash": "0x0ae4236726d55938305e9d86f20cda2f8826b15b67c5198654a9ec8a0984f5c0",
+            "block_time_utc": "2026-08-09T08:10:50+00:00",
+            "transaction_index": 192,
+            "log_index": 1629,
+            "receipt_status": "success",
+            "sqrt_price_x96": "250541448375047931186413801569",
+            "tick": 23027,
+            "initial_price_usdt_per_dos": "0.1"
+          },
+          "state": {
+            "as_of_block": 114958833,
+            "as_of_block_hash": "0x0a24189cc0774ca3a60d495c3306dacb78ea56b566fbce9f25c0d2a1ef41187b",
+            "as_of_time_utc": "2026-08-09T16:13:15+00:00",
+            "sqrt_price_x96": "250541448375047931186413801569",
+            "tick": 23027,
+            "active_liquidity": "0",
+            "status": "initialized_out_of_range_active_liquidity_zero"
+          },
+          "segments": [
+            {
+              "position_manager": "0x55f4c8aba71a1e923edc303eb4feff14608cc226",
+              "position_id": 1001030,
+              "owner": "0x605eb2f898d96b304eaa5d407a55f16a6c843325",
+              "tick_lower": 23120,
+              "tick_upper": 29950,
+              "liquidity": "3843813906800987272747984",
+              "initial_quote_deposit_usdt": "350000",
+              "range_status": "out_of_range_above_current_tick",
+              "evidence_transaction": "0xece2c54ca2f6d05c6d05b08c78e0793d13bdf19d26b4ef0d7c0654febc887fa4"
+            }
+          ],
+          "sellability": "blocked_no_active_liquidity"
+        },
+        "supply": {
+          "total_supply": "45000000",
+          "allocations": [],
+          "cross_chain": []
+        },
+        "venues": {
+          "cex": [
+            {
+              "venue": "Binance Alpha",
+              "market": "alpha",
+              "deposit_state": "unknown",
+              "trading_state": "announced_not_open",
+              "verification_status": "official_date_only",
+              "evidence_ids": [
+                "dos-binance-wallet-official"
+              ]
+            },
+            {
+              "venue": "Upbit",
+              "market": "unknown",
+              "deposit_state": "unknown",
+              "trading_state": "rumor_unverified",
+              "verification_status": "unverified",
+              "evidence_ids": [
+                "dos-social-anchor"
+              ]
+            }
+          ]
+        },
+        "actors": {
+          "market_makers": []
+        },
+        "opening_forecast": {},
+        "opening_actual": {},
+        "sniper_curve": [],
+        "valuation": {
+          "anchors": [],
+          "prediction_markets": []
+        },
+        "sell_pressure_scenarios": [],
+        "decision": {
+          "action": "Observe",
+          "automatic_trading": false,
+          "summary": "官方确认 Binance Alpha 首发日期与开盘后 Alpha Points 空投；canonical USDT/DOS PoolKey、初始化回执与单边 USDT position 已闭合，当前活动流动性为 0；官方 catalog 合约映射、源码控制项与可交易深度仍 fail-closed。",
+          "entry_conditions": [
+            "Binance Alpha public catalog contract exact match",
+            "active liquidity and sellability become reproducible",
+            "100k/200k/400k/1m depth curve becomes reproducible",
+            "opening cohort and buyer stack are attributable"
+          ],
+          "exit_triggers": [
+            "official contract or time conflicts with candidate",
+            "sellability fails",
+            "active range exhausts under intended size",
+            "project/MM single-sided sell liquidity or CEX inflow appears",
+            "airdrop or bridge residual supply overwhelms verified depth"
+          ]
+        },
+        "missing_fields": [
+          "identity.official_contract",
+          "identity.verified_source_and_proxy",
+          "identity.mint_pause_blacklist_controls",
+          "pool.active_depth_and_sellability",
+          "pool.additional_opening_liquidity",
+          "supply.address_map_and_remaining_supply",
+          "supply.airdrop_lock_bridge_inventory",
+          "venues.trading_pair_deposit_claim_state",
+          "sniper_curve"
+        ],
+        "conflicts": []
+      },
+      "facts": {
+        "project_name": "DAPPOS",
+        "raw_symbol": "DOS",
+        "display_symbol": "DOS",
+        "research_source_policy": "official_onchain_market_social_inference_separated"
       }
     },
     {

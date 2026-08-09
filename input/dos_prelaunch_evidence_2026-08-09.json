@@ -1,0 +1,177 @@
+{
+  "schema": "dos_prelaunch_evidence.v1",
+  "generated_at": "2026-08-09T16:13:15+00:00",
+  "symbol": "DOS",
+  "chain": "bsc",
+  "verdict": "Observe",
+  "automatic_trading": false,
+  "official": {
+    "binance_alpha": {
+      "status": "verified_date_only",
+      "claim": "Binance Alpha will be the first platform to feature DAPPOS (DOS) on August 10; eligible users may claim with Alpha Points once trading opens.",
+      "source": "https://x.com/BinanceWallet/status/2086355840311926814",
+      "published_at": "2026-08-09T07:36:09+00:00",
+      "missing": [
+        "contract",
+        "exact_time",
+        "trading_pair",
+        "deposit_state",
+        "claim_terms"
+      ],
+      "catalog_contract_status": "pending_not_present_as_of_2026-08-09T16:13:01Z"
+    },
+    "dappos": {
+      "status": "verified_retweet_and_airdrop_portal",
+      "sources": [
+        "https://x.com/BinanceWallet/status/2086355840311926814",
+        "https://dappos.com/airdrop"
+      ]
+    },
+    "upbit": {
+      "status": "rumor_unverified",
+      "official_evidence_found": false
+    }
+  },
+  "social": {
+    "source": "https://x.com/2024macbookpro/status/2086066151042560401",
+    "published_at": "2026-08-08T12:25:02+00:00",
+    "status": "discovery_only",
+    "claims": [
+      "2026-08-10 17:00 UTC+8 opening",
+      "candidate BSC contract",
+      "Alpha airdrop",
+      "Upbit follow expectation"
+    ]
+  },
+  "onchain": {
+    "token_candidate": {
+      "address": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+      "code_present": true,
+      "name": "DAPPOS",
+      "symbol": "DOS",
+      "decimals": 18,
+      "total_supply": "45000000",
+      "owner": "0x19a94d621eb4c337e91cef3c72f015a43d341e62",
+      "paused": false,
+      "source_status": "unverified",
+      "proxy_status": "no_eip1967_implementation_readback_unresolved",
+      "mint_status": "unresolved",
+      "blacklist_status": "unresolved",
+      "official_contract_match": "pending",
+      "canonical_pool_key_match": true
+    },
+    "setter_receipt": {
+      "chain_id": 56,
+      "transaction": "0xa02d27fee945c0263ae1771447635480d8186a0b67289bee11f881f369c29c03",
+      "status": "success",
+      "block": 114736236,
+      "transaction_index": 38,
+      "pool_manager": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+      "selector": "0x70e2af29",
+      "function_candidate": "setPoolStartedTimestamp(bytes32,uint256)",
+      "pool_id": "0x2e9c6c234e0a93c85979ae939561543186fa6341cb52b00323eb99cfc8d98ac8",
+      "opening_timestamp": 1786352400,
+      "opening_time_utc": "2026-08-10T09:00:00+00:00",
+      "opening_time_utc8": "2026-08-10 17:00",
+      "log_count": 1,
+      "pool_token_link_status": "verified_by_canonical_cl_pool_key"
+    }
+  },
+  "pool": {
+    "status": "initialized_active_liquidity_zero",
+    "model": "pancakeswap_infinity_cl_manager_pool_id",
+    "manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+    "hook": "0xb0baa371b899950b4ef6a27c21baf5ef7c434d0f",
+    "pool_id": "0x2e9c6c234e0a93c85979ae939561543186fa6341cb52b00323eb99cfc8d98ac8",
+    "actual_address": null,
+    "pair": "USDT/DOS",
+    "pool_key": {
+      "token0": "0x55d398326f99059ff775485246999027b3197955",
+      "token1": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+      "fee": 67,
+      "parameters": "0x00000000000000000000000000000000000000000000000000000000000a0045"
+    },
+    "initialization": {
+      "transaction": "0xece2c54ca2f6d05c6d05b08c78e0793d13bdf19d26b4ef0d7c0654febc887fa4",
+      "block": 114894536,
+      "block_hash": "0x0ae4236726d55938305e9d86f20cda2f8826b15b67c5198654a9ec8a0984f5c0",
+      "time_utc": "2026-08-09T08:10:50+00:00",
+      "transaction_index": 192,
+      "log_index": 1629,
+      "receipt_status": "success",
+      "sqrt_price_x96": "250541448375047931186413801569",
+      "tick": 23027,
+      "initial_price_usdt_per_dos": "0.1"
+    },
+    "lp_positions": [
+      {
+        "position_manager": "0x55f4c8aba71a1e923edc303eb4feff14608cc226",
+        "position_id": 1001030,
+        "owner": "0x605eb2f898d96b304eaa5d407a55f16a6c843325",
+        "tick_lower": 23120,
+        "tick_upper": 29950,
+        "liquidity": "3843813906800987272747984",
+        "initial_quote_deposit_usdt": "350000",
+        "range_status": "out_of_range_above_current_tick"
+      }
+    ],
+    "state": {
+      "as_of_block": 114958833,
+      "as_of_block_hash": "0x0a24189cc0774ca3a60d495c3306dacb78ea56b566fbce9f25c0d2a1ef41187b",
+      "as_of_time_utc": "2026-08-09T16:13:15+00:00",
+      "sqrt_price_x96": "250541448375047931186413801569",
+      "tick": 23027,
+      "active_liquidity": "0"
+    },
+    "token_depth": null,
+    "quote_depth": null,
+    "sellability": "blocked_no_active_liquidity"
+  },
+  "capacity": {
+    "status": "blocked_missing_actual_liquidity",
+    "as_of_block": 114958833,
+    "observed_active_liquidity": "0",
+    "buy_pressure_usd": [
+      100000,
+      200000,
+      400000,
+      1000000
+    ],
+    "simulations": [],
+    "reason": "The canonical pool is initialized with one out-of-range USDT position, while current active liquidity is zero; buy-depth and sellability simulations are not reproducible."
+  },
+  "supply": {
+    "address_map_status": "unresolved",
+    "project_alpha_cex_mm_airdrop_lock_bridge_buckets": [],
+    "remaining_supply_status": "unresolved"
+  },
+  "monitoring": {
+    "active_target": true,
+    "exclusive_active_symbols": [
+      "DOS",
+      "GRVT"
+    ],
+    "reuse_existing_flows": [
+      "prelaunch",
+      "opening",
+      "holder",
+      "liquidity",
+      "intraday",
+      "price",
+      "perp",
+      "position",
+      "daily",
+      "runtime_health"
+    ],
+    "classification_policy": "unknown_when_attribution_evidence_is_insufficient"
+  },
+  "invalidation": [
+    "official catalog contract differs",
+    "official opening time differs",
+    "candidate poolId does not resolve to DOS pair",
+    "sellability fails",
+    "active range is exhausted by intended size",
+    "project or MM single-sided sell liquidity appears",
+    "airdrop or bridge residual supply overwhelms verified depth"
+  ]
+}

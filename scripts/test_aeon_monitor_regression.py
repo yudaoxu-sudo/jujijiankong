@@ -24358,7 +24358,7 @@ raise SystemExit(0 if ok else 1)
             fast_source,
         )
 
-    def test_fast_health_identity_hash_matches_exclusive_grvt_focus(
+    def test_fast_health_identity_hash_matches_exclusive_dos_grvt_focus(
         self,
     ) -> None:
         import scripts.alpha_liquidity_retention_watch as fast
@@ -24366,7 +24366,11 @@ raise SystemExit(0 if ok else 1)
         import scripts.fast_lane_health as health
 
         grvt_address = self._address("1")
-        policy = {"mode": "exclusive_symbols", "symbols": ["GRVT"]}
+        dos_address = self._address("3")
+        policy = {
+            "mode": "exclusive_symbols",
+            "symbols": ["DOS", "GRVT"],
+        }
         watchlist = {
             "monitoring_policy": policy,
             "monitoring_policy_fingerprint": (
@@ -24382,6 +24386,14 @@ raise SystemExit(0 if ok else 1)
                     ],
                 },
                 {
+                    "symbol": "DOS",
+                    "priority": "P0_PRELAUNCH",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": dos_address}
+                    ],
+                },
+                {
                     "symbol": "AEON",
                     "priority": "P1_MONITOR",
                     "active_monitoring": False,
@@ -24392,7 +24404,10 @@ raise SystemExit(0 if ok else 1)
             ],
         }
         expected_hash = fast.stable_identity_hash(
-            [{"chain": "bsc", "address": grvt_address}]
+            [
+                {"chain": "bsc", "address": dos_address},
+                {"chain": "bsc", "address": grvt_address},
+            ]
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -24414,7 +24429,7 @@ raise SystemExit(0 if ok else 1)
                     health.monitoring_scope_issue(liquidity_path),
                     "",
                 )
-                watchlist["items"][1]["active_monitoring"] = True
+                watchlist["items"][2]["active_monitoring"] = True
                 watchlist_path.write_text(
                     json.dumps(watchlist),
                     encoding="utf-8",
@@ -24432,7 +24447,8 @@ raise SystemExit(0 if ok else 1)
                     catalog.monitoring_policy_fingerprint(wrong_policy)
                 )
                 watchlist["items"][0]["active_monitoring"] = False
-                watchlist["items"][1]["active_monitoring"] = True
+                watchlist["items"][1]["active_monitoring"] = False
+                watchlist["items"][2]["active_monitoring"] = True
                 watchlist_path.write_text(
                     json.dumps(watchlist),
                     encoding="utf-8",
