@@ -18317,6 +18317,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             if method == "eth_getTransactionReceipt":
                 return {
                     "status": "0x1",
+                    "transactionHash": source_tx,
                     "blockHash": block_hash,
                     "blockNumber": "0x64",
                     "logs": [],
@@ -18377,6 +18378,446 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             )
         self.assertTrue(result["coverage_complete"])
         self.assertEqual(result["coverage_issues"], [])
+
+    @classmethod
+    def _evidence_transfer_log(
+        cls,
+        *,
+        asset: str,
+        source: str,
+        destination: str,
+        tx_hash: str,
+        block: int,
+        block_hash: str,
+        log_index: int,
+        amount: int = 1,
+    ) -> dict[str, object]:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        return {
+            "address": asset,
+            "blockNumber": hex(block),
+            "blockHash": block_hash,
+            "logIndex": hex(log_index),
+            "transactionHash": tx_hash,
+            "topics": [
+                holder.TRANSFER_TOPIC,
+                holder.topic_address(source),
+                holder.topic_address(destination),
+            ],
+            "data": cls._data(amount),
+            "removed": False,
+        }
+
+    @staticmethod
+    def _complete_liquidity_verdict_evidence(
+        source_event_utc: str,
+        *,
+        active_range: str = "active",
+        spot_tick: int = 0,
+        liquidity_before: str = "1000",
+        liquidity_after: str = "900",
+        price_5m: str = "-1.25",
+        price_15m: str = "-3.5",
+    ) -> dict[str, object]:
+        return {
+            "coverage_complete": True,
+            "verdict_coverage_contract_version": (
+                "liquidity_verdict_coverage.v2"
+            ),
+            "coverage_issues": [],
+            "source_receipt_canonical": True,
+            "source_event_utc": source_event_utc,
+            "active_range_vs_spot": active_range,
+            "spot_tick": spot_tick,
+            "pool_liquidity_before": liquidity_before,
+            "pool_liquidity_after": liquidity_after,
+            "recipient_next_hop": {
+                "status": "no_outbound_observed",
+                "coverage_complete": True,
+                "attribution_complete": False,
+                "enumeration_complete": True,
+                "existence_complete": True,
+                "recipient_count": 1,
+                "canonical_transaction_count": 0,
+                "observed_transaction_count_lower_bound": 0,
+                "scope_limit": 16,
+            },
+            "price_reaction_5m_pct": price_5m,
+            "price_reaction_15m_pct": price_15m,
+            "evidence_level": "receipt_canonical_bounded_15m",
+        }
+
+    def _collect_liquidity_evidence_case(
+        self,
+        rows_by_asset: dict[str, list[dict[str, object]]],
+        *,
+        direct_pairs: list[tuple[str, str, int]] | None = None,
+        source_logs_extra: list[dict[str, object]] | None = None,
+        source_receipt_overrides: dict[str, object] | None = None,
+        next_receipt_overrides: dict[str, dict[str, object]] | None = None,
+    ) -> tuple[dict[str, object], list[str]]:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        quote = self._address("2")
+        pool = self._address("3")
+        recipient = self._address("4")
+        source_tx = self._hash("a")
+        source_block_hash = self._hash("f")
+        pairs = direct_pairs or [(token, recipient, 10)]
+        source_logs = [
+            self._evidence_transfer_log(
+                asset=asset,
+                source=pool,
+                destination=destination,
+                tx_hash=source_tx,
+                block=100,
+                block_hash=source_block_hash,
+                log_index=log_index,
+            )
+            for asset, destination, log_index in pairs
+        ]
+        source_logs.extend(source_logs_extra or [])
+        source_receipt: dict[str, object] = {
+            "status": "0x1",
+            "transactionHash": source_tx,
+            "blockHash": source_block_hash,
+            "blockNumber": "0x64",
+            "logs": source_logs,
+        }
+        source_receipt.update(source_receipt_overrides or {})
+        receipt_calls: list[str] = []
+        receipt_by_tx: dict[str, dict[str, object]] = {}
+        for rows in rows_by_asset.values():
+            for row in rows:
+                tx_hash = str(row.get("transactionHash") or "")
+                receipt_by_tx.setdefault(
+                    tx_hash,
+                    {
+                        "status": "0x1",
+                        "transactionHash": tx_hash,
+                        "blockHash": row.get("blockHash"),
+                        "blockNumber": row.get("blockNumber"),
+                    },
+                )
+        for tx_hash, overrides in (next_receipt_overrides or {}).items():
+            receipt_by_tx.setdefault(tx_hash, {}).update(overrides)
+
+        def rpc(_chain: str, method: str, params: list[object]) -> object:
+            if method == "eth_getTransactionReceipt":
+                tx_hash = str(params[0])
+                if tx_hash == source_tx:
+                    return source_receipt
+                receipt_calls.append(tx_hash)
+                return receipt_by_tx.get(tx_hash)
+            if method == "eth_getLogs":
+                query = params[0]
+                if query["address"] == pool:
+                    return [{
+                        "transactionHash": source_tx,
+                        "blockHash": source_block_hash,
+                    }]
+                return rows_by_asset.get(str(query["address"]), [])
+            raise AssertionError((method, params))
+
+        with (
+            mock.patch.object(holder, "holder_rpc_call", side_effect=rpc),
+            mock.patch.object(
+                holder,
+                "_canonical_block",
+                return_value={
+                    "number": 100,
+                    "hash": source_block_hash,
+                    "timestamp": 1000,
+                },
+            ),
+            mock.patch.object(
+                holder,
+                "_block_at_or_after_timestamp",
+                side_effect=[
+                    {"number": 110, "hash": self._hash("c"), "timestamp": 1300},
+                    {"number": 130, "hash": self._hash("d"), "timestamp": 1900},
+                ],
+            ),
+            mock.patch.object(
+                holder,
+                "_v3_state_at",
+                side_effect=[
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 1000},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                    {"sqrt_price_x96": 2**96, "tick": 0, "liquidity": 900},
+                ],
+            ),
+        ):
+            result = holder.collect_liquidity_verdict_evidence(
+                "bsc",
+                token,
+                0,
+                [{
+                    "protocol": "v3",
+                    "address": pool,
+                    "token0": token,
+                    "token1": quote,
+                    "quote_token": quote,
+                    "quote_decimals": 0,
+                }],
+                {
+                    "source_pool": pool,
+                    "source_block": 100,
+                    "source_block_hash": source_block_hash,
+                    "source_event": {
+                        "tx": source_tx,
+                        "tick_lower": -100,
+                        "tick_upper": 100,
+                    },
+                },
+                130,
+            )
+        return result, receipt_calls
+
+    def test_liquidity_evidence_bounds_high_activity_and_caches_receipts(
+        self,
+    ) -> None:
+        token = self._address("1")
+        quote = self._address("2")
+        recipient = self._address("4")
+        next_block_hash = self._hash("e")
+
+        def transfers(asset: str, start: int, stop: int) -> list[dict]:
+            return [
+                self._evidence_transfer_log(
+                    asset=asset,
+                    source=recipient,
+                    destination=self._address("5"),
+                    tx_hash=f"0x{number:064x}",
+                    block=101,
+                    block_hash=next_block_hash,
+                    log_index=100 + number,
+                    amount=number,
+                )
+                for number in range(start, stop)
+            ]
+
+        result, receipt_calls = self._collect_liquidity_evidence_case(
+            {
+                token: transfers(token, 1, 9),
+                quote: transfers(quote, 1, 18),
+            },
+            direct_pairs=[
+                (token, recipient, 10),
+                (quote, recipient, 11),
+            ],
+        )
+
+        self.assertFalse(result["coverage_complete"])
+        self.assertTrue(result["verdict_coverage_complete"])
+        self.assertEqual(
+            result["verdict_coverage_contract_version"],
+            "liquidity_verdict_coverage.v2",
+        )
+        self.assertEqual(
+            result["coverage_issues"],
+            ["recipient_next_hop_scope_exceeded"],
+        )
+        self.assertEqual(
+            result["evidence_level"],
+            "core_receipt_canonical_next_hop_observed_partial",
+        )
+        next_hop = result["recipient_next_hop"]
+        self.assertEqual(next_hop["status"], "high_activity_unattributed")
+        self.assertFalse(next_hop["coverage_complete"])
+        self.assertFalse(next_hop["attribution_complete"])
+        self.assertFalse(next_hop["enumeration_complete"])
+        self.assertTrue(next_hop["existence_complete"])
+        self.assertEqual(next_hop["canonical_transaction_count"], 16)
+        self.assertEqual(
+            next_hop["observed_transaction_count_lower_bound"], 17
+        )
+        self.assertEqual(next_hop["scope_limit"], 16)
+        self.assertEqual(len(receipt_calls), 16)
+        self.assertEqual(len(set(receipt_calls)), 16)
+
+    def test_liquidity_evidence_keeps_recipient_activity_unattributed(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        token = self._address("1")
+        row = self._evidence_transfer_log(
+            asset=token,
+            source=self._address("4"),
+            destination=self._address("5"),
+            tx_hash=self._hash("b"),
+            block=101,
+            block_hash=self._hash("e"),
+            log_index=20,
+        )
+        result, _calls = self._collect_liquidity_evidence_case(
+            {token: [row]}
+        )
+        next_hop = result["recipient_next_hop"]
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(next_hop["status"], "outbound_observed")
+        self.assertFalse(next_hop["attribution_complete"])
+        self.assertTrue(next_hop["enumeration_complete"])
+        self.assertEqual(next_hop["canonical_transaction_count"], 1)
+        text = holder.liquidity_verdict_evidence_text(
+            {**result, "type": "liquidity_reconciliation"}
+        )
+        self.assertIn("recipient 地址活动，归属未验证", text)
+        self.assertNotIn("项目方出货", text)
+
+    def test_liquidity_evidence_accepts_only_same_block_logs_after_direct(
+        self,
+    ) -> None:
+        token = self._address("1")
+        recipient = self._address("4")
+        source_tx = self._hash("a")
+        block_hash = self._hash("f")
+        rows = [
+            self._evidence_transfer_log(
+                asset=token,
+                source=recipient,
+                destination=self._address("5"),
+                tx_hash=tx_hash,
+                block=100,
+                block_hash=block_hash,
+                log_index=log_index,
+            )
+            for tx_hash, log_index in (
+                (self._hash("b"), 8),
+                (source_tx, 11),
+                (self._hash("c"), 12),
+            )
+        ]
+        result, receipt_calls = self._collect_liquidity_evidence_case(
+            {token: rows},
+            source_logs_extra=[rows[1]],
+        )
+        next_hop = result["recipient_next_hop"]
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(next_hop["canonical_transaction_count"], 2)
+        self.assertEqual(receipt_calls, [self._hash("c")])
+
+    def test_liquidity_evidence_uses_positive_128_row_proof_or_fails(
+        self,
+    ) -> None:
+        token = self._address("1")
+        recipient = self._address("4")
+        block_hash = self._hash("e")
+        unique_rows = [
+            self._evidence_transfer_log(
+                asset=token,
+                source=recipient,
+                destination=self._address("5"),
+                tx_hash=f"0x{number:064x}",
+                block=101,
+                block_hash=block_hash,
+                log_index=number,
+            )
+            for number in range(1, 18)
+        ]
+        result, calls = self._collect_liquidity_evidence_case(
+            {token: unique_rows + [unique_rows[0]] * 111}
+        )
+        self.assertEqual(
+            result["recipient_next_hop"]["status"],
+            "high_activity_unattributed",
+        )
+        self.assertEqual(len(calls), 16)
+
+        incomplete, _calls = self._collect_liquidity_evidence_case(
+            {token: [unique_rows[0]] * 128}
+        )
+        self.assertFalse(incomplete["coverage_complete"])
+        self.assertEqual(
+            incomplete["coverage_issues"],
+            ["recipient_next_hop_coverage_incomplete"],
+        )
+
+    def test_liquidity_evidence_rejects_wrong_receipt_identity_and_zero(
+        self,
+    ) -> None:
+        token = self._address("1")
+        recipient = self._address("4")
+        tx_hash = self._hash("b")
+        row = self._evidence_transfer_log(
+            asset=token,
+            source=recipient,
+            destination=self._address("5"),
+            tx_hash=tx_hash,
+            block=101,
+            block_hash=self._hash("e"),
+            log_index=20,
+        )
+        cases = {
+            "source_tx": {
+                "source_receipt_overrides": {
+                    "transactionHash": self._hash("d")
+                }
+            },
+            "source_block": {
+                "source_receipt_overrides": {"blockNumber": "0x65"}
+            },
+            "source_block_hash": {
+                "source_receipt_overrides": {
+                    "blockHash": self._hash("d")
+                }
+            },
+            "next_tx": {
+                "next_receipt_overrides": {
+                    tx_hash: {"transactionHash": self._hash("d")}
+                }
+            },
+            "next_block": {
+                "next_receipt_overrides": {
+                    tx_hash: {"blockNumber": "0x66"}
+                }
+            },
+            "next_block_hash": {
+                "next_receipt_overrides": {
+                    tx_hash: {"blockHash": self._hash("d")}
+                }
+            },
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name=name):
+                result, _calls = self._collect_liquidity_evidence_case(
+                    {token: [row]},
+                    **kwargs,
+                )
+                self.assertFalse(result["coverage_complete"])
+
+        zero_row = {**row, "data": self._data(0)}
+        zero, _calls = self._collect_liquidity_evidence_case(
+            {token: [zero_row]}
+        )
+        self.assertTrue(zero["coverage_complete"])
+        self.assertEqual(
+            zero["recipient_next_hop"]["canonical_transaction_count"],
+            0,
+        )
+        zero_direct = self._evidence_transfer_log(
+            asset=token,
+            source=self._address("3"),
+            destination=recipient,
+            tx_hash=self._hash("a"),
+            block=100,
+            block_hash=self._hash("f"),
+            log_index=10,
+            amount=0,
+        )
+        zero_source, _calls = self._collect_liquidity_evidence_case(
+            {},
+            source_receipt_overrides={"logs": [zero_direct]},
+        )
+        self.assertTrue(zero_source["coverage_complete"])
+        self.assertEqual(
+            zero_source["recipient_next_hop"]["recipient_count"],
+            0,
+        )
 
     @classmethod
     def _event_row(
@@ -20546,6 +20987,12 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             state["completed"][0]["source_event_utc"], ""
         )
         self.assertTrue(state["completed"][0]["expires_at"])
+        self.assertEqual(
+            state["completed"][0][
+                "verdict_coverage_contract_version"
+            ],
+            "liquidity_verdict_coverage.v2",
+        )
         self.assertEqual(metadata["unresolved_coverage_count"], 1)
 
     def test_reconciliation_migration_marks_invalid_collections_and_numbers(
@@ -20582,6 +21029,22 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             maximum_seconds=900,
         )
         self.assertTrue(unknown_schema["state_invalid"])
+        historical = holder.migrate_liquidity_reconciliation_state(
+            {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": [],
+                "completed": [{
+                    "reconcile_id": self._hash("a"),
+                    "classification": "unresolved_coverage",
+                }],
+                "deferred_events": [],
+            },
+            maximum_seconds=900,
+        )
+        self.assertNotIn(
+            "verdict_coverage_contract_version",
+            historical["completed"][0],
+        )
 
     def test_reconciliation_ambiguous_double_remove_keeps_both_pending(
         self,
@@ -20816,23 +21279,15 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             evidence_by_id={},
         )
         reconcile_id = state["pending"][0]["reconcile_id"]
-        evidence = {
-            "coverage_complete": True,
-            "source_receipt_canonical": True,
-            "evidence_level": "receipt_canonical_bounded_15m",
-            "active_range_vs_spot": "out_of_range",
-            "spot_tick": -12000,
-            "pool_liquidity_before": "100",
-            "pool_liquidity_after": "80",
-            "recipient_next_hop": {
-                "status": "no_outbound_observed",
-                "coverage_complete": True,
-                "recipient_count": 1,
-                "transaction_count": 0,
-            },
-            "price_reaction_5m_pct": "0",
-            "price_reaction_15m_pct": "0",
-        }
+        evidence = self._complete_liquidity_verdict_evidence(
+            started.isoformat(),
+            active_range="out_of_range",
+            spot_tick=-12000,
+            liquidity_before="100",
+            liquidity_after="80",
+            price_5m="0",
+            price_15m="0",
+        )
         final_events, state, _ = holder.reconcile_liquidity_events(
             [],
             state,
@@ -21187,12 +21642,29 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertFalse(second_events[0]["alert_eligible"])
         self.assertEqual(provisional_events, [])
         self.assertEqual(provisional_metadata["pending_count"], 1)
-        final_events, final_state, final_metadata = (
+        missing_events, missing_state, missing_metadata = (
             holder.reconcile_liquidity_events(
                 [],
                 provisional_state,
                 token_decimals=0,
                 observed_at=started + timedelta(minutes=15),
+            )
+        )
+        self.assertEqual(missing_events, [])
+        self.assertEqual(len(missing_state["pending"]), 1)
+        self.assertEqual(missing_metadata["evidence_blocked_count"], 1)
+        reconcile_id = missing_state["pending"][0]["reconcile_id"]
+        final_events, final_state, final_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                missing_state,
+                token_decimals=0,
+                observed_at=started + timedelta(minutes=16),
+                evidence_by_id={
+                    reconcile_id: self._complete_liquidity_verdict_evidence(
+                        started.isoformat()
+                    )
+                },
             )
         )
         self.assertEqual(final_events[0]["classification"], "migrated")
@@ -21236,6 +21708,13 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             blocked_state,
             token_decimals=0,
             observed_at=started + timedelta(minutes=15),
+            evidence_by_id={
+                blocked_state["pending"][0]["reconcile_id"]: (
+                    self._complete_liquidity_verdict_evidence(
+                        started.isoformat()
+                    )
+                )
+            },
         )
         self.assertEqual(net_events[0]["classification"], "net_removed")
         self.assertEqual(net_events[0]["level"], "HIGH")
@@ -21271,6 +21750,13 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             partial_state,
             token_decimals=0,
             observed_at=started + timedelta(minutes=15),
+            evidence_by_id={
+                partial_state["pending"][0]["reconcile_id"]: (
+                    self._complete_liquidity_verdict_evidence(
+                        started.isoformat()
+                    )
+                )
+            },
         )
         self.assertEqual(
             partial_events[0]["classification"], "net_removed"
@@ -21347,23 +21833,9 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(len(blocked_state["pending"]), 1)
         self.assertEqual(blocked_metadata["evidence_blocked_count"], 1)
 
-        evidence = {
-            "coverage_complete": True,
-            "source_receipt_canonical": True,
-            "source_event_utc": "2026-08-04T00:00:00+00:00",
-            "active_range_vs_spot": "active",
-            "spot_tick": 0,
-            "pool_liquidity_before": "1000",
-            "pool_liquidity_after": "900",
-            "recipient_next_hop": {
-                "status": "no_outbound_observed",
-                "coverage_complete": True,
-                "recipient_count": 1,
-            },
-            "price_reaction_5m_pct": "-1.25",
-            "price_reaction_15m_pct": "-3.5",
-            "evidence_level": "receipt_canonical_bounded_15m",
-        }
+        evidence = self._complete_liquidity_verdict_evidence(
+            "2026-08-04T00:00:00+00:00"
+        )
         final_events, final_state, final_metadata = (
             holder.reconcile_liquidity_events(
                 [],
@@ -21417,6 +21889,345 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertFalse(replay_events[0]["alert_eligible"])
         self.assertEqual(replay_state["pending"], [])
 
+    def test_liquidity_verdict_full_contract_rejects_self_assertion(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        valid = self._complete_liquidity_verdict_evidence(
+            "2026-08-09T00:00:00+00:00"
+        )
+        self.assertTrue(holder.liquidity_verdict_evidence_finalizable(valid))
+        self.assertFalse(
+            holder.liquidity_verdict_evidence_finalizable(
+                {"coverage_complete": True, "coverage_issues": []}
+            )
+        )
+        for field in (
+            "verdict_coverage_contract_version",
+            "source_receipt_canonical",
+            "source_event_utc",
+            "active_range_vs_spot",
+            "spot_tick",
+            "pool_liquidity_before",
+            "pool_liquidity_after",
+            "recipient_next_hop",
+            "price_reaction_5m_pct",
+            "price_reaction_15m_pct",
+            "evidence_level",
+        ):
+            with self.subTest(missing=field):
+                invalid = copy.deepcopy(valid)
+                invalid.pop(field)
+                self.assertFalse(
+                    holder.liquidity_verdict_evidence_finalizable(invalid)
+                )
+        for field, value in (
+            ("price_reaction_5m_pct", "NaN"),
+            ("price_reaction_15m_pct", "Infinity"),
+            ("spot_tick", True),
+            ("source_event_utc", "2026-08-09T00:00:00"),
+        ):
+            with self.subTest(field=field, value=value):
+                invalid = copy.deepcopy(valid)
+                invalid[field] = value
+                self.assertFalse(
+                    holder.liquidity_verdict_evidence_finalizable(invalid)
+                )
+        for field, value in (
+            ("status", "outbound_observed"),
+            ("enumeration_complete", False),
+            ("observed_transaction_count_lower_bound", 1),
+        ):
+            with self.subTest(next_hop_field=field):
+                invalid = copy.deepcopy(valid)
+                invalid["recipient_next_hop"][field] = value
+                self.assertFalse(
+                    holder.liquidity_verdict_evidence_finalizable(invalid)
+                )
+
+    def test_reconciliation_rejects_unknown_pending_contract_version(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 9, tzinfo=timezone.utc)
+        removal = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "block": 101,
+            "block_hash": self._hash("f"),
+            "type": "lp_remove_observation",
+            "lp_owner": self._address("6"),
+            "tick_lower": -100,
+            "tick_upper": 100,
+            "liquidity_operator": self._address("5"),
+            "liquidity_operator_basis": "transaction_sender_eoa",
+            "liquidity_operator_confidence": "high",
+            "quote_token": self._address("2"),
+            "quote_symbol": "USDT",
+            "quote_decimals": 0,
+            "lp_removed_amount_raw": "100",
+            "quote_removed_amount_raw": "200",
+            "historical_catchup": False,
+        }
+        _, pending_state, _ = holder.reconcile_liquidity_events(
+            [removal], {}, token_decimals=0, observed_at=started
+        )
+        reconcile_id = pending_state["pending"][0]["reconcile_id"]
+        pending_state["pending"][0][
+            "verdict_coverage_contract_version"
+        ] = "liquidity_verdict_coverage.v999"
+        evidence = self._complete_liquidity_verdict_evidence(
+            started.isoformat()
+        )
+
+        events, blocked_state, metadata = holder.reconcile_liquidity_events(
+            [],
+            pending_state,
+            token_decimals=0,
+            observed_at=started + timedelta(minutes=15),
+            evidence_by_id={reconcile_id: evidence},
+        )
+        self.assertEqual(events, [])
+        self.assertEqual(metadata["evidence_blocked_count"], 1)
+        self.assertEqual(len(blocked_state["pending"]), 1)
+        self.assertEqual(
+            blocked_state["pending"][0]["evidence_coverage_issues"],
+            ["liquidity_verdict_contract_version_invalid"],
+        )
+        self.assertEqual(
+            blocked_state["pending"][0][
+                "verdict_coverage_contract_version"
+            ],
+            "liquidity_verdict_coverage.v999",
+        )
+
+        expired_events, expired_state, expired_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                blocked_state,
+                token_decimals=0,
+                observed_at=started + timedelta(seconds=3601),
+                evidence_by_id={reconcile_id: evidence},
+            )
+        )
+        self.assertEqual(expired_events, [])
+        self.assertEqual(expired_state["pending"], [])
+        self.assertEqual(expired_metadata["unresolved_coverage_count"], 1)
+        self.assertEqual(
+            expired_state["completed"][0]["coverage_issue_code"],
+            "liquidity_verdict_contract_version_invalid",
+        )
+        self.assertEqual(
+            expired_state["completed"][0][
+                "verdict_coverage_contract_version"
+            ],
+            "liquidity_verdict_coverage.v999",
+        )
+
+    def test_v3_reconciliation_allows_only_bounded_next_hop_partial(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        started = datetime(2026, 8, 9, tzinfo=timezone.utc)
+        removal = {
+            "protocol": "v3",
+            "pool": self._address("3"),
+            "tx": self._hash("a"),
+            "log_index": 1,
+            "block": 101,
+            "block_hash": self._hash("f"),
+            "type": "lp_remove_observation",
+            "lp_owner": self._address("6"),
+            "tick_lower": -100,
+            "tick_upper": 100,
+            "liquidity_operator": self._address("5"),
+            "liquidity_operator_basis": "transaction_sender_eoa",
+            "liquidity_operator_confidence": "high",
+            "quote_token": self._address("2"),
+            "quote_symbol": "USDT",
+            "quote_decimals": 0,
+            "lp_removed_amount_raw": "100",
+            "quote_removed_amount_raw": "200",
+            "historical_catchup": False,
+        }
+        _, pending_state, _ = holder.reconcile_liquidity_events(
+            [removal],
+            {},
+            token_decimals=0,
+            observed_at=started,
+        )
+        reconcile_id = pending_state["pending"][0]["reconcile_id"]
+        self.assertEqual(
+            pending_state["pending"][0][
+                "verdict_coverage_contract_version"
+            ],
+            "liquidity_verdict_coverage.v2",
+        )
+        partial_evidence = {
+            "coverage_complete": False,
+            "verdict_coverage_complete": False,
+            "verdict_coverage_contract_version": (
+                "liquidity_verdict_coverage.v2"
+            ),
+            "coverage_issues": ["recipient_next_hop_scope_exceeded"],
+            "source_receipt_canonical": True,
+            "source_event_utc": started.isoformat(),
+            "active_range_vs_spot": "active",
+            "spot_tick": 0,
+            "pool_liquidity_before": "1000",
+            "pool_liquidity_after": "900",
+            "recipient_next_hop": {
+                "status": "high_activity_unattributed",
+                "coverage_complete": False,
+                "attribution_complete": False,
+                "enumeration_complete": False,
+                "existence_complete": True,
+                "recipient_count": 1,
+                "canonical_transaction_count": 16,
+                "observed_transaction_count_lower_bound": 17,
+                "scope_limit": 16,
+            },
+            "price_reaction_5m_pct": "-1.25",
+            "price_reaction_15m_pct": "-3.5",
+            "evidence_level": (
+                "core_receipt_canonical_next_hop_observed_partial"
+            ),
+        }
+        self.assertTrue(
+            holder.liquidity_verdict_evidence_finalizable(
+                partial_evidence
+            )
+        )
+        for field, value in (
+            ("evidence_level", "coverage_incomplete"),
+            ("coverage_complete", True),
+            ("verdict_coverage_contract_version", "unknown"),
+        ):
+            invalid = {**partial_evidence, field: value}
+            self.assertFalse(
+                holder.liquidity_verdict_evidence_finalizable(invalid)
+            )
+        for field, value in (
+            ("recipient_count", 0),
+            ("recipient_count", 9),
+            ("canonical_transaction_count", 15),
+            ("observed_transaction_count_lower_bound", 18),
+            ("existence_complete", False),
+            ("attribution_complete", True),
+        ):
+            invalid = copy.deepcopy(partial_evidence)
+            invalid["recipient_next_hop"][field] = value
+            self.assertFalse(
+                holder.liquidity_verdict_evidence_finalizable(invalid)
+            )
+        final_events, final_state, metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                pending_state,
+                token_decimals=0,
+                observed_at=started + timedelta(minutes=15),
+                evidence_by_id={reconcile_id: partial_evidence},
+            )
+        )
+        self.assertEqual(len(final_events), 1)
+        self.assertEqual(final_events[0]["classification"], "net_removed")
+        self.assertFalse(final_events[0]["enrichment_coverage_complete"])
+        self.assertTrue(final_events[0]["verdict_coverage_complete"])
+        self.assertEqual(
+            final_events[0]["verdict_coverage_contract_version"],
+            "liquidity_verdict_coverage.v2",
+        )
+        self.assertEqual(
+            final_events[0]["evidence_coverage_issues"],
+            ["recipient_next_hop_scope_exceeded"],
+        )
+        self.assertEqual(metadata["evidence_blocked_count"], 0)
+        completed = final_state["completed"][0]
+        self.assertFalse(completed["enrichment_coverage_complete"])
+        self.assertTrue(completed["verdict_coverage_complete"])
+        self.assertEqual(
+            completed["verdict_coverage_contract_version"],
+            "liquidity_verdict_coverage.v2",
+        )
+        self.assertEqual(
+            completed["evidence_coverage_issues"],
+            ["recipient_next_hop_scope_exceeded"],
+        )
+        telegram_text = holder.liquidity_verdict_evidence_text(
+            final_events[0]
+        )
+        self.assertIn(
+            "recipient 地址活动：观察至少17笔，其中16笔回执有效，归属受限",
+            telegram_text,
+        )
+        self.assertNotIn("项目方出货", telegram_text)
+
+        replay_events, replay_state, _ = holder.reconcile_liquidity_events(
+            [removal],
+            final_state,
+            token_decimals=0,
+            observed_at=started + timedelta(minutes=16),
+            evidence_by_id={reconcile_id: partial_evidence},
+        )
+        self.assertFalse(
+            any(
+                event.get("reconciliation_final") is True
+                for event in replay_events
+            )
+        )
+        self.assertFalse(replay_events[0]["alert_eligible"])
+        self.assertEqual(replay_state["pending"], [])
+
+        other_removal = {
+            **removal,
+            "tx": self._hash("b"),
+            "log_index": 2,
+        }
+        _, other_pending, _ = holder.reconcile_liquidity_events(
+            [other_removal],
+            {},
+            token_decimals=0,
+            observed_at=started,
+        )
+        other_id = other_pending["pending"][0]["reconcile_id"]
+        other_issue = {
+            **partial_evidence,
+            "coverage_issues": ["recipient_next_hop_receipt_invalid"],
+        }
+        blocked_events, blocked_state, blocked_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                other_pending,
+                token_decimals=0,
+                observed_at=started + timedelta(minutes=15),
+                evidence_by_id={other_id: other_issue},
+            )
+        )
+        self.assertEqual(blocked_events, [])
+        self.assertEqual(len(blocked_state["pending"]), 1)
+        self.assertEqual(blocked_metadata["evidence_blocked_count"], 1)
+        _, expired_state, expired_metadata = (
+            holder.reconcile_liquidity_events(
+                [],
+                blocked_state,
+                token_decimals=0,
+                observed_at=started + timedelta(seconds=3601),
+                evidence_by_id={other_id: other_issue},
+            )
+        )
+        self.assertEqual(expired_metadata["unresolved_coverage_count"], 1)
+        self.assertEqual(
+            expired_state["completed"][0][
+                "verdict_coverage_contract_version"
+            ],
+            "liquidity_verdict_coverage.v2",
+        )
+
     def test_removed_plus_sold_is_persisted_for_acceptance(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -21447,19 +22258,11 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertEqual(events[0]["reconciliation_status"], "pending")
         reconcile_id = pending_state["pending"][0]["reconcile_id"]
-        evidence = {
-            "coverage_complete": True,
-            "source_event_utc": started.isoformat(),
-            "source_receipt_canonical": True,
-            "active_range_vs_spot": "active",
-            "spot_tick": 0,
-            "pool_liquidity_before": "1000",
-            "pool_liquidity_after": "900",
-            "recipient_next_hop": {"coverage_complete": True},
-            "price_reaction_5m_pct": "-1",
-            "price_reaction_15m_pct": "-2",
-            "evidence_level": "receipt_canonical_bounded_15m",
-        }
+        evidence = self._complete_liquidity_verdict_evidence(
+            started.isoformat(),
+            price_5m="-1",
+            price_15m="-2",
+        )
         final_events, state, _ = holder.reconcile_liquidity_events(
             [],
             pending_state,

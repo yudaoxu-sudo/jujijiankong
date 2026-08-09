@@ -4161,6 +4161,16 @@ LIQUIDITY_RELIABLE_OPERATOR_BASES = {
 }
 V3_SLOT0_SELECTOR = "0x3850c7bd"
 V3_LIQUIDITY_SELECTOR = "0x1a686502"
+LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT = 16
+LIQUIDITY_RECIPIENT_NEXT_HOP_SCOPE_ISSUE = (
+    "recipient_next_hop_scope_exceeded"
+)
+LIQUIDITY_PARTIAL_NEXT_HOP_EVIDENCE_LEVEL = (
+    "core_receipt_canonical_next_hop_observed_partial"
+)
+LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION = (
+    "liquidity_verdict_coverage.v2"
+)
 
 
 def liquidity_evidence_error_code(exc: Exception) -> str:
@@ -4288,6 +4298,142 @@ def _v3_quote_price(
     raise ValueError("pool token orientation invalid")
 
 
+def _liquidity_verdict_aware_utc(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _liquidity_verdict_core_evidence(
+    evidence: dict[str, Any],
+) -> tuple[dict[str, Any], int, int, int] | None:
+    if (
+        evidence.get("verdict_coverage_contract_version")
+        != LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+        or evidence.get("source_receipt_canonical") is not True
+        or _liquidity_verdict_aware_utc(
+            evidence.get("source_event_utc")
+        ) is None
+        or evidence.get("active_range_vs_spot")
+        not in {"active", "out_of_range"}
+        or type(evidence.get("spot_tick")) is not int
+    ):
+        return None
+    try:
+        before_raw = evidence.get("pool_liquidity_before")
+        after_raw = evidence.get("pool_liquidity_after")
+        five_raw = evidence.get("price_reaction_5m_pct")
+        fifteen_raw = evidence.get("price_reaction_15m_pct")
+        if (
+            not isinstance(before_raw, str)
+            or re.fullmatch(r"[0-9]+", before_raw) is None
+            or not isinstance(after_raw, str)
+            or re.fullmatch(r"[0-9]+", after_raw) is None
+            or not isinstance(five_raw, str)
+            or not isinstance(fifteen_raw, str)
+        ):
+            return None
+        before = int(before_raw)
+        after = int(after_raw)
+        five = Decimal(five_raw)
+        fifteen = Decimal(fifteen_raw)
+        next_hop = evidence.get("recipient_next_hop")
+        if not isinstance(next_hop, dict) or any(
+            type(next_hop.get(field)) is not int
+            for field in (
+                "recipient_count",
+                "canonical_transaction_count",
+                "observed_transaction_count_lower_bound",
+                "scope_limit",
+            )
+        ):
+            return None
+        recipient_count = next_hop["recipient_count"]
+        canonical_transaction_count = next_hop[
+            "canonical_transaction_count"
+        ]
+        observed_transaction_count_lower_bound = next_hop[
+            "observed_transaction_count_lower_bound"
+        ]
+        scope_limit = next_hop["scope_limit"]
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not (
+        before >= 0
+        and after >= 0
+        and five.is_finite()
+        and fifteen.is_finite()
+        and next_hop.get("attribution_complete") is False
+        and next_hop.get("existence_complete") is True
+        and 0 <= recipient_count <= 8
+        and canonical_transaction_count >= 0
+        and observed_transaction_count_lower_bound >= 0
+        and scope_limit == LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT
+    ):
+        return None
+    return (
+        next_hop,
+        recipient_count,
+        canonical_transaction_count,
+        observed_transaction_count_lower_bound,
+    )
+
+
+def liquidity_verdict_evidence_finalizable(
+    evidence: dict[str, Any],
+) -> bool:
+    validated = _liquidity_verdict_core_evidence(evidence)
+    if validated is None:
+        return False
+    (
+        next_hop,
+        recipient_count,
+        canonical_transaction_count,
+        observed_transaction_count_lower_bound,
+    ) = validated
+    if evidence.get("coverage_complete") is True:
+        if (
+            evidence.get("coverage_issues") != []
+            or evidence.get("evidence_level")
+            != "receipt_canonical_bounded_15m"
+            or next_hop.get("coverage_complete") is not True
+            or next_hop.get("enumeration_complete") is not True
+            or canonical_transaction_count
+            != observed_transaction_count_lower_bound
+        ):
+            return False
+        if next_hop.get("status") == "no_outbound_observed":
+            return canonical_transaction_count == 0
+        return bool(
+            next_hop.get("status") == "outbound_observed"
+            and 1 <= recipient_count <= 8
+            and 1
+            <= canonical_transaction_count
+            <= LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT
+        )
+    return bool(
+        evidence.get("coverage_complete") is False
+        and evidence.get("coverage_issues")
+        == [LIQUIDITY_RECIPIENT_NEXT_HOP_SCOPE_ISSUE]
+        and evidence.get("evidence_level")
+        == LIQUIDITY_PARTIAL_NEXT_HOP_EVIDENCE_LEVEL
+        and next_hop.get("status") == "high_activity_unattributed"
+        and next_hop.get("coverage_complete") is False
+        and next_hop.get("enumeration_complete") is False
+        and 1 <= recipient_count <= 8
+        and canonical_transaction_count
+        == LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT
+        and observed_transaction_count_lower_bound
+        == LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT + 1
+    )
+
+
 def collect_liquidity_verdict_evidence(
     chain: str,
     token: str,
@@ -4314,20 +4460,23 @@ def collect_liquidity_verdict_evidence(
             pending_row.get("source_block_hash")
         ):
             raise ValueError("source block is not canonical")
+        source_tx = norm(pending_row.get("source_event", {}).get("tx"))
         receipt = holder_rpc_call(
             chain,
             "eth_getTransactionReceipt",
-            [norm(pending_row.get("source_event", {}).get("tx"))],
+            [source_tx],
         )
         if (
-            not isinstance(receipt, dict)
+            not valid_hash32(source_tx)
+            or not isinstance(receipt, dict)
             or int(receipt.get("status") or "0x0", 16) != 1
+            or norm(receipt.get("transactionHash")) != source_tx
             or norm(receipt.get("blockHash")) != source_block["hash"]
             or int(receipt.get("blockNumber") or "0x0", 16)
             != source_block_number
+            or not isinstance(receipt.get("logs"), list)
         ):
             raise ValueError("source receipt is not canonical")
-        source_tx = norm(pending_row.get("source_event", {}).get("tx"))
         block_pool_state_logs = holder_rpc_call(
             chain,
             "eth_getLogs",
@@ -4385,56 +4534,123 @@ def collect_liquidity_verdict_evidence(
         )
         if source_price <= 0:
             raise ValueError("source price unavailable")
-        recipients: set[str] = set()
-        for log in receipt.get("logs") or []:
-            topics = log.get("topics") if isinstance(log, dict) else None
+        tracked_assets = {token, norm(pool.get("quote_token"))}
+        direct_transfer_log_indexes: dict[tuple[str, str], int] = {}
+        for log in receipt["logs"]:
+            if not isinstance(log, dict):
+                raise ValueError("source receipt is not canonical")
+            asset = norm(log.get("address"))
+            topics = log.get("topics")
+            if asset not in tracked_assets:
+                continue
             if (
                 not isinstance(topics, list)
-                or len(topics) < 3
+                or not topics
                 or norm(topics[0]) != TRANSFER_TOPIC
-                or norm(log.get("address")) not in {token, norm(pool.get("quote_token"))}
-                or address_from_topic(str(topics[1])) != source_pool
             ):
                 continue
+            if len(topics) < 2:
+                raise ValueError("source receipt is not canonical")
+            if address_from_topic(str(topics[1])) != source_pool:
+                continue
+            query = {
+                "address": asset,
+                "fromBlock": hex(source_block_number),
+                "toBlock": hex(source_block_number),
+                "topics": [TRANSFER_TOPIC, topic_address(source_pool)],
+            }
+            identity = strict_rpc_log_identity(log, query)
+            if (
+                identity is None
+                or len(topics) != 3
+                or strict_abi_event_word_count(log.get("data")) != 1
+                or identity[1] != source_tx
+                or identity[2] != source_block["hash"]
+            ):
+                raise ValueError("source receipt is not canonical")
+            if int(str(log.get("data") or "0x0"), 16) <= 0:
+                continue
             recipient = address_from_topic(str(topics[2]))
-            if recipient not in {source_pool, ZERO_ADDRESS}:
-                recipients.add(recipient)
+            if recipient in {source_pool, ZERO_ADDRESS}:
+                continue
+            pair = (recipient, asset)
+            direct_transfer_log_indexes[pair] = min(
+                identity[0][1],
+                direct_transfer_log_indexes.get(pair, identity[0][1]),
+            )
+        recipients = {
+            recipient
+            for recipient, _asset in direct_transfer_log_indexes
+        }
         if len(recipients) > 8:
             raise ValueError("recipient scope exceeded")
         next_hop_transactions: set[str] = set()
-        for recipient in sorted(recipients):
-            for asset in (token, norm(pool.get("quote_token"))):
-                rows = holder_rpc_call(
-                    chain,
-                    "eth_getLogs",
-                    [
-                        {
-                            "address": asset,
-                            "fromBlock": hex(source_block_number + 1),
-                            "toBlock": hex(fifteen_minute_block["number"]),
-                            "topics": [TRANSFER_TOPIC, topic_address(recipient)],
-                        }
-                    ],
-                )
-                if not isinstance(rows, list) or len(rows) >= 128:
-                    raise ValueError("recipient next-hop coverage incomplete")
-                for row in rows:
-                    tx_hash = norm(row.get("transactionHash"))
-                    if not valid_hash32(tx_hash):
-                        raise ValueError("recipient next-hop identity invalid")
+        next_hop_receipts: dict[str, dict[str, Any]] = {
+            source_tx: receipt,
+        }
+        next_hop_scope_exceeded = False
+        for (recipient, asset), direct_log_index in sorted(
+            direct_transfer_log_indexes.items()
+        ):
+            query = {
+                "address": asset,
+                "fromBlock": hex(source_block_number),
+                "toBlock": hex(fifteen_minute_block["number"]),
+                "topics": [TRANSFER_TOPIC, topic_address(recipient)],
+            }
+            rows = holder_rpc_call(chain, "eth_getLogs", [query])
+            if not isinstance(rows, list):
+                raise ValueError("recipient next-hop coverage incomplete")
+            query_truncated = len(rows) >= 128
+            for row in rows:
+                identity = strict_rpc_log_identity(row, query)
+                topics = row.get("topics") if isinstance(row, dict) else None
+                if (
+                    identity is None
+                    or not isinstance(topics, list)
+                    or len(topics) != 3
+                    or strict_abi_event_word_count(row.get("data")) != 1
+                ):
+                    raise ValueError("recipient next-hop identity invalid")
+                order, tx_hash, row_block_hash = identity
+                if int(str(row.get("data") or "0x0"), 16) <= 0:
+                    continue
+                if (
+                    order[0] == source_block_number
+                    and order[1] <= direct_log_index
+                ):
+                    continue
+                if (
+                    tx_hash not in next_hop_transactions
+                    and len(next_hop_transactions)
+                    >= LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT
+                ):
+                    next_hop_scope_exceeded = True
+                    break
+                next_receipt = next_hop_receipts.get(tx_hash)
+                if next_receipt is None:
                     next_receipt = holder_rpc_call(
-                        chain, "eth_getTransactionReceipt", [tx_hash]
+                        chain,
+                        "eth_getTransactionReceipt",
+                        [tx_hash],
                     )
-                    if (
-                        not isinstance(next_receipt, dict)
-                        or int(next_receipt.get("status") or "0x0", 16) != 1
-                        or norm(next_receipt.get("blockHash"))
-                        != norm(row.get("blockHash"))
-                    ):
-                        raise ValueError("recipient next-hop receipt invalid")
-                    next_hop_transactions.add(tx_hash)
-                    if len(next_hop_transactions) > 16:
-                        raise ValueError("recipient next-hop scope exceeded")
+                    if isinstance(next_receipt, dict):
+                        next_hop_receipts[tx_hash] = next_receipt
+                if (
+                    not isinstance(next_receipt, dict)
+                    or int(next_receipt.get("status") or "0x0", 16) != 1
+                    or norm(next_receipt.get("transactionHash")) != tx_hash
+                    or int(next_receipt.get("blockNumber") or "0x0", 16)
+                    != order[0]
+                    or norm(next_receipt.get("blockHash"))
+                    != row_block_hash
+                ):
+                    raise ValueError("recipient next-hop receipt invalid")
+                next_hop_transactions.add(tx_hash)
+            if next_hop_scope_exceeded:
+                break
+            if query_truncated:
+                raise ValueError("recipient next-hop coverage incomplete")
         tick_lower = int(pending_row.get("source_event", {}).get("tick_lower"))
         tick_upper = int(pending_row.get("source_event", {}).get("tick_upper"))
         spot_tick = source_state["tick"]
@@ -4442,8 +4658,16 @@ def collect_liquidity_verdict_evidence(
             "active" if tick_lower <= spot_tick < tick_upper else "out_of_range"
         )
         return {
-            "coverage_complete": True,
-            "coverage_issues": [],
+            "coverage_complete": not next_hop_scope_exceeded,
+            "verdict_coverage_complete": True,
+            "verdict_coverage_contract_version": (
+                LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            ),
+            "coverage_issues": (
+                [LIQUIDITY_RECIPIENT_NEXT_HOP_SCOPE_ISSUE]
+                if next_hop_scope_exceeded
+                else []
+            ),
             "source_receipt_canonical": True,
             "source_event_utc": datetime.fromtimestamp(
                 source_block["timestamp"], timezone.utc
@@ -4454,13 +4678,26 @@ def collect_liquidity_verdict_evidence(
             "pool_liquidity_after": str(source_state["liquidity"]),
             "recipient_next_hop": {
                 "status": (
-                    "outbound_observed"
+                    "high_activity_unattributed"
+                    if next_hop_scope_exceeded
+                    else "outbound_observed"
                     if next_hop_transactions
                     else "no_outbound_observed"
                 ),
-                "coverage_complete": True,
+                "coverage_complete": not next_hop_scope_exceeded,
+                "attribution_complete": False,
+                "enumeration_complete": not next_hop_scope_exceeded,
+                "existence_complete": True,
                 "recipient_count": len(recipients),
-                "transaction_count": len(next_hop_transactions),
+                "canonical_transaction_count": len(
+                    next_hop_transactions
+                ),
+                "observed_transaction_count_lower_bound": (
+                    LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT + 1
+                    if next_hop_scope_exceeded
+                    else len(next_hop_transactions)
+                ),
+                "scope_limit": LIQUIDITY_RECIPIENT_NEXT_HOP_TX_LIMIT,
             },
             "price_reaction_5m_pct": str(
                 ((five_price / source_price) - 1) * 100
@@ -4468,7 +4705,11 @@ def collect_liquidity_verdict_evidence(
             "price_reaction_15m_pct": str(
                 ((fifteen_price / source_price) - 1) * 100
             ),
-            "evidence_level": "receipt_canonical_bounded_15m",
+            "evidence_level": (
+                LIQUIDITY_PARTIAL_NEXT_HOP_EVIDENCE_LEVEL
+                if next_hop_scope_exceeded
+                else "receipt_canonical_bounded_15m"
+            ),
         }
     except Exception as exc:
         issues.append(liquidity_evidence_error_code(exc))
@@ -4996,6 +5237,9 @@ def reconcile_liquidity_events(
             )
             pending_row = {
                 "reconcile_id": reconcile_id,
+                "verdict_coverage_contract_version": (
+                    LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+                ),
                 "first_seen_at": current.isoformat(),
                 "last_updated_at": current.isoformat(),
                 "operator": (
@@ -5064,6 +5308,9 @@ def reconcile_liquidity_events(
                 continue
             pending_row = {
                 "reconcile_id": reconcile_id,
+                "verdict_coverage_contract_version": (
+                    LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+                ),
                 "first_seen_at": current.isoformat(),
                 "last_updated_at": current.isoformat(),
                 "operator": (
@@ -5283,7 +5530,7 @@ def reconcile_liquidity_events(
             if isinstance(pending_row.get("source_event"), dict)
             else {}
         )
-        return {
+        row = {
             "reconcile_id": str(pending_row.get("reconcile_id") or ""),
             "classification": "unresolved_coverage",
             "completed_at": current.isoformat(),
@@ -5306,8 +5553,25 @@ def reconcile_liquidity_events(
             "coverage_issue_code": issue_code,
             "evidence_coverage_issues": list(dict.fromkeys(evidence_issues))[:8],
         }
+        contract_version = pending_row.get(
+            "verdict_coverage_contract_version"
+        )
+        if isinstance(contract_version, str) and contract_version:
+            row["verdict_coverage_contract_version"] = contract_version[:80]
+        return row
 
     for pending_row in pending:
+        contract_version = pending_row.get(
+            "verdict_coverage_contract_version"
+        )
+        if contract_version in (None, ""):
+            pending_row["verdict_coverage_contract_version"] = (
+                LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            )
+            contract_version = LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+        contract_version_valid = (
+            contract_version == LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+        )
         first_seen = parse_iso(pending_row.get("first_seen_at"))
         observation_age_seconds = int(
             max(0, (current - first_seen).total_seconds())
@@ -5320,6 +5584,24 @@ def reconcile_liquidity_events(
         ) if source_chain_time is not None else 0
         expires_at = parse_iso(pending_row.get("expires_at"))
         expired = bool(expires_at is not None and current >= expires_at)
+        if not contract_version_valid:
+            issue_code = "liquidity_verdict_contract_version_invalid"
+            reconcile_id = str(pending_row.get("reconcile_id") or "")
+            if expired:
+                completed_rows.append(unresolved_row(
+                    pending_row,
+                    issue_code,
+                    [issue_code],
+                    observation_age_seconds,
+                    chain_age_seconds,
+                ))
+                finalized_ids.add(reconcile_id)
+                unresolved_coverage_count += 1
+            else:
+                pending_row["evidence_coverage_issues"] = [issue_code]
+                pending_row["last_updated_at"] = current.isoformat()
+                evidence_blocked_count += 1
+            continue
         removed_target_raw = max(
             0, int(pending_row.get("removed_target_raw") or 0)
         )
@@ -5466,12 +5748,14 @@ def reconcile_liquidity_events(
         enrichment = (
             evidence_by_id.get(reconcile_id, {})
             if isinstance(evidence_by_id, dict)
-            else None
+            else {}
         )
-        if (
-            enrichment is not None
-            and enrichment.get("coverage_complete") is not True
-        ):
+        if not isinstance(enrichment, dict):
+            enrichment = {}
+        enrichment_finalizable = bool(
+            liquidity_verdict_evidence_finalizable(enrichment)
+        )
+        if not enrichment_finalizable:
             if expired:
                 completed_rows.append(unresolved_row(
                     pending_row,
@@ -5516,6 +5800,9 @@ def reconcile_liquidity_events(
                 "alert_eligible": True,
                 "historical_catchup": False,
                 "reconcile_id": reconcile_id,
+                "verdict_coverage_contract_version": (
+                    LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+                ),
                 "reconciliation_status": "final",
                 "reconciliation_final": True,
                 "reconciliation_window_seconds": maximum_seconds,
@@ -5549,6 +5836,16 @@ def reconcile_liquidity_events(
                     if isinstance(enrichment, dict)
                     else "verified_v3_operator_5_15m_reconciliation"
                 ),
+                "enrichment_coverage_complete": bool(
+                    isinstance(enrichment, dict)
+                    and enrichment.get("coverage_complete") is True
+                ),
+                "verdict_coverage_complete": bool(
+                    enrichment_finalizable
+                ),
+                "evidence_coverage_issues": list(
+                    enrichment.get("coverage_issues") or []
+                )[:8] if isinstance(enrichment, dict) else [],
                 **(
                     {
                         key: copy.deepcopy(enrichment[key])
@@ -5603,6 +5900,9 @@ def reconcile_liquidity_events(
         completed_rows.append(
             {
                 "reconcile_id": reconcile_id,
+                "verdict_coverage_contract_version": (
+                    LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+                ),
                 "classification": classification,
                 "completed_at": current.isoformat(),
                 "first_seen_at": str(
@@ -5611,6 +5911,15 @@ def reconcile_liquidity_events(
                 "source_event_utc": str(
                     enrichment.get("source_event_utc") or ""
                 ) if isinstance(enrichment, dict) else "",
+                "evidence_level": (
+                    str(enrichment.get("evidence_level") or "")
+                    if isinstance(enrichment, dict)
+                    else ""
+                ),
+                "source_receipt_canonical": bool(
+                    isinstance(enrichment, dict)
+                    and enrichment.get("source_receipt_canonical") is True
+                ),
                 "source_block": int(
                     pending_row.get("source_block") or 0
                 ),
@@ -5632,8 +5941,19 @@ def reconcile_liquidity_events(
                     isinstance(enrichment, dict)
                     and enrichment.get("coverage_complete") is True
                 ),
+                "verdict_coverage_complete": bool(
+                    enrichment_finalizable
+                ),
+                "evidence_coverage_issues": list(
+                    enrichment.get("coverage_issues") or []
+                )[:8] if isinstance(enrichment, dict) else [],
                 "active_range_vs_spot": (
                     enrichment.get("active_range_vs_spot")
+                    if isinstance(enrichment, dict)
+                    else None
+                ),
+                "spot_tick": (
+                    enrichment.get("spot_tick")
                     if isinstance(enrichment, dict)
                     else None
                 ),
@@ -8554,13 +8874,32 @@ def liquidity_verdict_evidence_text(event: dict[str, Any]) -> str:
         if source_ranges and destination_ranges
         else ""
     )
+    if (
+        next_hop.get("status") == "high_activity_unattributed"
+        and next_hop.get("coverage_complete") is False
+    ):
+        next_hop_text = (
+            "recipient next-hop：recipient 地址活动：观察至少"
+            f"{int(next_hop.get('observed_transaction_count_lower_bound') or 0)}笔，"
+            f"其中{int(next_hop.get('canonical_transaction_count') or 0)}笔"
+            "回执有效，归属受限"
+        )
+    elif next_hop.get("status") == "outbound_observed":
+        next_hop_text = (
+            "recipient next-hop：recipient 地址活动，归属未验证（"
+            f"{int(next_hop.get('canonical_transaction_count') or 0)}笔回执有效）"
+        )
+    else:
+        next_hop_text = (
+            "recipient next-hop no_outbound_observed（完整窗口，"
+            f"{int(next_hop.get('canonical_transaction_count') or next_hop.get('transaction_count') or 0)}笔）"
+        )
     return (
         range_text
         + f"区间 {event.get('active_range_vs_spot')}"
         f"（spot tick {event.get('spot_tick')}）｜池流动性 "
         f"{event.get('pool_liquidity_before')} → "
-        f"{event.get('pool_liquidity_after')}｜recipient next-hop "
-        f"{next_hop.get('status')}（{int(next_hop.get('transaction_count') or 0)}笔）｜"
+        f"{event.get('pool_liquidity_after')}｜{next_hop_text}｜"
         f"价格 5m {format_signed_pct(event.get('price_reaction_5m_pct'))} / "
         f"15m {format_signed_pct(event.get('price_reaction_15m_pct'))}"
     )

@@ -35,12 +35,76 @@ import hashlib
 import re
 import sys
 import time
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 root = Path(sys.argv[1])
 max_age = int(sys.argv[2])
 expected_hashes = json.loads(sys.argv[3])
 enriched_deploy_boundary = "2026-08-06T15:33:40+00:00"
+verdict_coverage_contract_version = "liquidity_verdict_coverage.v2"
+verdict_coverage_activated_at_utc = "2026-08-09T12:41:07+00:00"
+recipient_next_hop_scope_issue = "recipient_next_hop_scope_exceeded"
+historical_scope_reconcile_ids = {
+    "2889857dc0b23b492d8949eae9e59049f937783af86ea6ae40822d5744bc2a8f",
+    "b58cec136e8bdfc76e7739f9c5789bd4f60abafcbf5589a2cd6a671e37b5758e",
+    "21e9f32ff27150b7d5241e90279327e37a37fd79b8e1f493deb45d94142b5b32",
+}
+liquidity_final_classifications = {
+    "net_removed",
+    "range_repositioned",
+    "re_added",
+    "migrated",
+    "removed_plus_sold",
+}
+safe_output_codes = liquidity_final_classifications | {
+    "active",
+    "canonical_block",
+    "deadline_exceeded",
+    "error",
+    "eth_getlogs_coverage_failed",
+    "execution_failed",
+    "fail",
+    "healthy",
+    "holder_scan_failed",
+    "holder_transfer_coverage_failed",
+    "invalid_runtime_metadata",
+    "liquidity_evidence_cycle_limit",
+    "liquidity_flow_coverage_incomplete",
+    "liquidity_materiality_unverified",
+    "liquidity_operator_basis_unreliable",
+    "liquidity_operator_unavailable",
+    "liquidity_pairing_ambiguous",
+    "liquidity_reconciliation_incomplete",
+    "missing",
+    "out_of_range",
+    "pass",
+    "pool_liquidity_boundary_unavailable",
+    "pool_token_orientation_invalid",
+    "provider_error",
+    "recipient_next_hop_coverage_incomplete",
+    "recipient_next_hop_identity_invalid",
+    "recipient_next_hop_receipt_invalid",
+    "recipient_next_hop_scope_exceeded",
+    "recipient_scope_exceeded",
+    "runtime_dependency_failed",
+    "runtime_io_failed",
+    "source_block_not_canonical",
+    "source_chain_timestamp_unavailable",
+    "source_pool_scope_unavailable",
+    "source_price_unavailable",
+    "source_receipt_not_canonical",
+    "timeout",
+    "timestamp_target_unavailable",
+    "timestamp_window_unavailable",
+    "unexpected_runtime_error",
+    "unknown",
+    "unknown_issue",
+    "unresolved_coverage",
+    "v3_price_unavailable",
+    "v3_state_unavailable",
+}
 
 def read_json(path):
     try:
@@ -55,6 +119,24 @@ def read_list(path):
         return value if isinstance(value, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+
+def parse_iso_utc(value):
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+def valid_iso(value):
+    return parse_iso_utc(value) is not None
+
+verdict_coverage_activated_at = parse_iso_utc(
+    verdict_coverage_activated_at_utc
+)
+
+def safe_timestamp(value):
+    rendered = str(value or "")
+    return rendered if valid_iso(rendered) else ""
 
 def candidate_history(path, *, schema=None, schema_version=None):
     exists = path.exists()
@@ -77,8 +159,179 @@ def candidate_history(path, *, schema=None, schema_version=None):
         "exists": True,
         "valid": valid,
         "candidate_count": len(candidates) if isinstance(candidates, list) else 0,
-        "updated_at": str(payload.get("updated_at") or payload.get("last_scan_at") or ""),
+        "updated_at": safe_timestamp(
+            payload.get("updated_at") or payload.get("last_scan_at")
+        ),
     }
+
+def evidence_coverage_issues(row):
+    values = (
+        row.get("evidence_coverage_issues")
+        if isinstance(row.get("evidence_coverage_issues"), list)
+        else []
+    )
+    return [
+        safe_code(value, "unknown_issue")
+        for value in values[:8]
+        if isinstance(value, str)
+    ]
+
+def valid_reconcile_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+def safe_code(value, default="unknown"):
+    rendered = str(value or "")
+    return rendered if rendered in safe_output_codes else default
+
+def safe_int(value, default=None):
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value):
+        return int(value)
+    return default
+
+def safe_bool(value):
+    return value if type(value) is bool else None
+
+def safe_contract_version(value):
+    rendered = str(value or "")
+    if not rendered or rendered == verdict_coverage_contract_version:
+        return rendered
+    return "unsupported"
+
+def v2_core_evidence(row):
+    if (
+        row.get("verdict_coverage_contract_version")
+        != verdict_coverage_contract_version
+        or row.get("source_receipt_canonical") is not True
+        or not valid_iso(row.get("source_event_utc"))
+        or row.get("active_range_vs_spot") not in {"active", "out_of_range"}
+        or type(row.get("spot_tick")) is not int
+    ):
+        return None
+    try:
+        before_raw = row.get("pool_liquidity_before")
+        after_raw = row.get("pool_liquidity_after")
+        five_raw = row.get("price_reaction_5m_pct")
+        fifteen_raw = row.get("price_reaction_15m_pct")
+        if (
+            not isinstance(before_raw, str)
+            or re.fullmatch(r"[0-9]+", before_raw) is None
+            or not isinstance(after_raw, str)
+            or re.fullmatch(r"[0-9]+", after_raw) is None
+            or not isinstance(five_raw, str)
+            or not isinstance(fifteen_raw, str)
+        ):
+            return None
+        before = int(before_raw)
+        after = int(after_raw)
+        five = Decimal(five_raw)
+        fifteen = Decimal(fifteen_raw)
+        next_hop = row.get("recipient_next_hop")
+        integer_fields = (
+            "recipient_count",
+            "canonical_transaction_count",
+            "observed_transaction_count_lower_bound",
+            "scope_limit",
+        )
+        if not isinstance(next_hop, dict) or any(
+            type(next_hop.get(field)) is not int for field in integer_fields
+        ):
+            return None
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not (
+        before >= 0
+        and after >= 0
+        and five.is_finite()
+        and fifteen.is_finite()
+        and next_hop.get("attribution_complete") is False
+        and next_hop.get("existence_complete") is True
+        and 0 <= next_hop["recipient_count"] <= 8
+        and next_hop["canonical_transaction_count"] >= 0
+        and next_hop["observed_transaction_count_lower_bound"] >= 0
+        and next_hop["scope_limit"] == 16
+    ):
+        return None
+    return next_hop
+
+def valid_v2_lifecycle(row):
+    completed_at = parse_iso_utc(row.get("completed_at"))
+    first_seen_at = parse_iso_utc(row.get("first_seen_at"))
+    source_event_at = parse_iso_utc(row.get("source_event_utc"))
+    return bool(
+        completed_at is not None
+        and completed_at >= verdict_coverage_activated_at
+        and first_seen_at is not None
+        and source_event_at is not None
+        and first_seen_at <= completed_at
+        and source_event_at <= completed_at
+        and type(row.get("source_block")) is int
+        and row.get("source_block") > 0
+        and type(row.get("reconciliation_window_seconds")) is int
+        and row.get("reconciliation_window_seconds") == 900
+        and type(row.get("observation_age_seconds")) is int
+        and row.get("observation_age_seconds") >= 0
+        and type(row.get("chain_age_seconds")) is int
+        and row.get("chain_age_seconds") >= 900
+    )
+
+def valid_v2_full_final(row, alert_sent_count):
+    next_hop = v2_core_evidence(row)
+    if (
+        next_hop is None
+        or not valid_v2_lifecycle(row)
+        or not valid_reconcile_id(row.get("reconcile_id"))
+        or str(row.get("classification") or "")
+        not in liquidity_final_classifications
+        or row.get("verdict_coverage_complete") is not True
+        or row.get("enrichment_coverage_complete") is not True
+        or row.get("evidence_coverage_issues") != []
+        or row.get("evidence_level") != "receipt_canonical_bounded_15m"
+        or next_hop.get("coverage_complete") is not True
+        or next_hop.get("enumeration_complete") is not True
+        or next_hop["canonical_transaction_count"]
+        != next_hop["observed_transaction_count_lower_bound"]
+        or alert_sent_count != 1
+    ):
+        return False
+    if next_hop.get("status") == "no_outbound_observed":
+        return next_hop["canonical_transaction_count"] == 0
+    return bool(
+        next_hop.get("status") == "outbound_observed"
+        and 1 <= next_hop["recipient_count"] <= 8
+        and 1 <= next_hop["canonical_transaction_count"] <= 16
+    )
+
+def valid_v2_scope_final(row, alert_sent_count):
+    next_hop = v2_core_evidence(row)
+    return bool(
+        next_hop is not None
+        and valid_v2_lifecycle(row)
+        and valid_reconcile_id(row.get("reconcile_id"))
+        and str(row.get("classification") or "")
+        in liquidity_final_classifications
+        and row.get("verdict_coverage_complete") is True
+        and row.get("enrichment_coverage_complete") is False
+        and row.get("evidence_coverage_issues")
+        == [recipient_next_hop_scope_issue]
+        and row.get("evidence_level")
+        == "core_receipt_canonical_next_hop_observed_partial"
+        and next_hop.get("status") == "high_activity_unattributed"
+        and next_hop.get("coverage_complete") is False
+        and next_hop.get("attribution_complete") is False
+        and next_hop.get("existence_complete") is True
+        and next_hop.get("enumeration_complete") is False
+        and type(next_hop.get("recipient_count")) is int
+        and 1 <= next_hop.get("recipient_count") <= 8
+        and type(next_hop.get("canonical_transaction_count")) is int
+        and next_hop.get("canonical_transaction_count") == 16
+        and type(next_hop.get("observed_transaction_count_lower_bound")) is int
+        and next_hop.get("observed_transaction_count_lower_bound") == 17
+        and type(next_hop.get("scope_limit")) is int
+        and next_hop.get("scope_limit") == 16
+        and alert_sent_count == 1
+    )
 
 health_path = root / "output" / "runtime_health" / "last_cycle.json"
 health = read_json(health_path)
@@ -152,25 +405,53 @@ grvt_holder_rows = [
     if isinstance(row, dict) and str(row.get("symbol") or "").upper() == "GRVT"
 ]
 grvt_holder = grvt_holder_rows[0] if len(grvt_holder_rows) == 1 else {}
-grvt_holder_error_safe = re.sub(
-    r"0x[0-9a-fA-F]+", "HEX_REDACTED", str(grvt_holder.get("error") or "")
-)
-grvt_holder_error_safe = re.sub(r"\S+://\S+", "URL_REDACTED", grvt_holder_error_safe)
-grvt_holder_error_safe = re.sub(r"\S+@\S+", "IDENTITY_REDACTED", grvt_holder_error_safe)[:180]
 reconciliations = []
 reconciliation_scopes = []
-for token_key, token_state in (liquidity_state.get("tokens") or {}).items():
-    if isinstance(token_state, dict):
-        reconciliation = (token_state.get("liquidity") or {}).get("reconciliation")
-        if isinstance(reconciliation, dict):
-            reconciliations.append(reconciliation)
-            chain, _, token = str(token_key).partition(":")
-            reconciliation_scopes.append((chain, token, reconciliation))
+reconciliation_shape_invalid_count = 0
+token_states = liquidity_state.get("tokens")
+if not isinstance(token_states, dict):
+    reconciliation_shape_invalid_count += 1
+    token_states = {}
+for token_key, token_state in token_states.items():
+    if not isinstance(token_state, dict):
+        reconciliation_shape_invalid_count += 1
+        continue
+    liquidity_payload = token_state.get("liquidity")
+    if liquidity_payload is None:
+        continue
+    if not isinstance(liquidity_payload, dict):
+        reconciliation_shape_invalid_count += 1
+        continue
+    reconciliation = liquidity_payload.get("reconciliation")
+    if reconciliation is None:
+        continue
+    pending_rows = (
+        reconciliation.get("pending")
+        if isinstance(reconciliation, dict)
+        else None
+    )
+    completed_state_rows = (
+        reconciliation.get("completed")
+        if isinstance(reconciliation, dict)
+        else None
+    )
+    if (
+        not isinstance(reconciliation, dict)
+        or not isinstance(pending_rows, list)
+        or not isinstance(completed_state_rows, list)
+        or any(not isinstance(row, dict) for row in pending_rows)
+        or any(not isinstance(row, dict) for row in completed_state_rows)
+    ):
+        reconciliation_shape_invalid_count += 1
+        continue
+    reconciliations.append(reconciliation)
+    chain, _, token = str(token_key).partition(":")
+    reconciliation_scopes.append((chain, token, reconciliation))
 pending_count = sum(len(row.get("pending") or []) for row in reconciliations)
 completed_rows = [item for row in reconciliations for item in (row.get("completed") or []) if isinstance(item, dict)]
 completed_classes = {}
 for row in completed_rows:
-    classification = str(row.get("classification") or "unknown")
+    classification = safe_code(row.get("classification"))
     completed_classes[classification] = completed_classes.get(classification, 0) + 1
 completed_times = sorted(
     str(row.get("completed_at") or "")
@@ -190,27 +471,62 @@ withdrawal_history = candidate_history(
     schema_version=1,
 )
 grvt_reconciliation_events = []
+historical_unversioned_scope_count = 0
+v2_scope_pending_count = 0
+v2_scope_unresolved_count = 0
+v2_scope_legal_final_count = 0
+v2_full_final_count = 0
+v2_invalid_or_unsent_final_count = 0
+v2_invalid_pending_count = 0
+missing_contract_version_count = 0
+unsupported_contract_version_count = 0
 for chain, token, reconciliation in reconciliation_scopes:
     for row in reconciliation.get("pending") or []:
         if not isinstance(row, dict):
             continue
+        issues = evidence_coverage_issues(row)
+        scope_issue_present = recipient_next_hop_scope_issue in (
+            row.get("evidence_coverage_issues")
+            if isinstance(row.get("evidence_coverage_issues"), list)
+            else []
+        )
+        contract_version = str(
+            row.get("verdict_coverage_contract_version") or ""
+        )
+        raw_issues = row.get("evidence_coverage_issues")
+        if contract_version == verdict_coverage_contract_version:
+            if (
+                not valid_reconcile_id(row.get("reconcile_id"))
+                or not valid_iso(row.get("first_seen_at"))
+                or raw_issues not in (None, [])
+            ):
+                v2_invalid_pending_count += 1
+                if scope_issue_present:
+                    v2_scope_pending_count += 1
+        elif contract_version:
+            unsupported_contract_version_count += 1
+        else:
+            missing_contract_version_count += 1
         first_seen = str(row.get("first_seen_at") or "")
         if first_seen < enriched_deploy_boundary:
             continue
         reconcile_id = str(row.get("reconcile_id") or "")
+        reconcile_id_prefix = (
+            reconcile_id[:12] if valid_reconcile_id(reconcile_id) else "invalid"
+        )
         key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
-        source = row.get("source_event") if isinstance(row.get("source_event"), dict) else {}
         grvt_reconciliation_events.append({
-            "reconcile_id_prefix": reconcile_id[:12],
+            "reconcile_id_prefix": reconcile_id_prefix,
             "status": "pending",
-            "source_event_utc": str(row.get("source_event_utc") or ""),
-            "source_block": row.get("source_block"),
-            "source_tx_prefix": str(source.get("tx") or "")[:12],
+            "source_event_utc": safe_timestamp(row.get("source_event_utc")),
+            "source_block": safe_int(row.get("source_block")),
             "classification": "",
-            "pending_at": first_seen,
+            "verdict_coverage_contract_version": safe_contract_version(contract_version),
+            "evidence_coverage_issues": issues,
+            "pending_at": safe_timestamp(first_seen),
             "final_at": "",
             "window_seconds": None,
-            "alert_key": "liquidity_reconciliation/" + reconcile_id[:12],
+            "alert_key": "liquidity_reconciliation/" + reconcile_id_prefix,
             "alert_sent_count": int(key in seen_alerts),
             "last_push_receipt_match": key in last_push_keys,
             "raw_removal_alert_eligible": False,
@@ -226,39 +542,75 @@ for chain, token, reconciliation in reconciliation_scopes:
     for row in reconciliation.get("completed") or []:
         if not isinstance(row, dict):
             continue
+        reconcile_id = str(row.get("reconcile_id") or "")
+        reconcile_id_prefix = (
+            reconcile_id[:12] if valid_reconcile_id(reconcile_id) else "invalid"
+        )
+        key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
+        issues = evidence_coverage_issues(row)
+        scope_issue_present = recipient_next_hop_scope_issue in (
+            row.get("evidence_coverage_issues")
+            if isinstance(row.get("evidence_coverage_issues"), list)
+            else []
+        )
+        contract_version = str(
+            row.get("verdict_coverage_contract_version") or ""
+        )
+        alert_sent_count = int(key in seen_alerts)
         completed_at = str(row.get("completed_at") or "")
+        completed_at_utc = parse_iso_utc(completed_at)
+        if contract_version == verdict_coverage_contract_version:
+            classification = str(row.get("classification") or "")
+            if classification == "unresolved_coverage":
+                v2_scope_unresolved_count += 1
+            elif valid_v2_full_final(row, alert_sent_count):
+                v2_full_final_count += 1
+            elif valid_v2_scope_final(row, alert_sent_count):
+                v2_scope_legal_final_count += 1
+            else:
+                v2_invalid_or_unsent_final_count += 1
+        elif contract_version:
+            unsupported_contract_version_count += 1
+        elif (
+            completed_at_utc is None
+            or completed_at_utc >= verdict_coverage_activated_at
+        ):
+            missing_contract_version_count += 1
+        elif scope_issue_present:
+            if (
+                str(row.get("classification") or "")
+                == "unresolved_coverage"
+                and row.get("evidence_coverage_issues")
+                == [recipient_next_hop_scope_issue]
+                and valid_reconcile_id(row.get("reconcile_id"))
+                and str(row.get("reconcile_id"))
+                in historical_scope_reconcile_ids
+            ):
+                historical_unversioned_scope_count += 1
+            else:
+                missing_contract_version_count += 1
         if completed_at < enriched_deploy_boundary:
             continue
-        reconcile_id = str(row.get("reconcile_id") or "")
-        key = "|".join((chain, token, "liquidity_reconciliation", reconcile_id))
         grvt_reconciliation_events.append({
-            "reconcile_id_prefix": reconcile_id[:12],
+            "reconcile_id_prefix": reconcile_id_prefix,
             "status": "final",
-            "source_event_utc": str(row.get("source_event_utc") or ""),
-            "source_block": row.get("source_block"),
-            "source_tx_prefix": str(row.get("source_tx") or "")[:12],
-            "classification": str(row.get("classification") or "unknown"),
-            "pending_at": str(row.get("first_seen_at") or ""),
-            "final_at": completed_at,
-            "expires_at": str(row.get("expires_at") or ""),
-            "window_seconds": row.get("reconciliation_window_seconds"),
-            "observation_age_seconds": row.get("observation_age_seconds"),
-            "chain_age_seconds": row.get("chain_age_seconds"),
-            "source_chain_timestamp_basis": str(row.get("source_chain_timestamp_basis") or ""),
-            "coverage_issue_code": str(row.get("coverage_issue_code") or ""),
-            "evidence_coverage_issues": [
-                str(value)[:80]
-                for value in (
-                    row.get("evidence_coverage_issues")
-                    if isinstance(row.get("evidence_coverage_issues"), list)
-                    else []
-                )[:8]
-                if isinstance(value, str) and re.fullmatch(r"[a-z0-9_]+", value)
-            ],
-            "alert_key": "liquidity_reconciliation/" + reconcile_id[:12],
-            "alert_sent_count": int(key in seen_alerts),
+            "source_event_utc": safe_timestamp(row.get("source_event_utc")),
+            "source_block": safe_int(row.get("source_block")),
+            "classification": safe_code(row.get("classification")),
+            "verdict_coverage_contract_version": safe_contract_version(contract_version),
+            "pending_at": safe_timestamp(row.get("first_seen_at")),
+            "final_at": safe_timestamp(completed_at),
+            "expires_at": safe_timestamp(row.get("expires_at")),
+            "window_seconds": safe_int(row.get("reconciliation_window_seconds")),
+            "observation_age_seconds": safe_int(row.get("observation_age_seconds")),
+            "chain_age_seconds": safe_int(row.get("chain_age_seconds")),
+            "source_chain_timestamp_basis": safe_code(row.get("source_chain_timestamp_basis"), ""),
+            "coverage_issue_code": safe_code(row.get("coverage_issue_code"), ""),
+            "evidence_coverage_issues": issues,
+            "alert_key": "liquidity_reconciliation/" + reconcile_id_prefix,
+            "alert_sent_count": alert_sent_count,
             "last_push_receipt_match": key in last_push_keys,
-            "raw_removal_alert_eligible": row.get("raw_removal_alert_eligible"),
+            "raw_removal_alert_eligible": safe_bool(row.get("raw_removal_alert_eligible")),
             "enrichment_coverage_complete": row.get("enrichment_coverage_complete") is True,
             "enriched_fields_present": {
                 "active_range_vs_spot": row.get("active_range_vs_spot") is not None,
@@ -269,26 +621,23 @@ for chain, token, reconciliation in reconciliation_scopes:
             },
         })
 grvt_reconciliation_events.sort(key=lambda row: (str(row.get("final_at") or row.get("pending_at") or ""), str(row.get("reconcile_id_prefix") or "")))
+v2_scope_contract_pass = (
+    v2_scope_pending_count == 0
+    and v2_scope_unresolved_count == 0
+    and v2_invalid_or_unsent_final_count == 0
+    and v2_invalid_pending_count == 0
+    and missing_contract_version_count == 0
+    and unsupported_contract_version_count == 0
+    and reconciliation_shape_invalid_count == 0
+)
 runtime_issue_codes = sorted({
-    str(row.get("kind") or row.get("code") or row.get("name") or "unknown")
+    safe_code(row.get("kind") or row.get("code"))
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
 })
 runtime_issue_summaries = [
     {
-        "kind": str(row.get("kind") or row.get("code") or "unknown"),
-        "name": str(row.get("name") or "")[:80],
-        "detail": (
-            str(row.get("detail") or "")[:180]
-            if all(
-                character.isalnum() or character in " _:=/.-"
-                for character in str(row.get("detail") or "")[:180]
-            )
-            and "//" not in str(row.get("detail") or "")[:180]
-            and "0x" not in str(row.get("detail") or "")[:180].lower()
-            and "@" not in str(row.get("detail") or "")[:180]
-            else "redacted_unsafe_detail"
-        ),
+        "kind": safe_code(row.get("kind") or row.get("code")),
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
@@ -296,6 +645,8 @@ runtime_issue_summaries = [
 ok = (
     health.get("schema") == "runtime_health.v1"
     and health.get("status") == "healthy"
+    and int(health.get("issue_count") or 0) == 0
+    and health.get("issues") == []
     and age is not None
     and age <= max_age
     and verification_path.exists()
@@ -311,16 +662,17 @@ ok = (
     and int(grvt_flow.get("latest_block") or 0) > 0
     and int(grvt_flow.get("latest_block") or 0)
     == int(grvt_flow.get("target_latest_block") or 0)
+    and v2_scope_contract_pass
     and micro_gas_history["valid"]
     and withdrawal_history["valid"]
 )
 print(json.dumps({
     "schema": "sniper_remote_health_acceptance.v1",
     "status": "pass" if ok else "fail",
-    "runtime_status": health.get("status", "missing"),
-    "runtime_generated_at": health.get("generated_at", ""),
+    "runtime_status": safe_code(health.get("status"), "missing"),
+    "runtime_generated_at": safe_timestamp(health.get("generated_at")),
     "runtime_age_seconds": age,
-    "runtime_issue_count": health.get("issue_count"),
+    "runtime_issue_count": safe_int(health.get("issue_count")),
     "runtime_issue_codes": runtime_issue_codes,
     "runtime_issue_summaries": runtime_issue_summaries,
     "verification_exists": verification_path.exists(),
@@ -329,64 +681,71 @@ print(json.dumps({
     "deployed_hash_parity_count": parity_matches,
     "deployed_hash_expected_count": len(expected_hashes),
     "grvt_replay_acceptance": {
-        "status": grvt_replay.get("status", "missing"),
-        "issues": grvt_replay.get("issues", []),
-        "generated_at": grvt_replay.get("generated_at", ""),
+        "status": safe_code(grvt_replay.get("status"), "missing"),
+        "issues": [
+            safe_code(value)
+            for value in (
+                grvt_replay.get("issues")
+                if isinstance(grvt_replay.get("issues"), list)
+                else []
+            )[:8]
+        ],
+        "generated_at": safe_timestamp(grvt_replay.get("generated_at")),
         "age_seconds": grvt_replay_age,
         "contract_pass": grvt_replay_contract,
-        "classification": grvt_replay.get("classification"),
-        "range_changed": grvt_replay.get("range_changed"),
-        "source_pool_equals_destination_pool": grvt_replay.get("source_pool_equals_destination_pool"),
-        "quote_boundary_complete": grvt_replay.get("quote_boundary_complete"),
-        "relative_materiality_proven": grvt_replay.get("relative_materiality_proven"),
-        "normal_replay_dedup_pass": grvt_replay.get("normal_replay_dedup_pass"),
-        "replay_duplicate_send_count": grvt_replay.get("replay_duplicate_send_count"),
+        "classification": safe_code(grvt_replay.get("classification")),
+        "range_changed": safe_bool(grvt_replay.get("range_changed")),
+        "source_pool_equals_destination_pool": safe_bool(grvt_replay.get("source_pool_equals_destination_pool")),
+        "quote_boundary_complete": safe_bool(grvt_replay.get("quote_boundary_complete")),
+        "relative_materiality_proven": safe_bool(grvt_replay.get("relative_materiality_proven")),
+        "normal_replay_dedup_pass": safe_bool(grvt_replay.get("normal_replay_dedup_pass")),
+        "replay_duplicate_send_count": safe_int(grvt_replay.get("replay_duplicate_send_count")),
         "code_hash_parity": grvt_replay_hash_parity,
     },
     "grvt_liquidity": {
-        "status": liquidity.get("status", "missing"),
-        "issue_count": liquidity.get("issue_count"),
-        "alert_ready_count": liquidity.get("alert_ready_count"),
-        "alert_count": liquidity.get("alert_count"),
-        "complete_count": liquidity.get("complete_count"),
-        "cursor": grvt_flow.get("latest_block"),
-        "confirmed_tip": grvt_flow.get("target_latest_block"),
-        "continuous": grvt_flow.get("continuous"),
-        "pool_count": grvt_flow.get("pool_count"),
+        "status": safe_code(liquidity.get("status"), "missing"),
+        "issue_count": safe_int(liquidity.get("issue_count")),
+        "alert_ready_count": safe_int(liquidity.get("alert_ready_count")),
+        "alert_count": safe_int(liquidity.get("alert_count")),
+        "complete_count": safe_int(liquidity.get("complete_count")),
+        "cursor": safe_int(grvt_flow.get("latest_block")),
+        "confirmed_tip": safe_int(grvt_flow.get("target_latest_block")),
+        "continuous": safe_bool(grvt_flow.get("continuous")),
+        "pool_count": safe_int(grvt_flow.get("pool_count")),
         "pending_count": pending_count,
         "completed_count": len(completed_rows),
         "completed_classes": completed_classes,
-        "first_completed_at": completed_times[0] if completed_times else "",
-        "last_completed_at": completed_times[-1] if completed_times else "",
+        "first_completed_at": safe_timestamp(completed_times[0]) if completed_times else "",
+        "last_completed_at": safe_timestamp(completed_times[-1]) if completed_times else "",
         "enriched_deploy_boundary_utc": enriched_deploy_boundary,
         "reconciliation_events_since_enriched_deploy": grvt_reconciliation_events,
         "reconciliation_event_count_since_enriched_deploy": len(grvt_reconciliation_events),
+        "verdict_coverage_contract": {
+            "version": verdict_coverage_contract_version,
+            "activated_at_utc": verdict_coverage_activated_at_utc,
+            "historical_unversioned_scope_count": historical_unversioned_scope_count,
+            "v2_scope_pending_count": v2_scope_pending_count,
+            "v2_scope_unresolved_count": v2_scope_unresolved_count,
+            "v2_scope_legal_final_count": v2_scope_legal_final_count,
+            "v2_full_final_count": v2_full_final_count,
+            "v2_invalid_or_unsent_final_count": v2_invalid_or_unsent_final_count,
+            "v2_invalid_pending_count": v2_invalid_pending_count,
+            "missing_contract_version_count": missing_contract_version_count,
+            "unsupported_contract_version_count": unsupported_contract_version_count,
+            "reconciliation_shape_invalid_count": reconciliation_shape_invalid_count,
+            "pass": v2_scope_contract_pass,
+        },
         "telegram_seen_ledger_count": len(seen_alerts),
-        "telegram_last_push_sent_at": str(last_push.get("sent_at") or ""),
+        "telegram_last_push_sent_at": safe_timestamp(last_push.get("sent_at")),
     },
     "grvt_holder": {
-        "fields": sorted(grvt_holder),
         "project_count": len(holder_snapshot.get("projects") or []),
-        "symbols": sorted({
-            str(row.get("symbol") or "").upper()
-            for row in (holder_snapshot.get("projects") or [])
-            if isinstance(row, dict)
-        }),
-        "scan_from_block": grvt_holder.get("scan_from_block"),
-        "scan_to_block": grvt_holder.get("scan_to_block"),
-        "previous_latest_block": grvt_holder.get("previous_latest_block"),
-        "latest_block": grvt_holder.get("latest_block"),
-        "target_latest_block": grvt_holder.get("target_latest_block"),
-        "log_error_count": grvt_holder.get("log_error_count"),
-        "coverage_note": grvt_holder.get("coverage_note"),
-        "error": (
-            grvt_holder_error_safe
-            if all(
-                character.isalnum() or character in " _:=/.-"
-                for character in grvt_holder_error_safe
-            )
-            else "redacted_unsafe_detail"
-        ),
+        "scan_from_block": safe_int(grvt_holder.get("scan_from_block")),
+        "scan_to_block": safe_int(grvt_holder.get("scan_to_block")),
+        "previous_latest_block": safe_int(grvt_holder.get("previous_latest_block")),
+        "latest_block": safe_int(grvt_holder.get("latest_block")),
+        "target_latest_block": safe_int(grvt_holder.get("target_latest_block")),
+        "log_error_count": safe_int(grvt_holder.get("log_error_count")),
         "error_code": next(
             (
                 code
@@ -402,12 +761,11 @@ print(json.dumps({
             ),
             "other",
         ),
-        "incremental_catchup": grvt_holder.get("incremental_catchup"),
     },
     "natural_evidence_watch": {
-        "intraday_generated_at": str(intraday.get("generated_at") or ""),
-        "intraday_event_count": int(intraday.get("event_count") or 0),
-        "intraday_alert_count": int(intraday.get("alert_count") or 0),
+        "intraday_generated_at": safe_timestamp(intraday.get("generated_at")),
+        "intraday_event_count": safe_int(intraday.get("event_count"), 0),
+        "intraday_alert_count": safe_int(intraday.get("alert_count"), 0),
         "cex_micro_gas_candidate_history": micro_gas_history,
         "cex_withdrawal_candidate_history": withdrawal_history,
     },
@@ -435,17 +793,18 @@ def run_json(command: list[str], cwd: Path, timeout: int = 30) -> tuple[dict[str
             text=True,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {}, str(exc)
+    except subprocess.TimeoutExpired:
+        return {}, "timeout"
+    except OSError:
+        return {}, "execution_failed"
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        return {}, detail[:500] or f"exit={result.returncode}"
+        return {}, f"exit_nonzero_{result.returncode}"
     try:
         value = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        return {}, f"invalid JSON output: {exc}"
+    except json.JSONDecodeError:
+        return {}, "invalid_json"
     if not isinstance(value, dict):
-        return {}, "command returned a non-object JSON value"
+        return {}, "non_object_json"
     return value, ""
 
 
@@ -601,8 +960,21 @@ def issue(code: str, detail: str) -> dict[str, str]:
     return {"code": code, "detail": detail}
 
 
+def safe_command_error(value: Any) -> str:
+    rendered = str(value or "")
+    if re.fullmatch(
+        r"(?:check|resume|audit|git|remote): [a-z0-9_]+",
+        rendered,
+    ):
+        return rendered
+    return "operation_failed"
+
+
 def evaluate(snapshot: dict[str, Any], allow_dirty: bool, remote_required: bool) -> dict[str, Any]:
-    issues = [issue("command_error", detail) for detail in snapshot.pop("command_errors", [])]
+    issues = [
+        issue("command_error", safe_command_error(detail))
+        for detail in snapshot.pop("command_errors", [])
+    ]
     advisories: list[dict[str, str]] = []
     continuity = snapshot["continuity"]
     repository = snapshot["repository"]
@@ -753,7 +1125,7 @@ def main() -> int:
 
     try:
         repository = collect_repository(project_root, policy)
-    except (OSError, subprocess.CalledProcessError, IndexError) as exc:
+    except (OSError, subprocess.CalledProcessError, IndexError):
         repository = {
             "head": "",
             "branch": "",
@@ -763,7 +1135,7 @@ def main() -> int:
             "tracked_denied_paths": [],
             "tracked_paths": set(),
         }
-        command_errors.append(f"git: {exc}")
+        command_errors.append("git: collection_failed")
     repository["context_boundary_violations"] = context_boundary_violations(
         config,
         config_path,
@@ -805,9 +1177,9 @@ def main() -> int:
             snapshot["remote_runtime"] = remote_payload or {"status": "error"}
             if remote_error:
                 snapshot["command_errors"].append(f"remote: {remote_error}")
-        except (OSError, TypeError, ValueError) as exc:
+        except (OSError, TypeError, ValueError):
             snapshot["remote_runtime"] = {"status": "error"}
-            snapshot["command_errors"].append(f"remote: {exc}")
+            snapshot["command_errors"].append("remote: setup_failed")
 
     payload = evaluate(snapshot, allow_dirty=args.allow_dirty, remote_required=args.remote)
     configured_output = Path(str(policy.get("output_dir", "../output/project_continuity_acceptance"))).expanduser()
