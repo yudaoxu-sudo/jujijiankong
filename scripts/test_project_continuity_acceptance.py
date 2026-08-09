@@ -1172,10 +1172,31 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         deploy = (
             Path(__file__).resolve().parent / "deploy_to_server.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('health_status_after" != "healthy', deploy)
-        self.assertIn("replay_artifact_not_refreshed=1", deploy)
-        self.assertIn("SNIPER_OVERLAP_SKIP_EXIT_CODE=75", deploy)
-        self.assertIn("overlap_attempt_limit=12", deploy)
+        required_contracts = {
+            "healthy cycle": 'health_status_after" != "healthy',
+            "fresh replay": "replay_artifact_not_refreshed=1",
+            "full-cycle overlap retry": "SNIPER_OVERLAP_SKIP_EXIT_CODE=75",
+            "bounded overlap attempts": "overlap_attempt_limit=12",
+            "project-only cycle limit": "project_only_cycle_limit=",
+            "project-only mode": "ALPHA_PROJECT_ONLY=1",
+            "project-only no-send": "DISABLE_TELEGRAM=1 ALPHA_PROJECT_ONLY=1",
+            "bounded project-only cycles": (
+                "ALPHA_PROJECT_ONLY_CYCLES=$project_only_cycle_limit"
+            ),
+            "shared full-cycle lock": (
+                "SNIPER_PROJECT_ONLY_RUN_LOCK_FILE=/tmp/sniper_server_run_once.lock"
+            ),
+            "incomplete project scan gate": "project_watch_incomplete=1",
+        }
+        for label, marker in required_contracts.items():
+            self.assertTrue(
+                marker in deploy,
+                f"missing deployment contract: {label}",
+            )
+        self.assertLess(
+            deploy.index("ALPHA_PROJECT_ONLY=1"),
+            deploy.index("RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE="),
+        )
         server_run = (
             Path(__file__).resolve().parent / "server_run_once.sh"
         ).read_text(encoding="utf-8")

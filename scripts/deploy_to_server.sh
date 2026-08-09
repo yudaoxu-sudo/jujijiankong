@@ -57,9 +57,36 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
       exit 1
     }
   fi
+  project_only_cycle_limit="${SNIPER_DEPLOY_PROJECT_ONLY_CYCLES:-12}"
+  if [[ ! "$project_only_cycle_limit" =~ ^[1-9][0-9]*$ ]] \
+    || (( 10#$project_only_cycle_limit > 64 )); then
+    printf '%s\n' 'remote_no_telegram_cycle=fail invalid_project_only_cycle_limit=1' >&2
+    exit 64
+  fi
+  project_only_cycle_limit="$((10#$project_only_cycle_limit))"
+  overlap_attempt_limit=12
+  project_only_status=75
+  project_only_attempt=0
+  while (( project_only_status == 75 && project_only_attempt < overlap_attempt_limit )); do
+    project_only_attempt=$((project_only_attempt + 1))
+    project_only_status=0
+    "${ssh_cmd[@]}" "$remote_target" \
+      "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 ALPHA_PROJECT_ONLY=1 ALPHA_PROJECT_ONLY_CYCLES=$project_only_cycle_limit SNIPER_PROJECT_ONLY_RUN_LOCK_FILE=/tmp/sniper_server_run_once.lock bash scripts/server_run_once.sh" \
+      >/dev/null 2>&1 || project_only_status=$?
+    if (( project_only_status == 75 && project_only_attempt < overlap_attempt_limit )); then
+      sleep 10
+    fi
+  done
+  if (( project_only_status == 75 )); then
+    printf '%s\n' "remote_no_telegram_cycle=fail project_watch_overlap_lock_busy=1 attempts=$project_only_attempt" >&2
+    exit 1
+  fi
+  if (( project_only_status != 0 )); then
+    printf '%s\n' "remote_no_telegram_cycle=fail project_watch_incomplete=1 status=$project_only_status" >&2
+    exit 1
+  fi
   remote_cycle_status=75
   overlap_attempt=0
-  overlap_attempt_limit=12
   while (( remote_cycle_status == 75 && overlap_attempt < overlap_attempt_limit )); do
     overlap_attempt=$((overlap_attempt + 1))
     remote_cycle_status=0
