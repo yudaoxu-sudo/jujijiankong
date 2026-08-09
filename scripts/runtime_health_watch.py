@@ -1419,7 +1419,11 @@ def runtime_watchlist_contracts(path: Path) -> set[tuple[str, str]]:
     return rows
 
 
-def runtime_watchlist_targets(path: Path) -> list[dict[str, Any]]:
+def runtime_watchlist_targets(
+    path: Path,
+    *,
+    fallback_path: Path | None = None,
+) -> list[dict[str, Any]]:
     payload = read_json(path, {})
     targets: list[dict[str, Any]] = []
     for item in payload.get("items", []):
@@ -1444,13 +1448,103 @@ def runtime_watchlist_targets(path: Path) -> list[dict[str, Any]]:
                     "listing_time_utc": str(
                         facts.get("listing_time_utc") or ""
                     ),
+                    "monitoring_anchor_time_utc": str(
+                        facts.get("monitoring_anchor_time_utc") or ""
+                    ),
                     "lifecycle_first_seen_at": str(
                         facts.get("lifecycle_first_seen_at") or ""
                     ),
                     "active_monitoring": True,
                 }
             )
+    if fallback_path is not None and fallback_path != path:
+        fallback_by_identity = {
+            (row["chain"], row["contract"]): row
+            for row in runtime_watchlist_targets(fallback_path)
+        }
+        for target in targets:
+            fallback = fallback_by_identity.get(
+                (target["chain"], target["contract"]),
+                {},
+            )
+            for key in (
+                "listing_time_utc",
+                "monitoring_anchor_time_utc",
+                "lifecycle_first_seen_at",
+            ):
+                if not target.get(key):
+                    target[key] = fallback.get(key, "")
     return targets
+
+
+def catalog_pending_runtime_identities(path: Path) -> set[tuple[str, str]]:
+    payload = read_json(path, {})
+    identities: set[tuple[str, str]] = set()
+    for item in payload.get("items", []):
+        if not isinstance(item, dict) or item.get("active_monitoring") is not True:
+            continue
+        facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+        if parse_time(facts.get("monitoring_anchor_time_utc")) is None:
+            continue
+        research = (
+            item.get("prelaunch_research")
+            if isinstance(item.get("prelaunch_research"), dict)
+            else {}
+        )
+        identity = (
+            research.get("identity")
+            if isinstance(research.get("identity"), dict)
+            else {}
+        )
+        pool = (
+            research.get("pool")
+            if isinstance(research.get("pool"), dict)
+            else {}
+        )
+        pool_key = (
+            pool.get("pool_key")
+            if isinstance(pool.get("pool_key"), dict)
+            else {}
+        )
+        decision = (
+            research.get("decision")
+            if isinstance(research.get("decision"), dict)
+            else {}
+        )
+        identity_chain = str(identity.get("chain") or "").lower()
+        identity_contract = str(identity.get("contract") or "").lower()
+        pool_tokens = {
+            str(pool_key.get("token0") or "").lower(),
+            str(pool_key.get("token1") or "").lower(),
+        }
+        pool_id = str(pool.get("pool_id") or "").lower()
+        if (
+            research.get("schema_version") != "alpha_prelaunch_research.v1"
+            or research.get("research_status") != "blocked"
+            or identity.get("verification_status")
+            != "canonical_pool_key_match_official_contract_pending"
+            or decision.get("action") != "Observe"
+            or decision.get("automatic_trading") is not False
+            or len(pool_id) != 66
+            or not pool_id.startswith("0x")
+            or identity_contract not in pool_tokens
+        ):
+            continue
+        for contract in item.get("contracts", []):
+            if not isinstance(contract, dict):
+                continue
+            chain = str(
+                contract.get("chain") or item.get("chain") or ""
+            ).lower()
+            address = str(contract.get("address") or "").lower()
+            if (
+                chain == identity_chain
+                and address == identity_contract
+                and contract.get("confidence")
+                == "canonical_pancake_pool_key_match_official_catalog_pending"
+            ):
+                identities.add((chain, address))
+    return identities
 
 
 def effective_runtime_watchlist_path(root: Path) -> Path:
@@ -1611,7 +1705,10 @@ def historical_prelaunch_delivery_issue(
     row: dict[str, Any],
     current: datetime,
 ) -> str:
-    listing = parse_time(row.get("listing_time_utc"))
+    listing = parse_time(
+        row.get("listing_time_utc")
+        or row.get("monitoring_anchor_time_utc")
+    )
     if listing is None or current < listing:
         return ""
     first_seen = parse_time(row.get("lifecycle_first_seen_at"))
@@ -1730,6 +1827,9 @@ def alpha_coverage_evaluation(
         )
     issues: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    current = (
+        current or datetime.now(timezone.utc)
+    ).astimezone(timezone.utc)
     runtime_watchlist_path = effective_runtime_watchlist_path(root)
     focus_symbols, focus_detail = monitoring_focus_scope(
         root,
@@ -1881,11 +1981,18 @@ def alpha_coverage_evaluation(
         and in_monitoring_focus(row)
         and row.get("active_monitoring") is not False
     ]
+    static_watchlist_path = root / "config" / "current_alpha_watchlist.json"
     runtime_targets = [
         row
-        for row in runtime_watchlist_targets(runtime_watchlist_path)
+        for row in runtime_watchlist_targets(
+            runtime_watchlist_path,
+            fallback_path=static_watchlist_path,
+        )
         if in_monitoring_focus(row)
     ]
+    catalog_pending_identities = catalog_pending_runtime_identities(
+        static_watchlist_path
+    )
     selected_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for row in runtime_targets:
         identity = (
@@ -1919,12 +2026,34 @@ def alpha_coverage_evaluation(
         )
         if identity not in catalog_identities:
             symbol = str(row.get("symbol") or "UNKNOWN").upper()
-            issues.append(
+            monitoring_anchor = parse_time(
+                row.get("monitoring_anchor_time_utc")
+            )
+            is_pending = (
+                identity in catalog_pending_identities
+                and monitoring_anchor is not None
+                and current < monitoring_anchor
+            )
+            target = warnings if is_pending else issues
+            kind = (
+                "alpha_catalog_focus_pending"
+                if is_pending
+                else "alpha_catalog_focus_missing"
+            )
+            target.append(
                 issue(
-                    "alpha_catalog_focus_missing",
+                    kind,
                     symbol,
-                    f"{symbol} is active in the runtime focus but absent from the current catalog summary",
-                    f"alpha_catalog_focus_missing:{identity[0]}:{identity[1]}",
+                    (
+                        f"{symbol} canonical pool identity is active while "
+                        "the official catalog contract remains pending"
+                        if is_pending
+                        else (
+                            f"{symbol} is active in the runtime focus but "
+                            "absent from the current catalog summary"
+                        )
+                    ),
+                    f"{kind}:{identity[0]}:{identity[1]}",
                 )
             )
     selected = list(selected_by_identity.values())
@@ -1940,9 +2069,6 @@ def alpha_coverage_evaluation(
             )
         return issues, warnings
     runtime_contracts = runtime_watchlist_contracts(runtime_watchlist_path)
-    current = (
-        current or datetime.now(timezone.utc)
-    ).astimezone(timezone.utc)
     output_paths = {
         "project": root / "output" / "alpha_project_watch" / "latest.json",
         "prelaunch": root / "output" / "alpha_prelaunch_watch" / "latest.json",
@@ -1972,7 +2098,10 @@ def alpha_coverage_evaluation(
                 )
             )
             continue
-        listing = parse_time(row.get("listing_time_utc"))
+        listing = parse_time(
+            row.get("listing_time_utc")
+            or row.get("monitoring_anchor_time_utc")
+        )
         required_outputs = alpha_required_outputs(
             chain,
             listing,

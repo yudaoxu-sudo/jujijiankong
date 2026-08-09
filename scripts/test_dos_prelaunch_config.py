@@ -25,6 +25,10 @@ def main() -> int:
     assert active == ["DOS", "GRVT"]
     dos = next(item for item in items if item.get("symbol") == "DOS")
     assert dos["chain"] == "bsc"
+    assert dos["facts"]["monitoring_anchor_time_utc"] == (
+        "2026-08-10T09:00:00+00:00"
+    )
+    assert "listing_time_utc" not in dos["facts"]
     assert dos["contracts"] == [
         {
             "chain": "bsc",

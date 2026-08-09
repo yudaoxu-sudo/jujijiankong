@@ -958,6 +958,8 @@
         "project_name": "DAPPOS",
         "raw_symbol": "DOS",
         "display_symbol": "DOS",
+        "monitoring_anchor_time_utc": "2026-08-10T09:00:00+00:00",
+        "monitoring_anchor_basis": "canonical_pool_hook_official_venue_time_pending",
         "research_source_policy": "official_onchain_market_social_inference_separated"
       }
     },

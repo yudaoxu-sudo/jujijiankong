@@ -4603,6 +4603,134 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertFalse(any(row.get("name") == "AEON" for row in issues))
 
+    def test_health_warns_for_strict_catalog_pending_prelaunch_candidate(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import alpha_coverage_evaluation
+
+        tracked = json.loads(
+            (ROOT / "config" / "current_alpha_watchlist.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        dos = copy.deepcopy(
+            next(row for row in tracked["items"] if row["symbol"] == "DOS")
+        )
+        watchlist = {
+            "monitoring_policy": {
+                "mode": "exclusive_symbols",
+                "symbols": ["DOS"],
+            },
+            "items": [dos],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config" / "current_alpha_watchlist.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps(watchlist), encoding="utf-8")
+            catalog_path = (
+                root
+                / "output"
+                / "binance_alpha_catalog_watch"
+                / "latest.json"
+            )
+            catalog_path.parent.mkdir(parents=True)
+            catalog_path.write_text(
+                json.dumps({"status": "pass", "selected": []}),
+                encoding="utf-8",
+            )
+
+            issues, warnings = alpha_coverage_evaluation(
+                root,
+                current=datetime(
+                    2026,
+                    8,
+                    9,
+                    17,
+                    0,
+                    tzinfo=timezone.utc,
+                ),
+            )
+            opened_issues, opened_warnings = alpha_coverage_evaluation(
+                root,
+                current=datetime(
+                    2026,
+                    8,
+                    10,
+                    9,
+                    0,
+                    tzinfo=timezone.utc,
+                ),
+            )
+
+        self.assertFalse(
+            any(row["kind"] == "alpha_catalog_focus_missing" for row in issues),
+            [row["kind"] for row in issues],
+        )
+        self.assertFalse(
+            any(
+                " intraday " in row["detail"]
+                or " price " in row["detail"]
+                for row in issues
+            ),
+            [row["detail"] for row in issues],
+        )
+        self.assertTrue(
+            any(row["kind"] == "alpha_catalog_focus_pending" for row in warnings),
+            [row["kind"] for row in warnings],
+        )
+        self.assertTrue(
+            any(
+                row["kind"] == "alpha_catalog_focus_missing"
+                for row in opened_issues
+            ),
+            [row["kind"] for row in opened_issues],
+        )
+        self.assertFalse(
+            any(
+                row["kind"] == "alpha_catalog_focus_pending"
+                for row in opened_warnings
+            ),
+            [row["kind"] for row in opened_warnings],
+        )
+
+    def test_runtime_target_keeps_monitoring_anchor_separate_from_listing(
+        self,
+    ) -> None:
+        from scripts.runtime_health_watch import runtime_watchlist_targets
+
+        tracked = json.loads(
+            (ROOT / "config" / "current_alpha_watchlist.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        dos = copy.deepcopy(
+            next(row for row in tracked["items"] if row["symbol"] == "DOS")
+        )
+        anchor = "2026-08-10T09:00:00+00:00"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            static_path = root / "static.json"
+            runtime_path = root / "runtime.json"
+            static_path.write_text(
+                json.dumps({"items": [dos]}),
+                encoding="utf-8",
+            )
+            runtime_dos = copy.deepcopy(dos)
+            runtime_dos["facts"].pop("monitoring_anchor_time_utc")
+            runtime_path.write_text(
+                json.dumps({"items": [runtime_dos]}),
+                encoding="utf-8",
+            )
+
+            targets = runtime_watchlist_targets(
+                runtime_path,
+                fallback_path=static_path,
+            )
+
+        self.assertEqual(targets[0]["listing_time_utc"], "")
+        self.assertEqual(targets[0]["monitoring_anchor_time_utc"], anchor)
+
     def test_health_fails_when_recent_official_token_has_no_runtime_coverage(self) -> None:
         from scripts.runtime_health_watch import alpha_coverage_issues
 
