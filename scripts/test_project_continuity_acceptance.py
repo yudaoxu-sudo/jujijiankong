@@ -408,7 +408,9 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         issue_payload["status"] = "fail"
         issue_payload["runtime_issue_count"] = 1
         issue_payload["runtime_issue_codes"] = [marker]
-        issue_payload["runtime_issue_summaries"] = [{"kind": marker}]
+        issue_payload["runtime_issue_summaries"] = [
+            {"kind": marker, "name_hash": "0" * 16}
+        ]
         issue_payload["grvt_replay_acceptance"]["status"] = "fail"
         issue_payload["grvt_replay_acceptance"]["issues"] = [marker]
         issue_snapshot = healthy_snapshot()
@@ -422,6 +424,25 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         rendered = json.dumps(issue_result, sort_keys=True)
         self.assertNotIn(marker, rendered)
         self.assertIn("issue_present", rendered)
+
+        recognized_payload = json.loads(json.dumps(remote_payload))
+        recognized_payload["status"] = "fail"
+        recognized_payload["runtime_issue_count"] = 1
+        recognized_payload["runtime_issue_codes"] = ["alpha_coverage_gap"]
+        recognized_payload["runtime_issue_summaries"] = [
+            {"kind": "alpha_coverage_gap", "name_hash": "1" * 16}
+        ]
+        recognized_snapshot = healthy_snapshot()
+        recognized_snapshot["remote_runtime"] = recognized_payload
+        recognized_result = evaluate(
+            recognized_snapshot,
+            allow_dirty=False,
+            remote_required=True,
+        )
+        self.assertEqual(
+            recognized_result["remote_runtime"]["runtime_issue_codes"],
+            ["alpha_coverage_gap"],
+        )
 
     def test_outer_remote_contract_rejects_forged_typed_fields(self) -> None:
         marker = "synthetic_private_key_material"

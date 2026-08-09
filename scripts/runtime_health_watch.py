@@ -1953,6 +1953,23 @@ def alpha_coverage_evaluation(
                 f"alpha_unsupported_chain:{unsupported_count}:{labels}",
             )
         )
+    static_watchlist_path = root / "config" / "current_alpha_watchlist.json"
+    catalog_pending_identities = catalog_pending_runtime_identities(
+        static_watchlist_path
+    )
+    active_pending_by_symbol: dict[str, set[tuple[str, str]]] = {}
+    for target in runtime_watchlist_targets(static_watchlist_path):
+        identity = (target["chain"], target["contract"])
+        anchor = parse_time(target.get("monitoring_anchor_time_utc"))
+        if (
+            identity in catalog_pending_identities
+            and anchor is not None
+            and current < anchor
+        ):
+            active_pending_by_symbol.setdefault(
+                str(target.get("symbol") or "").upper(),
+                set(),
+            ).add(identity)
     pending_registry = [
         row
         for row in catalog.get("registry_pending", [])
@@ -1962,12 +1979,36 @@ def alpha_coverage_evaluation(
         symbol = str(row.get("symbol") or "UNKNOWN").upper()
         reasons = ",".join(str(value) for value in row.get("reasons", []))
         project_key = str(row.get("project_key") or symbol)
-        issues.append(
+        pending_identities = active_pending_by_symbol.get(symbol, set())
+        row_identity = (
+            str(row.get("chain") or "").lower(),
+            str(row.get("contract") or "").lower(),
+        )
+        is_pending = (
+            row_identity in pending_identities
+            if all(row_identity)
+            else len(pending_identities) == 1
+        )
+        target = warnings if is_pending else issues
+        kind = (
+            "alpha_launch_candidate_pending"
+            if is_pending
+            else "alpha_launch_candidate_gap"
+        )
+        target.append(
             issue(
-                "alpha_launch_candidate_gap",
+                kind,
                 symbol,
-                f"{symbol} launch candidate is not monitor-ready: {reasons or 'unknown gap'}",
-                f"alpha_launch_candidate_gap:{project_key}:{reasons}",
+                (
+                    f"{symbol} official catalog contract remains pending; "
+                    "canonical prelaunch monitoring stays Observe"
+                    if is_pending
+                    else (
+                        f"{symbol} launch candidate is not monitor-ready: "
+                        f"{reasons or 'unknown gap'}"
+                    )
+                ),
+                f"{kind}:{project_key}:{reasons}",
             )
         )
     catalog_selected = [
@@ -1981,7 +2022,6 @@ def alpha_coverage_evaluation(
         and in_monitoring_focus(row)
         and row.get("active_monitoring") is not False
     ]
-    static_watchlist_path = root / "config" / "current_alpha_watchlist.json"
     runtime_targets = [
         row
         for row in runtime_watchlist_targets(
@@ -1990,9 +2030,6 @@ def alpha_coverage_evaluation(
         )
         if in_monitoring_focus(row)
     ]
-    catalog_pending_identities = catalog_pending_runtime_identities(
-        static_watchlist_path
-    )
     selected_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for row in runtime_targets:
         identity = (

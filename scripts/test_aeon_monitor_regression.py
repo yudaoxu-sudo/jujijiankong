@@ -4623,7 +4623,16 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             },
             "items": [dos],
         }
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_WATCHLIST_PATH": "",
+                    "ALPHA_PRELAUNCH_LOOKAHEAD_HOURS": "48",
+                },
+            ),
+        ):
             root = Path(temp_dir)
             config_path = root / "config" / "current_alpha_watchlist.json"
             config_path.parent.mkdir(parents=True)
@@ -4636,7 +4645,19 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
             catalog_path.parent.mkdir(parents=True)
             catalog_path.write_text(
-                json.dumps({"status": "pass", "selected": []}),
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "selected": [],
+                        "registry_pending": [
+                            {
+                                "symbol": "DOS",
+                                "project_key": "dos",
+                                "reasons": ["official_contract_pending"],
+                            }
+                        ],
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -4668,6 +4689,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             [row["kind"] for row in issues],
         )
         self.assertFalse(
+            any(row["kind"] == "alpha_launch_candidate_gap" for row in issues),
+            [row["kind"] for row in issues],
+        )
+        self.assertFalse(
             any(
                 " intraday " in row["detail"]
                 or " price " in row["detail"]
@@ -4677,6 +4702,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertTrue(
             any(row["kind"] == "alpha_catalog_focus_pending" for row in warnings),
+            [row["kind"] for row in warnings],
+        )
+        self.assertTrue(
+            any(row["kind"] == "alpha_launch_candidate_pending" for row in warnings),
             [row["kind"] for row in warnings],
         )
         self.assertTrue(
@@ -4692,6 +4721,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 for row in opened_warnings
             ),
             [row["kind"] for row in opened_warnings],
+        )
+        self.assertTrue(
+            any(
+                row["kind"] == "alpha_launch_candidate_gap"
+                for row in opened_issues
+            ),
+            [row["kind"] for row in opened_issues],
         )
 
     def test_runtime_target_keeps_monitoring_anchor_separate_from_listing(

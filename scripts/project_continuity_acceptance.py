@@ -31,6 +31,30 @@ DEPLOY_PARITY_PATHS = (
     "scripts/test_project_continuity_acceptance.py",
     "scripts/verify_sniper_engine.py",
 )
+REMOTE_RUNTIME_ISSUE_CODES = frozenset(
+    {
+        "alpha_catalog_budget_exceeded",
+        "alpha_catalog_failed",
+        "alpha_catalog_focus_missing",
+        "alpha_coverage_gap",
+        "alpha_launch_candidate_gap",
+        "alpha_monitoring_focus_missing",
+        "alpha_monitoring_policy_mismatch",
+        "alpha_project_scan_pending",
+        "alpha_static_time_conflict",
+        "alpha_static_time_conflict_summary_invalid",
+        "alpha_unsupported_chain",
+        "fast_lane_unhealthy",
+        "missing_fast_lane_heartbeat",
+        "missing_heartbeat",
+        "missing_output",
+        "stale_fast_lane_heartbeat",
+        "stale_heartbeat",
+        "stale_output",
+        "step_failed",
+        "verification_failed",
+    }
+)
 
 REMOTE_PROBE = r"""
 import json
@@ -63,12 +87,24 @@ liquidity_final_classifications = {
 }
 safe_output_codes = liquidity_final_classifications | {
     "active",
+    "alpha_catalog_budget_exceeded",
+    "alpha_catalog_failed",
+    "alpha_catalog_focus_missing",
+    "alpha_coverage_gap",
+    "alpha_launch_candidate_gap",
+    "alpha_monitoring_focus_missing",
+    "alpha_monitoring_policy_mismatch",
+    "alpha_project_scan_pending",
+    "alpha_static_time_conflict",
+    "alpha_static_time_conflict_summary_invalid",
+    "alpha_unsupported_chain",
     "canonical_block",
     "deadline_exceeded",
     "error",
     "eth_getlogs_coverage_failed",
     "execution_failed",
     "fail",
+    "fast_lane_unhealthy",
     "healthy",
     "holder_scan_failed",
     "holder_transfer_coverage_failed",
@@ -81,6 +117,9 @@ safe_output_codes = liquidity_final_classifications | {
     "liquidity_pairing_ambiguous",
     "liquidity_reconciliation_incomplete",
     "missing",
+    "missing_fast_lane_heartbeat",
+    "missing_heartbeat",
+    "missing_output",
     "out_of_range",
     "pass",
     "pool_liquidity_boundary_unavailable",
@@ -98,6 +137,10 @@ safe_output_codes = liquidity_final_classifications | {
     "source_pool_scope_unavailable",
     "source_price_unavailable",
     "source_receipt_not_canonical",
+    "stale_fast_lane_heartbeat",
+    "stale_heartbeat",
+    "stale_output",
+    "step_failed",
     "timeout",
     "timestamp_target_unavailable",
     "timestamp_window_unavailable",
@@ -107,6 +150,7 @@ safe_output_codes = liquidity_final_classifications | {
     "unresolved_coverage",
     "v3_price_unavailable",
     "v3_state_unavailable",
+    "verification_failed",
 }
 
 def read_json(path):
@@ -344,7 +388,17 @@ try:
     verification_text = verification_path.read_text(encoding="utf-8", errors="replace")
 except OSError:
     verification_text = ""
-fail_count = sum(1 for line in verification_text.splitlines() if "| FAIL |" in line)
+verification_fail_rows = [
+    line for line in verification_text.splitlines() if "| FAIL |" in line
+]
+fail_count = len(verification_fail_rows)
+verification_fail_check_hashes = sorted(
+    hashlib.sha256(
+        line.split("|")[1].strip().encode("utf-8")
+    ).hexdigest()[:16]
+    for line in verification_fail_rows
+    if len(line.split("|")) >= 4
+)
 grvt_replay_path = root / "output" / "grvt_liquidity_replay_acceptance" / "latest.json"
 grvt_replay = read_json(grvt_replay_path)
 grvt_replay_age = max(0, int(time.time() - grvt_replay_path.stat().st_mtime)) if grvt_replay_path.exists() else None
@@ -674,6 +728,9 @@ runtime_issue_codes = sorted({
 runtime_issue_summaries = [
     {
         "kind": safe_code(row.get("kind") or row.get("code")),
+        "name_hash": hashlib.sha256(
+            str(row.get("name") or "").encode("utf-8")
+        ).hexdigest()[:16],
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
@@ -713,6 +770,7 @@ print(json.dumps({
     "runtime_issue_summaries": runtime_issue_summaries,
     "verification_exists": verification_path.exists(),
     "verification_fail_count": fail_count,
+    "verification_fail_check_hashes": verification_fail_check_hashes,
     "watchlist_item_count": item_count,
     "deployed_hash_parity_count": parity_matches,
     "deployed_hash_expected_count": len(expected_hashes),
@@ -1071,6 +1129,7 @@ def sanitize_remote_runtime(
         "runtime_issue_summaries",
         "verification_exists",
         "verification_fail_count",
+        "verification_fail_check_hashes",
         "watchlist_item_count",
         "deployed_hash_parity_count",
         "deployed_hash_expected_count",
@@ -1204,23 +1263,56 @@ def sanitize_remote_runtime(
         or any(not isinstance(item, str) for item in raw_runtime_issue_codes)
     ):
         return error_payload, False
-    runtime_issue_codes = (
-        [] if not raw_runtime_issue_codes else ["issue_present"]
+    runtime_issue_codes = sorted(
+        {
+            item
+            if item in REMOTE_RUNTIME_ISSUE_CODES
+            else "issue_present"
+            for item in raw_runtime_issue_codes
+        }
     )
     issue_summaries = value.get("runtime_issue_summaries")
     if not isinstance(issue_summaries, list) or len(issue_summaries) > 20:
         return error_payload, False
     safe_issue_summaries = []
     for row in issue_summaries:
-        if not isinstance(row, dict) or set(row) != {"kind"}:
+        if not isinstance(row, dict) or set(row) != {"kind", "name_hash"}:
             return error_payload, False
-        if not isinstance(row.get("kind"), str):
+        if (
+            not isinstance(row.get("kind"), str)
+            or not isinstance(row.get("name_hash"), str)
+            or re.fullmatch(r"[0-9a-f]{16}", row["name_hash"]) is None
+        ):
             return error_payload, False
-        safe_issue_summaries.append({"kind": "issue_present"})
+        kind = row["kind"]
+        safe_issue_summaries.append(
+            {
+                "kind": (
+                    kind
+                    if kind in REMOTE_RUNTIME_ISSUE_CODES
+                    else "issue_present"
+                ),
+                "name_hash": row["name_hash"],
+            }
+        )
     verification_exists = strict_remote_bool(value.get("verification_exists"))
     verification_fail_count = strict_remote_int(
         value.get("verification_fail_count")
     )
+    verification_fail_check_hashes = value.get(
+        "verification_fail_check_hashes"
+    )
+    if (
+        not isinstance(verification_fail_check_hashes, list)
+        or len(verification_fail_check_hashes) > 20
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"[0-9a-f]{16}", item) is None
+            for item in verification_fail_check_hashes
+        )
+        or len(verification_fail_check_hashes) != verification_fail_count
+    ):
+        return error_payload, False
     watchlist_item_count = strict_remote_int(value.get("watchlist_item_count"))
     parity_count = strict_remote_int(value.get("deployed_hash_parity_count"))
     parity_expected = strict_remote_int(value.get("deployed_hash_expected_count"))
@@ -1475,6 +1567,7 @@ def sanitize_remote_runtime(
         and safe_issue_summaries == []
         and verification_exists is True
         and verification_fail_count == 0
+        and verification_fail_check_hashes == []
         and watchlist_item_count > 0
         and parity_expected == len(DEPLOY_PARITY_PATHS)
         and parity_count == parity_expected
@@ -1511,6 +1604,7 @@ def sanitize_remote_runtime(
         "runtime_issue_summaries": safe_issue_summaries,
         "verification_exists": verification_exists,
         "verification_fail_count": verification_fail_count,
+        "verification_fail_check_hashes": verification_fail_check_hashes,
         "watchlist_item_count": watchlist_item_count,
         "deployed_hash_parity_count": parity_count,
         "deployed_hash_expected_count": parity_expected,
