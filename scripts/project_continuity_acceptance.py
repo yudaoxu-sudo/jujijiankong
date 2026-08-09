@@ -55,6 +55,39 @@ REMOTE_RUNTIME_ISSUE_CODES = frozenset(
         "verification_failed",
     }
 )
+REMOTE_RUNTIME_ISSUE_SCOPES = frozenset(
+    {
+        "",
+        "holder",
+        "intraday",
+        "liquidity_retention",
+        "opening",
+        "prelaunch",
+        "price",
+        "project",
+        "retention_flow",
+        "runtime_watchlist",
+    }
+)
+REMOTE_RUNTIME_ISSUE_REASONS = frozenset(
+    {
+        "",
+        "contract_mismatch",
+        "opening_buyer_scope",
+        "opening_buyer_scope_incomplete",
+        "opening_buyer_trace_failed",
+        "opening_cohort_incomplete",
+        "opening_deadline",
+        "opening_identity_conflict",
+        "opening_liquidity_incomplete",
+        "opening_scan_errors",
+        "opening_status_invalid",
+        "other",
+    }
+)
+REMOTE_OPENING_ERROR_CODES = frozenset(
+    {"", "opening_cohort_coverage_incomplete", "opening_scope_error"}
+)
 
 REMOTE_PROBE = r"""
 import json
@@ -99,6 +132,7 @@ safe_output_codes = liquidity_final_classifications | {
     "alpha_static_time_conflict_summary_invalid",
     "alpha_unsupported_chain",
     "canonical_block",
+    "contract_mismatch",
     "deadline_exceeded",
     "error",
     "eth_getlogs_coverage_failed",
@@ -124,14 +158,19 @@ safe_output_codes = liquidity_final_classifications | {
     "pass",
     "pool_liquidity_boundary_unavailable",
     "pool_token_orientation_invalid",
+    "prelaunch",
+    "price",
+    "project",
     "provider_error",
     "recipient_next_hop_coverage_incomplete",
     "recipient_next_hop_identity_invalid",
     "recipient_next_hop_receipt_invalid",
     "recipient_next_hop_scope_exceeded",
     "recipient_scope_exceeded",
+    "retention_flow",
     "runtime_dependency_failed",
     "runtime_io_failed",
+    "runtime_watchlist",
     "source_block_not_canonical",
     "source_chain_timestamp_unavailable",
     "source_pool_scope_unavailable",
@@ -151,6 +190,21 @@ safe_output_codes = liquidity_final_classifications | {
     "v3_price_unavailable",
     "v3_state_unavailable",
     "verification_failed",
+    "holder",
+    "intraday",
+    "liquidity_retention",
+    "opening",
+    "opening_buyer_scope",
+    "opening_buyer_scope_incomplete",
+    "opening_buyer_trace_failed",
+    "opening_cohort_incomplete",
+    "opening_cohort_coverage_incomplete",
+    "opening_deadline",
+    "opening_identity_conflict",
+    "opening_liquidity_incomplete",
+    "opening_scan_errors",
+    "opening_scope_error",
+    "opening_status_invalid",
 }
 
 def read_json(path):
@@ -725,12 +779,89 @@ runtime_issue_codes = sorted({
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
 })
+def runtime_issue_scope(row):
+    if safe_code(row.get("kind") or row.get("code")) != "alpha_coverage_gap":
+        return ""
+    parts = str(row.get("fingerprint") or "").split(":")
+    return safe_code(parts[3], "") if len(parts) > 3 else ""
+
+def runtime_issue_reason(row):
+    if runtime_issue_scope(row) != "opening":
+        return ""
+    parts = str(row.get("fingerprint") or "").split(":")
+    detail = ":".join(parts[4:]) if len(parts) > 4 else ""
+    exact = {
+        "contract_mismatch": "contract_mismatch",
+        "opening cohort transfer coverage incomplete": "opening_cohort_incomplete",
+        "opening buyer address scope incomplete": "opening_buyer_scope_incomplete",
+        "opening liquidity flow coverage incomplete": "opening_liquidity_incomplete",
+        "opening scan has errors": "opening_scan_errors",
+        "opening evidence deadline exceeded before a usable snapshot": "opening_deadline",
+        "opening buyer trace failed": "opening_buyer_trace_failed",
+        "opening_buyer_scope": "opening_buyer_scope",
+    }
+    if detail in exact:
+        return exact[detail]
+    if detail.startswith("opening stable identity metadata conflict="):
+        return "opening_identity_conflict"
+    if detail.startswith("opening status="):
+        return "opening_status_invalid"
+    return "other"
+
+opening_snapshot = read_json(
+    root / "output" / "alpha_opening_block_watch" / "latest.json"
+)
+opening_rows = opening_snapshot.get("events")
+if not isinstance(opening_rows, list):
+    opening_rows = opening_snapshot.get("projects")
+if not isinstance(opening_rows, list):
+    opening_rows = opening_snapshot.get("rows")
+if not isinstance(opening_rows, list):
+    opening_rows = []
+
+def runtime_issue_error_code(row):
+    if runtime_issue_scope(row) != "opening":
+        return ""
+    symbol = str(row.get("name") or "").upper()
+    parts = str(row.get("fingerprint") or "").split(":")
+    contract = parts[2].lower() if len(parts) > 2 else ""
+    for event in opening_rows:
+        token = event.get("token") if isinstance(event, dict) else {}
+        event_contract = (
+            str(token.get("address") or "").lower()
+            if isinstance(token, dict)
+            else ""
+        )
+        if (
+            isinstance(event, dict)
+            and (
+                str(event.get("symbol") or "").upper() == symbol
+                or (contract and event_contract == contract)
+            )
+        ):
+            code = safe_code(event.get("error"), "")
+            if code:
+                return code
+    return ""
+
+def runtime_issue_contract_hash(row):
+    parts = str(row.get("fingerprint") or "").split(":")
+    contract = parts[2].lower() if len(parts) > 2 else ""
+    return hashlib.sha256(contract.encode("utf-8")).hexdigest()[:16]
+
 runtime_issue_summaries = [
     {
         "kind": safe_code(row.get("kind") or row.get("code")),
         "name_hash": hashlib.sha256(
             str(row.get("name") or "").encode("utf-8")
         ).hexdigest()[:16],
+        "fingerprint_hash": hashlib.sha256(
+            str(row.get("fingerprint") or "").encode("utf-8")
+        ).hexdigest()[:16],
+        "scope": runtime_issue_scope(row),
+        "reason": runtime_issue_reason(row),
+        "error_code": runtime_issue_error_code(row),
+        "contract_hash": runtime_issue_contract_hash(row),
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
@@ -1276,12 +1407,32 @@ def sanitize_remote_runtime(
         return error_payload, False
     safe_issue_summaries = []
     for row in issue_summaries:
-        if not isinstance(row, dict) or set(row) != {"kind", "name_hash"}:
+        if (
+            not isinstance(row, dict)
+            or set(row)
+            != {
+                "kind",
+                "name_hash",
+                "fingerprint_hash",
+                "scope",
+                "reason",
+                "error_code",
+                "contract_hash",
+            }
+        ):
             return error_payload, False
         if (
             not isinstance(row.get("kind"), str)
             or not isinstance(row.get("name_hash"), str)
             or re.fullmatch(r"[0-9a-f]{16}", row["name_hash"]) is None
+            or not isinstance(row.get("fingerprint_hash"), str)
+            or re.fullmatch(r"[0-9a-f]{16}", row["fingerprint_hash"])
+            is None
+            or row.get("scope") not in REMOTE_RUNTIME_ISSUE_SCOPES
+            or row.get("reason") not in REMOTE_RUNTIME_ISSUE_REASONS
+            or row.get("error_code") not in REMOTE_OPENING_ERROR_CODES
+            or not isinstance(row.get("contract_hash"), str)
+            or re.fullmatch(r"[0-9a-f]{16}", row["contract_hash"]) is None
         ):
             return error_payload, False
         kind = row["kind"]
@@ -1293,6 +1444,11 @@ def sanitize_remote_runtime(
                     else "issue_present"
                 ),
                 "name_hash": row["name_hash"],
+                "fingerprint_hash": row["fingerprint_hash"],
+                "scope": row["scope"],
+                "reason": row["reason"],
+                "error_code": row["error_code"],
+                "contract_hash": row["contract_hash"],
             }
         )
     verification_exists = strict_remote_bool(value.get("verification_exists"))

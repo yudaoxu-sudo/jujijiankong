@@ -409,7 +409,15 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         issue_payload["runtime_issue_count"] = 1
         issue_payload["runtime_issue_codes"] = [marker]
         issue_payload["runtime_issue_summaries"] = [
-            {"kind": marker, "name_hash": "0" * 16}
+            {
+                "kind": marker,
+                "name_hash": "0" * 16,
+                "fingerprint_hash": "2" * 16,
+                "scope": "",
+                "reason": "",
+                "error_code": "",
+                "contract_hash": "4" * 16,
+            }
         ]
         issue_payload["grvt_replay_acceptance"]["status"] = "fail"
         issue_payload["grvt_replay_acceptance"]["issues"] = [marker]
@@ -430,7 +438,15 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         recognized_payload["runtime_issue_count"] = 1
         recognized_payload["runtime_issue_codes"] = ["alpha_coverage_gap"]
         recognized_payload["runtime_issue_summaries"] = [
-            {"kind": "alpha_coverage_gap", "name_hash": "1" * 16}
+            {
+                "kind": "alpha_coverage_gap",
+                "name_hash": "1" * 16,
+                "fingerprint_hash": "3" * 16,
+                "scope": "holder",
+                "reason": "",
+                "error_code": "",
+                "contract_hash": "5" * 16,
+            }
         ]
         recognized_snapshot = healthy_snapshot()
         recognized_snapshot["remote_runtime"] = recognized_payload
