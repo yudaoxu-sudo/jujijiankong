@@ -1183,6 +1183,9 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "bounded project-only cycles": (
                 "ALPHA_PROJECT_ONLY_CYCLES=$project_only_cycle_limit"
             ),
+            "full-cycle project preflight reuse": (
+                "ALPHA_PROJECT_WATCH_PREFLIGHT_COMPLETE=1"
+            ),
             "shared full-cycle lock": (
                 "SNIPER_PROJECT_ONLY_RUN_LOCK_FILE=/tmp/sniper_server_run_once.lock"
             ),
@@ -1201,6 +1204,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             Path(__file__).resolve().parent / "server_run_once.sh"
         ).read_text(encoding="utf-8")
         self.assertIn('SNIPER_OVERLAP_SKIP_EXIT_CODE:-0', server_run)
+        self.assertIn('ALPHA_PROJECT_WATCH_PREFLIGHT_COMPLETE:-0', server_run)
+        self.assertIn("project preflight progress still present", server_run)
 
     def test_markdown_reports_machine_result(self) -> None:
         payload = evaluate(healthy_snapshot(), allow_dirty=False, remote_required=False)

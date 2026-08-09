@@ -162,7 +162,16 @@ if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
   exit "$project_only_status"
 fi
 run_step "${SNIPER_MONITOR_TIMEOUT_SECONDS:-180}" python3 scripts/sniper_monitor.py
-run_project_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+if [[ "${ALPHA_PROJECT_WATCH_PREFLIGHT_COMPLETE:-0}" == "1" ]]; then
+  if [[ -s output/alpha_project_watch/progress.json ]]; then
+    echo "alpha project watch failed: project preflight progress still present" >&2
+    printf '%s\t%s\t%s\n' "1" "0" "alpha project preflight" >>"$RUNTIME_HEALTH_FAILURE_FILE"
+  else
+    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) reused completed alpha project preflight"
+  fi
+else
+  run_project_step "${ALPHA_PROJECT_WATCH_TIMEOUT_SECONDS:-120}" python3 scripts/alpha_project_watch.py
+fi
 run_step "${ALPHA_INTRADAY_TIMEOUT_SECONDS:-480}" python3 scripts/alpha_intraday_flow_watch.py
 run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_sprint.sh
 run_step "${ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-360}" env ALPHA_INTRADAY_REQUIRED_ONLY=1 ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS="${ALPHA_INTRADAY_POST_OPENING_WATCHER_BUDGET_SECONDS:-330}" python3 scripts/alpha_intraday_flow_watch.py

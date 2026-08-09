@@ -91,7 +91,7 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
     overlap_attempt=$((overlap_attempt + 1))
     remote_cycle_status=0
     "${ssh_cmd[@]}" "$remote_target" \
-      "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE=$grvt_replay_acceptance SNIPER_OVERLAP_SKIP_EXIT_CODE=75 bash scripts/server_run_once.sh" \
+      "cd $remote_dir_quoted && DISABLE_TELEGRAM=1 ALPHA_PROJECT_WATCH_PREFLIGHT_COMPLETE=1 RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE=$grvt_replay_acceptance SNIPER_OVERLAP_SKIP_EXIT_CODE=75 bash scripts/server_run_once.sh" \
       >/dev/null 2>&1 || remote_cycle_status=$?
     if (( remote_cycle_status == 75 && overlap_attempt < overlap_attempt_limit )); then
       sleep 10
