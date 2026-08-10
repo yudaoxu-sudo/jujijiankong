@@ -20,6 +20,7 @@ from project_continuity_acceptance import (
     path_matches_any,
     render_markdown,
     run_json,
+    sanitize_remote_runtime,
 )
 
 HISTORICAL_SCOPE_RECONCILE_IDS = (
@@ -367,6 +368,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             {
                 "schema": "sniper_remote_health_acceptance.v1",
                 "status": "error",
+                "validation_error_code": "top_shape_invalid",
             },
         )
 
@@ -375,6 +377,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             root = Path(temporary)
             expected_hashes, _ = remote_probe_fixture(root)
             remote_payload = run_remote_probe(root, expected_hashes)
+        sanitized, valid = sanitize_remote_runtime(remote_payload)
+        resanitized, revalid = sanitize_remote_runtime(sanitized)
+        self.assertTrue(valid)
+        self.assertTrue(revalid)
+        self.assertEqual(resanitized, sanitized)
         snapshot = healthy_snapshot()
         snapshot["remote_runtime"] = remote_payload
         payload = evaluate(snapshot, allow_dirty=False, remote_required=True)
@@ -411,6 +418,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             )
             remote_payload = run_remote_probe(root, expected_hashes)
 
+        sanitized, valid = sanitize_remote_runtime(remote_payload)
+        resanitized, revalid = sanitize_remote_runtime(sanitized)
+        self.assertTrue(valid)
+        self.assertTrue(revalid)
+        self.assertEqual(resanitized, sanitized)
         self.assertEqual(remote_payload["status"], "fail")
         self.assertEqual(remote_payload["runtime_status"], "unhealthy")
         self.assertEqual(
@@ -428,6 +440,45 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             payload["remote_runtime"]["runtime_issue_codes"],
             ["alpha_coverage_gap"],
+        )
+
+        missing_continuous_payload = json.loads(json.dumps(remote_payload))
+        missing_continuous_payload["grvt_liquidity"]["continuous"] = None
+        for key in (
+            "issue_count",
+            "alert_ready_count",
+            "complete_count",
+            "cursor",
+            "confirmed_tip",
+        ):
+            missing_continuous_payload["grvt_liquidity"][key] = None
+        nullable_sanitized, nullable_valid = sanitize_remote_runtime(
+            missing_continuous_payload
+        )
+        nullable_resanitized, nullable_revalid = sanitize_remote_runtime(
+            nullable_sanitized
+        )
+        self.assertTrue(nullable_valid)
+        self.assertTrue(nullable_revalid)
+        self.assertEqual(nullable_resanitized, nullable_sanitized)
+        missing_continuous_snapshot = healthy_snapshot()
+        missing_continuous_snapshot["remote_runtime"] = (
+            missing_continuous_payload
+        )
+        missing_continuous_result = evaluate(
+            missing_continuous_snapshot,
+            allow_dirty=False,
+            remote_required=True,
+        )
+        self.assertEqual(missing_continuous_result["status"], "fail")
+        self.assertEqual(
+            missing_continuous_result["remote_runtime"]["status"],
+            "fail",
+        )
+        self.assertIsNone(
+            missing_continuous_result["remote_runtime"]["grvt_liquidity"][
+                "continuous"
+            ]
         )
 
     def test_remote_nested_free_text_never_persists(self) -> None:

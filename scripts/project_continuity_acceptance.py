@@ -95,6 +95,33 @@ REMOTE_RUNTIME_ISSUE_REASONS = frozenset(
 REMOTE_OPENING_ERROR_CODES = frozenset(
     {"", "opening_cohort_coverage_incomplete", "opening_scope_error"}
 )
+REMOTE_VALIDATION_ERROR_CODES = frozenset(
+    {
+        "holder_summary_invalid",
+        "liquidity_numeric_invalid",
+        "liquidity_summary_invalid",
+        "max_age_invalid",
+        "natural_history_invalid",
+        "natural_required_values_invalid",
+        "nested_shape_invalid",
+        "replay_summary_invalid",
+        "replay_boolean_values_invalid",
+        "replay_required_values_invalid",
+        "runtime_issue_codes_invalid",
+        "runtime_issue_summaries_shape_invalid",
+        "runtime_issue_summary_row_shape_invalid",
+        "runtime_issue_summary_value_invalid",
+        "runtime_required_values_invalid",
+        "top_shape_invalid",
+        "holder_required_values_invalid",
+        "liquidity_required_values_invalid",
+        "verification_summary_invalid",
+        "verdict_contract_activation_invalid",
+        "verdict_contract_counts_invalid",
+        "verdict_contract_required_values_invalid",
+        "verdict_contract_version_invalid",
+    }
+)
 
 REMOTE_PROBE = r"""
 import json
@@ -1247,16 +1274,31 @@ def sanitize_remote_runtime(
     *,
     max_age_seconds: int = 1200,
 ) -> tuple[dict[str, Any], bool]:
-    error_payload = {
-        "schema": "sniper_remote_health_acceptance.v1",
-        "status": "error",
-    }
+    def validation_error(code: str) -> tuple[dict[str, Any], bool]:
+        return (
+            {
+                "schema": "sniper_remote_health_acceptance.v1",
+                "status": "error",
+                "validation_error_code": code,
+            },
+            False,
+        )
+
     if type(max_age_seconds) is not int or max_age_seconds <= 0:
-        return error_payload, False
+        return validation_error("max_age_invalid")
     if isinstance(value, dict) and set(value) == {"status"}:
         status = value.get("status")
         if status in {"not_requested", "fail", "error"}:
             return {"status": status}, True
+    if (
+        isinstance(value, dict)
+        and set(value) == {"schema", "status", "validation_error_code"}
+        and value.get("schema") == "sniper_remote_health_acceptance.v1"
+        and value.get("status") == "error"
+        and value.get("validation_error_code")
+        in REMOTE_VALIDATION_ERROR_CODES
+    ):
+        return dict(value), True
     top_keys = {
         "schema",
         "status",
@@ -1348,7 +1390,7 @@ def sanitize_remote_runtime(
     }
     history_keys = {"exists", "valid", "candidate_count", "updated_at"}
     if not isinstance(value, dict) or set(value) != top_keys:
-        return error_payload, False
+        return validation_error("top_shape_invalid")
     replay = value.get("grvt_replay_acceptance")
     liquidity = value.get("grvt_liquidity")
     holder = value.get("grvt_holder")
@@ -1380,7 +1422,7 @@ def sanitize_remote_runtime(
         or len(histories) != 2
         or any(not isinstance(row, dict) or set(row) != history_keys for row in histories)
     ):
-        return error_payload, False
+        return validation_error("nested_shape_invalid")
 
     runtime_status = strict_remote_code(
         value.get("runtime_status"),
@@ -1401,7 +1443,7 @@ def sanitize_remote_runtime(
         or len(raw_runtime_issue_codes) > 20
         or any(not isinstance(item, str) for item in raw_runtime_issue_codes)
     ):
-        return error_payload, False
+        return validation_error("runtime_issue_codes_invalid")
     runtime_issue_codes = sorted(
         {
             item
@@ -1412,7 +1454,7 @@ def sanitize_remote_runtime(
     )
     issue_summaries = value.get("runtime_issue_summaries")
     if not isinstance(issue_summaries, list) or len(issue_summaries) > 20:
-        return error_payload, False
+        return validation_error("runtime_issue_summaries_shape_invalid")
     safe_issue_summaries = []
     for row in issue_summaries:
         if (
@@ -1428,7 +1470,7 @@ def sanitize_remote_runtime(
                 "contract_hash",
             }
         ):
-            return error_payload, False
+            return validation_error("runtime_issue_summary_row_shape_invalid")
         if (
             not isinstance(row.get("kind"), str)
             or not isinstance(row.get("name_hash"), str)
@@ -1442,7 +1484,7 @@ def sanitize_remote_runtime(
             or not isinstance(row.get("contract_hash"), str)
             or re.fullmatch(r"[0-9a-f]{16}", row["contract_hash"]) is None
         ):
-            return error_payload, False
+            return validation_error("runtime_issue_summary_value_invalid")
         kind = row["kind"]
         safe_issue_summaries.append(
             {
@@ -1476,7 +1518,7 @@ def sanitize_remote_runtime(
         )
         or len(verification_fail_check_hashes) != verification_fail_count
     ):
-        return error_payload, False
+        return validation_error("verification_summary_invalid")
     watchlist_item_count = strict_remote_int(value.get("watchlist_item_count"))
     parity_count = strict_remote_int(value.get("deployed_hash_parity_count"))
     parity_expected = strict_remote_int(value.get("deployed_hash_expected_count"))
@@ -1491,7 +1533,7 @@ def sanitize_remote_runtime(
         or len(raw_replay_issues) > 20
         or any(not isinstance(item, str) for item in raw_replay_issues)
     ):
-        return error_payload, False
+        return validation_error("replay_summary_invalid")
     replay_issues = [] if not raw_replay_issues else ["issue_present"]
     replay_age = strict_remote_int(replay.get("age_seconds"), optional=True)
     replay_generated_at = strict_remote_timestamp(
@@ -1550,7 +1592,7 @@ def sanitize_remote_runtime(
         liquidity.get(key) is not None and liquidity_ints[key] is None
         for key in liquidity_int_keys
     ):
-        return error_payload, False
+        return validation_error("liquidity_numeric_invalid")
     liquidity_timestamps = {
         key: strict_remote_timestamp(
             liquidity.get(key),
@@ -1591,7 +1633,7 @@ def sanitize_remote_runtime(
             "reconciliation_event_count_since_enriched_deploy"
         ] != len(reconciliation_events)
     ):
-        return error_payload, False
+        return validation_error("liquidity_summary_invalid")
     continuous = strict_remote_bool(liquidity.get("continuous"), optional=True)
 
     contract_counts = {
@@ -1613,7 +1655,7 @@ def sanitize_remote_runtime(
         holder.get(key) is not None and holder_ints[key] is None
         for key in holder_ints
     ):
-        return error_payload, False
+        return validation_error("holder_summary_invalid")
     holder_error_code = strict_remote_code(
         holder.get("error_code"),
         {
@@ -1645,7 +1687,7 @@ def sanitize_remote_runtime(
             row.get("updated_at"), optional=True
         )
         if None in (exists, valid, candidate_count, updated_at):
-            return error_payload, False
+            return validation_error("natural_history_invalid")
         safe_histories.append(
             {
                 "exists": exists,
@@ -1655,50 +1697,62 @@ def sanitize_remote_runtime(
             }
         )
 
-    required_values = (
-        runtime_status,
-        runtime_generated_at,
-        runtime_age,
-        runtime_issue_count,
-        runtime_issue_codes,
-        verification_exists,
-        verification_fail_count,
-        watchlist_item_count,
-        parity_count,
-        parity_expected,
-        replay_status,
-        replay_issues,
-        replay_age,
-        replay_generated_at,
-        replay_classification,
-        replay_duplicate_count,
-        liquidity_status,
-        continuous,
-        contract_pass_flag,
-        contract_activated_at,
-        holder_error_code,
-        intraday_generated_at,
-        intraday_event_count,
-        intraday_alert_count,
+    required_groups = (
+        (
+            "runtime_required_values_invalid",
+            (
+                runtime_status,
+                runtime_generated_at,
+                runtime_age,
+                runtime_issue_count,
+                runtime_issue_codes,
+                verification_exists,
+                verification_fail_count,
+                watchlist_item_count,
+                parity_count,
+                parity_expected,
+            ),
+        ),
+        (
+            "replay_required_values_invalid",
+            (
+                replay_status,
+                replay_issues,
+                replay_age,
+                replay_generated_at,
+                replay_classification,
+                replay_duplicate_count,
+            ),
+        ),
+        (
+            "liquidity_required_values_invalid",
+            (liquidity_status,),
+        ),
+        (
+            "verdict_contract_required_values_invalid",
+            (contract_pass_flag, contract_activated_at),
+        ),
+        ("holder_required_values_invalid", (holder_error_code,)),
+        (
+            "natural_required_values_invalid",
+            (
+                intraday_generated_at,
+                intraday_event_count,
+                intraday_alert_count,
+            ),
+        ),
     )
-    if (
-        any(item is None for item in required_values)
-        or any(item is None for item in replay_bools.values())
-        or any(
-            liquidity_ints[key] is None
-            for key in (
-                "issue_count",
-                "alert_ready_count",
-                "complete_count",
-                "cursor",
-                "confirmed_tip",
-            )
-        )
-        or any(item is None for item in contract_counts.values())
-        or contract.get("version") != "liquidity_verdict_coverage.v2"
-        or contract_activated_at != "2026-08-09T12:41:07+00:00"
-    ):
-        return error_payload, False
+    for error_code, values in required_groups:
+        if any(item is None for item in values):
+            return validation_error(error_code)
+    if any(item is None for item in replay_bools.values()):
+        return validation_error("replay_boolean_values_invalid")
+    if any(item is None for item in contract_counts.values()):
+        return validation_error("verdict_contract_counts_invalid")
+    if contract.get("version") != "liquidity_verdict_coverage.v2":
+        return validation_error("verdict_contract_version_invalid")
+    if contract_activated_at != "2026-08-09T12:41:07+00:00":
+        return validation_error("verdict_contract_activation_invalid")
 
     contract_recomputed = (
         contract_counts["historical_unversioned_scope_count"] <= 3
@@ -1741,6 +1795,8 @@ def sanitize_remote_runtime(
         and liquidity_ints["complete_count"] == 1
         and liquidity_ints["alert_ready_count"] == 1
         and continuous is True
+        and type(liquidity_ints["cursor"]) is int
+        and type(liquidity_ints["confirmed_tip"]) is int
         and liquidity_ints["cursor"] > 0
         and liquidity_ints["cursor"] == liquidity_ints["confirmed_tip"]
         and contract_pass_flag is True
@@ -1785,6 +1841,21 @@ def sanitize_remote_runtime(
             "status": liquidity_status,
             **liquidity_ints,
             "continuous": continuous,
+            "completed_classes": dict(completed_classes),
+            "first_completed_at": liquidity_timestamps[
+                "first_completed_at"
+            ],
+            "last_completed_at": liquidity_timestamps[
+                "last_completed_at"
+            ],
+            "enriched_deploy_boundary_utc": liquidity_timestamps[
+                "enriched_deploy_boundary_utc"
+            ],
+            "reconciliation_events_since_enriched_deploy": [],
+            "reconciliation_event_count_since_enriched_deploy": 0,
+            "telegram_last_push_sent_at": liquidity_timestamps[
+                "telegram_last_push_sent_at"
+            ],
             "verdict_coverage_contract": safe_contract,
         },
         "grvt_holder": {
