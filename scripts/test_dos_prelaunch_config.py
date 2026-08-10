@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import alpha_prelaunch_watch as prelaunch
+from runtime_health_watch import historical_prelaunch_delivery_issue
 from verify_sniper_engine import validate_dos_candidate_sell_receipt
 
 
@@ -36,6 +38,25 @@ def main() -> int:
     assert dos["facts"]["monitoring_anchor_time_utc"] == (
         "2026-08-10T09:00:00+00:00"
     )
+    assert dos["facts"]["lifecycle_first_seen_at"] == (
+        "2026-08-09T16:20:58+00:00"
+    )
+    assert dos["facts"]["lifecycle_first_seen_basis"] == (
+        "first_tracked_monitor_commit"
+    )
+    assert dos["facts"]["lifecycle_first_seen_ref"] == (
+        "git:d6d05b4c60201ffb62c2aee8a6f9a847b832c93f"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        assert historical_prelaunch_delivery_issue(
+            Path(temporary),
+            {
+                "symbol": dos["symbol"],
+                "contract": dos["contracts"][0]["address"],
+                **dos["facts"],
+            },
+            datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc),
+        ) == "historical prelaunch Telegram delivery receipt missing"
     assert "listing_time_utc" not in dos["facts"]
     assert dos["contracts"] == [
         {

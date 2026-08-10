@@ -650,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "test_project_continuity_acceptance.py",
         ROOT / "scripts" / "test_sniper_engine_units.py",
         ROOT / "scripts" / "test_aeon_monitor_regression.py",
+        ROOT / "scripts" / "test_dos_prelaunch_config.py",
         ROOT / "scripts" / "rebuild_opening_sell_evidence.py",
         ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py",
         ROOT / "scripts" / "test_micro_gas_boundaries.py",
@@ -805,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
         "health": (
             "retention_flow_coverage_issue",
             "historical_prelaunch_delivery_issue",
+            'row.get("event_kind") != "airdrop_pressure"',
+            "prelaunch event kind invalid",
             "PRELAUNCH_RECEIPT_POLICY_VERSION",
             "opening cohort transfer coverage incomplete",
             "intraday_opening_buyer_scope_issue",
@@ -847,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
             "monitoring_scope_issue",
             "prelaunch_output_issue",
             "alpha_prelaunch_watch.v2",
+            "prelaunch launch events invalid",
             "airdrop_watchlist_path",
         ),
         "prelaunch_watch": (
@@ -2104,6 +2108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fixture_test_scripts = (
         ("AEON official-discovery and monitor-coverage regression tests", "test_aeon_monitor_regression.py"),
+        ("DOS prelaunch and airdrop evidence regression", "test_dos_prelaunch_config.py"),
         ("opening direct-sell evidence rebuild tests", "test_rebuild_opening_sell_evidence.py"),
         ("CEX micro-gas synthetic boundary regression tests", "test_micro_gas_boundaries.py"),
         ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
@@ -3336,6 +3341,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_sniper_engine_units.py"),
         str(ROOT / "scripts" / "test_aeon_monitor_regression.py"),
+        str(ROOT / "scripts" / "test_dos_prelaunch_config.py"),
         str(ROOT / "scripts" / "rebuild_opening_sell_evidence.py"),
         str(ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py"),
         str(ROOT / "scripts" / "test_micro_gas_boundaries.py"),

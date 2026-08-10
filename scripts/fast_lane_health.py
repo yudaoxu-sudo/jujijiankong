@@ -131,6 +131,11 @@ def prelaunch_output_issue(
         isinstance(event, dict) for event in airdrop_events
     ):
         return "prelaunch output airdrop events invalid"
+    if any(
+        event.get("event_kind") != "launch_window"
+        for event in launch_events
+    ):
+        return "prelaunch launch events invalid"
     required_count = payload.get("airdrop_pressure_required_count")
     observed_count = payload.get("airdrop_pressure_event_count")
     if any(
@@ -141,8 +146,7 @@ def prelaunch_output_issue(
     ):
         return "prelaunch airdrop counters invalid"
     if (
-        any(event.get("event_kind") == "airdrop_pressure" for event in launch_events)
-        or any(
+        any(
             event.get("event_kind") != "airdrop_pressure"
             for event in airdrop_events
         )

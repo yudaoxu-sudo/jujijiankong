@@ -5819,7 +5819,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("missing_exact_opening_time", gap["detail"])
 
     def test_prelaunch_health_requires_successful_delivery_receipt(self) -> None:
-        from scripts.runtime_health_watch import prelaunch_delivery_issue
+        from scripts.runtime_health_watch import (
+            output_row_coverage_issue,
+            prelaunch_delivery_issue,
+            snapshot_rows,
+        )
 
         rows = [
             {"alert_key": "GRVT|contract|2026-07-30T12:00:00+00:00|T_MINUS_24H"},
@@ -5827,7 +5831,17 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            airdrop = {
+                "event_kind": "airdrop_pressure",
+                "alert_policy": "notify",
+                "alert_key": "airdrop-separate-ledger",
+                "contract": "0x" + "1" * 40,
+            }
             self.assertIn("receipt missing", prelaunch_delivery_issue(root, rows))
+            self.assertIn(
+                "receipt missing",
+                prelaunch_delivery_issue(root, rows + [airdrop]),
+            )
             seen_path = root / "output" / "alpha_prelaunch_watch" / "seen_alerts.json"
             seen_path.parent.mkdir(parents=True)
             seen_path.write_text(
@@ -5840,6 +5854,40 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(prelaunch_delivery_issue(root, rows), "")
+            self.assertEqual(
+                prelaunch_delivery_issue(root, rows + [airdrop]),
+                "",
+            )
+            prelaunch_path = (
+                root / "output" / "alpha_prelaunch_watch" / "latest.json"
+            )
+            prelaunch_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "alpha_prelaunch_watch.v2",
+                        "events": [],
+                        "airdrop_pressure_events": [airdrop],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(snapshot_rows(prelaunch_path), [])
+            prelaunch_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "alpha_prelaunch_watch.v2",
+                        "events": [airdrop],
+                        "airdrop_pressure_events": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            malformed_rows = snapshot_rows(prelaunch_path)
+            self.assertEqual(malformed_rows, [airdrop])
+            self.assertEqual(
+                output_row_coverage_issue("prelaunch", malformed_rows[0]),
+                "prelaunch event kind invalid",
+            )
 
     def test_health_warns_on_partial_opening_buyer_trace_coverage(self) -> None:
         from scripts.runtime_health_watch import (
@@ -25342,6 +25390,22 @@ raise SystemExit(0 if ok else 1)
             }
             path.write_text(json.dumps(payload), encoding="utf-8")
             self.assertEqual(health.prelaunch_output_issue(path), "")
+            for launch_event in (
+                {},
+                {"event_kind": ""},
+                {"event_kind": "airdrop_pressure"},
+            ):
+                invalid_payload = copy.deepcopy(payload)
+                invalid_payload["events"] = [launch_event]
+                path.write_text(
+                    json.dumps(invalid_payload),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    health.prelaunch_output_issue(path),
+                    "prelaunch launch events invalid",
+                )
+            path.write_text(json.dumps(payload), encoding="utf-8")
 
             watchlist_path = Path(temp_dir) / "watchlist.json"
             watchlist_path.write_text(

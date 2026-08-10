@@ -290,6 +290,8 @@ def output_row_coverage_issue(
 ) -> str:
     if row.get("error"):
         return f"{output_name} scan has errors"
+    if output_name == "prelaunch" and row.get("event_kind") != "launch_window":
+        return "prelaunch event kind invalid"
     if output_name == "project":
         if row.get("coverage_complete") is not True:
             return "project coverage incomplete"
@@ -1641,9 +1643,17 @@ def prelaunch_delivery_issue(
     root: Path,
     matching_rows: list[dict[str, Any]],
 ) -> str:
+    delivery_rows = [
+        row
+        for row in matching_rows
+        if row.get("event_kind") != "airdrop_pressure"
+        and row.get("alert_policy", "notify") == "notify"
+    ]
+    if not delivery_rows:
+        return ""
     alert_keys = {
         str(row.get("alert_key") or "")
-        for row in matching_rows
+        for row in delivery_rows
         if str(row.get("alert_key") or "")
     }
     if not alert_keys:

@@ -1401,6 +1401,9 @@
         "display_symbol": "DOS",
         "monitoring_anchor_time_utc": "2026-08-10T09:00:00+00:00",
         "monitoring_anchor_basis": "binance_wallet_official_and_canonical_pool_hook_matched",
+        "lifecycle_first_seen_at": "2026-08-09T16:20:58+00:00",
+        "lifecycle_first_seen_basis": "first_tracked_monitor_commit",
+        "lifecycle_first_seen_ref": "git:d6d05b4c60201ffb62c2aee8a6f9a847b832c93f",
         "research_source_policy": "official_onchain_market_social_inference_separated"
       }
     },

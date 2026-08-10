@@ -385,6 +385,51 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "sniper_remote_health_acceptance.v1",
         )
 
+    def test_remote_unhealthy_runtime_keeps_safe_issue_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            write_json(
+                root / "output/runtime_health/last_cycle.json",
+                {
+                    "schema": "runtime_health.v1",
+                    "status": "unhealthy",
+                    "generated_at": "2026-08-10T11:30:00+00:00",
+                    "issue_count": 1,
+                    "issues": [
+                        {
+                            "kind": "alpha_coverage_gap",
+                            "name": "DOS",
+                            "fingerprint": (
+                                "alpha_coverage_gap:bsc:"
+                                + "1" * 40
+                                + ":prelaunch:historical_delivery_receipt"
+                            ),
+                        }
+                    ],
+                },
+            )
+            remote_payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(remote_payload["status"], "fail")
+        self.assertEqual(remote_payload["runtime_status"], "unhealthy")
+        self.assertEqual(
+            remote_payload["runtime_issue_codes"],
+            ["alpha_coverage_gap"],
+        )
+        snapshot = healthy_snapshot()
+        snapshot["remote_runtime"] = remote_payload
+        payload = evaluate(snapshot, allow_dirty=False, remote_required=True)
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(
+            payload["remote_runtime"]["runtime_status"],
+            "unhealthy",
+        )
+        self.assertEqual(
+            payload["remote_runtime"]["runtime_issue_codes"],
+            ["alpha_coverage_gap"],
+        )
+
     def test_remote_nested_free_text_never_persists(self) -> None:
         marker = "synthetic_secret_api_key_abc123"
         with tempfile.TemporaryDirectory() as temporary:
@@ -630,6 +675,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "scripts/alpha_prelaunch_watch.py",
             "scripts/build_alpha_daily_report.py",
             "scripts/fast_lane_health.py",
+            "scripts/runtime_health_watch.py",
+            "scripts/test_dos_prelaunch_config.py",
         }
         self.assertTrue(protected.issubset(set(DEPLOY_PARITY_PATHS)))
         for relative_path in sorted(protected):
