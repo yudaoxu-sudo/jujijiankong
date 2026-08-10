@@ -18,9 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRELAUNCH_LOOKAHEAD_HOURS = 48
 DEFAULT_INTRADAY_CORE_HOURS = 72
 LIQUIDITY_RETENTION_STATE_SCHEMA_VERSION = 2
-PANCAKE_INFINITY_BIN_POOL_MANAGER = (
-    "0xc697d2898e0d09264376196696c51d7abbbaa4a9"
-)
 # Historical prelaunch receipt enforcement first became a runtime-health
 # invariant in commit 4bf8d53. Projects both discovered and opened before this
 # boundary cannot acquire a persisted delivery receipt retroactively.
@@ -832,162 +829,40 @@ def opening_has_verified_liquidity_pool_scope(
     identity: tuple[str, str],
 ) -> bool:
     chain, token = identity
-    for event in snapshot_rows(opening_path):
-        if identity not in row_contract_identities(event, "opening"):
-            continue
-        if (
-            event.get("status") != "opened"
-        ):
-            continue
-        quote_meta = (
-            event.get("quote")
-            if isinstance(event.get("quote"), dict)
-            else {}
-        )
-        quote = str(quote_meta.get("address") or "").lower()
-        quote_symbol = str(quote_meta.get("symbol") or "").strip()
-        try:
-            quote_decimals = int(quote_meta.get("decimals"))
-        except (TypeError, ValueError):
-            quote_decimals = -1
-        if (
-            str(event.get("chain") or "").lower() != chain
-            or not valid_hex_value(token, 40, "0x")
-            or not valid_hex_value(quote, 40, "0x")
-            or quote == token
-            or not quote_symbol
-            or quote_decimals < 0
-            or quote_decimals > 36
-        ):
-            continue
-
-        def verified_pool_pair(pool: dict[str, Any]) -> bool:
-            pair = {
-                str(pool.get("token0") or "").lower(),
-                str(pool.get("token1") or "").lower(),
-            }
-            if (
-                len(pair) != 2
-                or token not in pair
-                or not all(valid_hex_value(value, 40, "0x") for value in pair)
-            ):
-                return False
-            pool_quote = str(pool.get("quote_token") or "").lower()
-            pool_quote_symbol = str(
-                pool.get("quote_symbol") or ""
-            ).strip()
-            try:
-                pool_quote_decimals = int(pool.get("quote_decimals"))
-            except (TypeError, ValueError):
-                pool_quote_decimals = -1
-            if not (
-                valid_hex_value(pool_quote, 40, "0x")
-                and pool_quote_symbol
-                and 0 <= pool_quote_decimals <= 36
-            ):
-                pool_quote = quote
-                pool_quote_symbol = quote_symbol
-                pool_quote_decimals = quote_decimals
-            return bool(
-                pool_quote != token
-                and pool_quote in pair
-                and pool_quote_symbol
-                and 0 <= pool_quote_decimals <= 36
-            )
-
-        v3_scope = (
-            event.get("opening_v3_pool_scope")
-            if isinstance(event.get("opening_v3_pool_scope"), dict)
-            else {}
-        )
-        try:
-            v3_as_of_block = int(v3_scope.get("as_of_block") or 0)
-        except (TypeError, ValueError):
-            v3_as_of_block = 0
-        if (
-            v3_scope.get("schema") != "opening_v3_factory_matrix.v2"
-            or v3_scope.get("status")
-            != "complete_tracked_factory_matrix"
-            or v3_scope.get("complete") is not True
-            or v3_scope.get("snapshot_coherent") is not True
-            or v3_scope.get("deadline_exceeded") not in (None, False)
-            or type(v3_scope.get("expected_query_count")) is not int
-            or v3_scope.get("expected_query_count") <= 0
-            or type(v3_scope.get("attempted_query_count")) is not int
-            or v3_scope.get("attempted_query_count")
-            != v3_scope.get("expected_query_count")
-            or type(v3_scope.get("validation_error_count")) is not int
-            or v3_scope.get("validation_error_count") != 0
-            or type(v3_scope.get("scope_conflict_count")) is not int
-            or v3_scope.get("scope_conflict_count") != 0
-            or not valid_hex_value(v3_scope.get("configuration_hash"), 64)
-            or not valid_hex_value(
-                v3_scope.get("as_of_block_hash"), 64, "0x"
-            )
-            or v3_as_of_block <= 0
-        ):
-            continue
-        v3_pools = v3_scope.get("pools")
-        if not isinstance(v3_pools, list):
-            continue
-        if not all(
-            isinstance(pool, dict)
-            and valid_hex_value(pool.get("address"), 40, "0x")
-            and valid_hex_value(pool.get("factory"), 40, "0x")
-            and verified_pool_pair(pool)
-            and str(pool.get("fee") or "").isdigit()
-            and int(pool["fee"]) > 0
-            for pool in v3_pools
-        ):
-            continue
-
-        v4_scope = (
-            event.get("opening_v4_pool_scope")
-            if isinstance(event.get("opening_v4_pool_scope"), dict)
-            else {}
-        )
-        v4_pools = v4_scope.get("pools")
-        if not isinstance(v4_pools, list):
-            continue
-        try:
-            v4_as_of_block = int(v4_scope.get("as_of_block") or 0)
-        except (TypeError, ValueError):
-            v4_as_of_block = 0
-        if (
-            v4_scope.get("schema") != "opening_v4_manager_scope.v2"
-            or v4_scope.get("complete") is not True
-        ):
-            continue
-        if v4_scope.get("applicable") is True:
-            if (
-                v4_scope.get("snapshot_coherent") is not True
-                or not valid_hex_value(
-                    v4_scope.get("configuration_hash"), 64
-                )
-                or not valid_hex_value(
-                    v4_scope.get("as_of_block_hash"), 64, "0x"
-                )
-                or v4_as_of_block <= 0
-            ):
-                continue
-        elif v4_pools:
-            continue
-        if not all(
-            isinstance(pool, dict)
-            and valid_hex_value(pool.get("address"), 40, "0x")
-            and str(pool.get("address") or "").lower()
-            != PANCAKE_INFINITY_BIN_POOL_MANAGER
-            and str(pool.get("pool_manager") or "").lower()
-            == str(pool.get("address") or "").lower()
-            and str(pool.get("v4_manager_type") or "").lower() == "cl"
-            and valid_hex_value(pool.get("pool_id"), 64, "0x")
-            and verified_pool_pair(pool)
-            for pool in v4_pools
-        ):
-            continue
-        if v3_pools or v4_pools:
-            return True
-    return False
+    matching = [
+        event
+        for event in snapshot_rows(opening_path)
+        if event.get("status") == "opened"
+        and identity in row_contract_identities(event, "opening")
+    ]
+    symbols = {
+        str(event.get("symbol") or "").strip().upper()
+        for event in matching
+    }
+    if (
+        not valid_hex_value(token, 40, "0x")
+        or not matching
+        or len(symbols) != 1
+        or not next(iter(symbols))
+    ):
+        return False
+    try:
+        from scripts import alpha_holder_concentration_watch as holder_watch
+    except ModuleNotFoundError:
+        import alpha_holder_concentration_watch as holder_watch
+    scope = holder_watch.opening_verified_pool_scope(
+        {"events": matching},
+        next(iter(symbols)),
+        chain,
+        token,
+    )
+    return bool(
+        scope.get("complete") is True
+        and type(scope.get("matching_event_count")) is int
+        and scope.get("matching_event_count") == len(matching)
+        and type(scope.get("pool_count")) is int
+        and scope.get("pool_count") > 0
+    )
 
 
 def opening_liquidity_gap_is_historical_only(

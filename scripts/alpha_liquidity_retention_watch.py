@@ -276,6 +276,30 @@ def validated_liquidity_seed(
         "pool_scope": pools,
         "pool_count": len(pools),
     }
+    bootstrap_retry_window = payload.get("bootstrap_retry_window_blocks")
+    bootstrap_coverage_from = payload.get("scope_coverage_from_block")
+    if (
+        payload.get("bootstrap_retry_pending") is True
+        and type(bootstrap_retry_window) is int
+        and 0 < bootstrap_retry_window <= 50_000
+        and type(bootstrap_coverage_from) is int
+        and bootstrap_coverage_from >= 0
+        and type(payload.get("pool_count")) is int
+        and payload.get("pool_count") == len(pools)
+        and "latest_block" not in payload
+        and "latest_block_hash" not in payload
+        and "catchup_active" not in payload
+        and "catchup_live_from_block" not in payload
+        and "next_catchup_window_blocks" not in payload
+        and "reconciliation" not in payload
+    ):
+        seed.update(
+            {
+                "scope_coverage_from_block": bootstrap_coverage_from,
+                "bootstrap_retry_pending": True,
+                "bootstrap_retry_window_blocks": bootstrap_retry_window,
+            }
+        )
     raw_reconciliation = payload.get("reconciliation")
     reconciliation = (
         holder.migrate_liquidity_reconciliation_state(
@@ -500,9 +524,15 @@ def build_snapshot() -> dict[str, Any]:
     budget_seconds = configured_budget_seconds()
     deadline = time.monotonic() + budget_seconds
     previous_deadline = holder.HOLDER_DEADLINE_AT
-    holder.HOLDER_DEADLINE_AT = deadline
     try:
-        for item in expected_items:
+        for item_index, item in enumerate(expected_items):
+            now = time.monotonic()
+            remaining_items = len(expected_items) - item_index
+            remaining_seconds = max(0.0, deadline - now)
+            holder.HOLDER_DEADLINE_AT = min(
+                deadline,
+                now + remaining_seconds / max(1, remaining_items),
+            )
             symbol = str(item.get("symbol") or "UNKNOWN").upper()
             chain = str(item.get("chain") or "").lower()
             token = holder.norm(item.get("address"))

@@ -593,8 +593,13 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             "configuration_hash": "",
             "expected_query_count": 0,
             "attempted_query_count": 0,
+            "provider_error_count": 0,
+            "response_validation_error_count": 0,
+            "identity_mismatch_count": 0,
+            "snapshot_error_count": 0,
             "validation_error_count": 0,
             "deadline_exceeded": False,
+            "scope_conflict_count": 0,
             "complete": False,
             "pools": [],
         }
@@ -697,6 +702,26 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         )
     except ValueError:
         scope_refresh_blocks = 60
+    diagnostic_count_fields = (
+        "provider_error_count",
+        "response_validation_error_count",
+        "identity_mismatch_count",
+        "snapshot_error_count",
+    )
+    cached_diagnostic_fields_present = tuple(
+        field in cached for field in diagnostic_count_fields
+    )
+    cached_diagnostic_counts_compatible = bool(
+        not any(cached_diagnostic_fields_present)
+        or (
+            all(cached_diagnostic_fields_present)
+            and all(
+                type(cached.get(field)) is int
+                and cached.get(field) == 0
+                for field in diagnostic_count_fields
+            )
+        )
+    )
     if (
         cached.get("schema") == "opening_v3_factory_matrix.v2"
         and cached.get("configuration_hash") == configuration_hash
@@ -712,6 +737,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         and cached.get("validation_error_count") == 0
         and type(cached.get("scope_conflict_count")) is int
         and cached.get("scope_conflict_count") == 0
+        and cached_diagnostic_counts_compatible
         and isinstance(cached.get("pools"), list)
         and 0 < cached_as_of <= latest
         and cached_as_of >= required_as_of_block
@@ -730,11 +756,16 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             ):
                 reused = copy.deepcopy(cached)
                 reused.setdefault("deadline_exceeded", False)
+                for field in diagnostic_count_fields:
+                    reused.setdefault(field, 0)
                 return reused
         except Exception:
             pass
     pools: dict[str, dict[str, Any]] = {}
-    errors = 0
+    provider_errors = 0
+    response_validation_errors = 0
+    identity_mismatches = 0
+    snapshot_errors = 0
     attempted = 0
     deadline_exceeded = False
     initial_block_hash = ""
@@ -749,12 +780,11 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                     initial_block.get("hash")
                 )
             if not initial_block_hash:
-                errors += 1
+                response_validation_errors += 1
         except OpeningTraceDeadlineExceeded:
-            errors += 1
             deadline_exceeded = True
         except Exception:
-            errors += 1
+            provider_errors += 1
 
     for factory, factory_row, fee, quote in fee_rows:
         attempted += 1
@@ -774,7 +804,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             if state == "zero":
                 continue
             if state != "address":
-                errors += 1
+                response_validation_errors += 1
                 continue
 
             def pool_call(selector: str) -> Any:
@@ -805,11 +835,16 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 or token0_state != "address"
                 or token1_state != "address"
                 or factory_state != "address"
-                or {token0, token1} != {token, quote}
+                or actual_fee is None
+            ):
+                response_validation_errors += 1
+                continue
+            if (
+                {token0, token1} != {token, quote}
                 or actual_factory != factory
                 or actual_fee != fee
             ):
-                errors += 1
+                identity_mismatches += 1
                 continue
             pool_row = {
                 "address": pool,
@@ -838,11 +873,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 )
             pools[pool] = pool_row
         except OpeningTraceDeadlineExceeded:
-            errors += 1
             deadline_exceeded = True
             break
         except Exception:
-            errors += 1
+            provider_errors += 1
     as_of_block_hash = ""
     snapshot_coherent = False
     if fee_rows and attempted == len(fee_rows):
@@ -855,18 +889,18 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 as_of_block_hash = strict_block_hash(
                     as_of_block.get("hash")
                 )
-            if (
-                not as_of_block_hash
-                or as_of_block_hash != initial_block_hash
-            ):
-                errors += 1
+            if not as_of_block_hash:
+                response_validation_errors += 1
+            elif not initial_block_hash:
+                pass
+            elif as_of_block_hash != initial_block_hash:
+                snapshot_errors += 1
             else:
                 snapshot_coherent = True
         except OpeningTraceDeadlineExceeded:
-            errors += 1
             deadline_exceeded = True
         except Exception:
-            errors += 1
+            provider_errors += 1
     if not snapshot_coherent:
         pools.clear()
     cached_identities = {
@@ -898,13 +932,29 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     }
     scope_conflict_count = (
         len(cached_identities - current_identities)
-        if snapshot_coherent and errors == 0
+        if snapshot_coherent
+        and provider_errors == 0
+        and response_validation_errors == 0
+        and identity_mismatches == 0
+        and snapshot_errors == 0
+        and not deadline_exceeded
         else 0
     )
     if scope_conflict_count:
-        errors += scope_conflict_count
         pools.clear()
-    complete = bool(fee_rows and attempted == len(fee_rows) and errors == 0)
+    errors = (
+        provider_errors
+        + response_validation_errors
+        + identity_mismatches
+        + snapshot_errors
+        + scope_conflict_count
+    )
+    complete = bool(
+        fee_rows
+        and attempted == len(fee_rows)
+        and errors == 0
+        and not deadline_exceeded
+    )
     result = {
         "schema": "opening_v3_factory_matrix.v2",
         "status": (
@@ -927,6 +977,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         "tracked_quotes": sorted(quotes),
         "expected_query_count": len(fee_rows),
         "attempted_query_count": attempted,
+        "provider_error_count": provider_errors,
+        "response_validation_error_count": response_validation_errors,
+        "identity_mismatch_count": identity_mismatches,
+        "snapshot_error_count": snapshot_errors,
         "validation_error_count": errors,
         "deadline_exceeded": deadline_exceeded,
         "scope_conflict_count": scope_conflict_count,

@@ -72,12 +72,13 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         rpc_calls: list[dict[str, object]] = []
 
         def fake_runtime_rpc(
+            endpoint: str,
             _chain: str,
             _method: str,
             _params: list[object],
             **kwargs: object,
         ) -> str:
-            rpc_calls.append(dict(kwargs))
+            rpc_calls.append({"endpoint": endpoint, **kwargs})
             return "0x1"
 
         def successful_acceptance(rpc: object) -> dict[str, object]:
@@ -89,7 +90,12 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(replay.time, "monotonic", return_value=10.0),
             mock.patch.object(
                 replay,
-                "runtime_rpc_call",
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_replay_rpc_call",
                 side_effect=fake_runtime_rpc,
             ),
             mock.patch.object(
@@ -102,6 +108,9 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
 
         self.assertEqual(result, {"status": "pass"})
         self.assertEqual(len(rpc_calls), 2)
+        self.assertEqual(
+            {row["endpoint"] for row in rpc_calls}, {"fixture-a"}
+        )
         self.assertEqual(
             {row["deadline"] for row in rpc_calls},
             {110.0},
@@ -128,6 +137,11 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(replay.time, "monotonic", return_value=10.0),
             mock.patch.object(
                 replay,
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
                 "run_acceptance",
                 side_effect=[
                     replay.AcceptanceFailure(
@@ -150,7 +164,12 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(replay.time, "monotonic", return_value=10.0),
             mock.patch.object(
                 replay,
-                "runtime_rpc_call",
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_replay_rpc_call",
                 side_effect=RuntimeError("synthetic provider failure"),
             ) as failed_rpc,
             mock.patch.object(
@@ -165,10 +184,15 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ):
                 replay.run_runtime_acceptance()
         self.assertEqual(failed_rpc.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in failed_rpc.call_args_list],
+            ["fixture-a", "fixture-b"],
+        )
 
         deadline_calls: list[float] = []
 
         def deadline_rpc(
+            _endpoint: str,
             _chain: str,
             _method: str,
             _params: list[object],
@@ -185,7 +209,12 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ),
             mock.patch.object(
                 replay,
-                "runtime_rpc_call",
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_replay_rpc_call",
                 side_effect=deadline_rpc,
             ),
             mock.patch.object(
@@ -209,7 +238,12 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ),
             mock.patch.object(
                 replay,
-                "runtime_rpc_call",
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_replay_rpc_call",
                 side_effect=RuntimeError("synthetic provider failure"),
             ) as expired_rpc,
             mock.patch.object(
@@ -233,6 +267,11 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ),
             mock.patch.object(
                 replay,
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+            mock.patch.object(
+                replay,
                 "run_acceptance",
                 return_value={"status": "pass"},
             ) as overrun,
@@ -248,6 +287,11 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(replay.time, "monotonic", return_value=10.0),
             mock.patch.object(
                 replay,
+                "rpc_urls",
+                return_value=["fixture-a"],
+            ),
+            mock.patch.object(
+                replay,
                 "run_acceptance",
                 side_effect=replay.AcceptanceFailure(
                     "pool_identity_mismatch"
@@ -259,6 +303,82 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ):
                 replay.run_runtime_acceptance()
         self.assertEqual(semantic.call_count, 1)
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "rpc_urls",
+                return_value=["fixture-only"],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_replay_rpc_call",
+                side_effect=RuntimeError("synthetic provider failure"),
+            ) as only_endpoint,
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=exercise_rpc,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_attempts_exhausted",
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(only_endpoint.call_count, 1)
+
+        endpoint_calls: list[tuple[str, str]] = []
+
+        def fixed_endpoint_rpc(
+            endpoint: str,
+            method: str,
+            _params: list[object],
+            *,
+            timeout: float,
+        ) -> object:
+            endpoint_calls.append((endpoint, method))
+            self.assertLessEqual(timeout, 8)
+            return [] if method == "eth_getLogs" else "0x1"
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "rpc_call_url",
+                side_effect=fixed_endpoint_rpc,
+            ),
+        ):
+            self.assertEqual(
+                replay.runtime_replay_rpc_call(
+                    "fixture-endpoint",
+                    "bsc",
+                    "eth_blockNumber",
+                    [],
+                    timeout=8,
+                    deadline=20.0,
+                ),
+                "0x1",
+            )
+            self.assertEqual(
+                replay.runtime_replay_rpc_call(
+                    "fixture-endpoint",
+                    "bsc",
+                    "eth_getLogs",
+                    [{"fromBlock": "0x1", "toBlock": "0x1"}],
+                    timeout=8,
+                    deadline=20.0,
+                ),
+                [],
+            )
+        self.assertEqual(
+            endpoint_calls,
+            [
+                ("fixture-endpoint", "eth_blockNumber"),
+                ("fixture-endpoint", "eth_getLogs"),
+            ],
+        )
 
         with tempfile.TemporaryDirectory() as temporary:
             output_root = Path(temporary)
@@ -6944,25 +7064,40 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(good["expected_query_count"], 2)
         self.assertEqual(good["attempted_query_count"], 2)
         self.assertEqual(good["pools"][0]["address"], pool)
+        for field in (
+            "provider_error_count",
+            "response_validation_error_count",
+            "identity_mismatch_count",
+            "snapshot_error_count",
+        ):
+            self.assertEqual(good[field], 0)
         self.assertFalse(mismatch["complete"])
         self.assertEqual(mismatch["pools"], [])
         self.assertEqual(mismatch["validation_error_count"], 1)
+        self.assertEqual(mismatch["identity_mismatch_count"], 1)
         self.assertFalse(mixed["complete"])
         self.assertEqual(mixed["pools"][0]["address"], pool)
         self.assertEqual(mixed["validation_error_count"], 1)
+        self.assertEqual(mixed["provider_error_count"], 1)
         for result in invalid_code_results:
             self.assertFalse(result["complete"])
             self.assertEqual(result["pools"], [])
+            self.assertEqual(result["response_validation_error_count"], 1)
         self.assertFalse(malformed_abi["complete"])
         self.assertEqual(malformed_abi["pools"], [])
+        self.assertEqual(
+            malformed_abi["response_validation_error_count"], 2
+        )
         self.assertFalse(incoherent_block["complete"])
         self.assertFalse(incoherent_block["snapshot_coherent"])
         self.assertEqual(incoherent_block["pools"], [])
+        self.assertEqual(incoherent_block["snapshot_error_count"], 1)
         self.assertFalse(partial_refresh["complete"])
         self.assertEqual(
             partial_refresh["status"], "factory_matrix_partial"
         )
         self.assertEqual(partial_refresh["scope_conflict_count"], 0)
+        self.assertEqual(partial_refresh["provider_error_count"], 1)
         self.assertFalse(scope_conflict["complete"])
         self.assertEqual(
             scope_conflict["status"],
@@ -7132,6 +7267,27 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             event["opening_v3_pool_scope"] = copy.deepcopy(first)
             cached = opening.supported_v3_pool_scope(event, 300)
             rejected_caches = []
+            classification_fields = (
+                "provider_error_count",
+                "response_validation_error_count",
+                "identity_mismatch_count",
+                "snapshot_error_count",
+            )
+            legacy_cache = copy.deepcopy(first)
+            for field in classification_fields:
+                legacy_cache.pop(field)
+            event["opening_v3_pool_scope"] = legacy_cache
+            reused_legacy = opening.supported_v3_pool_scope(event, 300)
+            for missing_field in classification_fields:
+                with self.subTest(
+                    missing_cache_field=missing_field
+                ):
+                    partial = copy.deepcopy(first)
+                    partial.pop(missing_field)
+                    event["opening_v3_pool_scope"] = partial
+                    rejected_caches.append(
+                        opening.supported_v3_pool_scope(event, 300)
+                    )
             for field, value in {
                 "status": "factory_matrix_partial",
                 "snapshot_coherent": False,
@@ -7140,6 +7296,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "attempted_query_count": 0,
                 "validation_error_count": 1,
                 "scope_conflict_count": 1,
+                "provider_error_count": 1,
+                "response_validation_error_count": 1,
+                "identity_mismatch_count": 1,
+                "snapshot_error_count": 1,
             }.items():
                 with self.subTest(cache_field=field):
                     forged = copy.deepcopy(first)
@@ -7152,6 +7312,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(first["complete"])
         self.assertEqual(first["pools"], [])
         self.assertEqual(cached["as_of_block"], 200)
+        self.assertEqual(reused_legacy["as_of_block"], 200)
         self.assertFalse(cached["deadline_exceeded"])
         self.assertTrue(
             all(row["as_of_block"] == 300 for row in rejected_caches)
@@ -7420,6 +7581,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertEqual(result["attempted_query_count"], 1)
         self.assertTrue(result["deadline_exceeded"])
+        self.assertEqual(result["validation_error_count"], 0)
+        self.assertEqual(result["provider_error_count"], 0)
         self.assertFalse(result["complete"])
 
     def test_manager_only_liquidity_scope_scans_filtered_events(
@@ -19949,6 +20112,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                         "deadline_exceeded": False,
                         "expected_query_count": 1,
                         "attempted_query_count": 1,
+                        "provider_error_count": 0,
+                        "response_validation_error_count": 0,
+                        "identity_mismatch_count": 0,
+                        "snapshot_error_count": 0,
                         "validation_error_count": 0,
                         "scope_conflict_count": 0,
                         "configuration_hash": "8" * 64,
@@ -20676,6 +20843,38 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(scope["v3_pool_count"], 1)
         self.assertEqual(scope["v4_pool_count"], 1)
 
+        classification_fields = (
+            "provider_error_count",
+            "response_validation_error_count",
+            "identity_mismatch_count",
+            "snapshot_error_count",
+        )
+        legacy = copy.deepcopy(payload)
+        for field in classification_fields:
+            legacy["events"][0]["opening_v3_pool_scope"].pop(field)
+        self.assertTrue(
+            holder.opening_verified_pool_scope(
+                legacy,
+                "TEST",
+                "bsc",
+                token,
+            )["complete"]
+        )
+        for missing_field in classification_fields:
+            with self.subTest(missing_v3_scope_field=missing_field):
+                partial_classification = copy.deepcopy(payload)
+                partial_classification["events"][0][
+                    "opening_v3_pool_scope"
+                ].pop(missing_field)
+                self.assertFalse(
+                    holder.opening_verified_pool_scope(
+                        partial_classification,
+                        "TEST",
+                        "bsc",
+                        token,
+                    )["complete"]
+                )
+
         for field, value in (
             ("status", "factory_matrix_partial"),
             ("snapshot_coherent", False),
@@ -20684,6 +20883,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             ("attempted_query_count", 0),
             ("validation_error_count", 1),
             ("scope_conflict_count", 1),
+            ("provider_error_count", 1),
+            ("response_validation_error_count", 1),
+            ("identity_mismatch_count", 1),
+            ("snapshot_error_count", 1),
         ):
             with self.subTest(v3_scope_field=field):
                 contradictory = copy.deepcopy(payload)
@@ -20891,6 +21094,41 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                     ("bsc", self._address("1")),
                 )
             )
+            classification_fields = (
+                "provider_error_count",
+                "response_validation_error_count",
+                "identity_mismatch_count",
+                "snapshot_error_count",
+            )
+            for missing_field in classification_fields:
+                with self.subTest(
+                    runtime_missing_v3_field=missing_field
+                ):
+                    partial = copy.deepcopy(payload)
+                    partial["events"][0][
+                        "opening_v3_pool_scope"
+                    ].pop(missing_field)
+                    opening_path.write_text(
+                        json.dumps(partial), encoding="utf-8"
+                    )
+                    self.assertFalse(
+                        opening_has_verified_liquidity_pool_scope(
+                            opening_path,
+                            ("bsc", self._address("1")),
+                        )
+                    )
+            legacy = copy.deepcopy(payload)
+            for field in classification_fields:
+                legacy["events"][0]["opening_v3_pool_scope"].pop(field)
+            opening_path.write_text(
+                json.dumps(legacy), encoding="utf-8"
+            )
+            self.assertTrue(
+                opening_has_verified_liquidity_pool_scope(
+                    opening_path,
+                    ("bsc", self._address("1")),
+                )
+            )
             for field, value in {
                 "status": "factory_matrix_partial",
                 "deadline_exceeded": True,
@@ -20980,6 +21218,60 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                     opening_path,
                     ("bsc", self._address("1")),
                     "opening liquidity flow coverage incomplete",
+                )
+            )
+
+    def test_runtime_opening_scope_requires_all_matching_opened_events(
+        self,
+    ) -> None:
+        import scripts.runtime_health_watch as health
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        complete_events = [
+            payload["events"][0],
+            copy.deepcopy(payload["events"][0]),
+        ]
+        with mock.patch.object(
+            health,
+            "snapshot_rows",
+            return_value=complete_events,
+        ):
+            self.assertTrue(
+                health.opening_has_verified_liquidity_pool_scope(
+                    Path("unused"),
+                    ("bsc", token),
+                )
+            )
+
+        incomplete_events = copy.deepcopy(complete_events)
+        incomplete_events[1]["opening_v3_pool_scope"]["complete"] = False
+        incomplete_events[1]["opening_v3_pool_scope"]["status"] = (
+            "factory_matrix_partial"
+        )
+        with mock.patch.object(
+            health,
+            "snapshot_rows",
+            return_value=incomplete_events,
+        ):
+            self.assertFalse(
+                health.opening_has_verified_liquidity_pool_scope(
+                    Path("unused"),
+                    ("bsc", token),
+                )
+            )
+
+        conflicting_events = copy.deepcopy(complete_events)
+        conflicting_events[1]["quote"]["symbol"] = "BNB"
+        with mock.patch.object(
+            health,
+            "snapshot_rows",
+            return_value=conflicting_events,
+        ):
+            self.assertFalse(
+                health.opening_has_verified_liquidity_pool_scope(
+                    Path("unused"),
+                    ("bsc", token),
                 )
             )
 
@@ -21614,6 +21906,175 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(next_state["latest_block_hash"], self._hash("a"))
         self.assertEqual(next_state["next_catchup_window_blocks"], 8)
         self.assertEqual(next_state["reconciliation"], reconciliation)
+
+    def test_liquidity_bootstrap_deadline_persists_strict_smaller_retry(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        calls: list[tuple[int, int, int]] = []
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "age_hours": 1,
+        }
+
+        def bounded(
+            _chain: str,
+            pools: list[dict[str, object]],
+            from_block: int,
+            requested_to: int,
+            *,
+            preferred_window_blocks: int = 0,
+            **_kwargs: object,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            calls.append(
+                (from_block, requested_to, preferred_window_blocks)
+            )
+            scope_count = len(
+                holder.retention_liquidity_query_scopes(pools)
+            )
+            if len(calls) == 1:
+                return (
+                    [],
+                    ["liquidity retention RPC deadline exceeded"],
+                    False,
+                    requested_to,
+                    {
+                        "query_scope_complete": False,
+                        "query_count": 1,
+                        "scope_batch_count": scope_count,
+                        "query_chunk_count": 3,
+                        "expected_query_count": scope_count * 3,
+                        "v4_manager_count": 1,
+                        "event_filter_count": 6,
+                        "applicable": True,
+                        "active": False,
+                        "requested_to_block": requested_to,
+                        "selected_to_block": requested_to,
+                        "attempt_count": 1,
+                        "retry_window_blocks": 8,
+                        "deadline_exceeded": True,
+                        "complete_selected_window": False,
+                        "complete_requested_window": False,
+                    },
+                )
+            selected_to = min(
+                requested_to,
+                from_block + preferred_window_blocks - 1,
+            )
+            return (
+                [],
+                [],
+                False,
+                selected_to,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": selected_to < requested_to,
+                    "requested_to_block": requested_to,
+                    "selected_to_block": selected_to,
+                    "attempt_count": 1,
+                    "next_window_blocks": 16,
+                    "deadline_exceeded": False,
+                    "complete_selected_window": True,
+                    "complete_requested_window": (
+                        selected_to == requested_to
+                    ),
+                },
+            )
+
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                side_effect=bounded,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                return_value=self._hash("a"),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS": "20",
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                },
+            ),
+        ):
+            first, first_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state={},
+            )
+            assert first_state is not None
+            validated = fast.validated_liquidity_seed(
+                first_state,
+                token,
+            )
+            second, second_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=validated,
+            )
+
+        self.assertTrue(
+            first["incremental_catchup"]["deadline_exceeded"]
+        )
+        self.assertEqual(first["events"], [])
+        self.assertNotIn("latest_block", first_state)
+        self.assertNotIn("latest_block_hash", first_state)
+        self.assertNotIn("catchup_active", first_state)
+        self.assertNotIn("reconciliation", first_state)
+        self.assertTrue(first_state["bootstrap_retry_pending"])
+        self.assertEqual(first_state["bootstrap_retry_window_blocks"], 8)
+        self.assertEqual(first_state["scope_coverage_from_block"], 111)
+        self.assertEqual(
+            calls,
+            [(111, 130, 0), (111, 130, 8)],
+        )
+        self.assertTrue(second["selected_window_complete"])
+        self.assertFalse(second["complete"])
+        self.assertIsNotNone(second_state)
+        assert second_state is not None
+        self.assertEqual(second_state["latest_block"], 118)
+        self.assertTrue(second_state["catchup_active"])
+        self.assertNotIn("bootstrap_retry_pending", second_state)
+
+        invalid = copy.deepcopy(first_state)
+        invalid["latest_block"] = 1
+        invalid_seed = fast.validated_liquidity_seed(invalid, token)
+        self.assertNotIn("bootstrap_retry_pending", invalid_seed)
+        self.assertNotIn("bootstrap_retry_window_blocks", invalid_seed)
 
     def test_bounded_liquidity_default_reaches_eight_block_window(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -25440,6 +25901,117 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(snapshot["chain_tip_query_count"], 1)
         self.assertEqual(snapshot["required_count"], 2)
         self.assertEqual(snapshot["complete_count"], 2)
+
+    def test_fast_liquidity_fairly_bounds_each_identity(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        items = [
+            {
+                "symbol": symbol,
+                "priority": "P1_MONITOR",
+                "chain": "bsc",
+                "address": self._address(digit),
+            }
+            for symbol, digit in (("ONE", "1"), ("TWO", "2"))
+        ]
+        deadlines: list[float] = []
+        complete_flow = {
+            "status": "active",
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "complete": True,
+            "selected_window_complete": True,
+            "query_scope_complete": True,
+            "pool_count": 1,
+            "log_error_count": 0,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+        }
+
+        def build(**_kwargs: object):
+            assert holder.HOLDER_DEADLINE_AT is not None
+            deadlines.append(holder.HOLDER_DEADLINE_AT)
+            if len(deadlines) == 1:
+                raise TimeoutError("identity sub-deadline exhausted")
+            return complete_flow, {"pool_scope": [{"protocol": "v3"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            config_path.write_text('{"items": []}', encoding="utf-8")
+            opening_path.write_text('{"events": []}', encoding="utf-8")
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    fast,
+                    "eligible_contract_items",
+                    return_value=(items, []),
+                ),
+                mock.patch.object(
+                    fast,
+                    "matching_opened_event",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    holder,
+                    "config_item_for_contract",
+                    return_value={"chain": "bsc"},
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active"},
+                ),
+                mock.patch.object(
+                    holder,
+                    "opening_verified_pool_scope",
+                    return_value={"complete": True, "pool_scope": [{}]},
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(18, 10**24),
+                ),
+                mock.patch.object(holder, "latest_block", return_value=120),
+                mock.patch.object(
+                    holder,
+                    "build_token_liquidity_retention",
+                    side_effect=build,
+                ),
+                mock.patch.object(
+                    holder,
+                    "liquidity_retention_alert_coverage_complete",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    fast.time,
+                    "monotonic",
+                    side_effect=[100.0, 100.0, 118.0],
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_LIQUIDITY_FAST_BUDGET_SECONDS": "35"},
+                ),
+            ):
+                previous_deadline = holder.HOLDER_DEADLINE_AT
+                snapshot = fast.build_snapshot()
+
+        self.assertEqual(len(deadlines), 2)
+        self.assertAlmostEqual(deadlines[0], 117.5)
+        self.assertAlmostEqual(deadlines[1], 135.0)
+        self.assertEqual(snapshot["processed_count"], 2)
+        self.assertEqual(snapshot["complete_count"], 1)
+        self.assertEqual(snapshot["issues"][0]["detail"], "deadline_exceeded")
+        self.assertIs(holder.HOLDER_DEADLINE_AT, previous_deadline)
 
     def test_fast_liquidity_enumerates_all_supported_contract_identities(
         self,

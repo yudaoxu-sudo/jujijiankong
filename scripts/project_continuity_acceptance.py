@@ -629,6 +629,26 @@ for relative_path, expected_hash in expected_hashes.items():
         actual_hash = ""
     parity_matches += actual_hash == expected_hash
 liquidity = read_json(root / "output" / "alpha_liquidity_retention_watch" / "latest.json")
+liquidity_count_keys = (
+    "issue_count",
+    "expected_count",
+    "processed_count",
+    "dropped_count",
+    "required_count",
+    "complete_count",
+    "alert_ready_count",
+)
+liquidity_counts = {
+    key: safe_int(liquidity.get(key)) for key in liquidity_count_keys
+}
+liquidity_expected_hash = liquidity.get("expected_identity_hash")
+liquidity_processed_hash = liquidity.get("processed_identity_hash")
+liquidity_identity_hash_parity = bool(
+    isinstance(liquidity_expected_hash, str)
+    and isinstance(liquidity_processed_hash, str)
+    and re.fullmatch(r"[0-9a-f]{64}", liquidity_expected_hash)
+    and liquidity_expected_hash == liquidity_processed_hash
+)
 grvt_projects = [
     row for row in liquidity.get("projects", [])
     if isinstance(row, dict) and str(row.get("symbol") or "").upper() == "GRVT"
@@ -996,6 +1016,19 @@ def runtime_issue_pool_scope(row):
         "opening_event_match_count": 0,
         "opening_event_opened_count": 0,
         "opening_event_error_count": 0,
+        "v3_scope_complete_count": 0,
+        "v3_scope_deadline_count": 0,
+        "v3_expected_query_count_total": 0,
+        "v3_attempted_query_count_total": 0,
+        "v3_validation_error_count_total": 0,
+        "v3_scope_conflict_count_total": 0,
+        "v3_provider_error_count_total": 0,
+        "v3_response_validation_error_count_total": 0,
+        "v3_identity_mismatch_count_total": 0,
+        "v3_snapshot_error_count_total": 0,
+        "v3_metadata_invalid_count": 0,
+        "v4_scope_applicable_count": 0,
+        "v4_scope_complete_count": 0,
         "v3_complete": None,
         "v3_deadline_exceeded": None,
         "v3_expected_query_count": None,
@@ -1009,6 +1042,33 @@ def runtime_issue_pool_scope(row):
     if runtime_issue_scope(row) != "opening":
         return empty
     matched_events = runtime_issue_opening_events(row)
+    v3_scopes = [
+        event.get("opening_v3_pool_scope")
+        if isinstance(event.get("opening_v3_pool_scope"), dict)
+        else {}
+        for event in matched_events
+    ]
+    v4_scopes = [
+        event.get("opening_v4_pool_scope")
+        if isinstance(event.get("opening_v4_pool_scope"), dict)
+        else {}
+        for event in matched_events
+    ]
+    v3_count_fields = (
+        "expected_query_count",
+        "attempted_query_count",
+        "validation_error_count",
+        "scope_conflict_count",
+    )
+    v3_classification_count_fields = (
+        "provider_error_count",
+        "response_validation_error_count",
+        "identity_mismatch_count",
+        "snapshot_error_count",
+    )
+    def nonnegative_count(scope, key):
+        value = scope.get(key)
+        return value if type(value) is int and value >= 0 else 0
     aggregate = {
         "opening_event_match_count": len(matched_events),
         "opening_event_opened_count": sum(
@@ -1017,6 +1077,72 @@ def runtime_issue_pool_scope(row):
         "opening_event_error_count": sum(
             bool(str(event.get("error") or ""))
             for event in matched_events
+        ),
+        "v3_scope_complete_count": sum(
+            scope.get("complete") is True for scope in v3_scopes
+        ),
+        "v3_scope_deadline_count": sum(
+            scope.get("deadline_exceeded") is True
+            for scope in v3_scopes
+        ),
+        "v3_expected_query_count_total": sum(
+            nonnegative_count(scope, "expected_query_count")
+            for scope in v3_scopes
+        ),
+        "v3_attempted_query_count_total": sum(
+            nonnegative_count(scope, "attempted_query_count")
+            for scope in v3_scopes
+        ),
+        "v3_validation_error_count_total": sum(
+            nonnegative_count(scope, "validation_error_count")
+            for scope in v3_scopes
+        ),
+        "v3_scope_conflict_count_total": sum(
+            nonnegative_count(scope, "scope_conflict_count")
+            for scope in v3_scopes
+        ),
+        "v3_provider_error_count_total": sum(
+            nonnegative_count(scope, "provider_error_count")
+            for scope in v3_scopes
+        ),
+        "v3_response_validation_error_count_total": sum(
+            nonnegative_count(scope, "response_validation_error_count")
+            for scope in v3_scopes
+        ),
+        "v3_identity_mismatch_count_total": sum(
+            nonnegative_count(scope, "identity_mismatch_count")
+            for scope in v3_scopes
+        ),
+        "v3_snapshot_error_count_total": sum(
+            nonnegative_count(scope, "snapshot_error_count")
+            for scope in v3_scopes
+        ),
+        "v3_metadata_invalid_count": sum(
+            bool(
+                any(
+                    type(scope.get(key)) is not int
+                    or scope.get(key) < 0
+                    for key in v3_count_fields
+                )
+                or (
+                    any(
+                        key in scope
+                        for key in v3_classification_count_fields
+                    )
+                    and any(
+                        type(scope.get(key)) is not int
+                        or scope.get(key) < 0
+                        for key in v3_classification_count_fields
+                    )
+                )
+            )
+            for scope in v3_scopes
+        ),
+        "v4_scope_applicable_count": sum(
+            scope.get("applicable") is True for scope in v4_scopes
+        ),
+        "v4_scope_complete_count": sum(
+            scope.get("complete") is True for scope in v4_scopes
         ),
     }
     if len(matched_events) != 1:
@@ -1080,9 +1206,24 @@ ok = (
     and parity_matches == len(expected_hashes)
     and grvt_replay_contract
     and liquidity.get("status") == "healthy"
-    and int(liquidity.get("issue_count") or 0) == 0
-    and int(liquidity.get("complete_count") or 0) == 1
-    and int(liquidity.get("alert_ready_count") or 0) == 1
+    and all(
+        type(liquidity.get(key)) is int
+        and liquidity_counts[key] is not None
+        and liquidity_counts[key] >= 0
+        for key in liquidity_count_keys
+    )
+    and liquidity_counts["issue_count"] == 0
+    and liquidity_counts["expected_count"] > 0
+    and liquidity_counts["processed_count"]
+    == liquidity_counts["expected_count"]
+    and liquidity_counts["dropped_count"] == 0
+    and 0 < liquidity_counts["required_count"]
+    <= liquidity_counts["expected_count"]
+    and liquidity_counts["complete_count"]
+    == liquidity_counts["required_count"]
+    and liquidity_counts["alert_ready_count"]
+    == liquidity_counts["required_count"]
+    and liquidity_identity_hash_parity
     and grvt_flow.get("continuous") is True
     and int(grvt_flow.get("latest_block") or 0) > 0
     and int(grvt_flow.get("latest_block") or 0)
@@ -1131,10 +1272,15 @@ print(json.dumps({
     },
     "grvt_liquidity": {
         "status": safe_code(liquidity.get("status"), "missing"),
-        "issue_count": safe_int(liquidity.get("issue_count")),
-        "alert_ready_count": safe_int(liquidity.get("alert_ready_count")),
+        "issue_count": liquidity_counts["issue_count"],
+        "expected_count": liquidity_counts["expected_count"],
+        "processed_count": liquidity_counts["processed_count"],
+        "dropped_count": liquidity_counts["dropped_count"],
+        "required_count": liquidity_counts["required_count"],
+        "identity_hash_parity": liquidity_identity_hash_parity,
+        "alert_ready_count": liquidity_counts["alert_ready_count"],
         "alert_count": safe_int(liquidity.get("alert_count")),
-        "complete_count": safe_int(liquidity.get("complete_count")),
+        "complete_count": liquidity_counts["complete_count"],
         "cursor": safe_int(grvt_flow.get("latest_block")),
         "confirmed_tip": safe_int(grvt_flow.get("target_latest_block")),
         "continuous": safe_bool(grvt_flow.get("continuous")),
@@ -1473,6 +1619,19 @@ def sanitize_remote_runtime(
                     "opening_event_match_count",
                     "opening_event_opened_count",
                     "opening_event_error_count",
+                    "v3_scope_complete_count",
+                    "v3_scope_deadline_count",
+                    "v3_expected_query_count_total",
+                    "v3_attempted_query_count_total",
+                    "v3_validation_error_count_total",
+                    "v3_scope_conflict_count_total",
+                    "v3_provider_error_count_total",
+                    "v3_response_validation_error_count_total",
+                    "v3_identity_mismatch_count_total",
+                    "v3_snapshot_error_count_total",
+                    "v3_metadata_invalid_count",
+                    "v4_scope_applicable_count",
+                    "v4_scope_complete_count",
                     "v3_complete",
                     "v3_deadline_exceeded",
                     "v3_expected_query_count",
@@ -1500,6 +1659,19 @@ def sanitize_remote_runtime(
                     "opening_event_match_count",
                     "opening_event_opened_count",
                     "opening_event_error_count",
+                    "v3_scope_complete_count",
+                    "v3_scope_deadline_count",
+                    "v3_expected_query_count_total",
+                    "v3_attempted_query_count_total",
+                    "v3_validation_error_count_total",
+                    "v3_scope_conflict_count_total",
+                    "v3_provider_error_count_total",
+                    "v3_response_validation_error_count_total",
+                    "v3_identity_mismatch_count_total",
+                    "v3_snapshot_error_count_total",
+                    "v3_metadata_invalid_count",
+                    "v4_scope_applicable_count",
+                    "v4_scope_complete_count",
                     "v3_expected_query_count",
                     "v3_attempted_query_count",
                     "v3_pool_count",
@@ -1768,6 +1940,11 @@ def sanitize_remote_runtime(
     liquidity_keys = {
         "status",
         "issue_count",
+        "expected_count",
+        "processed_count",
+        "dropped_count",
+        "required_count",
+        "identity_hash_parity",
         "alert_ready_count",
         "alert_count",
         "complete_count",
@@ -2001,6 +2178,10 @@ def sanitize_remote_runtime(
     )
     liquidity_int_keys = (
         "issue_count",
+        "expected_count",
+        "processed_count",
+        "dropped_count",
+        "required_count",
         "alert_ready_count",
         "alert_count",
         "complete_count",
@@ -2063,6 +2244,11 @@ def sanitize_remote_runtime(
     ):
         return validation_error("liquidity_summary_invalid")
     continuous = strict_remote_bool(liquidity.get("continuous"), optional=True)
+    identity_hash_parity = strict_remote_bool(
+        liquidity.get("identity_hash_parity")
+    )
+    if identity_hash_parity is None:
+        return validation_error("liquidity_summary_invalid")
 
     contract_counts = {
         key: strict_remote_int(contract.get(key))
@@ -2227,9 +2413,30 @@ def sanitize_remote_runtime(
         and parity_count == parity_expected
         and replay_recomputed
         and liquidity_status == "healthy"
+        and all(
+            type(liquidity_ints[key]) is int
+            for key in (
+                "issue_count",
+                "expected_count",
+                "processed_count",
+                "dropped_count",
+                "required_count",
+                "complete_count",
+                "alert_ready_count",
+            )
+        )
         and liquidity_ints["issue_count"] == 0
-        and liquidity_ints["complete_count"] == 1
-        and liquidity_ints["alert_ready_count"] == 1
+        and liquidity_ints["expected_count"] > 0
+        and liquidity_ints["processed_count"]
+        == liquidity_ints["expected_count"]
+        and liquidity_ints["dropped_count"] == 0
+        and 0 < liquidity_ints["required_count"]
+        <= liquidity_ints["expected_count"]
+        and liquidity_ints["complete_count"]
+        == liquidity_ints["required_count"]
+        and liquidity_ints["alert_ready_count"]
+        == liquidity_ints["required_count"]
+        and identity_hash_parity is True
         and continuous is True
         and type(liquidity_ints["cursor"]) is int
         and type(liquidity_ints["confirmed_tip"]) is int
@@ -2276,6 +2483,7 @@ def sanitize_remote_runtime(
         "grvt_liquidity": {
             "status": liquidity_status,
             **liquidity_ints,
+            "identity_hash_parity": identity_hash_parity,
             "continuous": continuous,
             "completed_classes": dict(completed_classes),
             "first_completed_at": liquidity_timestamps[

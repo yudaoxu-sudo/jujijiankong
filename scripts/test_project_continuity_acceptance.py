@@ -48,6 +48,19 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "opening_event_match_count": 0,
         "opening_event_opened_count": 0,
         "opening_event_error_count": 0,
+        "v3_scope_complete_count": 0,
+        "v3_scope_deadline_count": 0,
+        "v3_expected_query_count_total": 0,
+        "v3_attempted_query_count_total": 0,
+        "v3_validation_error_count_total": 0,
+        "v3_scope_conflict_count_total": 0,
+        "v3_provider_error_count_total": 0,
+        "v3_response_validation_error_count_total": 0,
+        "v3_identity_mismatch_count_total": 0,
+        "v3_snapshot_error_count_total": 0,
+        "v3_metadata_invalid_count": 0,
+        "v4_scope_applicable_count": 0,
+        "v4_scope_complete_count": 0,
         "v3_complete": None,
         "v3_deadline_exceeded": None,
         "v3_expected_query_count": None,
@@ -111,8 +124,14 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
         {
             "status": "healthy",
             "issue_count": 0,
+            "expected_count": 1,
+            "processed_count": 1,
+            "dropped_count": 0,
+            "required_count": 1,
             "complete_count": 1,
             "alert_ready_count": 1,
+            "expected_identity_hash": "1" * 64,
+            "processed_identity_hash": "1" * 64,
             "projects": [
                 {
                     "symbol": "GRVT",
@@ -420,6 +439,72 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "sniper_remote_health_acceptance.v1",
         )
 
+    def test_remote_liquidity_completion_tracks_dynamic_required_set(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            baseline.update(
+                {
+                    "expected_count": 2,
+                    "processed_count": 2,
+                    "dropped_count": 0,
+                    "required_count": 2,
+                    "complete_count": 2,
+                    "alert_ready_count": 2,
+                    "expected_identity_hash": "2" * 64,
+                    "processed_identity_hash": "2" * 64,
+                }
+            )
+            write_json(liquidity_path, baseline)
+            complete = run_remote_probe(root, expected_hashes)
+            self.assertEqual(complete["status"], "pass")
+            sanitized, valid = sanitize_remote_runtime(complete)
+            self.assertTrue(valid)
+            self.assertEqual(sanitized["status"], "pass")
+
+            nullable = json.loads(json.dumps(complete))
+            nullable["grvt_liquidity"]["required_count"] = None
+            safe_nullable, nullable_valid = sanitize_remote_runtime(
+                nullable
+            )
+            resanitized, revalid = sanitize_remote_runtime(safe_nullable)
+            self.assertTrue(nullable_valid)
+            self.assertTrue(revalid)
+            self.assertEqual(safe_nullable["status"], "fail")
+            self.assertEqual(resanitized, safe_nullable)
+
+            for field, value in (
+                ("complete_count", 1),
+                ("alert_ready_count", 1),
+                ("dropped_count", 1),
+                ("processed_count", 1),
+                ("required_count", "2"),
+                ("processed_identity_hash", "3" * 64),
+                ("expected_identity_hash", int("2" * 64)),
+                ("processed_identity_hash", True),
+                ("processed_identity_hash", None),
+            ):
+                with self.subTest(field=field):
+                    forged = dict(baseline)
+                    forged[field] = value
+                    write_json(liquidity_path, forged)
+                    rejected = run_remote_probe(root, expected_hashes)
+                    self.assertEqual(rejected["status"], "fail")
+                    safe_rejected, rejected_valid = (
+                        sanitize_remote_runtime(rejected)
+                    )
+                    self.assertTrue(rejected_valid)
+                    self.assertEqual(safe_rejected["status"], "fail")
+
     def test_remote_runtime_generated_at_must_be_canonical_for_pass(
         self,
     ) -> None:
@@ -614,6 +699,10 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 "deadline_exceeded": True,
                 "expected_query_count": 32,
                 "attempted_query_count": 20,
+                "provider_error_count": 0,
+                "response_validation_error_count": 1,
+                "identity_mismatch_count": 0,
+                "snapshot_error_count": 0,
                 "validation_error_count": 1,
                 "scope_conflict_count": 0,
                 "pools": [],
@@ -658,6 +747,35 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             )
             self.assertEqual(
                 summary["opening_event_opened_count"], event_count
+            )
+            self.assertEqual(summary["v3_scope_complete_count"], 0)
+            self.assertEqual(
+                summary["v3_scope_deadline_count"], event_count
+            )
+            self.assertEqual(
+                summary["v3_expected_query_count_total"],
+                32 * event_count,
+            )
+            self.assertEqual(
+                summary["v3_attempted_query_count_total"],
+                20 * event_count,
+            )
+            self.assertEqual(
+                summary["v3_validation_error_count_total"], event_count
+            )
+            self.assertEqual(
+                summary["v3_response_validation_error_count_total"],
+                event_count,
+            )
+            self.assertEqual(summary["v3_provider_error_count_total"], 0)
+            self.assertEqual(summary["v3_identity_mismatch_count_total"], 0)
+            self.assertEqual(summary["v3_snapshot_error_count_total"], 0)
+            self.assertEqual(summary["v3_metadata_invalid_count"], 0)
+            self.assertEqual(
+                summary["v4_scope_applicable_count"], event_count
+            )
+            self.assertEqual(
+                summary["v4_scope_complete_count"], event_count
             )
             if event_count == 1:
                 self.assertEqual(summary["error_code"], "opening_scope_deadline")

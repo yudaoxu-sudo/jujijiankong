@@ -1594,6 +1594,17 @@ def opening_verified_pool_scope(
             quote_decimals = int(quote_meta.get("decimals"))
         except (TypeError, ValueError):
             quote_decimals = -1
+        v3_diagnostic_fields = (
+            "provider_error_count",
+            "response_validation_error_count",
+            "identity_mismatch_count",
+            "snapshot_error_count",
+        )
+        v3_diagnostic_fields_present = (
+            tuple(field in v3_scope for field in v3_diagnostic_fields)
+            if isinstance(v3_scope, dict)
+            else ()
+        )
         if (
             event.get("status") != "opened"
             or not is_address(quote)
@@ -1618,6 +1629,17 @@ def opening_verified_pool_scope(
             or v3_scope.get("validation_error_count") != 0
             or type(v3_scope.get("scope_conflict_count")) is not int
             or v3_scope.get("scope_conflict_count") != 0
+            or (
+                any(v3_diagnostic_fields_present)
+                and (
+                    not all(v3_diagnostic_fields_present)
+                    or any(
+                        type(v3_scope.get(field)) is not int
+                        or v3_scope.get(field) != 0
+                        for field in v3_diagnostic_fields
+                    )
+                )
+            )
             or not valid_sha256(v3_scope.get("configuration_hash"))
             or not valid_hash32(v3_scope.get("as_of_block_hash"))
             or int(v3_scope.get("as_of_block") or 0) <= 0
@@ -6431,8 +6453,41 @@ def build_token_liquidity_retention(
     checkpoint_refresh = False
     effective_previous_latest = previous_latest
     verified_previous_hash = ""
+    bootstrap_retry_window = liquidity_state.get(
+        "bootstrap_retry_window_blocks"
+    )
+    bootstrap_coverage_from = liquidity_state.get(
+        "scope_coverage_from_block"
+    )
+    persisted_bootstrap_pools = normalized_verified_liquidity_pools(
+        liquidity_state.get("pool_scope"),
+        token,
+    )
+    bootstrap_retry_pending = bool(
+        previous_latest <= 0
+        and liquidity_state.get("bootstrap_retry_pending") is True
+        and state_schema_version == LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+        and previous_scope_hash == current_scope_hash
+        and persisted_bootstrap_pools == pools
+        and liquidity_pool_scope_hash(persisted_bootstrap_pools or [])
+        == current_scope_hash
+        and type(bootstrap_retry_window) is int
+        and 0 < bootstrap_retry_window <= 50_000
+        and type(bootstrap_coverage_from) is int
+        and bootstrap_coverage_from >= 0
+        and "latest_block" not in liquidity_state
+        and "latest_block_hash" not in liquidity_state
+        and "catchup_active" not in liquidity_state
+        and "catchup_live_from_block" not in liquidity_state
+        and "next_catchup_window_blocks" not in liquidity_state
+        and "reconciliation" not in liquidity_state
+    )
+    if bootstrap_retry_pending:
+        preferred_window_blocks = bootstrap_retry_window
     if scope_rebaseline:
-        if scope_changed:
+        if bootstrap_retry_pending:
+            scan_from = scope_coverage_from
+        elif scope_changed:
             try:
                 scope_change_rescan_blocks = max(
                     1,
@@ -6901,55 +6956,65 @@ def build_token_liquidity_retention(
                 next_state["next_catchup_window_blocks"] = (
                     next_window_blocks
                 )
-    elif (
-        previous_latest > 0
-        and (flow.get("incremental_catchup") or {}).get(
-            "deadline_exceeded"
-        ) is True
-    ):
+    elif (flow.get("incremental_catchup") or {}).get(
+        "deadline_exceeded"
+    ) is True:
         retry_window_blocks = int(
             (flow.get("incremental_catchup") or {}).get(
                 "retry_window_blocks"
             )
             or 0
         )
-        persisted_pools = normalized_verified_liquidity_pools(
-            liquidity_state.get("pool_scope"),
-            token,
-        )
-        persisted_hash = str(liquidity_state.get("scope_hash") or "")
-        if (
-            retry_window_blocks > 0
-            and persisted_pools
-            and liquidity_pool_scope_hash(persisted_pools)
-            == persisted_hash
-            and valid_hash32(liquidity_state.get("latest_block_hash"))
-        ):
+        if retry_window_blocks > 0 and previous_latest <= 0:
             next_state = {
                 "scope_state_schema_version": (
                     LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
                 ),
-                "scope_hash": persisted_hash,
-                "pool_scope": persisted_pools,
-                "pool_count": len(persisted_pools),
-                "scope_coverage_from_block": int(
-                    liquidity_state.get("scope_coverage_from_block") or 0
-                ),
-                "latest_block": previous_latest,
-                "latest_block_hash": str(
-                    liquidity_state.get("latest_block_hash") or ""
-                ),
-                "catchup_active": bool(
-                    liquidity_state.get("catchup_active") is True
-                ),
-                "next_catchup_window_blocks": retry_window_blocks,
+                "scope_hash": current_scope_hash,
+                "pool_scope": copy.deepcopy(pools),
+                "pool_count": len(pools),
+                "scope_coverage_from_block": scope_coverage_from,
+                "bootstrap_retry_pending": True,
+                "bootstrap_retry_window_blocks": retry_window_blocks,
             }
-            for key in (
-                "catchup_live_from_block",
-                "reconciliation",
+        elif previous_latest > 0:
+            persisted_pools = normalized_verified_liquidity_pools(
+                liquidity_state.get("pool_scope"),
+                token,
+            )
+            persisted_hash = str(liquidity_state.get("scope_hash") or "")
+            if (
+                retry_window_blocks > 0
+                and persisted_pools
+                and liquidity_pool_scope_hash(persisted_pools)
+                == persisted_hash
+                and valid_hash32(liquidity_state.get("latest_block_hash"))
             ):
-                if key in liquidity_state:
-                    next_state[key] = copy.deepcopy(liquidity_state[key])
+                next_state = {
+                    "scope_state_schema_version": (
+                        LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+                    ),
+                    "scope_hash": persisted_hash,
+                    "pool_scope": persisted_pools,
+                    "pool_count": len(persisted_pools),
+                    "scope_coverage_from_block": int(
+                        liquidity_state.get("scope_coverage_from_block") or 0
+                    ),
+                    "latest_block": previous_latest,
+                    "latest_block_hash": str(
+                        liquidity_state.get("latest_block_hash") or ""
+                    ),
+                    "catchup_active": bool(
+                        liquidity_state.get("catchup_active") is True
+                    ),
+                    "next_catchup_window_blocks": retry_window_blocks,
+                }
+                for key in (
+                    "catchup_live_from_block",
+                    "reconciliation",
+                ):
+                    if key in liquidity_state:
+                        next_state[key] = copy.deepcopy(liquidity_state[key])
     return flow, next_state
 
 

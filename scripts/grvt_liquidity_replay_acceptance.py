@@ -25,8 +25,9 @@ from sniper_engine.rpc import (  # noqa: E402
     READ_CAPABLE_PUBLIC_RPCS,
     RpcDeadlineExceeded,
     adaptive_get_logs,
-    rpc_call as runtime_rpc_call,
+    deadline_timeout,
     rpc_call_url,
+    rpc_urls,
 )
 from scripts import alpha_holder_concentration_watch as holder  # noqa: E402
 from scripts import alpha_opening_block_watch as opening  # noqa: E402
@@ -59,10 +60,50 @@ class AcceptanceFailure(RuntimeError):
     pass
 
 
+def runtime_replay_rpc_call(
+    endpoint: str,
+    chain: str,
+    method: str,
+    params: list[Any],
+    *,
+    timeout: int | float,
+    deadline: float,
+) -> Any:
+    if chain != "bsc":
+        raise RuntimeError("unsupported runtime replay chain")
+    if method == "eth_getLogs":
+        if len(params) != 1 or not isinstance(params[0], dict):
+            raise RuntimeError("eth_getLogs coverage query invalid")
+        return adaptive_get_logs(
+            params[0],
+            lambda query: rpc_call_url(
+                endpoint,
+                method,
+                [query],
+                timeout=deadline_timeout(timeout, deadline),
+            ),
+            max_transport_split_depth=0,
+            before_attempt=lambda: deadline_timeout(timeout, deadline),
+        )
+    return rpc_call_url(
+        endpoint,
+        method,
+        params,
+        timeout=deadline_timeout(timeout, deadline),
+    )
+
+
 def run_runtime_acceptance() -> dict[str, Any]:
     overall_deadline = time.monotonic() + RUNTIME_REPLAY_BUDGET_SECONDS
     last_issue = "runtime_rpc_attempts_exhausted"
+    runtime_endpoints = iter(
+        tuple(dict.fromkeys(rpc_urls("bsc", "eth_getLogs")))
+    )
     for attempt in range(RUNTIME_REPLAY_MAX_ATTEMPTS):
+        try:
+            endpoint = next(runtime_endpoints)
+        except StopIteration:
+            raise AcceptanceFailure(last_issue) from None
         attempt_deadline = min(
             overall_deadline,
             time.monotonic() + RUNTIME_REPLAY_ATTEMPT_SECONDS,
@@ -76,7 +117,8 @@ def run_runtime_acceptance() -> dict[str, Any]:
         ) -> Any:
             nonlocal rpc_issue
             try:
-                return runtime_rpc_call(
+                return runtime_replay_rpc_call(
+                    endpoint,
                     chain,
                     method,
                     params,

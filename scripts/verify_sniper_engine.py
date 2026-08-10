@@ -2968,6 +2968,10 @@ assert readback_gate['can_follow'] is False, readback_gate
                 "next_hop_watch_recipients",
                 "confirmed_sell_evidence",
                 "last_full_trace_attempt_at",
+                "provider_error_count",
+                "response_validation_error_count",
+                "identity_mismatch_count",
+                "snapshot_error_count",
             )
         ) and identity_before_transfer
         opening_sprint_msg = (
