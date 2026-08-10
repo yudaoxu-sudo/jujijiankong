@@ -26776,7 +26776,18 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                     "latest_block": 130,
                     "latest_block_hash": self._hash("b"),
                 },
-                "seed_conflict_reconciliation",
+                "seed_conflict_reconciliation_cross_checkpoint",
+            ),
+            (
+                {**checkpoint, "reconciliation": pending},
+                {
+                    **checkpoint,
+                    "reconciliation": {
+                        **pending,
+                        "pending": [{"reconcile_id": "2" * 64}],
+                    },
+                },
+                "seed_conflict_reconciliation_same_checkpoint",
             ),
             (
                 checkpoint,

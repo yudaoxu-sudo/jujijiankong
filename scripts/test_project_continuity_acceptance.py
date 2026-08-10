@@ -927,6 +927,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "seed_conflict_checkpoint_hash",
             "seed_conflict_checkpoint_state",
             "seed_conflict_reconciliation",
+            "seed_conflict_reconciliation_same_checkpoint",
+            "seed_conflict_reconciliation_cross_checkpoint",
             "seed_conflict_progress",
         ):
             with self.subTest(reason_code=reason_code):

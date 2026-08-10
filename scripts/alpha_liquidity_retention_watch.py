@@ -48,6 +48,8 @@ LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
         "seed_conflict_checkpoint_hash",
         "seed_conflict_checkpoint_state",
         "seed_conflict_reconciliation",
+        "seed_conflict_reconciliation_same_checkpoint",
+        "seed_conflict_reconciliation_cross_checkpoint",
         "seed_conflict_progress",
     }
 )
@@ -714,7 +716,11 @@ def select_liquidity_seed(
     return outcome(
         "none",
         conflict_reason=(
-            "seed_conflict_reconciliation"
+            (
+                "seed_conflict_reconciliation_same_checkpoint"
+                if latest["standalone"] == latest["holder"]
+                else "seed_conflict_reconciliation_cross_checkpoint"
+            )
             if kind == "checkpoint" and any(progress_dominates.values())
             else "seed_conflict_progress"
         ),
