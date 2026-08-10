@@ -53,6 +53,14 @@ LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
         "seed_conflict_progress",
     }
 )
+LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT = {
+    "checkpoint_relation": "not_applicable",
+    "reconciliation_conflict_shape": "not_applicable",
+    "missing_previous_pending_count": 0,
+    "missing_previous_completed_count": 0,
+    "missing_previous_deferred_count": 0,
+}
+ReconciliationDetail = tuple[set[str], set[str], set[str], list[str], set[str]]
 
 
 class ReconciliationStateInvalid(ValueError):
@@ -537,7 +545,7 @@ def liquidity_reconciliation_identities(
     deferred: set[str] = set()
     try:
         for row in deferred_rows:
-            if not isinstance(row, dict):
+            if not isinstance(row, dict) or not holder.valid_hash32(row.get("tx")):
                 return None
             deferred.add(holder.liquidity_reconciliation_id(row))
     except (TypeError, ValueError):
@@ -547,6 +555,139 @@ def liquidity_reconciliation_identities(
     if identities[0] & identities[1]:
         return None
     return identities[0], identities[1], deferred
+
+
+def liquidity_reconciliation_detail(seed: dict[str, Any]) -> ReconciliationDetail | None:
+    identities = liquidity_reconciliation_identities(seed)
+    if identities is None:
+        return None
+    reconciliation = seed.get("reconciliation") or {}
+    completed_order = [
+        str(row.get("reconcile_id") or "")
+        for row in reconciliation.get("completed", [])
+    ]
+    deferred_adds = {
+        holder.liquidity_reconciliation_id(row)
+        for row in reconciliation.get("deferred_events", [])
+        if str(row.get("type") or "") == "lp_add_observation"
+    }
+    return (*identities, completed_order, deferred_adds)
+
+
+def liquidity_reconciliation_conflict_detail(
+    seeds: dict[str, dict[str, Any]],
+    progress_dominates: dict[str, bool],
+) -> dict[str, Any]:
+    detail = dict(LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT)
+    latest = {
+        source: int(seed.get("latest_block") or 0)
+        for source, seed in seeds.items()
+    }
+    if latest["standalone"] == latest["holder"]:
+        relation = "same_checkpoint"
+    elif progress_dominates.get("standalone") is True:
+        relation = "standalone_newer"
+    elif progress_dominates.get("holder") is True:
+        relation = "holder_newer"
+    else:
+        return {
+            **detail,
+            "checkpoint_relation": "progress_incomparable",
+        }
+
+    rows = {
+        source: liquidity_reconciliation_detail(seed)
+        for source, seed in seeds.items()
+    }
+    if any(value is None for value in rows.values()):
+        return {
+            **detail,
+            "checkpoint_relation": relation,
+            "reconciliation_conflict_shape": "identity_shape_invalid",
+        }
+
+    standalone_rows = rows["standalone"]
+    holder_rows = rows["holder"]
+    assert standalone_rows is not None and holder_rows is not None
+
+    def missing(previous: ReconciliationDetail, candidate: ReconciliationDetail):
+        return (
+            previous[0] - (candidate[0] | candidate[1]),
+            previous[1] - candidate[1],
+            previous[2] - (candidate[2] | candidate[0] | candidate[1]),
+        )
+
+    if relation == "same_checkpoint":
+        left = missing(standalone_rows, holder_rows)
+        right = missing(holder_rows, standalone_rows)
+        return {
+            "checkpoint_relation": relation,
+            "reconciliation_conflict_shape": "mixed",
+            "missing_previous_pending_count": len(left[0]) + len(right[0]),
+            "missing_previous_completed_count": (
+                len(left[1]) + len(right[1])
+            ),
+            "missing_previous_deferred_count": len(left[2]) + len(right[2]),
+        }
+
+    candidate_source = "standalone" if relation == "standalone_newer" else "holder"
+    previous_source = "holder" if candidate_source == "standalone" else "standalone"
+    candidate = rows[candidate_source]
+    previous = rows[previous_source]
+    assert candidate is not None and previous is not None
+    absent = missing(previous, candidate)
+    pending, completed, deferred = absent
+    shapes = {"missing_pending"} if pending else set()
+    if completed:
+        evicted = len(completed)
+        shared = previous[3][evicted:]
+        rollover = bool(
+            len(candidate[3]) == 500
+            and 0 < evicted < len(previous[3])
+            and candidate[3][: len(shared)] == shared
+            and set(previous[3][:evicted]) == completed
+            and not (set(candidate[3][len(shared) :]) & set(previous[3]))
+        )
+        shapes.add(
+            "bounded_completed_prefix_eviction"
+            if rollover
+            else "missing_completed_unproven"
+        )
+    if deferred & previous[4]:
+        shapes.add("missing_deferred_add")
+    if deferred - previous[4]:
+        shapes.add("missing_deferred_other")
+    shape = next(iter(shapes)) if len(shapes) == 1 else "mixed"
+    return {
+        "checkpoint_relation": relation,
+        "reconciliation_conflict_shape": shape,
+        "missing_previous_pending_count": len(pending),
+        "missing_previous_completed_count": len(completed),
+        "missing_previous_deferred_count": len(deferred),
+    }
+
+
+def strict_liquidity_seed_conflict_detail(value: Any) -> dict[str, Any]:
+    fallback = dict(LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT)
+    relations = "not_applicable standalone_newer holder_newer same_checkpoint progress_incomparable"
+    shapes = (
+        "not_applicable identity_shape_invalid bounded_completed_prefix_eviction "
+        "missing_pending missing_completed_unproven missing_deferred_add "
+        "missing_deferred_other mixed"
+    )
+    if (
+        not isinstance(value, dict)
+        or set(value) != set(fallback)
+        or value.get("checkpoint_relation") not in relations.split()
+        or value.get("reconciliation_conflict_shape") not in shapes.split()
+        or any(
+            type(value.get(key)) is not int or value[key] < 0
+            for key in fallback
+            if key.endswith("_count")
+        )
+    ):
+        return fallback
+    return copy.deepcopy(value)
 
 
 def liquidity_reconciliation_dominates(
@@ -580,12 +721,16 @@ def select_liquidity_seed(
         source: str,
         *,
         conflict_reason: str = "none",
+        conflict_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "seed": copy.deepcopy(seeds.get(source) or {}),
             "source": source,
             "conflict": conflict_reason != "none",
             "conflict_reason": conflict_reason,
+            "conflict_detail": strict_liquidity_seed_conflict_detail(
+                conflict_detail
+            ),
         }
 
     present = [source for source, seed in seeds.items() if seed]
@@ -724,6 +869,17 @@ def select_liquidity_seed(
             if kind == "checkpoint" and any(progress_dominates.values())
             else "seed_conflict_progress"
         ),
+        conflict_detail=(
+            liquidity_reconciliation_conflict_detail(
+                seeds,
+                progress_dominates,
+            )
+            if kind == "checkpoint"
+            else {
+                **LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                "checkpoint_relation": "progress_incomparable",
+            }
+        ),
     )
 
 
@@ -856,6 +1012,7 @@ def liquidity_runtime_diagnostic(
     flow: dict[str, Any],
     error_code: str = "",
     seed_conflict: bool = False,
+    seed_conflict_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     incremental = (
         flow.get("incremental_catchup")
@@ -1014,6 +1171,7 @@ def liquidity_runtime_diagnostic(
         "provider_status": provider_status,
         "coverage_status": coverage_status,
         "reason_code": reason_code,
+        **strict_liquidity_seed_conflict_detail(seed_conflict_detail),
     }
 
 
@@ -1294,6 +1452,7 @@ def build_snapshot() -> dict[str, Any]:
                 flow=flow,
                 error_code=runtime_error_code,
                 seed_conflict=seed_conflict,
+                seed_conflict_detail=selection.get("conflict_detail"),
             )
             projects.append(project)
             if detail and not exception_recorded:

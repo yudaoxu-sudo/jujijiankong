@@ -92,6 +92,11 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "retention_provider_status": None,
         "retention_coverage_status": None,
         "retention_reason_code": None,
+        "retention_checkpoint_relation": None,
+        "retention_reconciliation_conflict_shape": None,
+        "retention_missing_previous_pending_count": None,
+        "retention_missing_previous_completed_count": None,
+        "retention_missing_previous_deferred_count": None,
     }
     row.update(overrides)
     return row
@@ -1156,6 +1161,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "provider_status": "deadline",
             "coverage_status": "checkpoint_retry_pending",
             "reason_code": "retryable_min_window_exhausted",
+            "checkpoint_relation": "same_checkpoint",
+            "reconciliation_conflict_shape": "not_applicable",
+            "missing_previous_pending_count": 1,
+            "missing_previous_completed_count": 2,
+            "missing_previous_deferred_count": 3,
         }
 
         def probe(
@@ -1275,6 +1285,52 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                     ],
                     reason_code,
                 )
+        for field, values in (
+            (
+                "checkpoint_relation",
+                (
+                    "not_applicable",
+                    "standalone_newer",
+                    "holder_newer",
+                    "same_checkpoint",
+                    "progress_incomparable",
+                ),
+            ),
+            (
+                "reconciliation_conflict_shape",
+                (
+                    "not_applicable",
+                    "identity_shape_invalid",
+                    "bounded_completed_prefix_eviction",
+                    "missing_pending",
+                    "missing_completed_unproven",
+                    "missing_deferred_add",
+                    "missing_deferred_other",
+                    "mixed",
+                ),
+            ),
+        ):
+            for enum_value in values:
+                with self.subTest(field=field, enum_value=enum_value):
+                    enum_payload = probe(
+                        [{**diagnostic, field: enum_value}]
+                    )
+                    enum_summary = enum_payload[
+                        "runtime_issue_summaries"
+                    ][0]
+                    self.assertEqual(
+                        enum_summary[f"retention_{field}"], enum_value
+                    )
+                    safe_enum, enum_valid = sanitize_remote_runtime(
+                        enum_payload
+                    )
+                    self.assertTrue(enum_valid)
+                    self.assertEqual(
+                        safe_enum["runtime_issue_summaries"][0][
+                            f"retention_{field}"
+                        ],
+                        enum_value,
+                    )
         sanitized, valid = sanitize_remote_runtime(payload)
         resanitized, revalid = sanitize_remote_runtime(sanitized)
         self.assertTrue(valid)
@@ -1316,6 +1372,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "provider_status": marker,
             "coverage_status": marker,
             "reason_code": marker,
+            "checkpoint_relation": marker,
+            "reconciliation_conflict_shape": marker,
+            "missing_previous_pending_count": True,
+            "missing_previous_completed_count": -1,
+            "missing_previous_deferred_count": marker,
         }
         malformed_payload = probe([malformed])
         malformed_summary = malformed_payload["runtime_issue_summaries"][0]
@@ -1340,11 +1401,31 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             malformed_summary["retention_reason_code"], "unknown"
         )
+        self.assertEqual(
+            malformed_summary["retention_checkpoint_relation"],
+            "invalid",
+        )
+        self.assertEqual(
+            malformed_summary[
+                "retention_reconciliation_conflict_shape"
+            ],
+            "invalid",
+        )
         self.assertIsNone(
             malformed_summary["retention_input_retry_window_blocks"]
         )
         self.assertIsNone(
             malformed_summary["retention_deadline_exceeded"]
+        )
+        self.assertIsNone(
+            malformed_summary[
+                "retention_missing_previous_pending_count"
+            ]
+        )
+        self.assertIsNone(
+            malformed_summary[
+                "retention_missing_previous_completed_count"
+            ]
         )
         self.assertNotIn(
             marker, json.dumps(malformed_payload, sort_keys=True)
@@ -1370,8 +1451,23 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             missing_key_summary["retention_provider_status"], "unknown"
         )
+        self.assertEqual(
+            missing_key_summary["retention_checkpoint_relation"],
+            "invalid",
+        )
+        self.assertEqual(
+            missing_key_summary[
+                "retention_reconciliation_conflict_shape"
+            ],
+            "invalid",
+        )
         self.assertIsNone(
             missing_key_summary["retention_deadline_exceeded"]
+        )
+        self.assertIsNone(
+            missing_key_summary[
+                "retention_missing_previous_pending_count"
+            ]
         )
 
         duplicate_payload = probe([diagnostic, diagnostic])
@@ -1423,6 +1519,10 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         tampered_summary["retention_scope_seed_source"] = marker
         tampered_summary["retention_provider_status"] = marker
         tampered_summary["retention_reason_code"] = marker
+        tampered_summary["retention_checkpoint_relation"] = marker
+        tampered_summary[
+            "retention_reconciliation_conflict_shape"
+        ] = marker
         safe_tampered, tampered_valid = sanitize_remote_runtime(tampered)
         resafe_tampered, retampered_valid = sanitize_remote_runtime(
             safe_tampered
@@ -1439,6 +1539,32 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             safe_summary["retention_provider_status"], "unknown"
         )
         self.assertEqual(safe_summary["retention_reason_code"], "unknown")
+        self.assertEqual(
+            safe_summary["retention_checkpoint_relation"], "invalid"
+        )
+        self.assertEqual(
+            safe_summary["retention_reconciliation_conflict_shape"],
+            "invalid",
+        )
+
+    def test_remote_retention_extended_int_rejects_bool(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            payload = run_remote_probe(root, expected_hashes)
+        payload["runtime_issue_summaries"] = [
+            safe_issue_summary(
+                scope="liquidity_retention",
+                retention_project_match_count=1,
+                retention_missing_previous_pending_count=True,
+            )
+        ]
+        rejected, valid = sanitize_remote_runtime(payload)
+        self.assertFalse(valid)
+        self.assertEqual(
+            rejected["validation_error_code"],
+            "runtime_issue_summary_value_invalid",
+        )
 
     def test_remote_nested_free_text_never_persists(self) -> None:
         marker = "synthetic_secret_api_key_abc123"

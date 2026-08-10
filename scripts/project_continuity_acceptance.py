@@ -198,6 +198,29 @@ REMOTE_RETENTION_REASON_CODES = frozenset(
         "unknown",
     }
 )
+REMOTE_RETENTION_CHECKPOINT_RELATIONS = frozenset(
+    {
+        "not_applicable",
+        "standalone_newer",
+        "holder_newer",
+        "same_checkpoint",
+        "progress_incomparable",
+        "invalid",
+    }
+)
+REMOTE_RETENTION_RECONCILIATION_CONFLICT_SHAPES = frozenset(
+    {
+        "not_applicable",
+        "identity_shape_invalid",
+        "bounded_completed_prefix_eviction",
+        "missing_pending",
+        "missing_completed_unproven",
+        "missing_deferred_add",
+        "missing_deferred_other",
+        "mixed",
+        "invalid",
+    }
+)
 REMOTE_REPLAY_ISSUE_CODES = frozenset(
     {
         "canonical_block_identity_mismatch",
@@ -419,6 +442,11 @@ retention_diagnostic_keys = {
     "provider_status",
     "coverage_status",
     "reason_code",
+    "checkpoint_relation",
+    "reconciliation_conflict_shape",
+    "missing_previous_pending_count",
+    "missing_previous_completed_count",
+    "missing_previous_deferred_count",
 }
 retention_seed_statuses = {"missing", "valid", "invalid"}
 retention_seed_sources = {"none", "standalone", "holder", "invalid"}
@@ -472,6 +500,23 @@ retention_reason_codes = {
     "pool_scope_empty",
     "operator_attribution_failed",
     "unknown",
+}
+retention_checkpoint_relations = {
+    "not_applicable",
+    "standalone_newer",
+    "holder_newer",
+    "same_checkpoint",
+    "progress_incomparable",
+}
+retention_reconciliation_conflict_shapes = {
+    "not_applicable",
+    "identity_shape_invalid",
+    "bounded_completed_prefix_eviction",
+    "missing_pending",
+    "missing_completed_unproven",
+    "missing_deferred_add",
+    "missing_deferred_other",
+    "mixed",
 }
 opening_liquidity_coverage_statuses = {
     "complete_historical_opening_window",
@@ -1474,6 +1519,11 @@ def runtime_issue_retention_summary(row):
         "retention_provider_status": None,
         "retention_coverage_status": None,
         "retention_reason_code": None,
+        "retention_checkpoint_relation": None,
+        "retention_reconciliation_conflict_shape": None,
+        "retention_missing_previous_pending_count": None,
+        "retention_missing_previous_completed_count": None,
+        "retention_missing_previous_deferred_count": None,
     }
     if runtime_issue_scope(row) != "liquidity_retention":
         return empty
@@ -1512,6 +1562,8 @@ def runtime_issue_retention_summary(row):
             "retention_provider_status": "unknown",
             "retention_coverage_status": "unknown",
             "retention_reason_code": "unknown",
+            "retention_checkpoint_relation": "invalid",
+            "retention_reconciliation_conflict_shape": "invalid",
         }
 
     def fixed_enum(value, allowed, fallback):
@@ -1579,6 +1631,25 @@ def runtime_issue_retention_summary(row):
             diagnostic.get("reason_code"),
             retention_reason_codes,
             "unknown",
+        ),
+        "retention_checkpoint_relation": fixed_enum(
+            diagnostic.get("checkpoint_relation"),
+            retention_checkpoint_relations,
+            "invalid",
+        ),
+        "retention_reconciliation_conflict_shape": fixed_enum(
+            diagnostic.get("reconciliation_conflict_shape"),
+            retention_reconciliation_conflict_shapes,
+            "invalid",
+        ),
+        "retention_missing_previous_pending_count": nonnegative_int(
+            diagnostic.get("missing_previous_pending_count")
+        ),
+        "retention_missing_previous_completed_count": nonnegative_int(
+            diagnostic.get("missing_previous_completed_count")
+        ),
+        "retention_missing_previous_deferred_count": nonnegative_int(
+            diagnostic.get("missing_previous_deferred_count")
         ),
     }
 
@@ -2073,6 +2144,11 @@ def sanitize_remote_runtime(
                     "retention_provider_status",
                     "retention_coverage_status",
                     "retention_reason_code",
+                    "retention_checkpoint_relation",
+                    "retention_reconciliation_conflict_shape",
+                    "retention_missing_previous_pending_count",
+                    "retention_missing_previous_completed_count",
+                    "retention_missing_previous_deferred_count",
                 }
             ):
                 return None, "runtime_issue_summary_row_shape_invalid"
@@ -2121,6 +2197,9 @@ def sanitize_remote_runtime(
                     "v3_scope_conflict_count",
                     "retention_input_retry_window_blocks",
                     "retention_next_retry_window_blocks",
+                    "retention_missing_previous_pending_count",
+                    "retention_missing_previous_completed_count",
+                    "retention_missing_previous_deferred_count",
                 )
             }
             retention_match_count = strict_remote_int(
@@ -2180,6 +2259,20 @@ def sanitize_remote_runtime(
                     row.get("retention_reason_code"),
                     REMOTE_RETENTION_REASON_CODES,
                     "unknown",
+                ),
+                "retention_checkpoint_relation": safe_optional_code(
+                    row.get("retention_checkpoint_relation"),
+                    REMOTE_RETENTION_CHECKPOINT_RELATIONS,
+                    "invalid",
+                ),
+                "retention_reconciliation_conflict_shape": (
+                    safe_optional_code(
+                        row.get(
+                            "retention_reconciliation_conflict_shape"
+                        ),
+                        REMOTE_RETENTION_RECONCILIATION_CONFLICT_SHAPES,
+                        "invalid",
+                    )
                 ),
             }
             opening_codes = {
@@ -2258,6 +2351,9 @@ def sanitize_remote_runtime(
                 for key in (
                     "retention_input_retry_window_blocks",
                     "retention_next_retry_window_blocks",
+                    "retention_missing_previous_pending_count",
+                    "retention_missing_previous_completed_count",
+                    "retention_missing_previous_deferred_count",
                 )
             }
             safe_retention_codes = dict(retention_codes)

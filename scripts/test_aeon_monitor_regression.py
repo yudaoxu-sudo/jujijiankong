@@ -26794,6 +26794,173 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertFalse(deferred_transition["conflict"])
         self.assertEqual(deferred_transition["source"], "holder")
 
+    def test_fast_liquidity_reconciliation_conflict_detail_is_safe_exact(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        detail_keys = (
+            "checkpoint_relation",
+            "reconciliation_conflict_shape",
+            "missing_previous_pending_count",
+            "missing_previous_completed_count",
+            "missing_previous_deferred_count",
+        )
+
+        def expected(
+            relation: str = "not_applicable",
+            shape: str = "not_applicable",
+            counts: tuple[int, int, int] = (0, 0, 0),
+        ) -> dict[str, object]:
+            return dict(zip(detail_keys, (relation, shape, *counts)))
+
+        def reconciliation(
+            *,
+            pending: tuple[str, ...] = (),
+            completed: tuple[str, ...] = (),
+            deferred: tuple[dict[str, object], ...] = (),
+        ) -> dict[str, object]:
+            return {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": [{"reconcile_id": value} for value in pending],
+                "completed": [{"reconcile_id": value} for value in completed],
+                "deferred_events": list(deferred),
+            }
+
+        def checkpoint(
+            state: dict[str, object], newer: bool = False
+        ) -> dict[str, object]:
+            return {
+                "scope_hash": "a" * 64,
+                "pool_scope": [{"protocol": "v3"}],
+                "scope_coverage_from_block": 90,
+                "latest_block": 130 if newer else 120,
+                "latest_block_hash": self._hash("b" if newer else "a"),
+                "catchup_active": False,
+                "reconciliation": state,
+            }
+
+        def deferred(event_type: str, digit: str) -> dict[str, object]:
+            return {
+                "type": event_type,
+                "tx": self._hash(digit),
+                "log_index": 7,
+            }
+
+        identities = tuple(f"{index:064x}" for index in range(1, 502))
+        unordered = list(identities[1:501])
+        unordered[0], unordered[1] = unordered[1], unordered[0]
+        add_event = deferred("lp_add_observation", "c")
+        burn_event = deferred("v3_burn", "d")
+        pending_id = identities[0]
+        completed_id = identities[1]
+
+        cases = (
+            (
+                "bounded_rollover_holder",
+                reconciliation(completed=identities[:500]),
+                reconciliation(completed=identities[1:501]),
+                "bounded_completed_prefix_eviction",
+                (0, 1, 0),
+            ),
+            (
+                "unordered_completed",
+                reconciliation(completed=identities[:500]),
+                reconciliation(completed=tuple(unordered)),
+                "missing_completed_unproven",
+                (0, 1, 0),
+            ),
+            (
+                "candidate_below_limit",
+                reconciliation(completed=identities[:3]),
+                reconciliation(completed=identities[1:3]),
+                "missing_completed_unproven",
+                (0, 1, 0),
+            ),
+            (
+                "missing_pending",
+                reconciliation(pending=(pending_id,)),
+                reconciliation(),
+                "missing_pending",
+                (1, 0, 0),
+            ),
+            (
+                "missing_deferred_add",
+                reconciliation(deferred=(add_event,)),
+                reconciliation(),
+                "missing_deferred_add",
+                (0, 0, 1),
+            ),
+            (
+                "missing_deferred_other",
+                reconciliation(deferred=(burn_event,)),
+                reconciliation(),
+                "missing_deferred_other",
+                (0, 0, 1),
+            ),
+            (
+                "mixed",
+                reconciliation(
+                    pending=(pending_id,), completed=(completed_id,)
+                ),
+                reconciliation(),
+                "mixed",
+                (1, 1, 0),
+            ),
+            (
+                "identity_duplicate",
+                reconciliation(pending=(pending_id, pending_id)),
+                reconciliation(),
+                "identity_shape_invalid",
+                (0, 0, 0),
+            ),
+            (
+                "no_conflict",
+                reconciliation(pending=(pending_id,)),
+                reconciliation(completed=(pending_id,)),
+                "not_applicable",
+                (0, 0, 0),
+            ),
+        )
+
+        rollover_detail = None
+        for name, previous, candidate, shape, counts in cases:
+            with self.subTest(name=name):
+                selected = fast.select_liquidity_seed(
+                    checkpoint(previous),
+                    checkpoint(candidate, newer=True),
+                )
+                detail = selected["conflict_detail"]
+                self.assertEqual(set(detail), set(detail_keys))
+                relation = (
+                    "not_applicable"
+                    if shape == "not_applicable"
+                    else "holder_newer"
+                )
+                self.assertEqual(detail, expected(relation, shape, counts))
+                if name == "bounded_rollover_holder":
+                    rollover_detail = detail
+
+        self.assertIsNotNone(rollover_detail)
+        self.assertNotIn(pending_id, json.dumps(rollover_detail, sort_keys=True))
+        diagnostic = fast.liquidity_runtime_diagnostic(
+            standalone_seed_status="valid",
+            holder_seed_status="valid",
+            scope_seed_source="none",
+            input_seed={},
+            next_state=None,
+            flow=fast.error_flow(
+                "seed_conflict_reconciliation_cross_checkpoint"
+            ),
+            error_code="seed_conflict_reconciliation_cross_checkpoint",
+            seed_conflict=True,
+            seed_conflict_detail=rollover_detail,
+        )
+        self.assertEqual(len(diagnostic), 19)
+        for key, value in rollover_detail.items():
+            self.assertEqual(diagnostic[key], value)
+
     def test_fast_liquidity_seed_conflict_reason_is_exact(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
         import scripts.alpha_liquidity_retention_watch as fast
@@ -27892,6 +28059,11 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 "provider_status",
                 "coverage_status",
                 "reason_code",
+                "checkpoint_relation",
+                "reconciliation_conflict_shape",
+                "missing_previous_pending_count",
+                "missing_previous_completed_count",
+                "missing_previous_deferred_count",
             },
         )
         self.assertEqual(diagnostic["standalone_seed_status"], "valid")
@@ -27901,6 +28073,16 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(diagnostic["next_state_kind"], "checkpoint")
         self.assertIsNone(diagnostic["input_retry_window_blocks"])
         self.assertIsNone(diagnostic["next_retry_window_blocks"])
+        self.assertEqual(
+            diagnostic["checkpoint_relation"], "not_applicable"
+        )
+        self.assertEqual(
+            diagnostic["reconciliation_conflict_shape"],
+            "not_applicable",
+        )
+        self.assertEqual(diagnostic["missing_previous_pending_count"], 0)
+        self.assertEqual(diagnostic["missing_previous_completed_count"], 0)
+        self.assertEqual(diagnostic["missing_previous_deferred_count"], 0)
         self.assertTrue(diagnostic["deadline_exceeded"] is False)
         self.assertTrue(diagnostic["selected_window_complete"] is True)
         self.assertTrue(diagnostic["requested_window_complete"] is True)
