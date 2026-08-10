@@ -1234,6 +1234,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "seed_conflict_reconciliation_same_checkpoint",
             "seed_conflict_reconciliation_cross_checkpoint",
             "seed_conflict_progress",
+            "seed_conflict_progress_not_checkpoint",
+            "seed_conflict_progress_catchup_inactive",
+            "seed_conflict_progress_live_boundary_invalid",
+            "seed_conflict_progress_live_boundary_not_ahead",
+            "seed_conflict_progress_reconciliation_not_dominant",
         ):
             with self.subTest(reason_code=reason_code):
                 reason_diagnostic = {

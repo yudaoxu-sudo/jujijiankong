@@ -51,6 +51,11 @@ LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
         "seed_conflict_reconciliation_same_checkpoint",
         "seed_conflict_reconciliation_cross_checkpoint",
         "seed_conflict_progress",
+        "seed_conflict_progress_not_checkpoint",
+        "seed_conflict_progress_catchup_inactive",
+        "seed_conflict_progress_live_boundary_invalid",
+        "seed_conflict_progress_live_boundary_not_ahead",
+        "seed_conflict_progress_reconciliation_not_dominant",
     }
 )
 LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT = {
@@ -860,29 +865,43 @@ def select_liquidity_seed(
         return outcome("standalone")
     if dominates["holder"]:
         return outcome("holder")
-    cross_progress = [
-        (source, other)
-        for source, other in (
-            ("standalone", "holder"),
-            ("holder", "standalone"),
-        )
-        if kind == "checkpoint"
-        and coverage_from[source] < coverage_from[other]
-        and progress[source] < progress[other]
-    ]
-    if len(cross_progress) == 1:
-        source, other = cross_progress[0]
-        live_from = seeds[source].get("catchup_live_from_block")
-        if (
-            seeds[source].get("catchup_active") is True
-            and type(live_from) is int
-            and live_from > progress[other]
-            and liquidity_reconciliation_dominates(
+    progress_conflict_reason = "seed_conflict_progress_not_checkpoint"
+    if kind == "checkpoint":
+        cross_progress = [
+            (source, other)
+            for source, other in (
+                ("standalone", "holder"),
+                ("holder", "standalone"),
+            )
+            if coverage_from[source] < coverage_from[other]
+            and progress[source] < progress[other]
+        ]
+        if len(cross_progress) == 1:
+            source, other = cross_progress[0]
+            live_from = seeds[source].get("catchup_live_from_block")
+            if seeds[source].get("catchup_active") is not True:
+                progress_conflict_reason = (
+                    "seed_conflict_progress_catchup_inactive"
+                )
+            elif type(live_from) is not int:
+                progress_conflict_reason = (
+                    "seed_conflict_progress_live_boundary_invalid"
+                )
+            elif live_from <= progress[other]:
+                progress_conflict_reason = (
+                    "seed_conflict_progress_live_boundary_not_ahead"
+                )
+            elif not liquidity_reconciliation_dominates(
                 seeds[source],
                 seeds[other],
-            )
-        ):
-            return outcome(source, progress_recovery=True)
+            ):
+                progress_conflict_reason = (
+                    "seed_conflict_progress_reconciliation_not_dominant"
+                )
+            else:
+                return outcome(source, progress_recovery=True)
+        else:
+            progress_conflict_reason = "seed_conflict_progress"
     return outcome(
         "none",
         conflict_reason=(
@@ -892,7 +911,7 @@ def select_liquidity_seed(
                 else "seed_conflict_reconciliation_cross_checkpoint"
             )
             if kind == "checkpoint" and any(progress_dominates.values())
-            else "seed_conflict_progress"
+            else progress_conflict_reason
         ),
         conflict_detail=(
             liquidity_reconciliation_conflict_detail(

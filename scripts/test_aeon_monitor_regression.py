@@ -26708,14 +26708,34 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             ],
         }
         cases = (
-            ({**earlier, "catchup_live_from_block": 130}, later),
-            ({**earlier, "catchup_live_from_block": True}, later),
-            ({**earlier, "catchup_active": False}, later),
-            (earlier, {**later, "reconciliation": pending}),
-            ({**earlier, "reconciliation": duplicate}, later),
+            (
+                {**earlier, "catchup_live_from_block": 130},
+                later,
+                "seed_conflict_progress_live_boundary_not_ahead",
+            ),
+            (
+                {**earlier, "catchup_live_from_block": True},
+                later,
+                "seed_conflict_progress_live_boundary_invalid",
+            ),
+            (
+                {**earlier, "catchup_active": False},
+                later,
+                "seed_conflict_progress_catchup_inactive",
+            ),
+            (
+                earlier,
+                {**later, "reconciliation": pending},
+                "seed_conflict_progress_reconciliation_not_dominant",
+            ),
+            (
+                {**earlier, "reconciliation": duplicate},
+                later,
+                "seed_conflict_progress_reconciliation_not_dominant",
+            ),
         )
-        for candidate, counterpart in cases:
-            with self.subTest(candidate=candidate):
+        for candidate, counterpart, reason in cases:
+            with self.subTest(reason=reason):
                 selected = fast.select_liquidity_seed(
                     candidate,
                     counterpart,
@@ -26725,8 +26745,39 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 self.assertEqual(selected["source"], "none")
                 self.assertEqual(
                     selected["conflict_reason"],
-                    "seed_conflict_progress",
+                    reason,
                 )
+
+        retry_earlier = {
+            key: copy.deepcopy(value)
+            for key, value in earlier.items()
+            if key
+            not in {
+                "catchup_active",
+                "catchup_live_from_block",
+                "latest_block",
+                "latest_block_hash",
+                "reconciliation",
+            }
+        }
+        retry_earlier.update(
+            {
+                "bootstrap_retry_pending": True,
+                "bootstrap_retry_window_blocks": 20,
+            }
+        )
+        retry_later = {
+            **retry_earlier,
+            "scope_coverage_from_block": 100,
+            "bootstrap_retry_window_blocks": 10,
+        }
+        selected = fast.select_liquidity_seed(retry_earlier, retry_later)
+        self.assertTrue(selected["conflict"])
+        self.assertEqual(selected["source"], "none")
+        self.assertEqual(
+            selected["conflict_reason"],
+            "seed_conflict_progress_not_checkpoint",
+        )
 
     def test_fast_liquidity_checkpoint_reconciliation_is_monotonic(
         self,
@@ -27140,7 +27191,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                     "latest_block": 130,
                     "latest_block_hash": self._hash("b"),
                 },
-                "seed_conflict_progress",
+                "seed_conflict_progress_live_boundary_invalid",
             ),
         )
         for left, right, reason in cases:
