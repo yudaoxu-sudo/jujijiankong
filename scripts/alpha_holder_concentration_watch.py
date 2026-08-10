@@ -8892,6 +8892,13 @@ def alert_keys(snapshot: dict[str, Any]) -> list[str]:
     return sorted(set(keys))
 
 
+def checkpoint_commit_allowed(snapshot: dict[str, Any]) -> bool:
+    return not (
+        os.environ.get("DISABLE_TELEGRAM", "0") == "1"
+        and bool(alert_keys(snapshot))
+    )
+
+
 def send_telegram_batch(
     text: str,
     batch_keys: list[str],
@@ -9397,6 +9404,7 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- generated_at: `{snapshot.get('generated_at')}`",
         f"- project_count: `{snapshot.get('project_count')}`",
         f"- alert_count: `{snapshot.get('alert_count')}`",
+        f"- state_commit_status: `{snapshot.get('state_commit_status', '')}`",
         "",
         "| Symbol | Chain | Contract | 排除托管后前十 | 窗口重建前十 | 交易所/托管/池子 | 外部全量Top10 | 动作 | 数据覆盖 | Logs |",
         "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: |",
@@ -9485,10 +9493,24 @@ def main() -> int:
     next_state = snapshot.pop("_next_state", {"tokens": {}})
     atomic_write_json(LATEST_PATH, snapshot)
     REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
-    if not maybe_send_telegram(snapshot):
+    delivered = maybe_send_telegram(snapshot)
+    commit_state = delivered and checkpoint_commit_allowed(snapshot)
+    snapshot["state_commit_status"] = (
+        "committed"
+        if commit_state
+        else (
+            "retained_no_send_alerts"
+            if delivered
+            else "retained_delivery_failure"
+        )
+    )
+    atomic_write_json(LATEST_PATH, snapshot)
+    REPORT_PATH.write_text(render(snapshot), encoding="utf-8")
+    if not delivered:
         print("holder Telegram delivery unavailable; checkpoint retained", file=sys.stderr)
         return 1
-    atomic_write_json(STATE_PATH, next_state)
+    if commit_state:
+        atomic_write_json(STATE_PATH, next_state)
     print(LATEST_PATH)
     print(REPORT_PATH)
     print(f"holder_projects={snapshot['project_count']} alerts={snapshot['alert_count']}")

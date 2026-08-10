@@ -1382,6 +1382,7 @@ def render(snapshot: dict[str, Any]) -> str:
         f"- complete: `{snapshot.get('complete_count', 0)}`",
         f"- alert_ready: `{snapshot.get('alert_ready_count', 0)}`",
         f"- alerts: `{snapshot.get('alert_count', 0)}`",
+        f"- state_commit_status: `{snapshot.get('state_commit_status', '')}`",
         "",
     ]
     for issue in snapshot.get("issues", []):
@@ -1426,7 +1427,17 @@ def run_once() -> int:
         seen_path=holder.SEEN_PATH,
         last_push_path=LAST_PUSH_PATH,
     )
+    commit_state = delivered and holder.checkpoint_commit_allowed(snapshot)
     snapshot["delivery_status"] = "complete" if delivered else "failed"
+    snapshot["state_commit_status"] = (
+        "committed"
+        if commit_state
+        else (
+            "retained_no_send_alerts"
+            if delivered
+            else "retained_delivery_failure"
+        )
+    )
     if not delivered:
         snapshot["issues"].append(
             {
@@ -1445,7 +1456,8 @@ def run_once() -> int:
             file=sys.stderr,
         )
         return 1
-    holder.atomic_write_json(STATE_PATH, next_state)
+    if commit_state:
+        holder.atomic_write_json(STATE_PATH, next_state)
     print(LATEST_PATH)
     print(
         "liquidity_projects="

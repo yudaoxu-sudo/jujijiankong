@@ -19773,6 +19773,13 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             ):
                 self.assertEqual(holder.main(), 1)
             self.assertFalse(state_path.exists())
+            failed_latest = json.loads(
+                (out_dir / "latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                failed_latest["state_commit_status"],
+                "retained_delivery_failure",
+            )
 
             with (
                 mock.patch.object(holder, "OUT_DIR", out_dir),
@@ -19789,12 +19796,90 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "maybe_send_telegram",
                     return_value=True,
                 ),
+                mock.patch.object(holder, "alert_keys", return_value=[]),
+                mock.patch.dict(os.environ, {"DISABLE_TELEGRAM": "1"}),
             ):
                 self.assertEqual(holder.main(), 0)
             self.assertEqual(
                 json.loads(state_path.read_text(encoding="utf-8")),
                 payload["_next_state"],
             )
+            latest = json.loads(
+                (out_dir / "latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(latest["state_commit_status"], "committed")
+
+            retained_state = {"tokens": {"retained": {"latest_block": 99}}}
+            state_path.write_text(
+                json.dumps(retained_state),
+                encoding="utf-8",
+            )
+            retained_mtime = state_path.stat().st_mtime_ns
+            with (
+                mock.patch.object(holder, "OUT_DIR", out_dir),
+                mock.patch.object(holder, "LATEST_PATH", out_dir / "latest.json"),
+                mock.patch.object(holder, "REPORT_PATH", out_dir / "latest.md"),
+                mock.patch.object(holder, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "build_snapshot",
+                    return_value=dict(payload),
+                ),
+                mock.patch.object(
+                    holder,
+                    "maybe_send_telegram",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    holder,
+                    "alert_keys",
+                    return_value=["fixture-alert"],
+                ),
+                mock.patch.dict(os.environ, {"DISABLE_TELEGRAM": "1"}),
+            ):
+                self.assertEqual(holder.main(), 0)
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                retained_state,
+            )
+            self.assertEqual(state_path.stat().st_mtime_ns, retained_mtime)
+            latest = json.loads(
+                (out_dir / "latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                latest["state_commit_status"],
+                "retained_no_send_alerts",
+            )
+            self.assertIn(
+                "state_commit_status: `retained_no_send_alerts`",
+                (out_dir / "latest.md").read_text(encoding="utf-8"),
+            )
+
+            state_path.unlink()
+            with (
+                mock.patch.object(holder, "OUT_DIR", out_dir),
+                mock.patch.object(holder, "LATEST_PATH", out_dir / "latest.json"),
+                mock.patch.object(holder, "REPORT_PATH", out_dir / "latest.md"),
+                mock.patch.object(holder, "STATE_PATH", state_path),
+                mock.patch.object(
+                    holder,
+                    "build_snapshot",
+                    return_value=dict(payload),
+                ),
+                mock.patch.object(
+                    holder,
+                    "maybe_send_telegram",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    holder,
+                    "alert_keys",
+                    return_value=["fixture-alert"],
+                ),
+                mock.patch.dict(os.environ, {"DISABLE_TELEGRAM": "1"}),
+            ):
+                self.assertEqual(holder.main(), 0)
+            self.assertFalse(state_path.exists())
 
     def test_health_matches_the_target_project_contract_only(self) -> None:
         from scripts.runtime_health_watch import (
@@ -27882,6 +27967,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             latest = json.loads(latest_path.read_text(encoding="utf-8"))
             self.assertFalse(state_path.exists())
             self.assertEqual(latest["delivery_status"], "failed")
+            self.assertEqual(
+                latest["state_commit_status"],
+                "retained_delivery_failure",
+            )
             self.assertEqual(latest["status"], "unhealthy")
             self.assertIn("unhealthy", health.liquidity_output_issue(latest_path))
             failures = health.read_failures(failure_path)
@@ -27973,7 +28062,117 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             retry_seed,
         )
         self.assertEqual(latest["delivery_status"], "complete")
+        self.assertEqual(latest["state_commit_status"], "committed")
         self.assertEqual(latest["status"], "unhealthy")
+
+    def test_fast_liquidity_no_send_alert_retains_entire_checkpoint(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        old_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {
+                "bsc:old": {"liquidity": {"latest_block": 100}},
+                "bsc:other": {"liquidity": {"latest_block": 200}},
+            },
+        }
+        next_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {
+                "bsc:old": {"liquidity": {"latest_block": 110}},
+                "bsc:other": {"liquidity": {"latest_block": 210}},
+            },
+        }
+        snapshot = {
+            "schema": fast.SNAPSHOT_SCHEMA,
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "status": "healthy",
+            "issue_count": 0,
+            "issues": [],
+            "project_count": 2,
+            "expected_count": 2,
+            "processed_count": 2,
+            "dropped_count": 0,
+            "expected_identity_hash": "fixture",
+            "processed_identity_hash": "fixture",
+            "required_count": 2,
+            "complete_count": 2,
+            "alert_ready_count": 1,
+            "alert_count": 1,
+            "projects": [{}, {}],
+            "_next_state": next_state,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            state_path = temp / "state.json"
+            latest_path = temp / "latest.json"
+            state_path.write_text(json.dumps(old_state), encoding="utf-8")
+            old_mtime = state_path.stat().st_mtime_ns
+
+            def run(status: str) -> int:
+                payload = copy.deepcopy(snapshot)
+                payload["status"] = status
+                if status == "unhealthy":
+                    payload["issue_count"] = 1
+                    payload["issues"] = [
+                        {
+                            "kind": "liquidity_coverage_gap",
+                            "name": "TEST",
+                            "detail": "coverage_gap",
+                        }
+                    ]
+                with (
+                    mock.patch.object(fast, "OUT_DIR", temp),
+                    mock.patch.object(fast, "LATEST_PATH", latest_path),
+                    mock.patch.object(fast, "REPORT_PATH", temp / "latest.md"),
+                    mock.patch.object(fast, "STATE_PATH", state_path),
+                    mock.patch.object(
+                        fast,
+                        "build_snapshot",
+                        return_value=payload,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "maybe_send_telegram",
+                        return_value=True,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "alert_keys",
+                        return_value=["fixture-alert"],
+                    ),
+                    mock.patch.dict(os.environ, {"DISABLE_TELEGRAM": "1"}),
+                ):
+                    return fast.run_once()
+
+            self.assertEqual(run("healthy"), 0)
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                old_state,
+            )
+            self.assertEqual(state_path.stat().st_mtime_ns, old_mtime)
+            latest = json.loads(latest_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                latest["state_commit_status"],
+                "retained_no_send_alerts",
+            )
+            self.assertIn(
+                "state_commit_status: `retained_no_send_alerts`",
+                (temp / "latest.md").read_text(encoding="utf-8"),
+            )
+
+            self.assertEqual(run("unhealthy"), 1)
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                old_state,
+            )
+            self.assertEqual(state_path.stat().st_mtime_ns, old_mtime)
+
+            state_path.unlink()
+            self.assertEqual(run("healthy"), 0)
+            self.assertFalse(state_path.exists())
 
     def test_holder_and_fast_processes_share_locked_seen_ledger(self) -> None:
         snapshot = {"projects": [{}]}
