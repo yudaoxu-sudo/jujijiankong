@@ -571,6 +571,44 @@ def transfer_log(log: dict[str, Any], decimals: int) -> dict[str, Any]:
     }
 
 
+def strict_complete_v3_cycle_scope(
+    scope: Any,
+    configuration_hash: str,
+    latest: int,
+    expected_query_count: int,
+) -> bool:
+    zero_count_fields = (
+        "provider_error_count",
+        "response_validation_error_count",
+        "identity_mismatch_count",
+        "snapshot_error_count",
+        "validation_error_count",
+        "scope_conflict_count",
+    )
+    return bool(
+        isinstance(scope, dict)
+        and scope.get("schema") == "opening_v3_factory_matrix.v2"
+        and scope.get("status") == "complete_tracked_factory_matrix"
+        and scope.get("configuration_hash") == configuration_hash
+        and type(scope.get("as_of_block")) is int
+        and scope.get("as_of_block") == latest
+        and strict_block_hash(scope.get("as_of_block_hash"))
+        and scope.get("snapshot_coherent") is True
+        and type(scope.get("expected_query_count")) is int
+        and scope.get("expected_query_count") == expected_query_count
+        and type(scope.get("attempted_query_count")) is int
+        and scope.get("attempted_query_count") == expected_query_count
+        and all(
+            type(scope.get(field)) is int
+            and scope.get(field) == 0
+            for field in zero_count_fields
+        )
+        and scope.get("deadline_exceeded") is False
+        and scope.get("complete") is True
+        and isinstance(scope.get("pools"), list)
+    )
+
+
 def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any]:
     cached = event.get("opening_v3_pool_scope") or {}
     last_verified_scope = (
@@ -666,6 +704,45 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         if opening_block > 0
         else latest
     )
+    last_verified_pool_identities = {
+        (
+            norm(row.get("address")),
+            norm(row.get("factory")),
+            norm(row.get("token0")),
+            norm(row.get("token1")),
+            int(row.get("fee") or 0),
+        )
+        for row in (
+            last_verified_scope.get("pools", [])
+            if last_verified_scope.get("schema")
+            == "opening_v3_factory_matrix.v2"
+            and isinstance(last_verified_scope.get("pools"), list)
+            else []
+        )
+        if isinstance(row, dict)
+    }
+    last_verified_pool_identity_fingerprint = hashlib.sha256(
+        json.dumps(
+            sorted(last_verified_pool_identities),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    cycle_cache = event.get("_opening_snapshot_v3_scope_cache")
+    cycle_cache_key = (
+        "opening_v3_factory_matrix.v2",
+        chain,
+        token,
+        configuration_hash,
+        latest,
+        last_verified_pool_identity_fingerprint,
+    )
+    cycle_cached = (
+        cycle_cache.get(cycle_cache_key)
+        if isinstance(cycle_cache, dict)
+        else None
+    )
+    cycle_cache_revalidation_failed = False
     timeout = int(os.environ.get("ALPHA_OPENING_LIQUIDITY_RPC_TIMEOUT", "3"))
     block_tag = hex(latest)
     budget_seconds = int(
@@ -688,6 +765,29 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             raise OpeningTraceDeadlineExceeded(
                 "V3 factory matrix deadline exceeded"
             ) from None
+
+    if strict_complete_v3_cycle_scope(
+        cycle_cached,
+        configuration_hash,
+        latest,
+        len(fee_rows),
+    ):
+        cycle_cache_revalidation_failed = True
+        try:
+            canonical = matrix_rpc(
+                "eth_getBlockByNumber",
+                [block_tag, False],
+            )
+            if (
+                isinstance(canonical, dict)
+                and strict_block_hash(canonical.get("hash"))
+                == norm(cycle_cached.get("as_of_block_hash"))
+            ):
+                reused = copy.deepcopy(cycle_cached)
+                reused["required_as_of_block"] = required_as_of_block
+                return reused
+        except Exception:
+            pass
 
     cached_as_of = int(cached.get("as_of_block") or 0)
     try:
@@ -723,7 +823,8 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         )
     )
     if (
-        cached.get("schema") == "opening_v3_factory_matrix.v2"
+        not cycle_cache_revalidation_failed
+        and cached.get("schema") == "opening_v3_factory_matrix.v2"
         and cached.get("configuration_hash") == configuration_hash
         and type(cached.get("expected_query_count")) is int
         and cached.get("expected_query_count") == len(fee_rows)
@@ -903,23 +1004,6 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             provider_errors += 1
     if not snapshot_coherent:
         pools.clear()
-    cached_identities = {
-        (
-            norm(row.get("address")),
-            norm(row.get("factory")),
-            norm(row.get("token0")),
-            norm(row.get("token1")),
-            int(row.get("fee") or 0),
-        )
-        for row in (
-            last_verified_scope.get("pools", [])
-            if last_verified_scope.get("schema")
-            == "opening_v3_factory_matrix.v2"
-            and isinstance(last_verified_scope.get("pools"), list)
-            else []
-        )
-        if isinstance(row, dict)
-    }
     current_identities = {
         (
             norm(row.get("address")),
@@ -931,7 +1015,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         for row in pools.values()
     }
     scope_conflict_count = (
-        len(cached_identities - current_identities)
+        len(last_verified_pool_identities - current_identities)
         if snapshot_coherent
         and provider_errors == 0
         and response_validation_errors == 0
@@ -995,6 +1079,16 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 if key != "last_verified_pool_scope"
             }
         )
+    if (
+        isinstance(cycle_cache, dict)
+        and strict_complete_v3_cycle_scope(
+            result,
+            configuration_hash,
+            latest,
+            len(fee_rows),
+        )
+    ):
+        cycle_cache[cycle_cache_key] = copy.deepcopy(result)
     return result
 
 
@@ -6739,8 +6833,12 @@ def build_snapshot() -> dict[str, Any]:
     except OpeningTraceDeadlineExceeded:
         return deadline_snapshot_from_previous(previous_snapshot)
     snapshot_log_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    snapshot_v3_scope_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     for event in current_events:
         event["_opening_snapshot_log_cache"] = snapshot_log_cache
+        event["_opening_snapshot_v3_scope_cache"] = (
+            snapshot_v3_scope_cache
+        )
     current_identity_counts: dict[
         tuple[str, str, int, str, str, str],
         int,
@@ -7036,6 +7134,7 @@ def build_snapshot() -> dict[str, Any]:
                         f"opening_scope_{type(exc).__name__}"
                     )
         event.pop("_opening_snapshot_log_cache", None)
+        event.pop("_opening_snapshot_v3_scope_cache", None)
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))

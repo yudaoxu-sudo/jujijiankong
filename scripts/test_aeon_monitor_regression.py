@@ -4065,6 +4065,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "opening_block": 100 + index,
                 "start_time_utc": f"2026-07-30T0{index}:00:00+00:00",
                 "pool_id": f"pool-{index}",
+                "_opening_snapshot_v3_scope_cache": {"stale": {}},
             }
             for index, (symbol, digit) in enumerate(
                 (("FIRST", "1"), ("SECOND", "2")),
@@ -4134,6 +4135,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(
             all(
                 "_opening_snapshot_log_cache" not in event
+                for event in snapshot["events"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "_opening_snapshot_v3_scope_cache" not in event
                 for event in snapshot["events"]
             )
         )
@@ -7319,6 +7326,380 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertTrue(all(row["complete"] for row in rejected_caches))
         self.assertEqual(get_pool_calls, 1 + len(rejected_caches))
+
+    def test_v3_factory_matrix_cycle_cache_reuses_strict_complete(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        labels = {
+            quote: {
+                "class": "quote_token",
+                "symbol": "QUOTE",
+                "decimals": 18,
+            },
+            factory: {
+                "class": "v3_factory",
+                "protocol": "test_v3",
+                "fee_tiers": [100],
+            },
+        }
+        cycle_cache: dict[object, object] = {}
+        get_pool_calls = 0
+        block_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls, block_calls
+            if method == "eth_getBlockByNumber":
+                block_calls += 1
+                return {"hash": "0x" + "a" * 64}
+            self.assertEqual(method, "eth_call")
+            get_pool_calls += 1
+            return "0x" + "0" * 64
+
+        def event(opening_block: int) -> dict[str, object]:
+            return {
+                "chain": "bsc",
+                "opening_block": opening_block,
+                "token": {"address": token},
+                "quote": {"address": quote},
+                "_opening_snapshot_v3_scope_cache": cycle_cache,
+            }
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "50"},
+            ),
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            mock.patch.object(opening, "TRACE_DEADLINE_AT", None),
+        ):
+            first = opening.supported_v3_pool_scope(event(100), 200)
+            second = opening.supported_v3_pool_scope(event(180), 200)
+            second["pools"].append({"address": "mutated"})
+            third = opening.supported_v3_pool_scope(event(150), 200)
+
+        self.assertTrue(first["complete"])
+        self.assertTrue(second["complete"])
+        self.assertTrue(third["complete"])
+        self.assertEqual(first["required_as_of_block"], 149)
+        self.assertEqual(second["required_as_of_block"], 200)
+        self.assertEqual(third["required_as_of_block"], 199)
+        self.assertEqual(first["pools"], [])
+        self.assertEqual(third["pools"], [])
+        self.assertEqual(second["pools"], [{"address": "mutated"}])
+        self.assertEqual(get_pool_calls, 1)
+        self.assertEqual(block_calls, 4)
+        self.assertEqual(len(cycle_cache), 1)
+
+    def test_v3_factory_matrix_cycle_cache_revalidates_block_hash(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "fee_tiers": [100],
+            },
+        }
+        cycle_cache: dict[object, object] = {}
+        block_responses: list[object] = []
+        get_pool_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls
+            if method == "eth_getBlockByNumber":
+                response = (
+                    block_responses.pop(0)
+                    if block_responses
+                    else "0x" + "a" * 64
+                )
+                if isinstance(response, Exception):
+                    raise response
+                return {"hash": response}
+            self.assertEqual(method, "eth_call")
+            get_pool_calls += 1
+            return "0x" + "0" * 64
+
+        def event(
+            previous_scope: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            row: dict[str, object] = {
+                "chain": "bsc",
+                "opening_block": 100,
+                "token": {"address": token},
+                "quote": {"address": quote},
+                "_opening_snapshot_v3_scope_cache": cycle_cache,
+            }
+            if previous_scope is not None:
+                row["opening_v3_pool_scope"] = previous_scope
+            return row
+
+        block_b = "0x" + "b" * 64
+        block_c = "0x" + "c" * 64
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            mock.patch.object(opening, "TRACE_DEADLINE_AT", None),
+        ):
+            first = opening.supported_v3_pool_scope(event(), 200)
+            block_responses.extend([block_b, block_b, block_b])
+            reorg_refreshed = opening.supported_v3_pool_scope(
+                event(first),
+                200,
+            )
+            block_responses.extend(
+                [RuntimeError("provider unavailable"), block_c, block_c]
+            )
+            provider_refreshed = opening.supported_v3_pool_scope(
+                event(reorg_refreshed),
+                200,
+            )
+
+        self.assertTrue(first["complete"])
+        self.assertEqual(
+            reorg_refreshed["as_of_block_hash"],
+            block_b,
+        )
+        self.assertEqual(
+            provider_refreshed["as_of_block_hash"],
+            block_c,
+        )
+        self.assertTrue(reorg_refreshed["complete"])
+        self.assertTrue(provider_refreshed["complete"])
+        self.assertEqual(get_pool_calls, 3)
+        self.assertEqual(block_responses, [])
+
+    def test_v3_factory_matrix_cycle_cache_skips_partial_and_partitions_key(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "protocol": "test_v3",
+                "fee_tiers": [100],
+            },
+        }
+        cycle_cache: dict[object, object] = {}
+        get_pool_calls = 0
+        fail_next = {"value": True}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            self.assertEqual(method, "eth_call")
+            get_pool_calls += 1
+            if fail_next["value"]:
+                fail_next["value"] = False
+                raise RuntimeError("provider unavailable")
+            return "0x" + "0" * 64
+
+        def event(
+            *,
+            previous_scope: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            row: dict[str, object] = {
+                "chain": "bsc",
+                "opening_block": 100,
+                "token": {"address": token},
+                "quote": {"address": quote},
+                "_opening_snapshot_v3_scope_cache": cycle_cache,
+            }
+            if previous_scope is not None:
+                row["opening_v3_pool_scope"] = previous_scope
+            return row
+
+        historical_scope = {
+            "schema": "opening_v3_factory_matrix.v2",
+            "status": "complete_tracked_factory_matrix",
+            "complete": True,
+            "configuration_hash": "different",
+            "pools": [
+                {
+                    "address": "0x" + "4" * 40,
+                    "factory": factory,
+                    "token0": token,
+                    "token1": quote,
+                    "fee": 100,
+                }
+            ],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            mock.patch.object(opening, "TRACE_DEADLINE_AT", None),
+        ):
+            with mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "50"},
+            ):
+                partial = opening.supported_v3_pool_scope(event(), 200)
+                recovered = opening.supported_v3_pool_scope(event(), 200)
+                reused = opening.supported_v3_pool_scope(event(), 200)
+                separated_history = opening.supported_v3_pool_scope(
+                    event(previous_scope=historical_scope),
+                    200,
+                )
+                separated_latest = opening.supported_v3_pool_scope(
+                    event(),
+                    201,
+                )
+            with mock.patch.dict(
+                os.environ,
+                {"ALPHA_OPENING_LIQUIDITY_TRACE_BLOCKS": "51"},
+            ):
+                separated_config = opening.supported_v3_pool_scope(
+                    event(),
+                    200,
+                )
+
+        self.assertFalse(partial["complete"])
+        self.assertEqual(partial["provider_error_count"], 1)
+        self.assertTrue(recovered["complete"])
+        self.assertTrue(reused["complete"])
+        self.assertEqual(
+            separated_history["status"],
+            "factory_matrix_scope_conflict",
+        )
+        self.assertTrue(separated_latest["complete"])
+        self.assertTrue(separated_config["complete"])
+        self.assertEqual(get_pool_calls, 5)
+        self.assertEqual(len(cycle_cache), 3)
+
+    def test_v3_factory_matrix_cycle_cache_rejects_malformed_entries(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        labels = {
+            quote: {"class": "quote_token"},
+            factory: {
+                "class": "v3_factory",
+                "fee_tiers": [100],
+            },
+        }
+        get_pool_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            get_pool_calls += 1
+            return "0x" + "0" * 64
+
+        def event(cache: dict[object, object]) -> dict[str, object]:
+            return {
+                "chain": "bsc",
+                "opening_block": 100,
+                "token": {"address": token},
+                "quote": {"address": quote},
+                "_opening_snapshot_v3_scope_cache": cache,
+            }
+
+        cycle_cache: dict[object, object] = {}
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value=labels,
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            mock.patch.object(opening, "TRACE_DEADLINE_AT", None),
+        ):
+            first = opening.supported_v3_pool_scope(
+                event(cycle_cache),
+                200,
+            )
+            cache_key = next(iter(cycle_cache))
+            valid = copy.deepcopy(cycle_cache[cache_key])
+            invalid_fields = {
+                "schema": "wrong",
+                "status": "factory_matrix_partial",
+                "configuration_hash": "wrong",
+                "as_of_block": 199,
+                "as_of_block_hash": "0x0",
+                "snapshot_coherent": False,
+                "expected_query_count": True,
+                "attempted_query_count": 0,
+                "provider_error_count": 1,
+                "response_validation_error_count": 1,
+                "identity_mismatch_count": 1,
+                "snapshot_error_count": 1,
+                "validation_error_count": 1,
+                "scope_conflict_count": 1,
+                "deadline_exceeded": True,
+                "complete": False,
+                "pools": {},
+            }
+            for field, value in invalid_fields.items():
+                with self.subTest(field=field):
+                    forged = copy.deepcopy(valid)
+                    forged[field] = value
+                    forged_cache = {cache_key: forged}
+                    before = get_pool_calls
+                    refreshed = opening.supported_v3_pool_scope(
+                        event(forged_cache),
+                        200,
+                    )
+                    self.assertEqual(get_pool_calls, before + 1)
+                    self.assertTrue(refreshed["complete"])
+                    self.assertEqual(
+                        forged_cache[cache_key][field],
+                        first[field],
+                    )
+
+        self.assertTrue(first["complete"])
 
     def test_v3_factory_matrix_refreshes_stale_complete_scope(self) -> None:
         import scripts.alpha_opening_block_watch as opening
