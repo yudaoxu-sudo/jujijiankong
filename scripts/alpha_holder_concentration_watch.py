@@ -3037,13 +3037,34 @@ def bounded_retention_liquidity_logs(
         if complete_selected
         else 0
     )
-    retry_window_blocks = (
-        max(
-            min_window,
-            (selected_to - from_block + 1) // 2,
+    final_window_blocks = max(0, selected_to - from_block + 1)
+    deadline_exhausted = bool(
+        not complete_selected
+        and metadata.get("deadline_exceeded") is True
+    )
+    retryable_exhausted = bool(
+        not complete_selected
+        and not deadline_exhausted
+        and (
+            (
+                bool(errors)
+                and metadata.get("range_shrink_retryable") is True
+            )
+            or (not errors and truncated)
         )
-        if metadata.get("deadline_exceeded") is True
-        and selected_to >= from_block
+    )
+    retryable_min_window_exhausted = bool(
+        retryable_exhausted
+        and 0 < final_window_blocks <= min_window
+    )
+    retry_window_blocks = (
+        (
+            final_window_blocks
+            if final_window_blocks <= min_window
+            else max(min_window, final_window_blocks // 2)
+        )
+        if (deadline_exhausted or retryable_exhausted)
+        and final_window_blocks > 0
         else 0
     )
     metadata.update(
@@ -3062,6 +3083,10 @@ def bounded_retention_liquidity_logs(
                 else 0
             ),
             "retry_window_blocks": retry_window_blocks,
+            "retryable_exhausted": retryable_exhausted,
+            "retryable_min_window_exhausted": (
+                retryable_min_window_exhausted
+            ),
             "deadline_exceeded": bool(
                 metadata.get("deadline_exceeded") is True
             ),
@@ -6259,6 +6284,8 @@ def build_liquidity_retention(
                 "successful_window_blocks",
                 "next_window_blocks",
                 "retry_window_blocks",
+                "retryable_exhausted",
+                "retryable_min_window_exhausted",
                 "deadline_exceeded",
                 "raw_truncation_shrink_count",
                 "rpc_error_shrink_count",
@@ -6956,9 +6983,16 @@ def build_token_liquidity_retention(
                 next_state["next_catchup_window_blocks"] = (
                     next_window_blocks
                 )
-    elif (flow.get("incremental_catchup") or {}).get(
-        "deadline_exceeded"
-    ) is True:
+    elif (
+        (flow.get("incremental_catchup") or {}).get(
+            "deadline_exceeded"
+        )
+        is True
+        or (flow.get("incremental_catchup") or {}).get(
+            "retryable_exhausted"
+        )
+        is True
+    ):
         retry_window_blocks = int(
             (flow.get("incremental_catchup") or {}).get(
                 "retry_window_blocks"

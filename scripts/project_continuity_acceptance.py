@@ -110,6 +110,60 @@ REMOTE_OPENING_ERROR_CODES = frozenset(
         "opening_scope_value_error",
     }
 )
+REMOTE_RETENTION_SEED_STATUSES = frozenset(
+    {"missing", "valid", "invalid"}
+)
+REMOTE_RETENTION_SEED_SOURCES = frozenset(
+    {"none", "standalone", "holder", "invalid"}
+)
+REMOTE_RETENTION_STATE_KINDS = frozenset(
+    {"missing", "bootstrap_retry", "checkpoint", "invalid"}
+)
+REMOTE_RETENTION_PROVIDER_STATUSES = frozenset(
+    {
+        "not_attempted",
+        "complete",
+        "deadline",
+        "rpc_coverage_failed",
+        "response_invalid",
+        "truncated",
+        "unknown",
+    }
+)
+REMOTE_RETENTION_COVERAGE_STATUSES = frozenset(
+    {
+        "complete",
+        "selected_window_catchup",
+        "bootstrap_retry_pending",
+        "checkpoint_retry_pending",
+        "incomplete_without_retry",
+        "invalid",
+        "unknown",
+    }
+)
+REMOTE_RETENTION_REASON_CODES = frozenset(
+    {
+        "none",
+        "deadline_exceeded",
+        "provider_coverage_failed",
+        "response_invalid",
+        "truncated",
+        "selected_window_incomplete",
+        "requested_window_incomplete",
+        "query_scope_incomplete",
+        "checkpoint_unavailable",
+        "coverage_gap",
+        "invalid_runtime_metadata",
+        "runtime_dependency_failed",
+        "runtime_io_failed",
+        "unexpected_runtime_error",
+        "seed_conflict",
+        "retryable_min_window_exhausted",
+        "pool_scope_empty",
+        "operator_attribution_failed",
+        "unknown",
+    }
+)
 REMOTE_REPLAY_ISSUE_CODES = frozenset(
     {
         "canonical_block_identity_mismatch",
@@ -315,6 +369,66 @@ safe_output_codes = liquidity_final_classifications | {
     "opening_scope_value_error",
     "opening_scope_error",
     "opening_status_invalid",
+}
+retention_diagnostic_keys = {
+    "standalone_seed_status",
+    "holder_seed_status",
+    "scope_seed_source",
+    "input_state_kind",
+    "next_state_kind",
+    "input_retry_window_blocks",
+    "next_retry_window_blocks",
+    "deadline_exceeded",
+    "selected_window_complete",
+    "requested_window_complete",
+    "query_scope_complete",
+    "provider_status",
+    "coverage_status",
+    "reason_code",
+}
+retention_seed_statuses = {"missing", "valid", "invalid"}
+retention_seed_sources = {"none", "standalone", "holder", "invalid"}
+retention_state_kinds = {
+    "missing", "bootstrap_retry", "checkpoint", "invalid"
+}
+retention_provider_statuses = {
+    "not_attempted",
+    "complete",
+    "deadline",
+    "rpc_coverage_failed",
+    "response_invalid",
+    "truncated",
+    "unknown",
+}
+retention_coverage_statuses = {
+    "complete",
+    "selected_window_catchup",
+    "bootstrap_retry_pending",
+    "checkpoint_retry_pending",
+    "incomplete_without_retry",
+    "invalid",
+    "unknown",
+}
+retention_reason_codes = {
+    "none",
+    "deadline_exceeded",
+    "provider_coverage_failed",
+    "response_invalid",
+    "truncated",
+    "selected_window_incomplete",
+    "requested_window_incomplete",
+    "query_scope_incomplete",
+    "checkpoint_unavailable",
+    "coverage_gap",
+    "invalid_runtime_metadata",
+    "runtime_dependency_failed",
+    "runtime_io_failed",
+    "unexpected_runtime_error",
+    "seed_conflict",
+    "retryable_min_window_exhausted",
+    "pool_scope_empty",
+    "operator_attribution_failed",
+    "unknown",
 }
 
 def read_json(path):
@@ -1177,6 +1291,131 @@ def runtime_issue_pool_scope(row):
         "v4_complete": safe_bool(v4.get("complete")),
     }
 
+def runtime_issue_retention_summary(row):
+    empty = {
+        "retention_project_match_count": 0,
+        "retention_standalone_seed_status": None,
+        "retention_holder_seed_status": None,
+        "retention_scope_seed_source": None,
+        "retention_input_state_kind": None,
+        "retention_next_state_kind": None,
+        "retention_input_retry_window_blocks": None,
+        "retention_next_retry_window_blocks": None,
+        "retention_deadline_exceeded": None,
+        "retention_selected_window_complete": None,
+        "retention_requested_window_complete": None,
+        "retention_query_scope_complete": None,
+        "retention_provider_status": None,
+        "retention_coverage_status": None,
+        "retention_reason_code": None,
+    }
+    if runtime_issue_scope(row) != "liquidity_retention":
+        return empty
+    parts = str(row.get("fingerprint") or "").split(":")
+    chain = parts[1].lower() if len(parts) > 2 else ""
+    contract = parts[2].lower() if len(parts) > 2 else ""
+    if (
+        re.fullmatch(r"[a-z0-9_-]{1,32}", chain) is None
+        or re.fullmatch(r"0x[0-9a-f]{40}", contract) is None
+    ):
+        return empty
+    projects = liquidity.get("projects")
+    matched = [
+        project
+        for project in (projects if isinstance(projects, list) else [])
+        if isinstance(project, dict)
+        and str(project.get("chain") or "").lower() == chain
+        and str(project.get("address") or "").lower() == contract
+    ]
+    result = {**empty, "retention_project_match_count": len(matched)}
+    if len(matched) != 1:
+        return result
+    diagnostic = matched[0].get("runtime_diagnostic")
+    shape_valid = bool(
+        isinstance(diagnostic, dict)
+        and set(diagnostic) == retention_diagnostic_keys
+    )
+    if not shape_valid:
+        return {
+            **result,
+            "retention_standalone_seed_status": "invalid",
+            "retention_holder_seed_status": "invalid",
+            "retention_scope_seed_source": "invalid",
+            "retention_input_state_kind": "invalid",
+            "retention_next_state_kind": "invalid",
+            "retention_provider_status": "unknown",
+            "retention_coverage_status": "unknown",
+            "retention_reason_code": "unknown",
+        }
+
+    def fixed_enum(value, allowed, fallback):
+        return value if isinstance(value, str) and value in allowed else fallback
+
+    def nonnegative_int(value):
+        return value if type(value) is int and value >= 0 else None
+
+    return {
+        **result,
+        "retention_standalone_seed_status": fixed_enum(
+            diagnostic.get("standalone_seed_status"),
+            retention_seed_statuses,
+            "invalid",
+        ),
+        "retention_holder_seed_status": fixed_enum(
+            diagnostic.get("holder_seed_status"),
+            retention_seed_statuses,
+            "invalid",
+        ),
+        "retention_scope_seed_source": fixed_enum(
+            diagnostic.get("scope_seed_source"),
+            retention_seed_sources,
+            "invalid",
+        ),
+        "retention_input_state_kind": fixed_enum(
+            diagnostic.get("input_state_kind"),
+            retention_state_kinds,
+            "invalid",
+        ),
+        "retention_next_state_kind": fixed_enum(
+            diagnostic.get("next_state_kind"),
+            retention_state_kinds,
+            "invalid",
+        ),
+        "retention_input_retry_window_blocks": nonnegative_int(
+            diagnostic.get("input_retry_window_blocks")
+        ),
+        "retention_next_retry_window_blocks": nonnegative_int(
+            diagnostic.get("next_retry_window_blocks")
+        ),
+        "retention_deadline_exceeded": safe_bool(
+            diagnostic.get("deadline_exceeded")
+        ),
+        "retention_selected_window_complete": safe_bool(
+            diagnostic.get("selected_window_complete")
+        ),
+        "retention_requested_window_complete": safe_bool(
+            diagnostic.get("requested_window_complete")
+        ),
+        "retention_query_scope_complete": safe_bool(
+            diagnostic.get("query_scope_complete")
+        ),
+        "retention_provider_status": fixed_enum(
+            diagnostic.get("provider_status"),
+            retention_provider_statuses,
+            "unknown",
+        ),
+        "retention_coverage_status": fixed_enum(
+            diagnostic.get("coverage_status"),
+            retention_coverage_statuses,
+            "unknown",
+        ),
+        "retention_reason_code": fixed_enum(
+            diagnostic.get("reason_code"),
+            retention_reason_codes,
+            "unknown",
+        ),
+    }
+
 runtime_issue_summaries = [
     {
         "kind": safe_code(row.get("kind") or row.get("code")),
@@ -1191,6 +1430,7 @@ runtime_issue_summaries = [
         "error_code": runtime_issue_error_code(row),
         "contract_hash": runtime_issue_contract_hash(row),
         **runtime_issue_pool_scope(row),
+        **runtime_issue_retention_summary(row),
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
@@ -1644,6 +1884,21 @@ def sanitize_remote_runtime(
                     "v3_scope_conflict_count",
                     "v4_applicable",
                     "v4_complete",
+                    "retention_project_match_count",
+                    "retention_standalone_seed_status",
+                    "retention_holder_seed_status",
+                    "retention_scope_seed_source",
+                    "retention_input_state_kind",
+                    "retention_next_state_kind",
+                    "retention_input_retry_window_blocks",
+                    "retention_next_retry_window_blocks",
+                    "retention_deadline_exceeded",
+                    "retention_selected_window_complete",
+                    "retention_requested_window_complete",
+                    "retention_query_scope_complete",
+                    "retention_provider_status",
+                    "retention_coverage_status",
+                    "retention_reason_code",
                 }
             ):
                 return None, "runtime_issue_summary_row_shape_invalid"
@@ -1654,6 +1909,10 @@ def sanitize_remote_runtime(
                     "v3_deadline_exceeded",
                     "v4_applicable",
                     "v4_complete",
+                    "retention_deadline_exceeded",
+                    "retention_selected_window_complete",
+                    "retention_requested_window_complete",
+                    "retention_query_scope_complete",
                 )
             }
             scope_ints = {
@@ -1680,7 +1939,68 @@ def sanitize_remote_runtime(
                     "v3_pool_count",
                     "v3_validation_error_count",
                     "v3_scope_conflict_count",
+                    "retention_input_retry_window_blocks",
+                    "retention_next_retry_window_blocks",
                 )
+            }
+            retention_match_count = strict_remote_int(
+                row.get("retention_project_match_count")
+            )
+
+            def safe_optional_code(
+                value: Any,
+                allowed: frozenset[str],
+                fallback: str,
+            ) -> str | None:
+                if value is None:
+                    return None
+                return (
+                    value
+                    if isinstance(value, str) and value in allowed
+                    else fallback
+                )
+
+            retention_codes = {
+                "retention_standalone_seed_status": safe_optional_code(
+                    row.get("retention_standalone_seed_status"),
+                    REMOTE_RETENTION_SEED_STATUSES,
+                    "invalid",
+                ),
+                "retention_holder_seed_status": safe_optional_code(
+                    row.get("retention_holder_seed_status"),
+                    REMOTE_RETENTION_SEED_STATUSES,
+                    "invalid",
+                ),
+                "retention_scope_seed_source": safe_optional_code(
+                    row.get("retention_scope_seed_source"),
+                    REMOTE_RETENTION_SEED_SOURCES,
+                    "invalid",
+                ),
+                "retention_input_state_kind": safe_optional_code(
+                    row.get("retention_input_state_kind"),
+                    REMOTE_RETENTION_STATE_KINDS,
+                    "invalid",
+                ),
+                "retention_next_state_kind": safe_optional_code(
+                    row.get("retention_next_state_kind"),
+                    REMOTE_RETENTION_STATE_KINDS,
+                    "invalid",
+                ),
+                "retention_provider_status": safe_optional_code(
+                    row.get("retention_provider_status"),
+                    REMOTE_RETENTION_PROVIDER_STATUSES,
+                    "unknown",
+                ),
+                "retention_coverage_status": safe_optional_code(
+                    row.get("retention_coverage_status"),
+                    REMOTE_RETENTION_COVERAGE_STATUSES,
+                    "unknown",
+                ),
+                "retention_reason_code": safe_optional_code(
+                    row.get("retention_reason_code"),
+                    REMOTE_RETENTION_REASON_CODES,
+                    "unknown",
+                ),
             }
             if (
                 not isinstance(row.get("kind"), str)
@@ -1698,6 +2018,7 @@ def sanitize_remote_runtime(
                 or not isinstance(row.get("contract_hash"), str)
                 or re.fullmatch(r"[0-9a-f]{16}", row["contract_hash"])
                 is None
+                or retention_match_count is None
                 or any(
                     row.get(key) is not None and value is None
                     for key, value in {
@@ -1708,6 +2029,42 @@ def sanitize_remote_runtime(
             ):
                 return None, "runtime_issue_summary_value_invalid"
             kind = row["kind"]
+            safe_retention_match_count = retention_match_count
+            safe_retention_bools = {
+                key: scope_bools[key]
+                for key in (
+                    "retention_deadline_exceeded",
+                    "retention_selected_window_complete",
+                    "retention_requested_window_complete",
+                    "retention_query_scope_complete",
+                )
+            }
+            safe_retention_ints = {
+                key: scope_ints[key]
+                for key in (
+                    "retention_input_retry_window_blocks",
+                    "retention_next_retry_window_blocks",
+                )
+            }
+            safe_retention_codes = dict(retention_codes)
+            if (
+                row["scope"] != "liquidity_retention"
+                or retention_match_count != 1
+            ):
+                safe_retention_match_count = (
+                    retention_match_count
+                    if row["scope"] == "liquidity_retention"
+                    else 0
+                )
+                safe_retention_bools = {
+                    key: None for key in safe_retention_bools
+                }
+                safe_retention_ints = {
+                    key: None for key in safe_retention_ints
+                }
+                safe_retention_codes = {
+                    key: None for key in safe_retention_codes
+                }
             safe.append(
                 {
                     "kind": (
@@ -1723,6 +2080,12 @@ def sanitize_remote_runtime(
                     "contract_hash": row["contract_hash"],
                     **scope_bools,
                     **scope_ints,
+                    "retention_project_match_count": (
+                        safe_retention_match_count
+                    ),
+                    **safe_retention_bools,
+                    **safe_retention_ints,
+                    **safe_retention_codes,
                 }
             )
         return safe, ""

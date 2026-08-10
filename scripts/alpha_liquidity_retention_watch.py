@@ -46,6 +46,10 @@ class ReconciliationStateInvalid(ValueError):
     pass
 
 
+class LiquiditySeedConflict(ValueError):
+    pass
+
+
 def configured_budget_seconds() -> int:
     try:
         configured = int(
@@ -419,7 +423,261 @@ def holder_liquidity_seed(
     return validated_liquidity_seed(liquidity, token), token_state
 
 
+def liquidity_seed_status(
+    raw: Any,
+    seed: dict[str, Any],
+) -> str:
+    if not isinstance(raw, dict) or not raw:
+        return "missing"
+    if not seed or seed.get("reconciliation_state_invalid") is True:
+        return "invalid"
+    kind = liquidity_seed_state_kind(seed)
+    bootstrap_fields = {
+        "bootstrap_retry_pending",
+        "bootstrap_retry_window_blocks",
+    }
+    checkpoint_fields = {
+        "latest_block",
+        "latest_block_hash",
+        "catchup_active",
+        "catchup_live_from_block",
+        "next_catchup_window_blocks",
+    }
+    if (
+        any(field in raw for field in bootstrap_fields)
+        and kind != "bootstrap_retry"
+    ):
+        return "invalid"
+    if (
+        any(field in raw for field in checkpoint_fields)
+        and kind != "checkpoint"
+    ):
+        return "invalid"
+    if (
+        "reconciliation" in raw
+        and kind != "checkpoint"
+    ):
+        return "invalid"
+    progress_fields = {
+        *bootstrap_fields,
+        *checkpoint_fields,
+        "reconciliation",
+    }
+    if any(field in raw for field in progress_fields) and not any(
+        field in seed for field in progress_fields
+    ):
+        return "invalid"
+    return "valid"
+
+
+def liquidity_seed_state_kind(seed: Any) -> str:
+    if not isinstance(seed, dict) or not seed:
+        return "missing"
+    if seed.get("reconciliation_state_invalid") is True:
+        return "invalid"
+    if (
+        seed.get("bootstrap_retry_pending") is True
+        and type(seed.get("bootstrap_retry_window_blocks")) is int
+        and seed.get("bootstrap_retry_window_blocks") > 0
+        and type(seed.get("scope_coverage_from_block")) is int
+        and "latest_block" not in seed
+    ):
+        return "bootstrap_retry"
+    if (
+        type(seed.get("latest_block")) is int
+        and seed.get("latest_block") > 0
+        and holder.valid_hash32(seed.get("latest_block_hash"))
+        and type(seed.get("scope_coverage_from_block")) is int
+        and isinstance(seed.get("catchup_active"), bool)
+    ):
+        return "checkpoint"
+    return "missing"
+
+
+def liquidity_reconciliation_identities(
+    seed: dict[str, Any],
+) -> tuple[set[str], set[str], set[str]] | None:
+    reconciliation = seed.get("reconciliation")
+    if reconciliation is None:
+        return set(), set(), set()
+    if not isinstance(reconciliation, dict):
+        return None
+
+    identities: list[set[str]] = []
+    for field in ("pending", "completed"):
+        rows = reconciliation.get(field, [])
+        if not isinstance(rows, list):
+            return None
+        values = {
+            str(row.get("reconcile_id") or "")
+            for row in rows
+            if isinstance(row, dict)
+            and holder.valid_sha256(row.get("reconcile_id"))
+        }
+        if len(values) != len(rows):
+            return None
+        identities.append(values)
+
+    deferred_rows = reconciliation.get("deferred_events", [])
+    if not isinstance(deferred_rows, list):
+        return None
+    deferred: set[str] = set()
+    try:
+        for row in deferred_rows:
+            if not isinstance(row, dict):
+                return None
+            deferred.add(holder.liquidity_reconciliation_id(row))
+    except (TypeError, ValueError):
+        return None
+    if len(deferred) != len(deferred_rows):
+        return None
+    if identities[0] & identities[1]:
+        return None
+    return identities[0], identities[1], deferred
+
+
+def liquidity_reconciliation_dominates(
+    candidate: dict[str, Any],
+    previous: dict[str, Any],
+) -> bool:
+    candidate_ids = liquidity_reconciliation_identities(candidate)
+    previous_ids = liquidity_reconciliation_identities(previous)
+    if candidate_ids is None or previous_ids is None:
+        return False
+    candidate_pending, candidate_completed, candidate_deferred = (
+        candidate_ids
+    )
+    previous_pending, previous_completed, previous_deferred = previous_ids
+    candidate_finalized = candidate_pending | candidate_completed
+    return bool(
+        previous_pending <= candidate_finalized
+        and previous_completed <= candidate_completed
+        and previous_deferred
+        <= candidate_deferred | candidate_finalized
+    )
+
+
+def select_liquidity_seed(
+    standalone: dict[str, Any],
+    holder_seed: dict[str, Any],
+) -> dict[str, Any]:
+    seeds = {"standalone": standalone, "holder": holder_seed}
+
+    def outcome(source: str, *, conflict: bool = False) -> dict[str, Any]:
+        return {
+            "seed": copy.deepcopy(seeds.get(source) or {}),
+            "source": source,
+            "conflict": conflict,
+        }
+
+    present = [source for source, seed in seeds.items() if seed]
+    if not present:
+        return outcome("none")
+    if len(present) == 1:
+        return outcome(present[0])
+    if not (
+        standalone.get("scope_hash")
+        and standalone.get("scope_hash") == holder_seed.get("scope_hash")
+        and standalone.get("pool_scope") == holder_seed.get("pool_scope")
+    ):
+        return outcome("none", conflict=True)
+
+    kinds = {
+        source: liquidity_seed_state_kind(seed)
+        for source, seed in seeds.items()
+    }
+    if kinds["standalone"] == kinds["holder"] == "missing":
+        return outcome("standalone")
+    if "missing" in kinds.values():
+        return outcome(
+            next(source for source, kind in kinds.items() if kind != "missing")
+        )
+
+    if set(kinds.values()) == {
+        "bootstrap_retry",
+        "checkpoint",
+    }:
+        checkpoint_source = next(
+            source for source, kind in kinds.items() if kind == "checkpoint"
+        )
+        retry_source = next(
+            source
+            for source, kind in kinds.items()
+            if kind == "bootstrap_retry"
+        )
+        checkpoint = seeds[checkpoint_source]
+        retry = seeds[retry_source]
+        if int(checkpoint.get("scope_coverage_from_block") or 0) <= int(
+            retry.get("scope_coverage_from_block") or 0
+        ):
+            return outcome(checkpoint_source)
+        return outcome("none", conflict=True)
+
+    if kinds["standalone"] != kinds["holder"]:
+        return outcome("none", conflict=True)
+    kind = kinds["standalone"]
+    if kind == "checkpoint":
+        latest = {
+            source: int(seed.get("latest_block") or 0)
+            for source, seed in seeds.items()
+        }
+        if latest["standalone"] == latest["holder"]:
+            if str(
+                standalone.get("latest_block_hash") or ""
+            ).lower() != str(
+                holder_seed.get("latest_block_hash") or ""
+            ).lower():
+                return outcome("none", conflict=True)
+            checkpoint_state_fields = (
+                "catchup_active",
+                "catchup_live_from_block",
+                "next_catchup_window_blocks",
+            )
+            if any(
+                standalone.get(field) != holder_seed.get(field)
+                for field in checkpoint_state_fields
+            ):
+                return outcome("none", conflict=True)
+        progress = latest
+    elif kind == "bootstrap_retry":
+        progress = {
+            source: -int(seed.get("bootstrap_retry_window_blocks") or 0)
+            for source, seed in seeds.items()
+        }
+    else:
+        return outcome("none", conflict=True)
+
+    coverage_from = {
+        source: int(seed.get("scope_coverage_from_block") or 0)
+        for source, seed in seeds.items()
+    }
+    dominates = {
+        source: bool(
+            coverage_from[source] <= coverage_from[other]
+            and progress[source] >= progress[other]
+            and (
+                kind != "checkpoint"
+                or liquidity_reconciliation_dominates(
+                    seeds[source],
+                    seeds[other],
+                )
+            )
+        )
+        for source, other in (
+            ("standalone", "holder"),
+            ("holder", "standalone"),
+        )
+    }
+    if dominates["standalone"]:
+        return outcome("standalone")
+    if dominates["holder"]:
+        return outcome("holder")
+    return outcome("none", conflict=True)
+
+
 def safe_error_message(exc: Exception) -> str:
+    if isinstance(exc, LiquiditySeedConflict):
+        return "seed_conflict"
     if isinstance(exc, ReconciliationStateInvalid):
         return "liquidity_reconciliation_state_invalid"
     if isinstance(exc, TimeoutError):
@@ -503,6 +761,206 @@ def error_flow(reason: str) -> dict[str, Any]:
     }
 
 
+def diagnostic_state_kind(seed: Any) -> str:
+    if not isinstance(seed, dict) or not seed:
+        return "missing"
+    kind = liquidity_seed_state_kind(seed)
+    if kind in {"bootstrap_retry", "checkpoint"}:
+        return kind
+    if (
+        seed.get("scope_hash")
+        and isinstance(seed.get("pool_scope"), list)
+        and seed.get("reconciliation_state_invalid") is not True
+    ):
+        return "missing"
+    return "invalid"
+
+
+def diagnostic_retry_window(seed: Any) -> int | None:
+    if not isinstance(seed, dict):
+        return None
+    kind = liquidity_seed_state_kind(seed)
+    field = (
+        "bootstrap_retry_window_blocks"
+        if kind == "bootstrap_retry"
+        else "next_catchup_window_blocks"
+        if kind == "checkpoint"
+        else ""
+    )
+    value = seed.get(field) if field else None
+    return value if type(value) is int and value > 0 else None
+
+
+def liquidity_runtime_diagnostic(
+    *,
+    standalone_seed_status: str,
+    holder_seed_status: str,
+    scope_seed_source: str,
+    input_seed: dict[str, Any],
+    next_state: dict[str, Any] | None,
+    flow: dict[str, Any],
+    error_code: str = "",
+    seed_conflict: bool = False,
+) -> dict[str, Any]:
+    incremental = (
+        flow.get("incremental_catchup")
+        if isinstance(flow.get("incremental_catchup"), dict)
+        else {}
+    )
+    deadline_exceeded = bool(
+        incremental.get("deadline_exceeded") is True
+    )
+    selected_window_complete = bool(
+        flow.get("selected_window_complete") is True
+    )
+    requested_window_complete = bool(
+        incremental.get("complete_requested_window") is True
+    )
+    query_scope_complete = bool(
+        flow.get("query_scope_complete") is True
+    )
+    log_errors = [
+        str(value).lower()
+        for value in flow.get("log_errors", [])
+        if isinstance(value, str)
+    ]
+    response_invalid = any(
+        marker in value
+        for value in log_errors
+        for marker in (
+            "response invalid",
+            "quantity invalid",
+            "identity or abi invalid",
+            "event topic invalid",
+        )
+    )
+    if flow.get("status") != "active":
+        provider_status = "not_attempted"
+    elif deadline_exceeded:
+        provider_status = "deadline"
+    elif flow.get("truncated") or flow.get("events_truncated"):
+        provider_status = "truncated"
+    elif response_invalid:
+        provider_status = "response_invalid"
+    elif int(flow.get("log_error_count") or 0) > 0:
+        provider_status = "rpc_coverage_failed"
+    elif selected_window_complete and query_scope_complete:
+        provider_status = "complete"
+    else:
+        provider_status = "unknown"
+
+    input_state_kind = (
+        "invalid"
+        if seed_conflict
+        else diagnostic_state_kind(input_seed)
+    )
+    next_state_kind = (
+        "invalid"
+        if seed_conflict
+        else diagnostic_state_kind(next_state)
+    )
+    if seed_conflict or error_code == "seed_conflict":
+        coverage_status = "invalid"
+    elif next_state_kind == "invalid":
+        coverage_status = "invalid"
+    elif (
+        flow.get("status") != "active"
+        or int(flow.get("pool_count") or 0) <= 0
+        or int(flow.get("attribution_query_error_count") or 0) > 0
+    ):
+        coverage_status = "incomplete_without_retry"
+    elif (
+        flow.get("complete") is True
+        and next_state_kind == "checkpoint"
+        and selected_window_complete
+        and requested_window_complete
+        and query_scope_complete
+        and provider_status == "complete"
+    ):
+        coverage_status = "complete"
+    elif next_state_kind == "bootstrap_retry":
+        coverage_status = "bootstrap_retry_pending"
+    elif next_state_kind == "checkpoint":
+        coverage_status = (
+            "selected_window_catchup"
+            if selected_window_complete
+            else "checkpoint_retry_pending"
+        )
+    else:
+        coverage_status = "incomplete_without_retry"
+
+    normalized_error_code = {
+        "liquidity_reconciliation_state_invalid": (
+            "invalid_runtime_metadata"
+        ),
+    }.get(error_code, error_code)
+    safe_error_codes = {
+        "deadline_exceeded",
+        "invalid_runtime_metadata",
+        "runtime_dependency_failed",
+        "runtime_io_failed",
+        "unexpected_runtime_error",
+        "seed_conflict",
+    }
+    if normalized_error_code in safe_error_codes:
+        reason_code = normalized_error_code
+    elif flow.get("status") != "active":
+        reason_code = "coverage_gap"
+    elif int(flow.get("pool_count") or 0) <= 0:
+        reason_code = "pool_scope_empty"
+    elif int(flow.get("attribution_query_error_count") or 0) > 0:
+        reason_code = "operator_attribution_failed"
+    elif deadline_exceeded:
+        reason_code = "deadline_exceeded"
+    elif incremental.get("retryable_min_window_exhausted") is True:
+        reason_code = "retryable_min_window_exhausted"
+    elif provider_status == "rpc_coverage_failed":
+        reason_code = "provider_coverage_failed"
+    elif provider_status == "response_invalid":
+        reason_code = "response_invalid"
+    elif provider_status == "truncated":
+        reason_code = "truncated"
+    elif (
+        flow.get("complete") is True
+        and next_state_kind != "checkpoint"
+    ):
+        reason_code = "checkpoint_unavailable"
+    elif (
+        flow.get("complete") is True
+        and selected_window_complete
+        and requested_window_complete
+        and query_scope_complete
+    ):
+        reason_code = "none"
+    elif not selected_window_complete:
+        reason_code = "selected_window_incomplete"
+    elif not requested_window_complete:
+        reason_code = "requested_window_incomplete"
+    elif not query_scope_complete:
+        reason_code = "query_scope_incomplete"
+    elif next_state is None:
+        reason_code = "checkpoint_unavailable"
+    else:
+        reason_code = "unknown"
+
+    return {
+        "standalone_seed_status": standalone_seed_status,
+        "holder_seed_status": holder_seed_status,
+        "scope_seed_source": scope_seed_source,
+        "input_state_kind": input_state_kind,
+        "next_state_kind": next_state_kind,
+        "input_retry_window_blocks": diagnostic_retry_window(input_seed),
+        "next_retry_window_blocks": diagnostic_retry_window(next_state),
+        "deadline_exceeded": deadline_exceeded,
+        "selected_window_complete": selected_window_complete,
+        "requested_window_complete": requested_window_complete,
+        "query_scope_complete": query_scope_complete,
+        "provider_status": provider_status,
+        "coverage_status": coverage_status,
+        "reason_code": reason_code,
+    }
+
+
 def build_snapshot() -> dict[str, Any]:
     config = holder.read_json(CONFIG_PATH, {"items": []})
     opening_payload = holder.read_json(
@@ -556,15 +1014,55 @@ def build_snapshot() -> dict[str, Any]:
                 chain,
                 token,
             )
-            seed_source = "standalone" if persisted_liquidity else ""
-            if not persisted_liquidity and holder_seed:
-                persisted_liquidity = holder_seed
-                seed_source = "holder"
+            standalone_seed_status = liquidity_seed_status(
+                raw_persisted_liquidity,
+                persisted_liquidity,
+            )
+            holder_retention = (
+                holder_token_state.get("retention_flow")
+                if isinstance(
+                    holder_token_state.get("retention_flow"), dict
+                )
+                else {}
+            )
+            raw_holder_liquidity = (
+                holder_retention.get("liquidity")
+                if isinstance(holder_retention.get("liquidity"), dict)
+                else {}
+            )
+            holder_seed_status = liquidity_seed_status(
+                raw_holder_liquidity,
+                holder_seed,
+            )
+            if "invalid" in {
+                standalone_seed_status,
+                holder_seed_status,
+            }:
+                selection = {
+                    "seed": {},
+                    "source": "none",
+                    "conflict": True,
+                }
+            else:
+                selection = select_liquidity_seed(
+                    persisted_liquidity
+                    if standalone_seed_status == "valid"
+                    else {},
+                    holder_seed if holder_seed_status == "valid" else {},
+                )
+            persisted_liquidity = selection["seed"]
+            seed_source = str(selection["source"])
+            seed_conflict = bool(selection["conflict"] is True)
+            if seed_source == "holder":
                 next_tokens[key] = {
                     "decimals": holder_token_state.get("decimals"),
                     "liquidity": holder_seed,
                 }
-            elif raw_persisted_liquidity and not persisted_liquidity:
+            elif (
+                raw_persisted_liquidity
+                and standalone_seed_status == "invalid"
+                and not seed_conflict
+            ):
                 next_tokens.pop(key, None)
             opening_event = opened_event_for_identity(
                 opening_payload,
@@ -582,12 +1080,18 @@ def build_snapshot() -> dict[str, Any]:
             )
             persisted_obligation = bool(
                 persisted_liquidity.get("pool_scope")
+                or holder_seed.get("pool_scope")
             )
             flow: dict[str, Any]
             next_liquidity_state: dict[str, Any] | None = None
-            required = opened_obligation or persisted_obligation
+            required = bool(
+                opened_obligation or persisted_obligation or seed_conflict
+            )
             exception_recorded = False
+            runtime_error_code = ""
             try:
+                if seed_conflict:
+                    raise LiquiditySeedConflict("seed conflict")
                 if persisted_liquidity.get(
                     "reconciliation_state_invalid"
                 ) is True:
@@ -687,6 +1191,7 @@ def build_snapshot() -> dict[str, Any]:
                         }
             except Exception as exc:
                 detail = safe_error_message(exc)
+                runtime_error_code = detail
                 flow = error_flow(detail)
                 if required:
                     issues.append(
@@ -720,6 +1225,16 @@ def build_snapshot() -> dict[str, Any]:
                     "liquidity_retention": flow,
                 },
             }
+            project["runtime_diagnostic"] = liquidity_runtime_diagnostic(
+                standalone_seed_status=standalone_seed_status,
+                holder_seed_status=holder_seed_status,
+                scope_seed_source=seed_source,
+                input_seed=persisted_liquidity,
+                next_state=next_liquidity_state,
+                flow=flow,
+                error_code=runtime_error_code,
+                seed_conflict=seed_conflict,
+            )
             projects.append(project)
             if detail and not exception_recorded:
                 issues.append(

@@ -70,6 +70,21 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "v3_scope_conflict_count": None,
         "v4_applicable": None,
         "v4_complete": None,
+        "retention_project_match_count": 0,
+        "retention_standalone_seed_status": None,
+        "retention_holder_seed_status": None,
+        "retention_scope_seed_source": None,
+        "retention_input_state_kind": None,
+        "retention_next_state_kind": None,
+        "retention_input_retry_window_blocks": None,
+        "retention_next_retry_window_blocks": None,
+        "retention_deadline_exceeded": None,
+        "retention_selected_window_complete": None,
+        "retention_requested_window_complete": None,
+        "retention_query_scope_complete": None,
+        "retention_provider_status": None,
+        "retention_coverage_status": None,
+        "retention_reason_code": None,
     }
     row.update(overrides)
     return row
@@ -826,6 +841,262 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(mismatch_summary["opening_event_match_count"], 0)
         self.assertEqual(mismatch_summary["error_code"], "")
         self.assertIsNone(mismatch_summary["v3_complete"])
+
+    def test_remote_retention_diagnostic_is_safe_strict_and_unique(
+        self,
+    ) -> None:
+        contract = "0x" + "b" * 40
+        marker = "untrusted_retention_provider_detail"
+        diagnostic = {
+            "standalone_seed_status": "valid",
+            "holder_seed_status": "missing",
+            "scope_seed_source": "standalone",
+            "input_state_kind": "checkpoint",
+            "next_state_kind": "checkpoint",
+            "input_retry_window_blocks": 16,
+            "next_retry_window_blocks": 8,
+            "deadline_exceeded": True,
+            "selected_window_complete": False,
+            "requested_window_complete": False,
+            "query_scope_complete": False,
+            "provider_status": "deadline",
+            "coverage_status": "checkpoint_retry_pending",
+            "reason_code": "retryable_min_window_exhausted",
+        }
+
+        def probe(
+            runtime_diagnostics: list[dict[str, object]],
+        ) -> dict[str, object]:
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            root = Path(temporary.name)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity["projects"].extend(
+                {
+                    "symbol": "DOS",
+                    "chain": "bsc",
+                    "address": contract,
+                    "runtime_diagnostic": row,
+                    "retention_flow": {"liquidity_retention": {}},
+                }
+                for row in runtime_diagnostics
+            )
+            write_json(liquidity_path, liquidity)
+            write_json(
+                root / "output/runtime_health/last_cycle.json",
+                {
+                    "schema": "runtime_health.v1",
+                    "status": "unhealthy",
+                    "generated_at": "2026-08-10T11:30:00+00:00",
+                    "issue_count": 1,
+                    "issues": [
+                        {
+                            "kind": "alpha_coverage_gap",
+                            "name": "DOS",
+                            "fingerprint": (
+                                "alpha_coverage_gap:bsc:"
+                                + contract
+                                + ":liquidity_retention:"
+                                + "liquidity retention coverage incomplete"
+                            ),
+                        }
+                    ],
+                },
+            )
+            return run_remote_probe(root, expected_hashes)
+
+        payload = probe([diagnostic])
+        summary = payload["runtime_issue_summaries"][0]
+        self.assertEqual(summary["retention_project_match_count"], 1)
+        for key, value in diagnostic.items():
+            self.assertEqual(summary[f"retention_{key}"], value)
+        for reason_code in (
+            "pool_scope_empty",
+            "operator_attribution_failed",
+        ):
+            with self.subTest(reason_code=reason_code):
+                reason_diagnostic = {
+                    **diagnostic,
+                    "reason_code": reason_code,
+                }
+                reason_summary = probe([reason_diagnostic])[
+                    "runtime_issue_summaries"
+                ][0]
+                self.assertEqual(
+                    reason_summary["retention_reason_code"],
+                    reason_code,
+                )
+        sanitized, valid = sanitize_remote_runtime(payload)
+        resanitized, revalid = sanitize_remote_runtime(sanitized)
+        self.assertTrue(valid)
+        self.assertTrue(revalid)
+        self.assertEqual(resanitized, sanitized)
+
+        blocked = json.loads(json.dumps(payload))
+        blocked["grvt_replay_acceptance"].update(
+            {
+                "status": "blocked",
+                "issues": ["public_rpc_unavailable"],
+                "age_seconds": 1,
+            }
+        )
+        compact, compact_valid = sanitize_remote_runtime(blocked)
+        recompact, recompact_valid = sanitize_remote_runtime(compact)
+        self.assertFalse(compact_valid)
+        self.assertTrue(recompact_valid)
+        self.assertEqual(
+            compact["validation_error_code"], "replay_runtime_blocked"
+        )
+        self.assertEqual(recompact, compact)
+        self.assertEqual(
+            compact["runtime_issue_summaries"][0], summary
+        )
+
+        malformed = {
+            "standalone_seed_status": marker,
+            "holder_seed_status": 7,
+            "scope_seed_source": marker,
+            "input_state_kind": marker,
+            "next_state_kind": marker,
+            "input_retry_window_blocks": True,
+            "next_retry_window_blocks": marker,
+            "deadline_exceeded": marker,
+            "selected_window_complete": 1,
+            "requested_window_complete": {},
+            "query_scope_complete": [],
+            "provider_status": marker,
+            "coverage_status": marker,
+            "reason_code": marker,
+        }
+        malformed_payload = probe([malformed])
+        malformed_summary = malformed_payload["runtime_issue_summaries"][0]
+        self.assertEqual(
+            malformed_summary["retention_standalone_seed_status"],
+            "invalid",
+        )
+        self.assertEqual(
+            malformed_summary["retention_holder_seed_status"],
+            "invalid",
+        )
+        self.assertEqual(
+            malformed_summary["retention_scope_seed_source"],
+            "invalid",
+        )
+        self.assertEqual(
+            malformed_summary["retention_provider_status"], "unknown"
+        )
+        self.assertEqual(
+            malformed_summary["retention_coverage_status"], "unknown"
+        )
+        self.assertEqual(
+            malformed_summary["retention_reason_code"], "unknown"
+        )
+        self.assertIsNone(
+            malformed_summary["retention_input_retry_window_blocks"]
+        )
+        self.assertIsNone(
+            malformed_summary["retention_deadline_exceeded"]
+        )
+        self.assertNotIn(
+            marker, json.dumps(malformed_payload, sort_keys=True)
+        )
+        safe_malformed, malformed_valid = sanitize_remote_runtime(
+            malformed_payload
+        )
+        self.assertTrue(malformed_valid)
+        self.assertNotIn(
+            marker, json.dumps(safe_malformed, sort_keys=True)
+        )
+
+        missing_key = dict(diagnostic)
+        missing_key.pop("reason_code")
+        missing_key_payload = probe([missing_key])
+        missing_key_summary = missing_key_payload[
+            "runtime_issue_summaries"
+        ][0]
+        self.assertEqual(
+            missing_key_summary["retention_standalone_seed_status"],
+            "invalid",
+        )
+        self.assertEqual(
+            missing_key_summary["retention_provider_status"], "unknown"
+        )
+        self.assertIsNone(
+            missing_key_summary["retention_deadline_exceeded"]
+        )
+
+        duplicate_payload = probe([diagnostic, diagnostic])
+        duplicate_summary = duplicate_payload["runtime_issue_summaries"][0]
+        self.assertEqual(
+            duplicate_summary["retention_project_match_count"], 2
+        )
+        self.assertTrue(
+            all(
+                value is None
+                for key, value in duplicate_summary.items()
+                if key.startswith("retention_")
+                and key != "retention_project_match_count"
+            )
+        )
+        safe_duplicate, duplicate_valid = sanitize_remote_runtime(
+            duplicate_payload
+        )
+        self.assertTrue(duplicate_valid)
+        self.assertEqual(
+            safe_duplicate["runtime_issue_summaries"][0],
+            duplicate_summary,
+        )
+
+        wrong_scope = json.loads(json.dumps(payload))
+        wrong_scope_summary = wrong_scope["runtime_issue_summaries"][0]
+        wrong_scope_summary["scope"] = "opening"
+        safe_wrong_scope, wrong_scope_valid = sanitize_remote_runtime(
+            wrong_scope
+        )
+        self.assertTrue(wrong_scope_valid)
+        sanitized_wrong_scope = safe_wrong_scope[
+            "runtime_issue_summaries"
+        ][0]
+        self.assertEqual(
+            sanitized_wrong_scope["retention_project_match_count"], 0
+        )
+        self.assertTrue(
+            all(
+                value is None
+                for key, value in sanitized_wrong_scope.items()
+                if key.startswith("retention_")
+                and key != "retention_project_match_count"
+            )
+        )
+
+        tampered = json.loads(json.dumps(payload))
+        tampered_summary = tampered["runtime_issue_summaries"][0]
+        tampered_summary["retention_scope_seed_source"] = marker
+        tampered_summary["retention_provider_status"] = marker
+        tampered_summary["retention_reason_code"] = marker
+        safe_tampered, tampered_valid = sanitize_remote_runtime(tampered)
+        resafe_tampered, retampered_valid = sanitize_remote_runtime(
+            safe_tampered
+        )
+        self.assertTrue(tampered_valid)
+        self.assertTrue(retampered_valid)
+        self.assertEqual(resafe_tampered, safe_tampered)
+        self.assertNotIn(marker, json.dumps(safe_tampered, sort_keys=True))
+        safe_summary = safe_tampered["runtime_issue_summaries"][0]
+        self.assertEqual(
+            safe_summary["retention_scope_seed_source"], "invalid"
+        )
+        self.assertEqual(
+            safe_summary["retention_provider_status"], "unknown"
+        )
+        self.assertEqual(safe_summary["retention_reason_code"], "unknown")
 
     def test_remote_nested_free_text_never_persists(self) -> None:
         marker = "synthetic_secret_api_key_abc123"

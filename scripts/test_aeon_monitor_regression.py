@@ -22457,6 +22457,281 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertNotIn("bootstrap_retry_pending", invalid_seed)
         self.assertNotIn("bootstrap_retry_window_blocks", invalid_seed)
 
+    def test_liquidity_retryable_exhaustion_persists_bounded_retry(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "age_hours": 1,
+        }
+        mode = {"value": "retryable"}
+
+        def fetch(
+            _chain: str,
+            _pools: list[dict[str, object]],
+            _from_block: int,
+            _to_block: int,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            dict[str, object],
+        ]:
+            if mode["value"] == "truncated":
+                return [], [], True, {"range_shrink_retryable": False}
+            if mode["value"] == "invalid":
+                return (
+                    [],
+                    ["liquidity retention indexed response invalid"],
+                    False,
+                    {"range_shrink_retryable": False},
+                )
+            return (
+                [],
+                ["liquidity retention indexed coverage failed"],
+                False,
+                {"range_shrink_retryable": True},
+            )
+
+        with (
+            mock.patch.object(holder, "retention_window", return_value=active),
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                side_effect=fetch,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                return_value=self._hash("a"),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_ATTEMPTS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                },
+            ),
+        ):
+            retryable, retryable_state = (
+                holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state={},
+                )
+            )
+            mode["value"] = "truncated"
+            truncated, truncated_state = (
+                holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state={},
+                )
+            )
+            mode["value"] = "invalid"
+            invalid, invalid_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state={},
+            )
+            mode["value"] = "retryable"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                },
+            ):
+                minimum, minimum_state = (
+                    holder.build_token_liquidity_retention(
+                        item={"chain": "bsc"},
+                        symbol="TEST",
+                        chain="bsc",
+                        token=token,
+                        tip=130,
+                        decimals=18,
+                        supply_raw=10**24,
+                        opening_payload=payload,
+                        liquidity_state={},
+                    )
+                )
+
+        for flow, state in (
+            (retryable, retryable_state),
+            (truncated, truncated_state),
+        ):
+            self.assertFalse(flow["selected_window_complete"])
+            self.assertTrue(
+                flow["incremental_catchup"]["retryable_exhausted"]
+            )
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertTrue(state["bootstrap_retry_pending"])
+            self.assertEqual(state["bootstrap_retry_window_blocks"], 8)
+            self.assertNotIn("latest_block", state)
+        self.assertFalse(invalid["selected_window_complete"])
+        self.assertFalse(
+            invalid["incremental_catchup"]["retryable_exhausted"]
+        )
+        self.assertIsNone(invalid_state)
+        invalid_diagnostic = fast.liquidity_runtime_diagnostic(
+            standalone_seed_status="missing",
+            holder_seed_status="missing",
+            scope_seed_source="none",
+            input_seed={},
+            next_state=invalid_state,
+            flow=invalid,
+        )
+        self.assertEqual(
+            invalid_diagnostic["provider_status"],
+            "response_invalid",
+        )
+        self.assertEqual(
+            invalid_diagnostic["reason_code"],
+            "response_invalid",
+        )
+        self.assertTrue(
+            minimum["incremental_catchup"][
+                "retryable_min_window_exhausted"
+            ]
+        )
+        self.assertIsNotNone(minimum_state)
+        assert minimum_state is not None
+        self.assertEqual(
+            minimum_state["bootstrap_retry_window_blocks"],
+            1,
+        )
+        diagnostic = fast.liquidity_runtime_diagnostic(
+            standalone_seed_status="missing",
+            holder_seed_status="missing",
+            scope_seed_source="none",
+            input_seed={},
+            next_state=minimum_state,
+            flow=minimum,
+        )
+        self.assertEqual(
+            diagnostic["reason_code"],
+            "retryable_min_window_exhausted",
+        )
+        self.assertEqual(
+            diagnostic["coverage_status"],
+            "bootstrap_retry_pending",
+        )
+        self.assertEqual(
+            diagnostic["provider_status"],
+            "rpc_coverage_failed",
+        )
+        self.assertIsNone(diagnostic["input_retry_window_blocks"])
+        self.assertIs(
+            type(diagnostic["next_retry_window_blocks"]),
+            int,
+        )
+        self.assertEqual(diagnostic["next_retry_window_blocks"], 1)
+
+    def test_liquidity_retryable_checkpoint_preserves_verified_position(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+        state = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "pool_count": scope["pool_count"],
+            "scope_coverage_from_block": 100,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": True,
+            "catchup_live_from_block": 121,
+            "next_catchup_window_blocks": 16,
+        }
+        metadata = {
+            "range_shrink_retryable": True,
+            "query_scope_complete": False,
+        }
+        with (
+            mock.patch.object(
+                holder,
+                "retention_window",
+                return_value={"status": "active", "age_hours": 1},
+            ),
+            mock.patch.object(
+                holder,
+                "targeted_retention_liquidity_logs",
+                return_value=([], ["coverage failed"], False, metadata),
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                return_value=self._hash("a"),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_BLOCKS": "16",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MAX_ATTEMPTS": "1",
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                },
+            ),
+        ):
+            flow, next_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state=state,
+            )
+
+        self.assertFalse(flow["selected_window_complete"])
+        self.assertIsNotNone(next_state)
+        assert next_state is not None
+        self.assertEqual(next_state["latest_block"], 120)
+        self.assertEqual(next_state["latest_block_hash"], self._hash("a"))
+        self.assertEqual(next_state["next_catchup_window_blocks"], 5)
+        self.assertTrue(next_state["catchup_active"])
+
     def test_bounded_liquidity_default_reaches_eight_block_window(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
 
@@ -26186,6 +26461,580 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             pending_id,
         )
 
+    def test_fast_liquidity_seed_selection_is_monotonic_and_closed(
+        self,
+    ) -> None:
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        scope = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+        }
+        bare = dict(scope)
+        retry = {
+            **scope,
+            "scope_coverage_from_block": 100,
+            "bootstrap_retry_pending": True,
+            "bootstrap_retry_window_blocks": 8,
+        }
+        checkpoint = {
+            **scope,
+            "scope_coverage_from_block": 90,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": True,
+            "next_catchup_window_blocks": 16,
+        }
+        newer_checkpoint = {
+            **checkpoint,
+            "latest_block": 130,
+            "latest_block_hash": self._hash("b"),
+        }
+
+        selected = fast.select_liquidity_seed(bare, retry)
+        self.assertEqual(selected["source"], "holder")
+        self.assertEqual(selected["seed"], retry)
+        selected = fast.select_liquidity_seed(checkpoint, newer_checkpoint)
+        self.assertEqual(selected["source"], "holder")
+        selected = fast.select_liquidity_seed(newer_checkpoint, checkpoint)
+        self.assertEqual(selected["source"], "standalone")
+
+        selected = fast.select_liquidity_seed(
+            checkpoint,
+            copy.deepcopy(checkpoint),
+        )
+        self.assertFalse(selected["conflict"])
+        self.assertEqual(selected["source"], "standalone")
+
+        same_tip_state_conflicts = (
+            {**checkpoint, "catchup_active": False},
+            {**checkpoint, "catchup_live_from_block": 121},
+            {**checkpoint, "next_catchup_window_blocks": 8},
+        )
+        for incompatible in same_tip_state_conflicts:
+            with self.subTest(incompatible=incompatible):
+                selected = fast.select_liquidity_seed(
+                    checkpoint,
+                    incompatible,
+                )
+                self.assertTrue(selected["conflict"])
+                self.assertEqual(selected["source"], "none")
+                self.assertEqual(selected["seed"], {})
+
+        same_height_conflict = {
+            **checkpoint,
+            "latest_block_hash": self._hash("c"),
+        }
+        different_scope = {**retry, "scope_hash": "b" * 64}
+        later_coverage_checkpoint = {
+            **checkpoint,
+            "scope_coverage_from_block": 101,
+        }
+        incomparable_checkpoint = {
+            **newer_checkpoint,
+            "scope_coverage_from_block": 100,
+        }
+        incomparable_retry = {
+            **retry,
+            "scope_coverage_from_block": 99,
+            "bootstrap_retry_window_blocks": 16,
+        }
+        for left, right in (
+            (checkpoint, same_height_conflict),
+            (bare, different_scope),
+            (retry, later_coverage_checkpoint),
+            (retry, incomparable_retry),
+            (checkpoint, incomparable_checkpoint),
+        ):
+            with self.subTest(left=left, right=right):
+                selected = fast.select_liquidity_seed(left, right)
+                self.assertTrue(selected["conflict"])
+                self.assertEqual(selected["source"], "none")
+                self.assertEqual(selected["seed"], {})
+
+    def test_fast_liquidity_checkpoint_reconciliation_is_monotonic(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        pending_id = "1" * 64
+        completed_id = "2" * 64
+        deferred_event = {
+            "type": "v3_burn",
+            "pool": self._address("3"),
+            "tx": self._hash("d"),
+            "log_index": 7,
+            "lp_owner": self._address("4"),
+            "tick_lower": -10,
+            "tick_upper": 10,
+        }
+        deferred_id = holder.liquidity_reconciliation_id(deferred_event)
+
+        def reconciliation(
+            *,
+            pending: tuple[str, ...] = (),
+            completed: tuple[str, ...] = (),
+            deferred: tuple[dict[str, object], ...] = (),
+            updated_at: str = "2026-08-01T00:00:00+00:00",
+        ) -> dict[str, object]:
+            return {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": [
+                    {"reconcile_id": identity} for identity in pending
+                ],
+                "completed": [
+                    {"reconcile_id": identity} for identity in completed
+                ],
+                "deferred_events": list(deferred),
+                "updated_at": updated_at,
+            }
+
+        base = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "scope_coverage_from_block": 90,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": True,
+            "next_catchup_window_blocks": 16,
+        }
+        newer = {
+            **base,
+            "latest_block": 130,
+            "latest_block_hash": self._hash("b"),
+        }
+
+        same_semantics = fast.select_liquidity_seed(
+            {
+                **base,
+                "reconciliation": reconciliation(pending=(pending_id,)),
+            },
+            {
+                **base,
+                "reconciliation": reconciliation(
+                    pending=(pending_id,),
+                    updated_at="2026-08-01T00:01:00+00:00",
+                ),
+            },
+        )
+        self.assertFalse(same_semantics["conflict"])
+        self.assertEqual(same_semantics["source"], "standalone")
+
+        pending_completed = fast.select_liquidity_seed(
+            {
+                **base,
+                "reconciliation": reconciliation(pending=(pending_id,)),
+            },
+            {
+                **base,
+                "reconciliation": reconciliation(completed=(pending_id,)),
+            },
+        )
+        self.assertFalse(pending_completed["conflict"])
+        self.assertEqual(pending_completed["source"], "holder")
+
+        overlapping_state = {
+            **base,
+            "reconciliation": reconciliation(
+                pending=(pending_id,),
+                completed=(pending_id,),
+            ),
+        }
+        overlapping = fast.select_liquidity_seed(
+            overlapping_state,
+            newer,
+        )
+        self.assertTrue(overlapping["conflict"])
+        self.assertEqual(overlapping["source"], "none")
+
+        old_empty = fast.select_liquidity_seed(
+            base,
+            {
+                **base,
+                "reconciliation": reconciliation(pending=(pending_id,)),
+            },
+        )
+        self.assertFalse(old_empty["conflict"])
+        self.assertEqual(old_empty["source"], "holder")
+
+        for previous, candidate in (
+            (
+                {
+                    **base,
+                    "reconciliation": reconciliation(
+                        pending=(pending_id,)
+                    ),
+                },
+                newer,
+            ),
+            (
+                {
+                    **base,
+                    "reconciliation": reconciliation(
+                        completed=(completed_id,)
+                    ),
+                },
+                newer,
+            ),
+            (
+                {
+                    **base,
+                    "reconciliation": reconciliation(
+                        deferred=(deferred_event,)
+                    ),
+                },
+                newer,
+            ),
+        ):
+            with self.subTest(previous=previous):
+                selected = fast.select_liquidity_seed(previous, candidate)
+                self.assertTrue(selected["conflict"])
+                self.assertEqual(selected["source"], "none")
+
+        deferred_transition = fast.select_liquidity_seed(
+            {
+                **base,
+                "reconciliation": reconciliation(
+                    deferred=(deferred_event,)
+                ),
+            },
+            {
+                **newer,
+                "reconciliation": reconciliation(
+                    pending=(deferred_id,)
+                ),
+            },
+        )
+        self.assertFalse(deferred_transition["conflict"])
+        self.assertEqual(deferred_transition["source"], "holder")
+
+    def test_fast_liquidity_invalid_seed_is_preserved_and_stops_provider(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        key = f"bsc:{token}"
+        item = {
+            "symbol": "TEST",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": token,
+        }
+        raw_invalid = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "reconciliation": {"schema": "invalid.fixture"},
+        }
+        invalid_seed = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "reconciliation_state_invalid": True,
+        }
+        current_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {key: {"decimals": 18, "liquidity": raw_invalid}},
+        }
+        reads = iter(
+            [
+                {"items": []},
+                {"events": []},
+                current_state,
+                {"tokens": {}},
+            ]
+        )
+        complete_flow = {
+            "status": "active",
+            "complete": True,
+            "selected_window_complete": True,
+            "query_scope_complete": True,
+            "pool_count": 1,
+            "log_error_count": 0,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+            "incremental_catchup": {
+                "complete_requested_window": True,
+                "deadline_exceeded": False,
+            },
+        }
+        next_state = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "scope_coverage_from_block": 100,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": False,
+        }
+        with (
+            mock.patch.object(
+                holder,
+                "read_json",
+                side_effect=lambda *_args, **_kwargs: next(reads),
+            ),
+            mock.patch.object(
+                fast,
+                "eligible_contract_items",
+                return_value=([item], []),
+            ),
+            mock.patch.object(
+                fast,
+                "validated_liquidity_seed",
+                return_value=invalid_seed,
+            ),
+            mock.patch.object(
+                fast,
+                "holder_liquidity_seed",
+                return_value=({}, {}),
+            ),
+            mock.patch.object(
+                fast,
+                "opened_event_for_identity",
+                return_value={},
+            ),
+            mock.patch.object(
+                fast,
+                "matching_opened_event",
+                return_value=False,
+            ),
+            mock.patch.object(
+                fast,
+                "config_item_for_identity",
+                return_value=item,
+            ),
+            mock.patch.object(
+                holder,
+                "retention_window",
+                return_value={"status": "active", "age_hours": 1},
+            ),
+            mock.patch.object(
+                holder,
+                "opening_verified_pool_scope",
+                return_value={
+                    "pool_scope": [{"protocol": "v3"}],
+                    "source": "opening",
+                },
+            ),
+            mock.patch.object(
+                fast,
+                "strict_token_metadata",
+                return_value=(18, 1_000_000),
+            ),
+            mock.patch.object(holder, "latest_block", return_value=120),
+            mock.patch.object(
+                holder,
+                "build_token_liquidity_retention",
+                return_value=(complete_flow, next_state),
+            ) as build,
+        ):
+            snapshot = fast.build_snapshot()
+
+        build.assert_not_called()
+        self.assertEqual(snapshot["status"], "unhealthy")
+        self.assertEqual(snapshot["issues"][0]["detail"], "seed_conflict")
+        self.assertEqual(
+            snapshot["_next_state"]["tokens"][key]["liquidity"],
+            raw_invalid,
+        )
+        diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
+        self.assertEqual(diagnostic["standalone_seed_status"], "invalid")
+        self.assertEqual(diagnostic["holder_seed_status"], "missing")
+        self.assertEqual(diagnostic["scope_seed_source"], "none")
+        self.assertEqual(diagnostic["provider_status"], "not_attempted")
+        self.assertEqual(diagnostic["coverage_status"], "invalid")
+        self.assertEqual(diagnostic["reason_code"], "seed_conflict")
+
+    def test_fast_liquidity_seed_conflict_stops_before_provider(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        key = f"bsc:{token}"
+        item = {
+            "symbol": "TEST",
+            "priority": "P1_MONITOR",
+            "chain": "bsc",
+            "address": token,
+        }
+        standalone = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+        }
+        holder_seed = {
+            "scope_hash": "b" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "scope_coverage_from_block": 100,
+            "bootstrap_retry_pending": True,
+            "bootstrap_retry_window_blocks": 8,
+        }
+        current_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {key: {"liquidity": standalone}},
+        }
+        holder_token_state = {
+            "decimals": 18,
+            "retention_flow": {"liquidity": holder_seed},
+        }
+        reads = iter(
+            [
+                {"items": []},
+                {"events": []},
+                current_state,
+                {"tokens": {key: holder_token_state}},
+            ]
+        )
+        with (
+            mock.patch.object(
+                holder,
+                "read_json",
+                side_effect=lambda *_args, **_kwargs: next(reads),
+            ),
+            mock.patch.object(
+                fast,
+                "eligible_contract_items",
+                return_value=([item], []),
+            ),
+            mock.patch.object(
+                fast,
+                "validated_liquidity_seed",
+                side_effect=lambda payload, _token: dict(payload),
+            ),
+            mock.patch.object(
+                fast,
+                "holder_liquidity_seed",
+                return_value=(holder_seed, holder_token_state),
+            ),
+            mock.patch.object(
+                fast,
+                "opened_event_for_identity",
+                return_value={"symbol": "TEST"},
+            ),
+            mock.patch.object(
+                fast,
+                "matching_opened_event",
+                return_value=True,
+            ),
+            mock.patch.object(
+                holder,
+                "build_token_liquidity_retention",
+            ) as build,
+        ):
+            snapshot = fast.build_snapshot()
+
+        build.assert_not_called()
+        self.assertEqual(snapshot["status"], "unhealthy")
+        self.assertEqual(snapshot["issues"][0]["detail"], "seed_conflict")
+        diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
+        self.assertEqual(diagnostic["scope_seed_source"], "none")
+        self.assertEqual(diagnostic["input_state_kind"], "invalid")
+        self.assertEqual(diagnostic["next_state_kind"], "invalid")
+        self.assertEqual(diagnostic["provider_status"], "not_attempted")
+        self.assertEqual(diagnostic["coverage_status"], "invalid")
+        self.assertEqual(diagnostic["reason_code"], "seed_conflict")
+
+    def test_fast_liquidity_diagnostic_maps_safe_exception_reasons(
+        self,
+    ) -> None:
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        for error_code, expected in (
+            ("deadline_exceeded", "deadline_exceeded"),
+            (
+                "liquidity_reconciliation_state_invalid",
+                "invalid_runtime_metadata",
+            ),
+        ):
+            with self.subTest(error_code=error_code):
+                diagnostic = fast.liquidity_runtime_diagnostic(
+                    standalone_seed_status="missing",
+                    holder_seed_status="missing",
+                    scope_seed_source="none",
+                    input_seed={},
+                    next_state=None,
+                    flow=fast.error_flow(error_code),
+                    error_code=error_code,
+                )
+                self.assertEqual(
+                    diagnostic["reason_code"],
+                    expected,
+                )
+
+        complete_flow = {
+            "status": "active",
+            "complete": True,
+            "selected_window_complete": True,
+            "query_scope_complete": True,
+            "pool_count": 1,
+            "log_error_count": 0,
+            "truncated": False,
+            "events_truncated": False,
+            "incremental_catchup": {
+                "complete_requested_window": True,
+                "deadline_exceeded": False,
+            },
+        }
+        checkpoint = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "scope_coverage_from_block": 100,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": False,
+        }
+        cases = (
+            (
+                complete_flow,
+                None,
+                "checkpoint_unavailable",
+                "incomplete_without_retry",
+                "complete",
+            ),
+            (
+                {**complete_flow, "complete": False, "pool_count": 0},
+                None,
+                "pool_scope_empty",
+                "incomplete_without_retry",
+                "complete",
+            ),
+            (
+                {**complete_flow, "attribution_query_error_count": 1},
+                checkpoint,
+                "operator_attribution_failed",
+                "incomplete_without_retry",
+                "complete",
+            ),
+            (
+                fast.error_flow("pool_scope_unavailable"),
+                None,
+                "coverage_gap",
+                "incomplete_without_retry",
+                "not_attempted",
+            ),
+        )
+        for flow, next_state, reason, coverage, provider in cases:
+            with self.subTest(reason=reason):
+                diagnostic = fast.liquidity_runtime_diagnostic(
+                    standalone_seed_status="missing",
+                    holder_seed_status="missing",
+                    scope_seed_source="none",
+                    input_seed={},
+                    next_state=next_state,
+                    flow=flow,
+                )
+                self.assertEqual(diagnostic["reason_code"], reason)
+                self.assertEqual(
+                    diagnostic["coverage_status"],
+                    coverage,
+                )
+                self.assertEqual(
+                    diagnostic["provider_status"],
+                    provider,
+                )
+
     def test_fast_liquidity_caches_tip_once_per_chain(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
         import scripts.alpha_liquidity_retention_watch as fast
@@ -26746,8 +27595,29 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             config_path = temp / "watchlist.json"
             opening_path = temp / "opening.json"
             holder_state_path = temp / "holder.json"
+            fast_state_path = temp / "state.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             opening_path.write_text('{"events": []}', encoding="utf-8")
+            fast_state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": fast.STATE_SCHEMA,
+                        "tokens": {
+                            f"bsc:{token}": {
+                                "decimals": 18,
+                                "liquidity": {
+                                    **seed,
+                                    "latest_block": 110,
+                                    "latest_block_hash": self._hash("e"),
+                                    "catchup_active": True,
+                                    "next_catchup_window_blocks": 8,
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             holder_state_path.write_text(
                 json.dumps(
                     {
@@ -26763,7 +27633,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             )
             with (
                 mock.patch.object(fast, "CONFIG_PATH", config_path),
-                mock.patch.object(fast, "STATE_PATH", temp / "state.json"),
+                mock.patch.object(fast, "STATE_PATH", fast_state_path),
                 mock.patch.object(holder, "STATE_PATH", holder_state_path),
                 mock.patch.object(
                     holder,
@@ -26809,6 +27679,40 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(flow["scan_from_block"], 121)
         self.assertEqual(flow["latest_block"], 128)
         self.assertTrue(flow["continuous"])
+        diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
+        self.assertEqual(
+            set(diagnostic),
+            {
+                "standalone_seed_status",
+                "holder_seed_status",
+                "scope_seed_source",
+                "input_state_kind",
+                "next_state_kind",
+                "input_retry_window_blocks",
+                "next_retry_window_blocks",
+                "deadline_exceeded",
+                "selected_window_complete",
+                "requested_window_complete",
+                "query_scope_complete",
+                "provider_status",
+                "coverage_status",
+                "reason_code",
+            },
+        )
+        self.assertEqual(diagnostic["standalone_seed_status"], "valid")
+        self.assertEqual(diagnostic["holder_seed_status"], "valid")
+        self.assertEqual(diagnostic["scope_seed_source"], "holder")
+        self.assertEqual(diagnostic["input_state_kind"], "checkpoint")
+        self.assertEqual(diagnostic["next_state_kind"], "checkpoint")
+        self.assertIsNone(diagnostic["input_retry_window_blocks"])
+        self.assertIsNone(diagnostic["next_retry_window_blocks"])
+        self.assertTrue(diagnostic["deadline_exceeded"] is False)
+        self.assertTrue(diagnostic["selected_window_complete"] is True)
+        self.assertTrue(diagnostic["requested_window_complete"] is True)
+        self.assertTrue(diagnostic["query_scope_complete"] is True)
+        self.assertEqual(diagnostic["provider_status"], "complete")
+        self.assertEqual(diagnostic["coverage_status"], "complete")
+        self.assertEqual(diagnostic["reason_code"], "none")
 
     def test_fast_liquidity_delivery_failure_retains_checkpoint(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -26873,6 +27777,93 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             failures = health.read_failures(failure_path)
             self.assertEqual(failures[0]["kind"], "step_failed")
             self.assertIn("alpha_liquidity", failures[0]["command"])
+
+    def test_fast_liquidity_no_send_persists_retry_on_unhealthy_exit(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        retry_seed = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+            "pool_count": 1,
+            "scope_coverage_from_block": 100,
+            "bootstrap_retry_pending": True,
+            "bootstrap_retry_window_blocks": 8,
+        }
+        self.assertEqual(
+            fast.liquidity_seed_state_kind(retry_seed),
+            "bootstrap_retry",
+        )
+        token_key = f"bsc:{self._address('1')}"
+        next_state = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {
+                token_key: {"decimals": 18, "liquidity": retry_seed}
+            },
+        }
+        snapshot = {
+            "schema": fast.SNAPSHOT_SCHEMA,
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "status": "unhealthy",
+            "issue_count": 1,
+            "issues": [
+                {
+                    "kind": "liquidity_coverage_gap",
+                    "name": "TEST",
+                    "detail": "provider_coverage_failed",
+                }
+            ],
+            "project_count": 1,
+            "expected_count": 1,
+            "processed_count": 1,
+            "dropped_count": 0,
+            "expected_identity_hash": "fixture",
+            "processed_identity_hash": "fixture",
+            "required_count": 1,
+            "complete_count": 0,
+            "alert_ready_count": 0,
+            "alert_count": 0,
+            "projects": [],
+            "_next_state": next_state,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            latest_path = temp / "latest.json"
+            state_path = temp / "state.json"
+            with (
+                mock.patch.object(fast, "OUT_DIR", temp),
+                mock.patch.object(fast, "LATEST_PATH", latest_path),
+                mock.patch.object(fast, "REPORT_PATH", temp / "latest.md"),
+                mock.patch.object(fast, "STATE_PATH", state_path),
+                mock.patch.object(
+                    fast,
+                    "build_snapshot",
+                    return_value=copy.deepcopy(snapshot),
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "DISABLE_TELEGRAM": "1",
+                        "ALPHA_HOLDER_TELEGRAM": "1",
+                    },
+                ),
+            ):
+                self.assertEqual(fast.run_once(), 1)
+
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            latest = json.loads(latest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            saved["tokens"][token_key]["liquidity"],
+            retry_seed,
+        )
+        self.assertEqual(latest["delivery_status"], "complete")
+        self.assertEqual(latest["status"], "unhealthy")
 
     def test_holder_and_fast_processes_share_locked_seen_ledger(self) -> None:
         snapshot = {"projects": [{}]}
