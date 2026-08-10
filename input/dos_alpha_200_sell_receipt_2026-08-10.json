@@ -1,0 +1,83 @@
+{
+  "schema": "dos_candidate_asset_sell_receipt.v1",
+  "chain": "bsc",
+  "chain_id": 56,
+  "transaction_hash": "0xf79da567f0039d573d222835d5e3fc811db14b43905826f323b1de5794aaa782",
+  "receipt_status": "0x1",
+  "block_number": 115102481,
+  "block_hash": "0x59a7108399572be207314a699a2f6e8314be120bcf598327aebd2d0f82a590bb",
+  "block_time_utc": "2026-08-10T10:10:52+00:00",
+  "transaction_index": 36,
+  "transaction_from": "0x9e9faf2a707dfb588f53fa922bded3bac769ee02",
+  "transaction_to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+  "input_selector": "0x4de165c3",
+  "native_value_raw": "0",
+  "receipt_log_count": 13,
+  "canonical_transfer_count": 6,
+  "token_context": {
+    "candidate_dos": {
+      "address": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+      "decimals": 18,
+      "identity_status": "canonical_pool_key_match_official_catalog_pending"
+    },
+    "usdt": {
+      "address": "0x55d398326f99059ff775485246999027b3197955",
+      "decimals": 18
+    }
+  },
+  "canonical_transfers": [
+    {
+      "log_index": 233,
+      "token": "candidate_dos",
+      "from": "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db",
+      "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+      "value_raw": "200000000000000000000"
+    },
+    {
+      "log_index": 236,
+      "token": "candidate_dos",
+      "from": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+      "to": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "value_raw": "200000000000000000000"
+    },
+    {
+      "log_index": 238,
+      "token": "candidate_dos",
+      "from": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "to": "0x1905dbf18c916bf8ec659545de0858d9f20eaeab",
+      "value_raw": "200000000000000000000"
+    },
+    {
+      "log_index": 240,
+      "token": "candidate_dos",
+      "from": "0x1905dbf18c916bf8ec659545de0858d9f20eaeab",
+      "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "value_raw": "200000000000000000000"
+    },
+    {
+      "log_index": 241,
+      "token": "usdt",
+      "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "to": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "value_raw": "51029905954379509513"
+    },
+    {
+      "log_index": 244,
+      "token": "usdt",
+      "from": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+      "value_raw": "51029905954379509513"
+    }
+  ],
+  "derived": {
+    "candidate_dos_in": "200",
+    "usdt_out": "51.029905954379509513",
+    "classification": "candidate_asset_sell_receipt_confirmed",
+    "airdrop_origin_attribution": "unverified",
+    "automatic_trading": false
+  },
+  "issue_codes": [
+    "official_bsc_contract_mapping_missing",
+    "airdrop_origin_unverified"
+  ]
+}

@@ -4164,6 +4164,781 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("partial", text)
         self.assertIn("缺口", text)
 
+    def test_airdrop_pressure_clock_survives_prelaunch_expiry_and_fails_closed(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        event_id = "drop-community-claim"
+        item = {
+            "symbol": "DROP",
+            "name": "Drop Project",
+            "priority": "P0_PRELAUNCH",
+            "active_monitoring": True,
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "6" * 40}
+            ],
+            "event_schedule": [
+                {
+                    "event_id": event_id,
+                    "event_type": "airdrop_claim",
+                    "venue": "Project portal",
+                    "claim_start_utc": "2026-08-10T10:00:00+00:00",
+                    "claim_end_utc": "",
+                    "time_precision": "exact",
+                    "authority": "project_official",
+                    "verification_status": "verified",
+                    "channel_allocation_status": "unknown",
+                    "evidence_ids": ["drop-official-claim"],
+                }
+            ],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "blocked",
+                "evidence": [
+                    {
+                        "evidence_id": "drop-official-claim",
+                        "evidence_kind": "official",
+                        "source_ref": "https://example.com/drop-claim",
+                        "verification_status": "verified",
+                        "supports": [
+                            f"airdrop_schedule_start:{event_id}"
+                        ],
+                    }
+                ],
+                "missing_fields": ["distribution_identity"],
+                "conflicts": [],
+            },
+        }
+
+        self.assertEqual(
+            prelaunch.build_events(
+                {"items": [item]},
+                datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+            ),
+            [],
+        )
+        before = prelaunch.build_airdrop_pressure_events(
+            {"items": [item]},
+            datetime(2026, 8, 10, 9, 50, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(before), 1)
+        self.assertEqual(before[0]["event_kind"], "airdrop_pressure")
+        self.assertEqual(before[0]["calendar_state"], "scheduled_not_started")
+        self.assertEqual(before[0]["reminder_state"], "not_yet")
+
+        started = prelaunch.build_airdrop_pressure_events(
+            {"items": [item]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(started), 1)
+        event = started[0]
+        self.assertEqual(event["calendar_state"], "claim_open_end_unknown")
+        self.assertEqual(event["pressure_state"], "blocked_missing_evidence")
+        self.assertEqual(event["reminder_state"], "in_window")
+        self.assertEqual(event["alert_policy"], "notify")
+        self.assertFalse(event["automatic_trading"])
+        self.assertIn("airdrop_claim_end_unknown", event["issue_codes"])
+        self.assertIn("airdrop_allocation_unknown", event["issue_codes"])
+        self.assertIn(
+            "airdrop_distribution_identity_missing",
+            event["issue_codes"],
+        )
+        self.assertIn(
+            "airdrop_pressure_closure_unproven",
+            event["issue_codes"],
+        )
+        self.assertIn("空投抛压时钟", prelaunch.telegram_event_text(event))
+
+        ended_item = json.loads(json.dumps(item))
+        ended_item["event_schedule"][0]["claim_end_utc"] = (
+            "2026-08-10T12:00:00+00:00"
+        )
+        ended_item["prelaunch_research"]["evidence"][0]["supports"].append(
+            f"airdrop_schedule_end:{event_id}"
+        )
+        ended = prelaunch.build_airdrop_pressure_events(
+            {"items": [ended_item]},
+            datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(ended["calendar_state"], "claim_ended")
+        self.assertEqual(
+            ended["reminder_state"],
+            "ended_pressure_unresolved",
+        )
+        self.assertNotEqual(ended["pressure_state"], "pressure_cleared")
+
+    def test_airdrop_pressure_social_time_is_report_only_and_clearance_is_strict(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        base_event = {
+            "event_id": "drop-community-claim",
+            "event_type": "airdrop_claim",
+            "venue": "Project portal",
+            "claim_start_utc": "2026-08-10T10:00:00+00:00",
+            "claim_end_utc": "2026-08-10T12:00:00+00:00",
+            "time_precision": "exact",
+            "authority": "social_discovery",
+            "verification_status": "verified",
+            "evidence_ids": ["drop-social"],
+        }
+        item = {
+            "symbol": "DROP",
+            "priority": "P0_PRELAUNCH",
+            "active_monitoring": True,
+            "contracts": [
+                {"chain": "bsc", "address": "0x" + "7" * 40}
+            ],
+            "event_schedule": [base_event],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "blocked",
+                "evidence": [
+                    {
+                        "evidence_id": "drop-social",
+                        "evidence_kind": "social",
+                        "source_ref": "https://example.com/social",
+                        "verification_status": "verified",
+                        "supports": [
+                            "airdrop_schedule_start:drop-community-claim",
+                            "airdrop_schedule_end:drop-community-claim",
+                        ],
+                    }
+                ],
+                "missing_fields": [],
+                "conflicts": [],
+            },
+        }
+        social = prelaunch.build_airdrop_pressure_events(
+            {"items": [item]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(social["calendar_state"], "unverified")
+        self.assertEqual(social["reminder_state"], "time_unverified")
+        self.assertEqual(social["alert_policy"], "report_only")
+        self.assertIn("airdrop_schedule_unverified", social["issue_codes"])
+        self.assertIn("airdrop_authority_untrusted", social["issue_codes"])
+        self.assertEqual(prelaunch.telegram_messages([social]), [])
+        with mock.patch.object(prelaunch, "send_telegram") as send:
+            result = prelaunch.push_new_events(
+                [social],
+                [],
+                seen_namespace="airdrop",
+            )
+        self.assertTrue(result["skipped"])
+        send.assert_not_called()
+
+        verified = json.loads(json.dumps(item))
+        schedule = verified["event_schedule"][0]
+        schedule["authority"] = "project_official"
+        schedule["channel_allocation_status"] = "verified"
+        schedule["channel_token_amount"] = "1000"
+        schedule["distribution_identity_status"] = "verified"
+        official = verified["prelaunch_research"]["evidence"][0]
+        official["evidence_id"] = "close-official"
+        official["evidence_kind"] = "official"
+        official["supports"] = [
+            "airdrop_schedule_start:drop-community-claim",
+            "airdrop_schedule_end:drop-community-claim",
+            "airdrop_claim_closed:drop-community-claim",
+            "airdrop_asset_identity:drop-community-claim",
+            "airdrop_attribution:drop-community-claim",
+        ]
+        verified["prelaunch_research"]["identity"] = {
+            "verification_status": "verified",
+            "evidence_ids": ["close-official"],
+        }
+        schedule["evidence_ids"] = ["close-official"]
+        schedule["airdrop_attribution"] = {
+            "status": "verified",
+            "evidence_ids": ["close-official", "close-onchain"],
+        }
+        schedule["pressure_closure"] = {
+            "status": "cleared",
+            "verification_status": "verified",
+            "claim_closed": True,
+            "distribution_identity_verified": True,
+            "finalized_log_coverage_complete": True,
+            "residual_inventory_closed": True,
+            "recipient_next_hop_complete": True,
+            "downstream_activity_window_complete": True,
+            "issue_codes": [],
+            "evidence_ids": ["close-official", "close-onchain"],
+            "coverage": {
+                "status": "complete",
+                "finalized": True,
+                "from_block": 100,
+                "to_block": 200,
+                "to_block_hash": "0x" + "a" * 64,
+                "cursor": "finalized-200",
+                "window_start_utc": "2026-08-10T10:00:00+00:00",
+                "window_end_utc": "2026-08-10T12:30:00+00:00",
+            },
+            "downstream_coverage": {
+                "status": "complete",
+                "finalized": True,
+                "window_start_utc": "2026-08-10T12:00:00+00:00",
+                "window_end_utc": "2026-08-10T12:30:00+00:00",
+                "venues": ["DEX", "CEX"],
+                "providers": ["fixture-dex", "fixture-cex"],
+                "issue_codes": [],
+                "coverage_bindings": [
+                    {
+                        "venue": "DEX",
+                        "provider": "fixture-dex",
+                        "evidence_ids": ["close-dex"],
+                    },
+                    {
+                        "venue": "CEX",
+                        "provider": "fixture-cex",
+                        "evidence_ids": ["close-cex"],
+                    },
+                ],
+            },
+        }
+        invented = prelaunch.build_airdrop_pressure_events(
+            {"items": [verified]},
+            datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertNotEqual(invented["reminder_state"], "passed")
+        self.assertNotEqual(invented["clearance_state"], "verified")
+
+        verified["prelaunch_research"]["evidence"].append(
+            {
+                "evidence_id": "close-onchain",
+                "evidence_kind": "onchain",
+                "evidence_subtype": "coverage",
+                "source_ref": "bsc:finalized-range:100-200",
+                "verification_status": "verified",
+                "supports": [
+                    "airdrop_pressure_closure:drop-community-claim",
+                    "airdrop_attribution:drop-community-claim",
+                ],
+            }
+        )
+        verified["prelaunch_research"]["evidence"].append(
+            {
+                "evidence_id": "close-dex",
+                "evidence_kind": "onchain",
+                "evidence_subtype": "coverage",
+                "source_ref": "bsc:fixture-downstream-window",
+                "verification_status": "verified",
+                "supports": [
+                    (
+                        "airdrop_downstream_closure:drop-community-claim:"
+                        "dex:fixture-dex"
+                    )
+                ],
+            }
+        )
+        verified["prelaunch_research"]["evidence"].append(
+            {
+                "evidence_id": "close-cex",
+                "evidence_kind": "official_exchange",
+                "source_ref": "https://example.com/fixture-cex-window",
+                "verification_status": "verified",
+                "supports": [
+                    (
+                        "airdrop_downstream_closure:drop-community-claim:"
+                        "cex:fixture-cex"
+                    )
+                ],
+            }
+        )
+        zero_downstream = json.loads(json.dumps(verified))
+        zero_downstream["event_schedule"][0]["pressure_closure"][
+            "downstream_coverage"
+        ]["window_end_utc"] = "2026-08-10T12:00:00+00:00"
+        zero = prelaunch.build_airdrop_pressure_events(
+            {"items": [zero_downstream]},
+            datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertNotEqual(zero["reminder_state"], "passed")
+        dex_only = json.loads(json.dumps(verified))
+        dex_only_coverage = dex_only["event_schedule"][0][
+            "pressure_closure"
+        ]["downstream_coverage"]
+        dex_only_coverage["venues"] = ["DEX"]
+        dex_only_coverage["providers"] = ["fixture-dex"]
+        dex_only_coverage["coverage_bindings"] = [
+            dex_only_coverage["coverage_bindings"][0]
+        ]
+        incomplete = prelaunch.build_airdrop_pressure_events(
+            {"items": [dex_only]},
+            datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertNotEqual(incomplete["reminder_state"], "passed")
+        cleared = prelaunch.build_airdrop_pressure_events(
+            {"items": [verified]},
+            datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(cleared["pressure_state"], "pressure_cleared")
+        self.assertEqual(cleared["reminder_state"], "passed")
+        self.assertEqual(cleared["clearance_state"], "verified")
+        self.assertEqual(cleared["issue_codes"], [])
+        with (
+            mock.patch.object(prelaunch, "send_telegram") as send,
+            mock.patch.object(prelaunch, "write_seen_keys") as write_launch,
+            mock.patch.object(
+                prelaunch,
+                "write_airdrop_seen_keys",
+            ) as write_airdrop,
+        ):
+            mismatch = prelaunch.push_new_events([cleared], [])
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(mismatch["reason"], "seen_namespace_mismatch")
+        send.assert_not_called()
+        write_launch.assert_not_called()
+        write_airdrop.assert_not_called()
+
+        delivered_keys: list[str] = []
+        with (
+            mock.patch.object(
+                prelaunch,
+                "send_telegram",
+                return_value={"ok": True},
+            ),
+            mock.patch.object(prelaunch, "write_seen_keys") as write_launch,
+            mock.patch.object(
+                prelaunch,
+                "write_airdrop_seen_keys",
+            ) as write_airdrop,
+        ):
+            delivered = prelaunch.push_new_events(
+                [cleared],
+                delivered_keys,
+                seen_namespace="airdrop",
+            )
+        self.assertTrue(delivered["ok"])
+        self.assertEqual(delivered["delivered_event_count"], 1)
+        write_launch.assert_not_called()
+        write_airdrop.assert_called_once_with(delivered_keys)
+
+        disabled_keys: list[str] = []
+        with (
+            mock.patch.object(
+                prelaunch,
+                "send_telegram",
+                return_value={
+                    "ok": True,
+                    "disabled": True,
+                    "reason": "telegram_disabled",
+                },
+            ),
+            mock.patch.object(prelaunch, "write_seen_keys") as write_launch,
+            mock.patch.object(
+                prelaunch,
+                "write_airdrop_seen_keys",
+            ) as write_airdrop,
+        ):
+            disabled = prelaunch.push_new_events(
+                [cleared],
+                disabled_keys,
+                seen_namespace="airdrop",
+            )
+        self.assertTrue(disabled["ok"])
+        self.assertTrue(disabled["disabled"])
+        self.assertEqual(disabled_keys, [])
+        write_launch.assert_not_called()
+        write_airdrop.assert_not_called()
+
+    def test_airdrop_venue_sell_and_attribution_are_independent_axes(
+        self,
+    ) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        event_id = "drop-alpha-claim"
+        item = {
+            "symbol": "DROP",
+            "priority": "P0_PRELAUNCH",
+            "active_monitoring": True,
+            "event_schedule": [
+                {
+                    "event_id": event_id,
+                    "event_type": "airdrop_claim",
+                    "venue": "Alpha",
+                    "claim_start_utc": "2026-08-10T10:00:00+00:00",
+                    "claim_end_utc": "",
+                    "time_precision": "exact",
+                    "authority": "exchange_official",
+                    "verification_status": "verified",
+                    "channel_allocation_status": "unknown",
+                    "distribution_identity_status": "unverified",
+                    "venue_sell_evidence": {
+                        "status": "receipt_confirmed",
+                        "evidence_ids": ["drop-sell"],
+                    },
+                    "airdrop_attribution": {
+                        "status": "unverified",
+                        "evidence_ids": [],
+                    },
+                    "evidence_ids": ["drop-open", "drop-sell"],
+                }
+            ],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "blocked",
+                "evidence": [
+                    {
+                        "evidence_id": "drop-open",
+                        "evidence_kind": "official_exchange",
+                        "source_ref": "https://example.com/open",
+                        "verification_status": "verified",
+                        "supports": [
+                            f"airdrop_schedule_start:{event_id}",
+                            f"airdrop_asset_identity:{event_id}",
+                        ],
+                    },
+                    {
+                        "evidence_id": "drop-sell",
+                        "evidence_kind": "onchain",
+                        "evidence_subtype": "receipt",
+                        "source_ref": "bsc:0x" + "1" * 64,
+                        "verification_status": "verified",
+                        "supports": [f"airdrop_venue_sell:{event_id}"],
+                    },
+                ],
+                "identity": {
+                    "verification_status": "verified",
+                    "evidence_ids": ["drop-open"],
+                },
+                "missing_fields": ["airdrop_attribution"],
+                "conflicts": [],
+            },
+        }
+        for current in (
+            datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        ):
+            event = prelaunch.build_airdrop_pressure_events(
+                {"items": [item]}, current
+            )[0]
+            self.assertEqual(event["venue_sell_state"], "receipt_confirmed")
+            self.assertEqual(event["airdrop_attribution_state"], "unverified")
+            self.assertEqual(
+                event["pressure_state"],
+                "venue_sell_confirmed_airdrop_origin_unverified",
+            )
+            self.assertIn("空投来源未证实", event["action"])
+
+        candidate_asset = json.loads(json.dumps(item))
+        candidate_asset["prelaunch_research"].pop("identity")
+        candidate = prelaunch.build_airdrop_pressure_events(
+            {"items": [candidate_asset]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(
+            candidate["venue_sell_state"],
+            "candidate_asset_receipt_confirmed",
+        )
+        self.assertEqual(
+            candidate["pressure_state"],
+            "candidate_asset_sell_receipt_origin_unverified",
+        )
+        self.assertIn("airdrop_asset_identity_unverified", candidate["issue_codes"])
+
+        raw_only = json.loads(json.dumps(item))
+        raw_schedule = raw_only["event_schedule"][0]
+        raw_schedule.pop("venue_sell_evidence")
+        raw_schedule["distribution_status"] = "confirmed_sell_pressure"
+        raw = prelaunch.build_airdrop_pressure_events(
+            {"items": [raw_only]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(raw["venue_sell_state"], "unknown")
+        self.assertEqual(raw["pressure_state"], "blocked_missing_evidence")
+        self.assertEqual(
+            prelaunch.airdrop_allocation_text(
+                {
+                    "channel_allocation_status": "verified",
+                    "channel_share_of_total": "1%",
+                },
+                "DROP",
+            ),
+            "1%",
+        )
+        self.assertIn(
+            "未知",
+            prelaunch.airdrop_allocation_text(
+                {"channel_allocation_status": "verified"},
+                "DROP",
+            ),
+        )
+
+    def test_airdrop_duplicate_id_and_invalid_end_are_report_only(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        def item(symbol: str) -> dict[str, object]:
+            event_id = "duplicate-claim"
+            return {
+                "symbol": symbol,
+                "priority": "P0_PRELAUNCH",
+                "active_monitoring": True,
+                "event_schedule": [
+                    {
+                        "event_id": event_id,
+                        "event_type": "airdrop_claim",
+                        "claim_start_utc": "2026-08-10T10:00:00+00:00",
+                        "claim_end_utc": "2026-08-10T09:00:00+00:00",
+                        "time_precision": "exact",
+                        "authority": "project_official",
+                        "verification_status": "verified",
+                        "evidence_ids": [f"{symbol}-official"],
+                    }
+                ],
+                "prelaunch_research": {
+                    "schema_version": "alpha_prelaunch_research.v1",
+                    "research_status": "blocked",
+                    "evidence": [
+                        {
+                            "evidence_id": f"{symbol}-official",
+                            "evidence_kind": "official",
+                            "source_ref": f"https://example.com/{symbol}",
+                            "verification_status": "verified",
+                            "supports": [
+                                f"airdrop_schedule_start:{event_id}",
+                                f"airdrop_schedule_end:{event_id}",
+                            ],
+                        }
+                    ],
+                    "missing_fields": [],
+                    "conflicts": [],
+                },
+            }
+
+        duplicates = prelaunch.build_airdrop_pressure_events(
+            {"items": [item("A"), item("B")]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(duplicates), 2)
+        self.assertTrue(
+            all(event["alert_policy"] == "report_only" for event in duplicates)
+        )
+        self.assertTrue(
+            all(
+                "airdrop_event_id_duplicate" in event["issue_codes"]
+                for event in duplicates
+            )
+        )
+
+        invalid_end = prelaunch.build_airdrop_pressure_events(
+            {"items": [item("C")]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(invalid_end["alert_policy"], "report_only")
+        self.assertEqual(
+            invalid_end["calendar_state"],
+            "claim_open_end_unverified",
+        )
+        self.assertIn("airdrop_claim_window_invalid", invalid_end["issue_codes"])
+
+    def test_airdrop_evidence_provenance_and_type_fail_closed(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
+
+        event_id = "typed-claim"
+        base = {
+            "symbol": "TYPE",
+            "priority": "P0_PRELAUNCH",
+            "active_monitoring": True,
+            "event_schedule": [
+                {
+                    "event_id": event_id,
+                    "event_type": "airdrop_claim",
+                    "claim_start_utc": "2026-08-10T10:00:00+00:00",
+                    "claim_end_utc": "",
+                    "time_precision": "exact",
+                    "authority": "project_official",
+                    "verification_status": "verified",
+                    "evidence_ids": ["typed-official"],
+                }
+            ],
+            "prelaunch_research": {
+                "schema_version": "alpha_prelaunch_research.v1",
+                "research_status": "blocked",
+                "evidence": [
+                    {
+                        "evidence_id": "typed-official",
+                        "evidence_kind": "official",
+                        "source_ref": "https://example.com/typed",
+                        "verification_status": "verified",
+                        "supports": [
+                            f"airdrop_schedule_start:{event_id}",
+                            f"airdrop_asset_identity:{event_id}",
+                        ],
+                    }
+                ],
+                "identity": {
+                    "verification_status": "verified",
+                    "evidence_ids": ["typed-official"],
+                },
+                "missing_fields": [],
+                "conflicts": [],
+            },
+        }
+
+        baseline = prelaunch.build_airdrop_pressure_events(
+            {"items": [base]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        semantic_change = json.loads(json.dumps(base))
+        semantic_change["prelaunch_research"]["evidence"][0][
+            "source_ref"
+        ] = "https://example.com/typed-revised"
+        revised = prelaunch.build_airdrop_pressure_events(
+            {"items": [semantic_change]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertNotEqual(revised["alert_key"], baseline["alert_key"])
+        refresh_only = json.loads(json.dumps(base))
+        refresh_only["prelaunch_research"]["evidence"][0][
+            "observed_at"
+        ] = "2026-08-10T10:59:00+00:00"
+        refreshed = prelaunch.build_airdrop_pressure_events(
+            {"items": [refresh_only]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(refreshed["alert_key"], baseline["alert_key"])
+
+        missing_source = json.loads(json.dumps(base))
+        missing_source["prelaunch_research"]["evidence"][0]["source_ref"] = ""
+        missing = prelaunch.build_airdrop_pressure_events(
+            {"items": [missing_source]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(missing["alert_policy"], "report_only")
+        self.assertIn("airdrop_evidence_unresolved", missing["issue_codes"])
+
+        duplicate = json.loads(json.dumps(base))
+        duplicate["prelaunch_research"]["evidence"].append(
+            json.loads(json.dumps(duplicate["prelaunch_research"]["evidence"][0]))
+        )
+        ambiguous = prelaunch.build_airdrop_pressure_events(
+            {"items": [duplicate]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(ambiguous["alert_policy"], "report_only")
+        self.assertIn("airdrop_evidence_unresolved", ambiguous["issue_codes"])
+
+        sampled = json.loads(json.dumps(base))
+        sampled["prelaunch_research"]["evidence"].append(
+            {
+                "evidence_id": "typed-sample",
+                "evidence_kind": "onchain",
+                "evidence_subtype": "sample",
+                "source_ref": "bsc:sample",
+                "verification_status": "verified",
+                "supports": [f"airdrop_venue_sell:{event_id}"],
+            }
+        )
+        sampled["event_schedule"][0]["evidence_ids"].append("typed-sample")
+        sampled["event_schedule"][0]["venue_sell_evidence"] = {
+            "status": "receipt_confirmed",
+            "evidence_ids": ["typed-sample"],
+        }
+        sample_event = prelaunch.build_airdrop_pressure_events(
+            {"items": [sampled]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(sample_event["venue_sell_state"], "candidate")
+        self.assertIn(
+            "airdrop_venue_sell_evidence_unverified",
+            sample_event["issue_codes"],
+        )
+
+        for evidence_status in ("unverified", "conflicted"):
+            social_state = json.loads(json.dumps(base))
+            social_state["prelaunch_research"]["evidence"].append(
+                {
+                    "evidence_id": f"social-{evidence_status}",
+                    "evidence_kind": "social",
+                    "source_ref": "https://example.com/social-pressure",
+                    "verification_status": evidence_status,
+                    "supports": [
+                        f"airdrop_venue_sell:{event_id}",
+                        f"airdrop_attribution:{event_id}",
+                    ],
+                }
+            )
+            social_state["event_schedule"][0]["venue_sell_evidence"] = {
+                "status": "reorg_pending",
+                "evidence_ids": [f"social-{evidence_status}"],
+            }
+            social_state["event_schedule"][0]["airdrop_attribution"] = {
+                "status": "candidate",
+                "evidence_ids": [f"social-{evidence_status}"],
+            }
+            event = prelaunch.build_airdrop_pressure_events(
+                {"items": [social_state]},
+                datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+            )[0]
+            self.assertEqual(event["venue_sell_state"], "unknown")
+            self.assertEqual(event["airdrop_attribution_state"], "unverified")
+            self.assertEqual(event["alert_key"], baseline["alert_key"])
+            with mock.patch.object(prelaunch, "send_telegram") as send:
+                duplicate_push = prelaunch.push_new_events(
+                    [
+                        candidate
+                        for candidate in [event]
+                        if candidate["alert_key"]
+                        not in {baseline["alert_key"]}
+                    ],
+                    [baseline["alert_key"]],
+                    seen_namespace="airdrop",
+                )
+            self.assertTrue(duplicate_push["skipped"])
+            send.assert_not_called()
+            self.assertIn(
+                "airdrop_venue_sell_evidence_missing",
+                event["issue_codes"],
+            )
+            self.assertIn(
+                "airdrop_attribution_evidence_unresolved",
+                event["issue_codes"],
+            )
+
+        ordinary_receipt = json.loads(json.dumps(sampled))
+        ordinary_receipt["prelaunch_research"]["evidence"][-1][
+            "evidence_subtype"
+        ] = "receipt"
+        ordinary_receipt["event_schedule"][0]["venue_sell_evidence"][
+            "status"
+        ] = "reorg_pending"
+        unproven_reorg = prelaunch.build_airdrop_pressure_events(
+            {"items": [ordinary_receipt]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(unproven_reorg["venue_sell_state"], "unknown")
+        self.assertIn(
+            "airdrop_venue_sell_evidence_missing",
+            unproven_reorg["issue_codes"],
+        )
+
+        empty_states = json.loads(json.dumps(base))
+        empty_states["event_schedule"][0]["venue_sell_evidence"] = {
+            "status": "reorg_pending",
+            "evidence_ids": [],
+        }
+        empty_states["event_schedule"][0]["airdrop_attribution"] = {
+            "status": "candidate",
+            "evidence_ids": [],
+        }
+        empty_event = prelaunch.build_airdrop_pressure_events(
+            {"items": [empty_states]},
+            datetime(2026, 8, 10, 11, 0, tzinfo=timezone.utc),
+        )[0]
+        self.assertEqual(empty_event["venue_sell_state"], "unknown")
+        self.assertEqual(empty_event["airdrop_attribution_state"], "unverified")
+        self.assertIn(
+            "airdrop_venue_sell_evidence_missing",
+            empty_event["issue_codes"],
+        )
+        self.assertIn(
+            "airdrop_attribution_evidence_unresolved",
+            empty_event["issue_codes"],
+        )
+
     def test_grvt_tracked_research_is_blocked_and_schema_consistent(
         self,
     ) -> None:
@@ -24521,6 +25296,142 @@ raise SystemExit(0 if ok else 1)
             "ALPHA_RETENTION_LIQUIDITY_CATCHUP_MIN_BLOCKS=1",
             fast_source,
         )
+
+    def test_fast_health_requires_complete_airdrop_pressure_output(self) -> None:
+        import scripts.fast_lane_health as health
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "prelaunch.json"
+            path.write_text(json.dumps({"events": []}), encoding="utf-8")
+            with mock.patch.object(
+                health,
+                "CORE_OUTPUTS",
+                (("prelaunch", path),),
+            ):
+                issues, _rows = health.output_checks(60)
+            self.assertEqual(issues[0]["kind"], "invalid_fast_output")
+            self.assertIn("schema", issues[0]["detail"])
+
+            event = {
+                "event_kind": "airdrop_pressure",
+                "event_id": "drop-claim",
+                "event_id_source": "configured",
+                "symbol": "DROP",
+                "contract": "0x" + "1" * 40,
+                "reminder_state": "in_window",
+                "schedule_evidence_status": "verified",
+                "evidence_resolution_status": "resolved",
+                "clearance_state": "blocked",
+                "automatic_trading": False,
+                "alert_policy": "notify",
+                "issue_codes": ["airdrop_claim_end_unknown"],
+            }
+            payload = {
+                "schema": "alpha_prelaunch_watch.v2",
+                "events": [],
+                "airdrop_pressure_events": [event],
+                "airdrop_pressure_required_count": 1,
+                "airdrop_pressure_event_count": 1,
+                "airdrop_pressure_expected_identity_hash": (
+                    health.airdrop_identity_hash([event])
+                ),
+                "airdrop_pressure_processed_identity_hash": (
+                    health.airdrop_identity_hash([event])
+                ),
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(health.prelaunch_output_issue(path), "")
+
+            watchlist_path = Path(temp_dir) / "watchlist.json"
+            watchlist_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "symbol": "DROP",
+                                "priority": "P0_PRELAUNCH",
+                                "active_monitoring": True,
+                                "contracts": [
+                                    {
+                                        "address": "0x" + "1" * 40,
+                                    }
+                                ],
+                                "event_schedule": [
+                                    {
+                                        "event_id": "drop-claim",
+                                        "event_type": "airdrop_claim",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    health,
+                    "CORE_OUTPUTS",
+                    (("prelaunch", path),),
+                ),
+                mock.patch.object(
+                    health,
+                    "effective_watchlist_path",
+                    return_value=watchlist_path,
+                ),
+            ):
+                issues, _rows = health.output_checks(60)
+            self.assertEqual(issues, [])
+
+            substituted = json.loads(json.dumps(payload))
+            substituted["airdrop_pressure_events"][0]["event_id"] = (
+                "substituted-claim"
+            )
+            substituted_hash = health.airdrop_identity_hash(
+                substituted["airdrop_pressure_events"]
+            )
+            substituted["airdrop_pressure_expected_identity_hash"] = (
+                substituted_hash
+            )
+            substituted["airdrop_pressure_processed_identity_hash"] = (
+                substituted_hash
+            )
+            path.write_text(json.dumps(substituted), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    health,
+                    "CORE_OUTPUTS",
+                    (("prelaunch", path),),
+                ),
+                mock.patch.object(
+                    health,
+                    "effective_watchlist_path",
+                    return_value=watchlist_path,
+                ),
+            ):
+                issues, _rows = health.output_checks(60)
+            self.assertIn("identity", issues[0]["detail"])
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            for field, value in (
+                ("airdrop_pressure_required_count", 2),
+                ("airdrop_pressure_event_count", 0),
+                ("airdrop_pressure_event_count", "1"),
+            ):
+                invalid = json.loads(json.dumps(payload))
+                invalid[field] = value
+                path.write_text(json.dumps(invalid), encoding="utf-8")
+                self.assertNotEqual(health.prelaunch_output_issue(path), "")
+
+            invalid = json.loads(json.dumps(payload))
+            invalid["airdrop_pressure_events"][0]["event_id"] = ""
+            invalid_hash = health.airdrop_identity_hash(
+                invalid["airdrop_pressure_events"]
+            )
+            invalid["airdrop_pressure_expected_identity_hash"] = invalid_hash
+            invalid["airdrop_pressure_processed_identity_hash"] = invalid_hash
+            path.write_text(json.dumps(invalid), encoding="utf-8")
+            self.assertIn("event", health.prelaunch_output_issue(path))
 
     def test_fast_health_identity_hash_matches_exclusive_dos_grvt_focus(
         self,

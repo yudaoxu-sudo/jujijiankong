@@ -621,6 +621,38 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             },
         )
 
+    def test_remote_probe_hash_gates_airdrop_producer_and_health_consumer(
+        self,
+    ) -> None:
+        protected = {
+            "input/dos_airdrop_pressure_evidence_2026-08-10.json",
+            "input/dos_alpha_200_sell_receipt_2026-08-10.json",
+            "scripts/alpha_prelaunch_watch.py",
+            "scripts/build_alpha_daily_report.py",
+            "scripts/fast_lane_health.py",
+        }
+        self.assertTrue(protected.issubset(set(DEPLOY_PARITY_PATHS)))
+        for relative_path in sorted(protected):
+            with self.subTest(relative_path=relative_path):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    expected_hashes, _ = remote_probe_fixture(root)
+                    path = root / relative_path
+                    path.write_text(
+                        path.read_text(encoding="utf-8") + "tampered\n",
+                        encoding="utf-8",
+                    )
+                    payload = run_remote_probe(root, expected_hashes)
+                self.assertEqual(payload["status"], "fail")
+                self.assertEqual(
+                    payload["deployed_hash_expected_count"],
+                    len(DEPLOY_PARITY_PATHS),
+                )
+                self.assertEqual(
+                    payload["deployed_hash_parity_count"],
+                    len(DEPLOY_PARITY_PATHS) - 1,
+                )
+
     def test_remote_probe_ignores_three_historical_unversioned_scope_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

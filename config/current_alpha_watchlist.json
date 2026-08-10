@@ -694,33 +694,148 @@
       "known_times": [
         {
           "time": "2026-08-10 17:00",
-          "reason": "canonical_pool_hook_timestamp_official_venue_time_pending"
+          "reason": "binance_wallet_official_and_canonical_pool_hook_matched"
         }
       ],
       "event_schedule": [
         {
+          "event_id": "dos-binance-alpha-open",
           "event_type": "alpha_open",
           "venue": "Binance Alpha",
           "time_utc8": "2026-08-10 17:00",
+          "time_utc": "2026-08-10T09:00:00+00:00",
           "time_precision": "exact",
-          "authority": "onchain_canonical_pool_hook",
-          "verification_status": "verified_pool_key_and_hook_timestamp_official_venue_time_pending",
+          "authority": "binance_wallet_official_and_onchain_canonical_pool_hook",
+          "verification_status": "verified",
           "evidence_ids": [
+            "dos-binance-alpha-claim-rules",
             "dos-onchain-pool-start",
             "dos-onchain-pool-initialize"
           ]
         },
         {
+          "event_id": "dos-binance-alpha-points-claim",
           "event_type": "airdrop_claim",
           "venue": "Binance Alpha",
+          "program": "Binance Alpha Points",
           "time_utc8": "2026-08-10 17:00",
+          "claim_start_utc": "2026-08-10T09:00:00+00:00",
+          "claim_end_utc": "",
           "time_precision": "exact",
           "authority": "binance_wallet_official",
-          "verification_status": "verified_date_claim_on_open_time_from_canonical_pool_hook",
+          "verification_status": "verified",
+          "distribution_identity_status": "explorer_labeled_venue_proxy_candidate_claim_distributor_unverified",
+          "channel_allocation_status": "onchain_candidate_unverified",
+          "candidate_channel_token_amount": "10000000",
+          "candidate_channel_share_of_total": "1",
+          "reference_bucket_token_amount": "30000000",
+          "reference_bucket_share_of_total": "3",
+          "allocation_overlap_policy": "reference_bucket_only_do_not_sum_channel_claims",
+          "claim_rules": {
+            "alpha_points_threshold": 200,
+            "reward_dos_per_user": "200",
+            "allocation_method": "first_come_first_served",
+            "threshold_decrement_points": 5,
+            "threshold_decrement_interval_minutes": 5,
+            "claim_cost_points": 15,
+            "confirmation_deadline_hours": 24,
+            "pool_size_status": "unknown"
+          },
+          "candidate_hard_deadline_utc": "2026-08-11T09:00:00+00:00",
+          "candidate_deadline_basis": "claim_start_plus_official_confirmation_duration",
+          "pool_exhaustion_status": "unknown",
+          "venue_sell_evidence": {
+            "status": "receipt_confirmed",
+            "fixture": "input/dos_alpha_200_sell_receipt_2026-08-10.json",
+            "candidate_asset_in_display_units": "200",
+            "quote_out_usdt": "51.029905954379509513",
+            "airdrop_origin_status": "unverified",
+            "evidence_ids": [
+              "dos-onchain-alpha-200-sell"
+            ]
+          },
+          "airdrop_attribution": {
+            "status": "unverified",
+            "evidence_ids": []
+          },
           "evidence_ids": [
-            "dos-binance-wallet-official",
-            "dos-onchain-pool-start",
-            "dos-onchain-pool-initialize"
+            "dos-binance-alpha-claim-rules",
+            "dos-official-whitepaper",
+            "dos-onchain-alpha-custody-10m",
+            "dos-onchain-alpha-200-sell",
+            "dos-onchain-alpha-200-sell-cluster"
+          ]
+        },
+        {
+          "event_id": "dos-dappos-phase1-claim",
+          "event_type": "airdrop_claim",
+          "venue": "DAPPOS official claim portal",
+          "program": "DAPPOS Community Airdrop Phase 1",
+          "time_utc8": "2026-08-10 18:00",
+          "claim_start_utc": "2026-08-10T10:00:00+00:00",
+          "claim_end_utc": "",
+          "time_precision": "exact",
+          "authority": "dappos_official",
+          "verification_status": "verified",
+          "distribution_identity_status": "missing",
+          "channel_allocation_status": "unknown",
+          "reference_bucket_token_amount": "30000000",
+          "reference_bucket_share_of_total": "3",
+          "allocation_overlap_policy": "reference_bucket_only_do_not_sum_channel_claims",
+          "registered_wallet_and_social_accounts_lower_bound": 60000,
+          "registered_accounts_bound_type": "exclusive",
+          "per_wallet_amount_status": "unknown",
+          "evidence_ids": [
+            "dos-dappos-phase1-claim-open",
+            "dos-dappos-registrations-closed",
+            "dos-official-whitepaper"
+          ]
+        }
+      ],
+      "event_distributions": [
+        {
+          "name": "DOS airdrop total",
+          "bucket_id": "airdrop_total",
+          "role": "aggregate_parent",
+          "percent": "6%",
+          "token_amount": "60000000",
+          "aggregation_policy": "parent_not_summed_with_children",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "official_whitepaper",
+          "verification_status": "verified",
+          "evidence_ids": [
+            "dos-official-whitepaper"
+          ]
+        },
+        {
+          "name": "DOS airdrop TGE release",
+          "bucket_id": "airdrop_tge_initial",
+          "parent_bucket_id": "airdrop_total",
+          "role": "child_release_bucket",
+          "percent": "3%",
+          "token_amount": "30000000",
+          "aggregation_policy": "child_of_parent",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "official_whitepaper",
+          "verification_status": "verified",
+          "evidence_ids": [
+            "dos-official-whitepaper"
+          ]
+        },
+        {
+          "name": "DOS future monthly airdrop total",
+          "bucket_id": "airdrop_future_monthly_total",
+          "parent_bucket_id": "airdrop_total",
+          "role": "child_release_bucket",
+          "percent": "3%",
+          "token_amount": "30000000",
+          "release_window": "TGE+1 through TGE+3 monthly",
+          "aggregation_policy": "child_of_parent",
+          "projection_policy": "reference_only_do_not_sum",
+          "derived_from": "official_whitepaper",
+          "verification_status": "verified",
+          "evidence_ids": [
+            "dos-official-whitepaper"
           ]
         }
       ],
@@ -739,8 +854,8 @@
       ],
       "prelaunch_research": {
         "schema_version": "alpha_prelaunch_research.v1",
-        "revision": 2,
-        "as_of": "2026-08-09T16:13:15+00:00",
+        "revision": 3,
+        "as_of": "2026-08-10T10:10:55+00:00",
         "research_status": "blocked",
         "evidence": [
           {
@@ -787,6 +902,109 @@
             "published_at": "2026-08-08T12:25:02+00:00",
             "observed_at": "2026-08-09T14:35:00+00:00",
             "verification_status": "unverified_claims_only"
+          },
+          {
+            "evidence_id": "dos-social-airdrop-research-2026-08-10",
+            "evidence_kind": "social",
+            "source_ref": "https://x.com/2024macbookpro/status/2086687787143844209",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "discovery_only_unverified_claims"
+          },
+          {
+            "evidence_id": "dos-binance-alpha-claim-rules",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/BinanceWallet/status/2086694371483963450",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified",
+            "supports": [
+              "airdrop_schedule_start:dos-binance-alpha-points-claim"
+            ]
+          },
+          {
+            "evidence_id": "dos-dappos-phase1-claim-open",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/dappOS_com/status/2086648910983148004",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified",
+            "supports": [
+              "airdrop_schedule_start:dos-dappos-phase1-claim"
+            ]
+          },
+          {
+            "evidence_id": "dos-dappos-airdrop-registration",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/dappOS_com/status/2080639245317009723",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "dos-dappos-registrations-closed",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/dappOS_com/status/2084220888702951559",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified",
+            "verification_scope": "exclusive_lower_bound_more_than_60000"
+          },
+          {
+            "evidence_id": "dos-foundation-tokenomics",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/DAPPOSFDN/status/2082352034272149783",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "dos-official-whitepaper",
+            "evidence_kind": "official",
+            "source_ref": "https://pdf.dappos.com/",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified",
+            "verification_scope": "tokenomics_page_15"
+          },
+          {
+            "evidence_id": "dos-bitget-listing",
+            "evidence_kind": "official_exchange",
+            "source_ref": "https://www.bitget.com/support/articles/12560603891508",
+            "observed_at": "2026-08-10T09:45:00+00:00",
+            "verification_status": "verified"
+          },
+          {
+            "evidence_id": "dos-onchain-alpha-custody-10m",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:0x5e90980e6b8044a1ceb42c6e5b4a808b8a805952a310d6ca6d447c4a231f530e",
+            "observed_at": "2026-08-10T10:10:55+00:00",
+            "verification_status": "unverified",
+            "verification_scope": "receipt_and_explorer_labeled_venue_destination_claim_distributor_unverified"
+          },
+          {
+            "evidence_id": "dos-bsc-dynamic-supply-observation",
+            "evidence_kind": "onchain",
+            "evidence_subtype": "sample",
+            "source_ref": "tracked:input/dos_airdrop_pressure_evidence_2026-08-10.json#bsc_dynamic_supply",
+            "observed_at": "2026-08-10T10:10:55+00:00",
+            "verification_status": "unverified",
+            "verification_scope": "eth_call_value_observed_as_of_block_and_block_hash_missing"
+          },
+          {
+            "evidence_id": "dos-onchain-alpha-200-sell",
+            "evidence_kind": "onchain",
+            "evidence_subtype": "receipt",
+            "source_ref": "tracked:input/dos_alpha_200_sell_receipt_2026-08-10.json",
+            "transaction_ref": "bsc:0xf79da567f0039d573d222835d5e3fc811db14b43905826f323b1de5794aaa782",
+            "observed_at": "2026-08-10T10:10:55+00:00",
+            "verification_status": "verified",
+            "verification_scope": "candidate_asset_receipt_status_block_and_transfer_logs_token_in_quote_out",
+            "supports": [
+              "airdrop_venue_sell:dos-binance-alpha-points-claim"
+            ]
+          },
+          {
+            "evidence_id": "dos-onchain-alpha-200-sell-cluster",
+            "evidence_kind": "onchain",
+            "evidence_subtype": "sample",
+            "source_ref": "bsc:binance-alpha-proxy-events:2026-08-10T10:09:10Z/2026-08-10T10:10:55Z",
+            "observed_at": "2026-08-10T10:10:55+00:00",
+            "verification_status": "unverified",
+            "verification_scope": "bounded_sample_lower_bound_29_exact_200_dos_routes_one_receipt_verified_block_range_missing"
           }
         ],
         "identity": {
@@ -795,7 +1013,12 @@
           "name": "DAPPOS",
           "symbol": "DOS",
           "decimals": 18,
-          "total_supply": "45000000",
+          "total_supply": "44964190.066786",
+          "supply_scope": "bsc_dynamic_oft_observation",
+          "supply_as_of_block": null,
+          "supply_verification_status": "blocked_missing_as_of_block",
+          "global_total_supply": "1000000000",
+          "global_supply_source": "dos-official-whitepaper",
           "owner": "0x19a94d621eb4c337e91cef3c72f015a43d341e62",
           "paused": false,
           "source_status": "unverified",
@@ -815,11 +1038,50 @@
             "time_utc": "2026-08-10T09:00:00+00:00",
             "time_utc8": "2026-08-10 17:00",
             "time_precision": "exact",
-            "authority": "onchain_canonical_pool_hook",
-            "verification_status": "verified_pool_key_and_hook_timestamp_official_venue_time_pending",
+            "authority": "binance_wallet_official_and_onchain_canonical_pool_hook",
+            "verification_status": "verified",
             "evidence_ids": [
+              "dos-binance-alpha-claim-rules",
               "dos-onchain-pool-start",
               "dos-onchain-pool-initialize"
+            ]
+          },
+          {
+            "event": "binance_alpha_points_claim",
+            "venue": "Binance Alpha",
+            "time_utc": "2026-08-10T09:00:00+00:00",
+            "time_utc8": "2026-08-10 17:00",
+            "time_precision": "exact",
+            "authority": "binance_wallet_official",
+            "verification_status": "verified",
+            "claim_end_status": "unknown",
+            "evidence_ids": [
+              "dos-binance-alpha-claim-rules"
+            ]
+          },
+          {
+            "event": "dappos_phase1_claim",
+            "venue": "DAPPOS official claim portal",
+            "time_utc": "2026-08-10T10:00:00+00:00",
+            "time_utc8": "2026-08-10 18:00",
+            "time_precision": "exact",
+            "authority": "dappos_official",
+            "verification_status": "verified",
+            "claim_end_status": "unknown",
+            "evidence_ids": [
+              "dos-dappos-phase1-claim-open"
+            ]
+          },
+          {
+            "event": "cex_trade_open",
+            "venue": "Bitget",
+            "time_utc": "2026-08-10T11:00:00+00:00",
+            "time_utc8": "2026-08-10 19:00",
+            "time_precision": "exact",
+            "authority": "bitget_official",
+            "verification_status": "verified",
+            "evidence_ids": [
+              "dos-bitget-listing"
             ]
           }
         ],
@@ -884,20 +1146,137 @@
           "sellability": "blocked_no_active_liquidity"
         },
         "supply": {
-          "total_supply": "45000000",
-          "allocations": [],
-          "cross_chain": []
+          "total_supply": "1000000000",
+          "total_supply_scope": "official_global_fixed_supply",
+          "allocations": [
+            {
+              "bucket_id": "airdrop_total",
+              "role": "aggregate_parent",
+              "label": "Airdrop total",
+              "percent": "6%",
+              "percent_of_total": "6",
+              "token_amount": "60000000",
+              "bucket_role": "aggregate_parent",
+              "aggregation_policy": "parent_not_summed_with_children",
+              "sum_policy": "do_not_sum_with_children",
+              "verification_status": "verified",
+              "verification_detail": "official_whitepaper",
+              "evidence_ids": [
+                "dos-official-whitepaper",
+                "dos-foundation-tokenomics"
+              ]
+            },
+            {
+              "bucket_id": "airdrop_tge_initial",
+              "role": "child_release_bucket",
+              "label": "Airdrop released at TGE",
+              "percent": "3%",
+              "percent_of_total": "3",
+              "token_amount": "30000000",
+              "parent_bucket_id": "airdrop_total",
+              "release_window": "TGE",
+              "aggregation_policy": "child_of_parent",
+              "sum_policy": "included_in_parent",
+              "channel_breakdown_status": "unknown",
+              "verification_status": "verified",
+              "verification_detail": "official_whitepaper",
+              "evidence_ids": [
+                "dos-official-whitepaper",
+                "dos-foundation-tokenomics"
+              ]
+            },
+            {
+              "bucket_id": "airdrop_future_monthly_total",
+              "role": "child_release_bucket",
+              "label": "Remaining airdrop released monthly",
+              "percent": "3%",
+              "percent_of_total": "3",
+              "token_amount": "30000000",
+              "parent_bucket_id": "airdrop_total",
+              "release_window": "TGE+1 through TGE+3 monthly",
+              "exact_release_times_status": "unknown",
+              "equal_monthly_split_status": "unknown",
+              "aggregation_policy": "child_of_parent",
+              "sum_policy": "included_in_parent",
+              "verification_status": "verified",
+              "verification_detail": "official_whitepaper",
+              "evidence_ids": [
+                "dos-official-whitepaper",
+                "dos-foundation-tokenomics"
+              ]
+            }
+          ],
+          "cross_chain": [
+            {
+              "chain": "bsc",
+              "contract": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+              "observed_supply": "44964190.066786",
+              "supply_model": "dynamic_oft_mint_burn",
+              "as_of_block": null,
+              "verification_status": "unverified",
+              "verification_detail": "blocked_missing_as_of_block",
+              "identity_status": "canonical_pool_key_match_official_cross_chain_mapping_pending",
+              "evidence_ids": [
+                "dos-bsc-dynamic-supply-observation"
+              ]
+            },
+            {
+              "chain": "ethereum",
+              "contract": "0x951f086a127e280724fd93ccc543f65065afeb5e",
+              "identity_status": "official_exchange_listed_contract",
+              "relationship_to_bsc": "unverified",
+              "evidence_ids": [
+                "dos-bitget-listing"
+              ]
+            }
+          ]
         },
         "venues": {
           "cex": [
             {
               "venue": "Binance Alpha",
               "market": "alpha",
-              "deposit_state": "unknown",
-              "trading_state": "announced_not_open",
-              "verification_status": "official_date_only",
+              "deposit_state": "candidate_venue_inflow_user_claim_mapping_unknown",
+              "trading_state": "open",
+              "verification_status": "unverified",
+              "verification_detail": "official_time_receipt_destination_explorer_label_only",
               "evidence_ids": [
-                "dos-binance-wallet-official"
+                "dos-binance-alpha-claim-rules",
+                "dos-onchain-alpha-custody-10m"
+              ]
+            },
+            {
+              "venue": "Bitget",
+              "market": "DOS/USDT",
+              "deposit_state": "open_exact_start_unknown",
+              "trading_state": "official_schedule_elapsed_live_state_unverified",
+              "withdrawal_state": "scheduled_2026-08-11T11:00:00Z",
+              "verification_status": "verified",
+              "verification_detail": "official_exchange_announcement",
+              "reward_programs": [
+                {
+                  "program": "Launchpool",
+                  "token_amount": "700000",
+                  "bgb_pool_token_amount": "600000",
+                  "dos_pool_token_amount": "100000",
+                  "start_utc": "2026-08-10T11:00:00+00:00",
+                  "end_utc": "2026-08-16T11:00:00+00:00",
+                  "distribution_time_status": "unknown",
+                  "bucket_origin_status": "unknown",
+                  "projection_policy": "reference_only_do_not_sum"
+                },
+                {
+                  "program": "CandyBomb",
+                  "token_amount": "550000",
+                  "start_utc": "2026-08-10T16:00:00+00:00",
+                  "end_utc": "2026-08-17T16:00:00+00:00",
+                  "distribution_time_status": "unknown",
+                  "bucket_origin_status": "unknown",
+                  "projection_policy": "reference_only_do_not_sum"
+                }
+              ],
+              "evidence_ids": [
+                "dos-bitget-listing"
               ]
             },
             {
@@ -922,16 +1301,50 @@
           "anchors": [],
           "prediction_markets": []
         },
-        "sell_pressure_scenarios": [],
+        "sell_pressure_scenarios": [
+          {
+            "scenario": "binance_alpha_claim_active",
+            "calendar_state": "claim_open_end_unknown",
+            "venue_sell_state": "candidate_asset_receipt_confirmed",
+            "airdrop_attribution_state": "unverified",
+            "pressure_state": "candidate_asset_sell_receipt_origin_unverified",
+            "candidate_route_nominal_lower_bound": "5800 DOS / 105 seconds across 29 exact-200 DOS routes",
+            "candidate_asset_receipt_confirmed_sell_lower_bound": "200 display units across 1 receipt",
+            "attribution_status": "one sell receipt verified_airdrop_claim_origin_unverified",
+            "action": "Observe",
+            "verification_status": "unverified",
+            "verification_detail": "venue_sell_receipt_verified_airdrop_origin_unverified",
+            "evidence_ids": [
+              "dos-binance-alpha-claim-rules",
+              "dos-onchain-alpha-200-sell",
+              "dos-onchain-alpha-200-sell-cluster"
+            ]
+          },
+          {
+            "scenario": "dappos_phase1_claim_active",
+            "calendar_state": "claim_open_end_unknown",
+            "pressure_state": "blocked_missing_distribution_identity",
+            "registered_wallet_and_social_accounts_lower_bound": 60000,
+            "per_wallet_amount_status": "unknown",
+            "action": "Observe",
+            "verification_status": "unverified",
+            "verification_detail": "official_start_onchain_attribution_missing",
+            "evidence_ids": [
+              "dos-dappos-phase1-claim-open",
+              "dos-dappos-registrations-closed"
+            ]
+          }
+        ],
         "decision": {
           "action": "Observe",
           "automatic_trading": false,
-          "summary": "官方确认 Binance Alpha 首发日期与开盘后 Alpha Points 空投；canonical USDT/DOS PoolKey、初始化回执与单边 USDT position 已闭合，当前活动流动性为 0；官方 catalog 合约映射、源码控制项与可交易深度仍 fail-closed。",
+          "summary": "Binance Alpha 与 DAPPOS Phase 1 两个官方领取起点均已到；Alpha 路由出现 29 条精确 200 DOS 候选路由，名义量下界 5800 DOS，其中仅 1 笔、200 DOS 由 receipt 闭合 token-in/USDT-out。BSC 候选合约的官方映射、整簇卖出、空投归属、领取结束和持续下游卖压仍待闭环，继续 Observe。",
           "entry_conditions": [
             "Binance Alpha public catalog contract exact match",
             "active liquidity and sellability become reproducible",
             "100k/200k/400k/1m depth curve becomes reproducible",
-            "opening cohort and buyer stack are attributable"
+            "opening cohort and buyer stack are attributable",
+            "claim and distributor identity is receipt-backed"
           ],
           "exit_triggers": [
             "official contract or time conflicts with candidate",
@@ -947,19 +1360,47 @@
           "identity.mint_pause_blacklist_controls",
           "pool.active_depth_and_sellability",
           "pool.additional_opening_liquidity",
-          "supply.address_map_and_remaining_supply",
-          "supply.airdrop_lock_bridge_inventory",
-          "venues.trading_pair_deposit_claim_state",
+          "supply.channel_address_map_and_remaining_supply",
+          "supply.airdrop_claim_distributor_and_receipts",
+          "supply.airdrop_channel_breakdown_without_overlap",
+          "supply.future_monthly_exact_release_times",
+          "supply.cross_chain_official_identity_mapping",
+          "events.binance_claim_end_or_pool_exhaustion",
+          "events.dappos_phase1_claim_end",
+          "pressure.complete_downstream_cex_dex_window",
+          "venues.bitget_reward_distribution_time_and_source_bucket",
+          "venues.okx_kraken_gate_official_status",
           "sniper_curve"
         ],
-        "conflicts": []
+        "conflicts": [
+          {
+            "path": "supply.airdrop_channel_breakdown",
+            "detail": "The social post assigns 1% to Binance Alpha and 3% to community; official material verifies a 3% aggregate TGE airdrop bucket without a channel split. Do not add the claims until disjoint official buckets are proven."
+          },
+          {
+            "path": "venues.unverified_social_claims",
+            "detail": "OKX Boost 0.3%, Kraken and Gate 19:00 listings, and Binance Alpha 50,000 slots remain unverified discovery claims."
+          },
+          {
+            "path": "venues.bitget_reward_bucket_origin",
+            "detail": "Bitget verifies 1.25M DOS across Launchpool and CandyBomb; the originating tokenomics bucket and actual reward distribution times remain unknown."
+          },
+          {
+            "path": "supply.cross_chain_identity",
+            "detail": "BSC dynamic OFT supply and the exchange-listed Ethereum contract lack an official cross-chain identity mapping and must not be added."
+          },
+          {
+            "path": "pressure.attribution",
+            "detail": "A 200 DOS sell and an exact-200 DOS route cluster are observed after claim start; claim-origin attribution remains unresolved without claim/distributor receipts."
+          }
+        ]
       },
       "facts": {
         "project_name": "DAPPOS",
         "raw_symbol": "DOS",
         "display_symbol": "DOS",
         "monitoring_anchor_time_utc": "2026-08-10T09:00:00+00:00",
-        "monitoring_anchor_basis": "canonical_pool_hook_official_venue_time_pending",
+        "monitoring_anchor_basis": "binance_wallet_official_and_canonical_pool_hook_matched",
         "research_source_policy": "official_onchain_market_social_inference_separated"
       }
     },
@@ -1017,6 +1458,7 @@
           ]
         },
         {
+          "event_id": "grvt-social-airdrop-claim",
           "event_type": "airdrop_claim",
           "venue": "Grvt",
           "time_utc8": "2026-07-30 21:00",

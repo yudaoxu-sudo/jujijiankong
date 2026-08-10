@@ -23,6 +23,147 @@ OFFLINE_FLAG_ENV = "SNIPER_OFFLINE"
 OFFLINE_REPO_ROOT_ENV = "SNIPER_OFFLINE_REPO_ROOT"
 OFFLINE_TMP_ROOT_ENV = "SNIPER_OFFLINE_TMP_ROOT"
 
+DOS_SELL_RECEIPT_EXPECTED = {
+    "transaction_hash": "0xf79da567f0039d573d222835d5e3fc811db14b43905826f323b1de5794aaa782",
+    "block_hash": "0x59a7108399572be207314a699a2f6e8314be120bcf598327aebd2d0f82a590bb",
+    "transaction_from": "0x9e9faf2a707dfb588f53fa922bded3bac769ee02",
+    "transaction_to": "0x6aba0315493b7e6989041c91181337b662fb1b90",
+    "candidate_dos": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+    "usdt": "0x55d398326f99059ff775485246999027b3197955",
+}
+DOS_SELL_RECEIPT_TRANSFERS = [
+    (233, "candidate_dos", "0x73d8bd54f7cf5fab43fe4ef40a62d390644946db", "0x6aba0315493b7e6989041c91181337b662fb1b90", "200000000000000000000"),
+    (236, "candidate_dos", "0x6aba0315493b7e6989041c91181337b662fb1b90", "0xb300000b72deaeb607a12d5f54773d1c19c7028d", "200000000000000000000"),
+    (238, "candidate_dos", "0xb300000b72deaeb607a12d5f54773d1c19c7028d", "0x1905dbf18c916bf8ec659545de0858d9f20eaeab", "200000000000000000000"),
+    (240, "candidate_dos", "0x1905dbf18c916bf8ec659545de0858d9f20eaeab", "0x238a358808379702088667322f80ac48bad5e6c4", "200000000000000000000"),
+    (241, "usdt", "0x238a358808379702088667322f80ac48bad5e6c4", "0xb300000b72deaeb607a12d5f54773d1c19c7028d", "51029905954379509513"),
+    (244, "usdt", "0xb300000b72deaeb607a12d5f54773d1c19c7028d", "0x6aba0315493b7e6989041c91181337b662fb1b90", "51029905954379509513"),
+]
+
+
+def _exact_display_units(raw: str, decimals: int) -> str:
+    value = Decimal(raw) / (Decimal(10) ** decimals)
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def validate_dos_candidate_sell_receipt(
+    receipt: dict,
+    *,
+    schedule: dict | None = None,
+    evidence: dict | None = None,
+) -> None:
+    assert receipt["schema"] == "dos_candidate_asset_sell_receipt.v1", receipt
+    assert receipt["chain"] == "bsc" and receipt["chain_id"] == 56, receipt
+    assert receipt["transaction_hash"] == DOS_SELL_RECEIPT_EXPECTED[
+        "transaction_hash"
+    ], receipt
+    assert receipt["block_hash"] == DOS_SELL_RECEIPT_EXPECTED["block_hash"], receipt
+    for field in ("transaction_hash", "block_hash"):
+        value = receipt[field]
+        assert len(value) == 66 and value.startswith("0x"), receipt
+        assert all(character in "0123456789abcdef" for character in value[2:]), receipt
+    assert receipt["receipt_status"] == "0x1", receipt
+    assert receipt["block_number"] == 115102481, receipt
+    assert receipt["block_time_utc"] == "2026-08-10T10:10:52+00:00", receipt
+    assert receipt["transaction_index"] == 36, receipt
+    assert receipt["input_selector"] == "0x4de165c3", receipt
+    assert receipt["native_value_raw"] == "0", receipt
+    for field in ("transaction_from", "transaction_to"):
+        value = receipt[field]
+        assert value == DOS_SELL_RECEIPT_EXPECTED[field], receipt
+        assert len(value) == 42 and value.startswith("0x"), receipt
+        assert all(character in "0123456789abcdef" for character in value[2:]), receipt
+
+    contexts = receipt["token_context"]
+    assert contexts["candidate_dos"]["address"] == (
+        DOS_SELL_RECEIPT_EXPECTED["candidate_dos"]
+    ), receipt
+    assert contexts["candidate_dos"]["decimals"] == 18, receipt
+    assert contexts["candidate_dos"]["identity_status"] == (
+        "canonical_pool_key_match_official_catalog_pending"
+    ), receipt
+    assert contexts["usdt"] == {
+        "address": DOS_SELL_RECEIPT_EXPECTED["usdt"],
+        "decimals": 18,
+    }, receipt
+    for context in contexts.values():
+        address = context["address"]
+        assert len(address) == 42 and address.startswith("0x"), receipt
+        assert all(character in "0123456789abcdef" for character in address[2:]), receipt
+
+    transfers = receipt["canonical_transfers"]
+    assert receipt["canonical_transfer_count"] == len(transfers) == 6, receipt
+    assert isinstance(receipt["receipt_log_count"], int), receipt
+    assert len(transfers) <= receipt["receipt_log_count"] == 13, receipt
+    actual_transfers = [
+        (
+            row["log_index"],
+            row["token"],
+            row["from"],
+            row["to"],
+            row["value_raw"],
+        )
+        for row in transfers
+    ]
+    assert actual_transfers == DOS_SELL_RECEIPT_TRANSFERS, receipt
+    log_indexes = [row["log_index"] for row in transfers]
+    assert log_indexes == sorted(set(log_indexes)), receipt
+    dos_transfers = [row for row in transfers if row["token"] == "candidate_dos"]
+    usdt_transfers = [row for row in transfers if row["token"] == "usdt"]
+    assert len(dos_transfers) == 4 and len(usdt_transfers) == 2, receipt
+    assert all(
+        left["to"] == right["from"]
+        for left, right in zip(dos_transfers, dos_transfers[1:])
+    ), receipt
+    assert all(
+        left["to"] == right["from"]
+        for left, right in zip(usdt_transfers, usdt_transfers[1:])
+    ), receipt
+    assert dos_transfers[-1]["to"] == usdt_transfers[0]["from"], receipt
+    assert usdt_transfers[-1]["to"] == receipt["transaction_to"], receipt
+    assert receipt["transaction_to"] == dos_transfers[0]["to"], receipt
+
+    derived = receipt["derived"]
+    assert derived["candidate_dos_in"] == _exact_display_units(
+        dos_transfers[0]["value_raw"],
+        contexts["candidate_dos"]["decimals"],
+    ), receipt
+    assert derived["usdt_out"] == _exact_display_units(
+        usdt_transfers[-1]["value_raw"],
+        contexts["usdt"]["decimals"],
+    ), receipt
+    assert derived["classification"] == (
+        "candidate_asset_sell_receipt_confirmed"
+    ), receipt
+    assert derived["airdrop_origin_attribution"] == "unverified", receipt
+    assert derived["automatic_trading"] is False, receipt
+    assert set(receipt["issue_codes"]) == {
+        "official_bsc_contract_mapping_missing",
+        "airdrop_origin_unverified",
+    }, receipt
+
+    if schedule is not None:
+        sell = schedule["venue_sell_evidence"]
+        assert sell["fixture"] == (
+            "input/dos_alpha_200_sell_receipt_2026-08-10.json"
+        ), schedule
+        assert sell["candidate_asset_in_display_units"] == (
+            derived["candidate_dos_in"]
+        ), schedule
+        assert sell["quote_out_usdt"] == derived["usdt_out"], schedule
+        assert sell["airdrop_origin_status"] == "unverified", schedule
+    if evidence is not None:
+        assert evidence["source_ref"] == (
+            "tracked:input/dos_alpha_200_sell_receipt_2026-08-10.json"
+        ), evidence
+        assert evidence["transaction_ref"] == (
+            f"bsc:{receipt['transaction_hash']}"
+        ), evidence
+        assert evidence["verification_status"] == "verified", evidence
+        assert evidence["evidence_kind"] == "onchain", evidence
+        assert evidence["evidence_subtype"] == "receipt", evidence
+
 # Single source of truth for the strict offline guard. The same code text runs
 # in this process (install_offline_guard) and in every spawned python child via
 # a sitecustomize.py placed first on PYTHONPATH, so children inherit the guard.
@@ -701,6 +842,8 @@ def main(argv: list[str] | None = None) -> int:
             "CORE_OUTPUTS",
             "atomic_write_json(HEARTBEAT_PATH, snapshot)",
             "monitoring_scope_issue",
+            "prelaunch_output_issue",
+            "alpha_prelaunch_watch.v2",
         ),
     }
     lifecycle_missing = [
@@ -916,6 +1059,75 @@ def main(argv: list[str] | None = None) -> int:
         ):
             assert detail in grvt_report, detail
         assert "；+" not in grvt_report, grvt_report
+        dos = next(
+            row
+            for row in static_watchlist["items"]
+            if row.get("symbol") == "DOS"
+        )
+        pressure_events = prelaunch_watch.build_airdrop_pressure_events(
+            {"items": [dos, grvt]},
+            datetime(2026, 8, 10, 10, 11, tzinfo=timezone.utc),
+        )
+        dos_pressure = {
+            row["event_id"]: row
+            for row in pressure_events
+            if row.get("symbol") == "DOS"
+        }
+        assert set(dos_pressure) == {
+            "dos-binance-alpha-points-claim",
+            "dos-dappos-phase1-claim",
+        }, dos_pressure
+        alpha_claim = dos_pressure["dos-binance-alpha-points-claim"]
+        assert alpha_claim["calendar_state"] == "claim_open_end_unknown", (
+            alpha_claim
+        )
+        assert alpha_claim["venue_sell_state"] == (
+            "candidate_asset_receipt_confirmed"
+        ), alpha_claim
+        assert alpha_claim["airdrop_attribution_state"] == "unverified", (
+            alpha_claim
+        )
+        assert alpha_claim["pressure_state"] == (
+            "candidate_asset_sell_receipt_origin_unverified"
+        ), alpha_claim
+        assert alpha_claim["alert_policy"] == "notify", alpha_claim
+        dappos_claim = dos_pressure["dos-dappos-phase1-claim"]
+        assert dappos_claim["calendar_state"] == "claim_open_end_unknown", (
+            dappos_claim
+        )
+        assert dappos_claim["venue_sell_state"] == "unknown", dappos_claim
+        assert "airdrop_distribution_identity_missing" in (
+            dappos_claim["issue_codes"]
+        ), dappos_claim
+        sell_receipt = json.loads(
+            (
+                ROOT
+                / "input"
+                / "dos_alpha_200_sell_receipt_2026-08-10.json"
+            ).read_text(encoding="utf-8")
+        )
+        dos_schedules = {
+            row["event_id"]: row
+            for row in dos["event_schedule"]
+            if row.get("event_id")
+        }
+        dos_evidence = {
+            row["evidence_id"]: row
+            for row in dos["prelaunch_research"]["evidence"]
+            if row.get("evidence_id")
+        }
+        validate_dos_candidate_sell_receipt(
+            sell_receipt,
+            schedule=dos_schedules["dos-binance-alpha-points-claim"],
+            evidence=dos_evidence["dos-onchain-alpha-200-sell"],
+        )
+        grvt_pressure = [
+            row for row in pressure_events if row.get("symbol") == "GRVT"
+        ]
+        assert len(grvt_pressure) == 1, grvt_pressure
+        assert grvt_pressure[0]["alert_policy"] == "report_only", (
+            grvt_pressure
+        )
         official_listing = datetime(
             2026,
             7,

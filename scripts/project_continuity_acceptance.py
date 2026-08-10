@@ -20,8 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "project_continuity.json"
 DEPLOY_PARITY_PATHS = (
     "config/current_alpha_watchlist.json",
+    "input/dos_airdrop_pressure_evidence_2026-08-10.json",
+    "input/dos_alpha_200_sell_receipt_2026-08-10.json",
     "scripts/alpha_holder_concentration_watch.py",
     "scripts/alpha_liquidity_retention_watch.py",
+    "scripts/alpha_prelaunch_watch.py",
+    "scripts/fast_lane_health.py",
+    "scripts/build_alpha_daily_report.py",
     "scripts/test_aeon_monitor_regression.py",
     "scripts/grvt_liquidity_replay_acceptance.py",
     "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",

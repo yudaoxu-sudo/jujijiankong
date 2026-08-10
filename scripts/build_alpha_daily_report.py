@@ -316,6 +316,27 @@ def build_report() -> str:
     else:
         lines.append("- No upcoming P0/P1 launch windows in prelaunch watch output.")
 
+    lines.extend(["", "## Airdrop Pressure", ""])
+    airdrop_events = prelaunch.get("airdrop_pressure_events", [])
+    if airdrop_events:
+        lines.extend(
+            [
+                "| Project | Calendar | Venue sell | Attribution | Clearance | Action |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for event in airdrop_events[:12]:
+            lines.append(
+                f"| {event.get('display_name', event.get('symbol', ''))} | "
+                f"{event.get('calendar_state', '')} | "
+                f"{event.get('venue_sell_state', '')} | "
+                f"{event.get('airdrop_attribution_state', '')} | "
+                f"{event.get('clearance_state', '')} | "
+                f"{event.get('action', '')} |"
+            )
+    else:
+        lines.append("- No tracked airdrop-pressure events.")
+
     lines.extend(
         [
             "",

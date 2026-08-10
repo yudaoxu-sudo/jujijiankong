@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import tempfile
@@ -64,6 +65,20 @@ def read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def airdrop_identity_hash(rows: list[dict[str, Any]]) -> str:
+    canonical = sorted(
+        (
+            str(row.get("symbol") or "").upper(),
+            str(row.get("contract") or "").lower(),
+            str(row.get("event_id") or ""),
+        )
+        for row in rows
+    )
+    return hashlib.sha256(
+        json.dumps(canonical, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def liquidity_output_issue(path: Path) -> str:
     payload = read_json(path)
     if payload.get("schema") != "alpha_liquidity_retention_watch.v1":
@@ -99,6 +114,103 @@ def liquidity_output_issue(path: Path) -> str:
     return ""
 
 
+def prelaunch_output_issue(
+    path: Path,
+    expected_identity_hash: str = "",
+) -> str:
+    payload = read_json(path)
+    if payload.get("schema") != "alpha_prelaunch_watch.v2":
+        return "prelaunch output schema invalid"
+    launch_events = payload.get("events")
+    airdrop_events = payload.get("airdrop_pressure_events")
+    if not isinstance(launch_events, list) or not all(
+        isinstance(event, dict) for event in launch_events
+    ):
+        return "prelaunch output events invalid"
+    if not isinstance(airdrop_events, list) or not all(
+        isinstance(event, dict) for event in airdrop_events
+    ):
+        return "prelaunch output airdrop events invalid"
+    required_count = payload.get("airdrop_pressure_required_count")
+    observed_count = payload.get("airdrop_pressure_event_count")
+    if any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        for value in (required_count, observed_count)
+    ):
+        return "prelaunch airdrop counters invalid"
+    if (
+        any(event.get("event_kind") == "airdrop_pressure" for event in launch_events)
+        or any(
+            event.get("event_kind") != "airdrop_pressure"
+            for event in airdrop_events
+        )
+        or observed_count != len(airdrop_events)
+        or observed_count != required_count
+    ):
+        return "prelaunch airdrop coverage incomplete"
+    reported_expected_hash = str(
+        payload.get("airdrop_pressure_expected_identity_hash") or ""
+    )
+    reported_processed_hash = str(
+        payload.get("airdrop_pressure_processed_identity_hash") or ""
+    )
+    if (
+        len(reported_expected_hash) != 64
+        or len(reported_processed_hash) != 64
+        or reported_expected_hash != reported_processed_hash
+        or reported_processed_hash != airdrop_identity_hash(airdrop_events)
+        or (
+            expected_identity_hash
+            and reported_expected_hash != expected_identity_hash
+        )
+    ):
+        return "prelaunch airdrop identity coverage incomplete"
+    allowed_states = {
+        "time_unverified",
+        "not_yet",
+        "in_window",
+        "ended_pressure_unresolved",
+        "passed",
+    }
+    event_ids = [str(event.get("event_id") or "").strip() for event in airdrop_events]
+    if len(event_ids) != len(set(event_ids)):
+        return "prelaunch airdrop event ids duplicate"
+    for event in airdrop_events:
+        if (
+            not str(event.get("event_id") or "").strip()
+            or event.get("event_id_source") != "configured"
+            or event.get("reminder_state") not in allowed_states
+            or event.get("automatic_trading") is not False
+            or not isinstance(event.get("issue_codes"), list)
+            or not all(
+                isinstance(code, str) and code
+                for code in event["issue_codes"]
+            )
+            or (
+                event.get("reminder_state") == "time_unverified"
+                and event.get("alert_policy") != "report_only"
+            )
+            or (
+                event.get("alert_policy") == "notify"
+                and (
+                    event.get("schedule_evidence_status") != "verified"
+                    or event.get("evidence_resolution_status") != "resolved"
+                )
+            )
+            or (
+                event.get("reminder_state") == "passed"
+                and (
+                    event.get("clearance_state") != "verified"
+                    or event.get("issue_codes") != []
+                )
+            )
+        ):
+            return "prelaunch airdrop event invalid"
+    return ""
+
+
 def effective_watchlist_path() -> Path:
     configured = os.environ.get("ALPHA_WATCHLIST_PATH", "").strip()
     if configured:
@@ -113,6 +225,44 @@ def effective_watchlist_path() -> Path:
     if generated.exists():
         return generated
     return ROOT / "config" / "current_alpha_watchlist.json"
+
+
+def configured_airdrop_identity_hash() -> tuple[str, str]:
+    payload = read_json(effective_watchlist_path())
+    identities: list[dict[str, Any]] = []
+    event_ids: list[str] = []
+    for item in payload.get("items", []):
+        if not isinstance(item, dict) or item.get("active_monitoring") is False:
+            continue
+        if not str(item.get("priority") or "").startswith(("P0", "P1")):
+            continue
+        contract = next(
+            (
+                str(row.get("address") or "")
+                for row in item.get("contracts", [])
+                if isinstance(row, dict) and row.get("address")
+            ),
+            "",
+        )
+        for row in item.get("event_schedule", []):
+            if not isinstance(row, dict) or str(
+                row.get("event_type") or ""
+            ).lower() not in {"airdrop_claim", "airdrop_release"}:
+                continue
+            event_id = str(row.get("event_id") or "").strip()
+            event_ids.append(event_id)
+            identities.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "contract": contract,
+                    "event_id": event_id,
+                }
+            )
+    if not event_ids or any(not value for value in event_ids):
+        return "", "configured airdrop event identity missing"
+    if len(event_ids) != len(set(event_ids)):
+        return "", "configured airdrop event identity duplicate"
+    return airdrop_identity_hash(identities), ""
 
 
 def monitoring_scope_issue(liquidity_path: Path) -> str:
@@ -192,6 +342,20 @@ def output_checks(max_age_seconds: int) -> tuple[list[dict[str, Any]], list[dict
                     "detail": f"{name} output age {age}s exceeds {max_age_seconds}s",
                 }
             )
+        if name == "prelaunch":
+            detail = prelaunch_output_issue(path)
+            if not detail:
+                expected_hash, detail = configured_airdrop_identity_hash()
+                if not detail:
+                    detail = prelaunch_output_issue(path, expected_hash)
+            if detail:
+                issues.append(
+                    {
+                        "kind": "invalid_fast_output",
+                        "name": name,
+                        "detail": detail,
+                    }
+                )
         if name == "liquidity":
             detail = liquidity_output_issue(path)
             if detail:

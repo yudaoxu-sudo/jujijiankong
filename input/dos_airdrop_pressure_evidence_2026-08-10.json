@@ -1,0 +1,171 @@
+{
+  "schema": "dos_airdrop_pressure_evidence.v1",
+  "as_of": "2026-08-10T10:10:55+00:00",
+  "symbol": "DOS",
+  "verdict": "Observe",
+  "automatic_trading": false,
+  "calendar": [
+    {
+      "event_id": "dos-binance-alpha-points-claim",
+      "program": "Binance Alpha Points",
+      "claim_start_utc": "2026-08-10T09:00:00+00:00",
+      "claim_end_utc": null,
+      "state": "claim_open_end_unknown",
+      "authority": "binance_wallet_official",
+      "source": "https://x.com/BinanceWallet/status/2086694371483963450"
+    },
+    {
+      "event_id": "dos-dappos-phase1-claim",
+      "program": "DAPPOS Community Airdrop Phase 1",
+      "claim_start_utc": "2026-08-10T10:00:00+00:00",
+      "claim_end_utc": null,
+      "state": "claim_open_end_unknown",
+      "authority": "dappos_official",
+      "source": "https://x.com/dappOS_com/status/2086648910983148004"
+    }
+  ],
+  "official_tokenomics": {
+    "total_supply": "1000000000",
+    "airdrop_total": {
+      "percent_of_total": "6",
+      "token_amount": "60000000"
+    },
+    "tge_airdrop": {
+      "percent_of_total": "3",
+      "token_amount": "30000000"
+    },
+    "future_monthly_airdrop_total": {
+      "percent_of_total": "3",
+      "token_amount": "30000000",
+      "release_window": "TGE+1 through TGE+3 monthly",
+      "exact_release_times_status": "unknown",
+      "equal_monthly_split_status": "unknown"
+    },
+    "channel_breakdown_status": "unknown",
+    "sum_policy": "aggregate_and_child_buckets_must_not_be_added",
+    "sources": [
+      "https://x.com/DAPPOSFDN/status/2082352034272149783",
+      "https://pdf.dappos.com/"
+    ]
+  },
+  "binance_claim_rules": {
+    "alpha_points_threshold": 200,
+    "reward_dos_per_user": "200",
+    "allocation_method": "first_come_first_served",
+    "threshold_decrement_points": 5,
+    "threshold_decrement_interval_minutes": 5,
+    "claim_cost_points": 15,
+    "confirmation_deadline_hours": 24,
+    "official_pool_size_status": "unknown",
+    "official_slot_count_status": "unknown"
+  },
+  "dappos_phase1": {
+    "registered_wallet_and_social_accounts_lower_bound": 60000,
+    "registered_accounts_bound_type": "exclusive",
+    "final_eligibility_review_required": true,
+    "per_wallet_amount_status": "unknown",
+    "claim_end_status": "unknown",
+    "sources": [
+      "https://x.com/dappOS_com/status/2080639245317009723",
+      "https://x.com/dappOS_com/status/2084220888702951559",
+      "https://dappos.com/airdrop"
+    ]
+  },
+  "official_exchange_programs": {
+    "bitget": {
+      "market": "DOS/USDT",
+      "trading_start_utc": "2026-08-10T11:00:00+00:00",
+      "withdrawal_start_utc": "2026-08-11T11:00:00+00:00",
+      "launchpool": {
+        "token_amount": "700000",
+        "start_utc": "2026-08-10T11:00:00+00:00",
+        "end_utc": "2026-08-16T11:00:00+00:00"
+      },
+      "candybomb": {
+        "token_amount": "550000",
+        "start_utc": "2026-08-10T16:00:00+00:00",
+        "end_utc": "2026-08-17T16:00:00+00:00"
+      },
+      "bucket_origin_status": "unknown",
+      "reward_distribution_time_status": "unknown",
+      "source": "https://www.bitget.com/support/articles/12560603891508"
+    }
+  },
+  "onchain": {
+    "bsc_contract": "0xb0f09ea9ae0515c3551080d4a745c8115aa30e37",
+    "bsc_dynamic_supply": "44964190.066786",
+    "bsc_dynamic_supply_as_of_block": null,
+    "bsc_dynamic_supply_block_hash": null,
+    "bsc_dynamic_supply_status": "blocked_missing_block_anchor",
+    "global_to_bsc_identity_status": "official_cross_chain_mapping_pending",
+    "binance_alpha_custody_candidate": {
+      "token_amount": "10000000",
+      "share_of_official_global_supply": "1",
+      "transaction": "0x5e90980e6b8044a1ceb42c6e5b4a808b8a805952a310d6ca6d447c4a231f530e",
+      "status": "receipt_verified_venue_destination_channel_allocation_unverified"
+    },
+    "confirmed_candidate_asset_sell": {
+      "transaction": "0xf79da567f0039d573d222835d5e3fc811db14b43905826f323b1de5794aaa782",
+      "token_in_display_units": "200",
+      "quote_out_usdt": "51.029905954379509513",
+      "status": "receipt_verified_offline_fixture",
+      "fixture": "input/dos_alpha_200_sell_receipt_2026-08-10.json",
+      "asset_identity_status": "official_bsc_mapping_pending",
+      "airdrop_origin_attribution": "unverified"
+    },
+    "exact_200_dos_route_cluster": {
+      "window_start_utc": "2026-08-10T10:09:10+00:00",
+      "window_end_utc": "2026-08-10T10:10:55+00:00",
+      "sample_event_count": 100,
+      "outgoing_method_match_count": 44,
+      "exact_200_dos_count": 29,
+      "observed_dos_lower_bound": "5800",
+      "coverage_status": "bounded_sample_lower_bound",
+      "receipt_verified_count": 1,
+      "canonical_receipt_transaction": "0xf79da567f0039d573d222835d5e3fc811db14b43905826f323b1de5794aaa782",
+      "block_range_status": "missing",
+      "airdrop_origin_attribution": "unverified"
+    }
+  },
+  "social_discovery": {
+    "source": "https://x.com/2024macbookpro/status/2086687787143844209",
+    "status": "discovery_only",
+    "verified_claims": [
+      "Binance Alpha claim start at 2026-08-10 17:00 UTC+8",
+      "DAPPOS Phase 1 claim start at 2026-08-10 18:00 UTC+8",
+      "official global supply is 1B and TGE airdrop aggregate is 3%"
+    ],
+    "unverified_claims": [
+      "Binance Alpha pool is 1% with 50,000 slots",
+      "OKX Boost pool is 0.3%",
+      "Kraken and Gate open at 19:00 UTC+8",
+      "the social price-impact curve represents current executable liquidity"
+    ]
+  },
+  "pressure_state": {
+    "calendar_state": "claim_open_end_unknown",
+    "venue_sell_state": "candidate_asset_receipt_confirmed",
+    "airdrop_attribution_state": "unverified",
+    "derived_state": "candidate_asset_sell_receipt_origin_unverified",
+    "reminder_state": "in_window",
+    "clearance_status": "blocked"
+  },
+  "clearance_required": [
+    "verified claim close or pool exhaustion",
+    "verified claim and distributor identity",
+    "complete finalized distribution-log coverage",
+    "closed residual claimable inventory",
+    "bounded recipient next-hop coverage",
+    "complete downstream CEX and DEX activity window",
+    "empty evidence issue codes"
+  ],
+  "blockers": [
+    "official Binance and DAPPOS channel allocation breakdown",
+    "Binance pool exhaustion or claim end",
+    "DAPPOS Phase 1 claim end",
+    "claim and distributor contracts with receipt mapping",
+    "exact future monthly release times",
+    "official BSC to Ethereum token identity mapping",
+    "complete downstream CEX and DEX coverage"
+  ]
+}
