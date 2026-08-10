@@ -21,6 +21,7 @@ from scripts.alpha_prelaunch_research import (
 CONFIG_PATH = Path(
     os.environ.get("ALPHA_WATCHLIST_PATH", ROOT / "config" / "current_alpha_watchlist.json")
 )
+AIRDROP_CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"
 OUT_DIR = ROOT / "output" / "alpha_prelaunch_watch"
 LATEST_PATH = OUT_DIR / "latest.json"
 REPORT_PATH = OUT_DIR / "latest.md"
@@ -2147,8 +2148,9 @@ def push_new_events(
 def main() -> int:
     current = now_utc()
     config = read_json(CONFIG_PATH, {"items": []})
+    airdrop_config = read_json(AIRDROP_CONFIG_PATH, {"items": []})
     events = build_events(config, current)
-    airdrop_events = build_airdrop_pressure_events(config, current)
+    airdrop_events = build_airdrop_pressure_events(airdrop_config, current)
     seen = read_json(SEEN_PATH, {"keys": []})
     seen_order = list(
         dict.fromkeys(
@@ -2211,7 +2213,7 @@ def main() -> int:
         "airdrop_pressure_events": airdrop_events,
         "airdrop_pressure_required_count": sum(
             len(airdrop_schedule_rows(item))
-            for item in config.get("items", [])
+            for item in airdrop_config.get("items", [])
             if isinstance(item, dict)
             and item.get("active_monitoring") is not False
             and str(item.get("priority") or "").startswith(("P0", "P1"))
@@ -2221,7 +2223,7 @@ def main() -> int:
             for event in airdrop_events
         ),
         "airdrop_pressure_expected_identity_hash": airdrop_identity_hash(
-            expected_airdrop_identities(config)
+            expected_airdrop_identities(airdrop_config)
         ),
         "airdrop_pressure_processed_identity_hash": airdrop_identity_hash(
             airdrop_events

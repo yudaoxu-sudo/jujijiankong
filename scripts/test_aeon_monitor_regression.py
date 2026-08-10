@@ -25298,6 +25298,7 @@ raise SystemExit(0 if ok else 1)
         )
 
     def test_fast_health_requires_complete_airdrop_pressure_output(self) -> None:
+        import scripts.alpha_prelaunch_watch as prelaunch
         import scripts.fast_lane_health as health
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -25368,6 +25369,86 @@ raise SystemExit(0 if ok else 1)
                 ),
                 encoding="utf-8",
             )
+            runtime_watchlist_path = Path(temp_dir) / "runtime_watchlist.json"
+            runtime_watchlist = json.loads(watchlist_path.read_text(encoding="utf-8"))
+            runtime_watchlist["items"][0]["event_schedule"][0].pop("event_id")
+            runtime_watchlist_path.write_text(
+                json.dumps(runtime_watchlist),
+                encoding="utf-8",
+            )
+            generated_path = Path(temp_dir) / "generated_prelaunch.json"
+            with (
+                mock.patch.object(prelaunch, "CONFIG_PATH", runtime_watchlist_path),
+                mock.patch.object(prelaunch, "AIRDROP_CONFIG_PATH", watchlist_path),
+                mock.patch.object(prelaunch, "LATEST_PATH", generated_path),
+                mock.patch.object(
+                    prelaunch,
+                    "REPORT_PATH",
+                    Path(temp_dir) / "generated_prelaunch.md",
+                ),
+                mock.patch.object(
+                    prelaunch,
+                    "SEEN_PATH",
+                    Path(temp_dir) / "seen.json",
+                ),
+                mock.patch.object(
+                    prelaunch,
+                    "AIRDROP_SEEN_PATH",
+                    Path(temp_dir) / "airdrop_seen.json",
+                ),
+                mock.patch.object(
+                    prelaunch,
+                    "now_utc",
+                    return_value=datetime(
+                        2026,
+                        8,
+                        10,
+                        11,
+                        0,
+                        tzinfo=timezone.utc,
+                    ),
+                ),
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(prelaunch.main(), 0)
+            generated = json.loads(generated_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [
+                    row["event_id"]
+                    for row in generated["airdrop_pressure_events"]
+                ],
+                ["drop-claim"],
+            )
+            self.assertEqual(
+                generated["airdrop_pressure_events"][0]["event_id_source"],
+                "configured",
+            )
+            with (
+                mock.patch.object(
+                    health,
+                    "CORE_OUTPUTS",
+                    (("prelaunch", generated_path),),
+                ),
+                mock.patch.object(
+                    health,
+                    "airdrop_watchlist_path",
+                    return_value=watchlist_path,
+                ),
+            ):
+                generated_issues, _rows = health.output_checks(60)
+            self.assertEqual(generated_issues, [])
+            with mock.patch.dict(
+                os.environ,
+                {"ALPHA_AIRDROP_WATCHLIST_PATH": str(runtime_watchlist_path)},
+            ):
+                self.assertEqual(
+                    health.airdrop_watchlist_path(),
+                    ROOT / "config" / "current_alpha_watchlist.json",
+                )
+                self.assertEqual(
+                    prelaunch.AIRDROP_CONFIG_PATH,
+                    ROOT / "config" / "current_alpha_watchlist.json",
+                )
             with (
                 mock.patch.object(
                     health,
@@ -25376,7 +25457,7 @@ raise SystemExit(0 if ok else 1)
                 ),
                 mock.patch.object(
                     health,
-                    "effective_watchlist_path",
+                    "airdrop_watchlist_path",
                     return_value=watchlist_path,
                 ),
             ):
@@ -25405,7 +25486,7 @@ raise SystemExit(0 if ok else 1)
                 ),
                 mock.patch.object(
                     health,
-                    "effective_watchlist_path",
+                    "airdrop_watchlist_path",
                     return_value=watchlist_path,
                 ),
             ):

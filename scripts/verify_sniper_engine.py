@@ -782,6 +782,9 @@ def main(argv: list[str] | None = None) -> int:
         "fast_health": (
             ROOT / "scripts" / "fast_lane_health.py"
         ).read_text(encoding="utf-8"),
+        "prelaunch_watch": (
+            ROOT / "scripts" / "alpha_prelaunch_watch.py"
+        ).read_text(encoding="utf-8"),
     }
     lifecycle_tokens = {
         "holder": (
@@ -844,6 +847,11 @@ def main(argv: list[str] | None = None) -> int:
             "monitoring_scope_issue",
             "prelaunch_output_issue",
             "alpha_prelaunch_watch.v2",
+            "airdrop_watchlist_path",
+        ),
+        "prelaunch_watch": (
+            'AIRDROP_CONFIG_PATH = ROOT / "config" / "current_alpha_watchlist.json"',
+            "build_airdrop_pressure_events(airdrop_config, current)",
         ),
     }
     lifecycle_missing = [
@@ -868,7 +876,15 @@ def main(argv: list[str] | None = None) -> int:
         import scripts.alpha_prelaunch_research as prelaunch_research
         import scripts.alpha_prelaunch_watch as prelaunch_watch
         import scripts.binance_alpha_catalog_watch as alpha_catalog
+        import scripts.fast_lane_health as fast_health
         import scripts.ingest_alpha_signal as signal_ingest
+
+        assert prelaunch_watch.AIRDROP_CONFIG_PATH.resolve() == (
+            ROOT / "config" / "current_alpha_watchlist.json"
+        ).resolve(), prelaunch_watch.AIRDROP_CONFIG_PATH
+        assert fast_health.airdrop_watchlist_path().resolve() == (
+            ROOT / "config" / "current_alpha_watchlist.json"
+        ).resolve(), fast_health.airdrop_watchlist_path()
 
         for forecast_term in (
             "预计",

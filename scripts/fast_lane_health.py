@@ -227,8 +227,12 @@ def effective_watchlist_path() -> Path:
     return ROOT / "config" / "current_alpha_watchlist.json"
 
 
+def airdrop_watchlist_path() -> Path:
+    return ROOT / "config" / "current_alpha_watchlist.json"
+
+
 def configured_airdrop_identity_hash() -> tuple[str, str]:
-    payload = read_json(effective_watchlist_path())
+    payload = read_json(airdrop_watchlist_path())
     identities: list[dict[str, Any]] = []
     event_ids: list[str] = []
     for item in payload.get("items", []):
