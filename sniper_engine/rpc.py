@@ -31,6 +31,18 @@ READ_CAPABLE_PUBLIC_RPCS = {
 DISABLED_NODE_REAL = False
 DISABLED_RPC_URLS: set[str] = set()
 LOG_SPLIT_HTTP_STATUSES = {400, 413, 422}
+READ_ONLY_RPC_METHODS = {
+    "debug_traceCall",
+    "eth_blockNumber",
+    "eth_call",
+    "eth_getBlockByNumber",
+    "eth_getCode",
+    "eth_getStorageAt",
+    "eth_getTransactionByHash",
+    "eth_getTransactionReceipt",
+    "nr_getAssetTransfers",
+    "web3_sha3",
+}
 
 
 class RpcHTTPError(RuntimeError):
@@ -279,7 +291,10 @@ def rpc_call(
                 DISABLED_NODE_REAL = True
             if status == 429:
                 DISABLED_RPC_URLS.add(url)
-            if status in {401, 403, 429, 500, 502, 503, 504} and index + 1 < len(urls):
+            if (
+                status in {401, 403, 429, 500, 502, 503, 504}
+                or method in READ_ONLY_RPC_METHODS
+            ) and index + 1 < len(urls):
                 if status == 429:
                     backoff = float(
                         os.environ.get("RPC_429_BACKOFF_SECONDS", "0.25")

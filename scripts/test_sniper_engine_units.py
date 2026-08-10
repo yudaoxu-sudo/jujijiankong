@@ -156,6 +156,51 @@ class RpcFailoverTests(unittest.TestCase):
         self.assertEqual(calls[0], "https://primary.invalid/rpc")
         self.assertEqual(calls[1], "https://fallback.invalid/rpc")
 
+    def test_client_http_error_fails_over_for_read_only_call(self) -> None:
+        os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"
+        os.environ["BSC_RPC_FALLBACK_URLS"] = "https://fallback.invalid/rpc"
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=30):
+            url = req.full_url
+            calls.append(url)
+            if "primary.invalid" in url:
+                raise HTTPError(
+                    url,
+                    400,
+                    "Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(b""),
+                )
+            return _FakeResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": "0x" + "0" * 64,
+                }
+            )
+
+        urllib.request.urlopen = fake_urlopen
+        result = rpc.rpc_call(
+            "bsc",
+            "eth_call",
+            [
+                {
+                    "to": "0x" + "1" * 40,
+                    "data": "0x12345678",
+                },
+                "0x1",
+            ],
+        )
+        self.assertEqual(result, "0x" + "0" * 64)
+        self.assertEqual(
+            calls,
+            [
+                "https://primary.invalid/rpc",
+                "https://fallback.invalid/rpc",
+            ],
+        )
+
     def test_get_logs_uses_public_fallback_after_configured_providers(self) -> None:
         os.environ["BSC_RPC_URL"] = "https://primary.invalid/rpc"
         os.environ["NODEREAL_API_KEY"] = "regression-test-key"

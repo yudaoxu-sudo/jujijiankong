@@ -1070,6 +1070,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "scripts/fast_lane_health.py",
             "scripts/runtime_health_watch.py",
             "scripts/test_dos_prelaunch_config.py",
+            "scripts/test_sniper_engine_units.py",
+            "sniper_engine/rpc.py",
         }
         self.assertTrue(protected.issubset(set(DEPLOY_PARITY_PATHS)))
         for relative_path in sorted(protected):
@@ -1699,6 +1701,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         )
 
     def test_remote_replay_blocker_preserves_only_allowlisted_issue(self) -> None:
+        marker = "untrusted_blocked_replay_detail"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_hashes, replay_path = remote_probe_fixture(root)
@@ -1726,9 +1729,43 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertTrue(revalid)
         self.assertEqual(rediagnostic, diagnostic)
         self.assertEqual(
+            diagnostic["validation_error_code"],
+            "replay_runtime_blocked",
+        )
+        self.assertEqual(
             diagnostic["grvt_replay_acceptance"]["issues"],
             ["canonical_transaction_rpc_failed"],
         )
+
+        for field, value in (("issues", []), ("generated_at", "")):
+            with self.subTest(missing=field):
+                incomplete = json.loads(json.dumps(payload))
+                incomplete["grvt_replay_acceptance"][field] = value
+                rejected, rejected_valid = sanitize_remote_runtime(incomplete)
+                self.assertFalse(rejected_valid)
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "replay_required_values_invalid",
+                )
+
+        untrusted = json.loads(json.dumps(payload))
+        untrusted["grvt_replay_acceptance"]["issues"] = [marker]
+        safe_untrusted, untrusted_valid = sanitize_remote_runtime(untrusted)
+        resafe_untrusted, revalid_untrusted = sanitize_remote_runtime(
+            safe_untrusted
+        )
+        self.assertFalse(untrusted_valid)
+        self.assertTrue(revalid_untrusted)
+        self.assertEqual(resafe_untrusted, safe_untrusted)
+        self.assertEqual(
+            safe_untrusted["validation_error_code"],
+            "replay_runtime_blocked",
+        )
+        self.assertEqual(
+            safe_untrusted["grvt_replay_acceptance"]["issues"],
+            ["issue_present"],
+        )
+        self.assertNotIn(marker, json.dumps(safe_untrusted, sort_keys=True))
 
     def test_remote_probe_accepts_old_grvt_artifact_with_matching_contract_and_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -32,6 +32,7 @@ DEPLOY_PARITY_PATHS = (
     "scripts/build_alpha_daily_report.py",
     "scripts/test_aeon_monitor_regression.py",
     "scripts/test_dos_prelaunch_config.py",
+    "scripts/test_sniper_engine_units.py",
     "scripts/grvt_liquidity_replay_acceptance.py",
     "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
     "scripts/server_run_once.sh",
@@ -39,6 +40,7 @@ DEPLOY_PARITY_PATHS = (
     "scripts/project_continuity_acceptance.py",
     "scripts/test_project_continuity_acceptance.py",
     "scripts/verify_sniper_engine.py",
+    "sniper_engine/rpc.py",
 )
 REMOTE_RUNTIME_ISSUE_CODES = frozenset(
     {
@@ -169,6 +171,7 @@ REMOTE_VALIDATION_ERROR_CODES = frozenset(
         "replay_summary_invalid",
         "replay_boolean_values_invalid",
         "replay_required_values_invalid",
+        "replay_runtime_blocked",
         "runtime_issue_codes_invalid",
         "runtime_issue_summaries_shape_invalid",
         "runtime_issue_summary_row_shape_invalid",
@@ -2315,6 +2318,8 @@ def sanitize_remote_runtime(
         not replay_issues or not replay_generated_at
     ):
         return runtime_diagnostic("replay_required_values_invalid")
+    if replay_status == "blocked":
+        return runtime_diagnostic("replay_runtime_blocked")
 
     required_groups = (
         (
