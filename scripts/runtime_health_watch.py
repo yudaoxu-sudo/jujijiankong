@@ -906,8 +906,20 @@ def opening_has_verified_liquidity_pool_scope(
             v3_as_of_block = 0
         if (
             v3_scope.get("schema") != "opening_v3_factory_matrix.v2"
+            or v3_scope.get("status")
+            != "complete_tracked_factory_matrix"
             or v3_scope.get("complete") is not True
             or v3_scope.get("snapshot_coherent") is not True
+            or v3_scope.get("deadline_exceeded") not in (None, False)
+            or type(v3_scope.get("expected_query_count")) is not int
+            or v3_scope.get("expected_query_count") <= 0
+            or type(v3_scope.get("attempted_query_count")) is not int
+            or v3_scope.get("attempted_query_count")
+            != v3_scope.get("expected_query_count")
+            or type(v3_scope.get("validation_error_count")) is not int
+            or v3_scope.get("validation_error_count") != 0
+            or type(v3_scope.get("scope_conflict_count")) is not int
+            or v3_scope.get("scope_conflict_count") != 0
             or not valid_hex_value(v3_scope.get("configuration_hash"), 64)
             or not valid_hex_value(
                 v3_scope.get("as_of_block_hash"), 64, "0x"

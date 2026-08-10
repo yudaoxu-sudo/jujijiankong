@@ -23,6 +23,7 @@ os.environ["DISABLE_TELEGRAM"] = "1"
 from sniper_engine.rpc import (  # noqa: E402
     DEFAULT_RPCS,
     READ_CAPABLE_PUBLIC_RPCS,
+    RpcDeadlineExceeded,
     adaptive_get_logs,
     rpc_call as runtime_rpc_call,
     rpc_call_url,
@@ -44,10 +45,70 @@ PUBLIC_RPCS = tuple(
         [DEFAULT_RPCS["bsc"], *READ_CAPABLE_PUBLIC_RPCS["bsc"]]
     )
 )
+RUNTIME_REPLAY_BUDGET_SECONDS = 210
+RUNTIME_REPLAY_ATTEMPT_SECONDS = 100
+RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS = 8
+RUNTIME_REPLAY_MAX_ATTEMPTS = 2
+RUNTIME_REPLAY_TRANSIENT_ISSUES = {
+    "runtime_rpc_attempts_exhausted",
+    "runtime_rpc_deadline_exceeded",
+}
 
 
 class AcceptanceFailure(RuntimeError):
     pass
+
+
+def run_runtime_acceptance() -> dict[str, Any]:
+    overall_deadline = time.monotonic() + RUNTIME_REPLAY_BUDGET_SECONDS
+    last_issue = "runtime_rpc_attempts_exhausted"
+    for attempt in range(RUNTIME_REPLAY_MAX_ATTEMPTS):
+        attempt_deadline = min(
+            overall_deadline,
+            time.monotonic() + RUNTIME_REPLAY_ATTEMPT_SECONDS,
+        )
+        rpc_issue = ""
+
+        def bounded_runtime_rpc(
+            chain: str,
+            method: str,
+            params: list[Any],
+        ) -> Any:
+            nonlocal rpc_issue
+            try:
+                return runtime_rpc_call(
+                    chain,
+                    method,
+                    params,
+                    timeout=RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS,
+                    deadline=attempt_deadline,
+                )
+            except RpcDeadlineExceeded:
+                rpc_issue = "runtime_rpc_deadline_exceeded"
+                raise AcceptanceFailure(rpc_issue) from None
+            except RuntimeError:
+                rpc_issue = "runtime_rpc_attempts_exhausted"
+                raise AcceptanceFailure(rpc_issue) from None
+
+        try:
+            result = run_acceptance(bounded_runtime_rpc)
+            if time.monotonic() > overall_deadline:
+                raise AcceptanceFailure(
+                    "runtime_rpc_deadline_exceeded"
+                )
+            return result
+        except AcceptanceFailure as exc:
+            last_issue = rpc_issue or str(exc)
+            retryable = last_issue in RUNTIME_REPLAY_TRANSIENT_ISSUES
+            remaining_attempts = attempt + 1 < RUNTIME_REPLAY_MAX_ATTEMPTS
+            if (
+                retryable
+                and remaining_attempts
+                and time.monotonic() < overall_deadline
+            ):
+                continue
+            raise AcceptanceFailure(last_issue) from None
+    raise AcceptanceFailure(last_issue)
 
 
 def require(condition: bool, issue: str) -> None:
@@ -737,9 +798,12 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    rpc = fixed_public_rpc if args.rpc_mode == "public" else runtime_rpc_call
     try:
-        result = run_acceptance(rpc)
+        result = (
+            run_acceptance(fixed_public_rpc)
+            if args.rpc_mode == "public"
+            else run_runtime_acceptance()
+        )
     except AcceptanceFailure as exc:
         result = {
             "schema": "grvt_liquidity_replay_acceptance.v1",

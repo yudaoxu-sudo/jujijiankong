@@ -95,7 +95,67 @@ REMOTE_RUNTIME_ISSUE_REASONS = frozenset(
     }
 )
 REMOTE_OPENING_ERROR_CODES = frozenset(
-    {"", "opening_cohort_coverage_incomplete", "opening_scope_error"}
+    {
+        "",
+        "opening_cohort_coverage_incomplete",
+        "opening_scope_deadline",
+        "opening_scope_key_error",
+        "opening_scope_other",
+        "opening_scope_provider_error",
+        "opening_scope_runtime_error",
+        "opening_scope_truncated",
+        "opening_scope_type_error",
+        "opening_scope_value_error",
+    }
+)
+REMOTE_REPLAY_ISSUE_CODES = frozenset(
+    {
+        "canonical_block_identity_mismatch",
+        "canonical_receipt_identity_mismatch",
+        "canonical_sender_or_nonce_mismatch",
+        "canonical_transaction_rpc_failed",
+        "canonical_transaction_shape_invalid",
+        "eip7702_operator_attribution_mismatch",
+        "factory_pool_identity_mismatch",
+        "final_alert_key_cardinality_mismatch",
+        "final_coverage_contract_invalid",
+        "final_verdict_cardinality_mismatch",
+        "final_verdict_replayed",
+        "fixture_elapsed_window_mismatch",
+        "fixture_event_topic_invalid",
+        "fixture_identity_invalid",
+        "fixture_log_indexes_missing",
+        "fixture_log_payload_mismatch",
+        "fixture_mint_schema_invalid",
+        "fixture_pool_schema_invalid",
+        "fixture_top_level_schema_invalid",
+        "normal_replay_dedup_failed",
+        "operator_or_timestamp_attribution_incomplete",
+        "output_path_outside_project_output",
+        "paired_pending_state_missing",
+        "pool_address_call_invalid",
+        "pool_identity_mismatch",
+        "pool_runtime_code_invalid",
+        "pool_uint_call_invalid",
+        "public_rpc_deadline_exceeded",
+        "public_rpc_log_query_invalid",
+        "public_rpc_unavailable",
+        "quote_boundary_coverage_failed",
+        "quote_boundary_incomplete",
+        "quote_decimals_mismatch",
+        "range_reposition_verdict_mismatch",
+        "raw_removal_was_not_suppressed",
+        "relative_materiality_not_proven",
+        "runtime_rpc_attempts_exhausted",
+        "runtime_rpc_deadline_exceeded",
+        "telegram_range_message_incomplete",
+        "telegram_receipt_ledger_mismatch",
+        "telegram_seen_ledger_mismatch",
+        "telegram_test_sink_failed",
+        "unexpected_runtime_error",
+        "unsupported_chain",
+        "verdict_evidence_coverage_incomplete",
+    }
 )
 REMOTE_VALIDATION_ERROR_CODES = frozenset(
     {
@@ -138,6 +198,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 max_age = int(sys.argv[2])
 expected_hashes = json.loads(sys.argv[3])
+replay_issue_codes = set(json.loads(sys.argv[4]))
 enriched_deploy_boundary = "2026-08-06T15:33:40+00:00"
 verdict_coverage_contract_version = "liquidity_verdict_coverage.v2"
 verdict_coverage_activated_at_utc = "2026-08-09T12:41:07+00:00"
@@ -167,6 +228,7 @@ safe_output_codes = liquidity_final_classifications | {
     "alpha_static_time_conflict",
     "alpha_static_time_conflict_summary_invalid",
     "alpha_unsupported_chain",
+    "blocked",
     "canonical_block",
     "contract_mismatch",
     "deadline_exceeded",
@@ -240,6 +302,14 @@ safe_output_codes = liquidity_final_classifications | {
     "opening_identity_conflict",
     "opening_liquidity_incomplete",
     "opening_scan_errors",
+    "opening_scope_deadline",
+    "opening_scope_key_error",
+    "opening_scope_other",
+    "opening_scope_provider_error",
+    "opening_scope_runtime_error",
+    "opening_scope_truncated",
+    "opening_scope_type_error",
+    "opening_scope_value_error",
     "opening_scope_error",
     "opening_status_invalid",
 }
@@ -261,9 +331,13 @@ def read_list(path):
 def parse_iso_utc(value):
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+        return (
+            parsed.astimezone(timezone.utc)
+            if parsed.tzinfo is not None
+            else None
+        )
+    except (OverflowError, TypeError, ValueError):
         return None
-    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
 
 def valid_iso(value):
     return parse_iso_utc(value) is not None
@@ -506,11 +580,12 @@ grvt_replay_contract = (
     grvt_replay.get("schema") == "grvt_liquidity_replay_acceptance.v1"
     and grvt_replay.get("status") == "pass"
     and grvt_replay.get("issues") == []
-    and isinstance(grvt_replay.get("generated_at"), str)
-    and bool(grvt_replay.get("generated_at"))
+    and valid_iso(grvt_replay.get("generated_at"))
     and grvt_replay_age is not None
-    and int(grvt_replay.get("receipt_count") or 0) == 2
-    and int(grvt_replay.get("elapsed_seconds") or 0) == 80
+    and type(grvt_replay.get("receipt_count")) is int
+    and grvt_replay.get("receipt_count") == 2
+    and type(grvt_replay.get("elapsed_seconds")) is int
+    and grvt_replay.get("elapsed_seconds") == 80
     and grvt_replay.get("classification") == "range_repositioned"
     and grvt_replay.get("range_changed") is True
     and grvt_replay.get("source_pool_equals_destination_pool") is True
@@ -518,14 +593,13 @@ grvt_replay_contract = (
     and grvt_replay.get("quote_boundary_complete") is True
     and grvt_replay.get("relative_materiality_proven") is True
     and grvt_replay.get("raw_removal_alert_eligible") is False
-    and int(grvt_replay.get("pending_count") or 0) == 0
+    and type(grvt_replay.get("pending_count")) is int
+    and grvt_replay.get("pending_count") == 0
     and grvt_replay.get("normal_replay_dedup_pass") is True
-    and int(grvt_replay.get("first_send_count") or 0) == 1
-    and int(
-        grvt_replay.get("replay_duplicate_send_count")
-        if grvt_replay.get("replay_duplicate_send_count") is not None
-        else -1
-    ) == 0
+    and type(grvt_replay.get("first_send_count")) is int
+    and grvt_replay.get("first_send_count") == 1
+    and type(grvt_replay.get("replay_duplicate_send_count")) is int
+    and grvt_replay.get("replay_duplicate_send_count") == 0
     and grvt_replay_hash_parity
 )
 watchlist = read_json(root / "config" / "current_alpha_watchlist.json")
@@ -856,35 +930,123 @@ if not isinstance(opening_rows, list):
 if not isinstance(opening_rows, list):
     opening_rows = []
 
-def runtime_issue_error_code(row):
-    if runtime_issue_scope(row) != "opening":
-        return ""
+def runtime_issue_opening_events(row):
     symbol = str(row.get("name") or "").upper()
     parts = str(row.get("fingerprint") or "").split(":")
     contract = parts[2].lower() if len(parts) > 2 else ""
+    exact = []
+    symbolic = []
     for event in opening_rows:
-        token = event.get("token") if isinstance(event, dict) else {}
-        event_contract = (
-            str(token.get("address") or "").lower()
-            if isinstance(token, dict)
-            else ""
-        )
-        if (
-            isinstance(event, dict)
-            and (
-                str(event.get("symbol") or "").upper() == symbol
-                or (contract and event_contract == contract)
+        if not isinstance(event, dict):
+            continue
+        token = event.get("token") if isinstance(event.get("token"), dict) else {}
+        event_contract = str(token.get("address") or "").lower()
+        if contract and event_contract == contract:
+            exact.append(event)
+        elif str(event.get("symbol") or "").upper() == symbol:
+            symbolic.append(event)
+    return exact if contract else symbolic
+
+def runtime_issue_error_code(row):
+    if runtime_issue_scope(row) != "opening":
+        return ""
+    matched_events = runtime_issue_opening_events(row)
+    if len(matched_events) != 1:
+        return ""
+    for event in matched_events:
+        code = safe_code(event.get("error"), "")
+        if code == "opening_scope_error":
+            return {
+                "opening_scope_OpeningTraceDeadlineExceeded": (
+                    "opening_scope_deadline"
+                ),
+                "opening_scope_OpeningLogCoverageTruncated": (
+                    "opening_scope_truncated"
+                ),
+                "opening_scope_LogCoverageError": (
+                    "opening_scope_provider_error"
+                ),
+                "opening_scope_RpcDeadlineExceeded": (
+                    "opening_scope_deadline"
+                ),
+                "opening_scope_RpcHTTPError": (
+                    "opening_scope_provider_error"
+                ),
+                "opening_scope_KeyError": "opening_scope_key_error",
+                "opening_scope_RuntimeError": (
+                    "opening_scope_runtime_error"
+                ),
+                "opening_scope_TypeError": "opening_scope_type_error",
+                "opening_scope_ValueError": "opening_scope_value_error",
+            }.get(
+                str(event.get("refresh_error") or ""),
+                "opening_scope_other",
             )
-        ):
-            code = safe_code(event.get("error"), "")
-            if code:
-                return code
+        if code:
+            return code
     return ""
 
 def runtime_issue_contract_hash(row):
     parts = str(row.get("fingerprint") or "").split(":")
     contract = parts[2].lower() if len(parts) > 2 else ""
     return hashlib.sha256(contract.encode("utf-8")).hexdigest()[:16]
+
+def runtime_issue_pool_scope(row):
+    empty = {
+        "opening_event_match_count": 0,
+        "opening_event_opened_count": 0,
+        "opening_event_error_count": 0,
+        "v3_complete": None,
+        "v3_deadline_exceeded": None,
+        "v3_expected_query_count": None,
+        "v3_attempted_query_count": None,
+        "v3_pool_count": None,
+        "v3_validation_error_count": None,
+        "v3_scope_conflict_count": None,
+        "v4_applicable": None,
+        "v4_complete": None,
+    }
+    if runtime_issue_scope(row) != "opening":
+        return empty
+    matched_events = runtime_issue_opening_events(row)
+    aggregate = {
+        "opening_event_match_count": len(matched_events),
+        "opening_event_opened_count": sum(
+            event.get("status") == "opened" for event in matched_events
+        ),
+        "opening_event_error_count": sum(
+            bool(str(event.get("error") or ""))
+            for event in matched_events
+        ),
+    }
+    if len(matched_events) != 1:
+        return {**empty, **aggregate}
+    event = matched_events[0]
+    v3 = (
+        event.get("opening_v3_pool_scope")
+        if isinstance(event.get("opening_v3_pool_scope"), dict)
+        else {}
+    )
+    v4 = (
+        event.get("opening_v4_pool_scope")
+        if isinstance(event.get("opening_v4_pool_scope"), dict)
+        else {}
+    )
+    v3_pools = v3.get("pools")
+    return {
+        **aggregate,
+        "v3_complete": safe_bool(v3.get("complete")),
+        "v3_deadline_exceeded": safe_bool(v3.get("deadline_exceeded")),
+        "v3_expected_query_count": safe_int(v3.get("expected_query_count")),
+        "v3_attempted_query_count": safe_int(v3.get("attempted_query_count")),
+        "v3_pool_count": len(v3_pools) if isinstance(v3_pools, list) else None,
+        "v3_validation_error_count": safe_int(
+            v3.get("validation_error_count")
+        ),
+        "v3_scope_conflict_count": safe_int(v3.get("scope_conflict_count")),
+        "v4_applicable": safe_bool(v4.get("applicable")),
+        "v4_complete": safe_bool(v4.get("complete")),
+    }
 
 runtime_issue_summaries = [
     {
@@ -899,6 +1061,7 @@ runtime_issue_summaries = [
         "reason": runtime_issue_reason(row),
         "error_code": runtime_issue_error_code(row),
         "contract_hash": runtime_issue_contract_hash(row),
+        **runtime_issue_pool_scope(row),
     }
     for row in (health.get("issues") or [])
     if isinstance(row, dict)
@@ -906,6 +1069,7 @@ runtime_issue_summaries = [
 ok = (
     health.get("schema") == "runtime_health.v1"
     and health.get("status") == "healthy"
+    and valid_iso(health.get("generated_at"))
     and int(health.get("issue_count") or 0) == 0
     and health.get("issues") == []
     and age is not None
@@ -944,14 +1108,15 @@ print(json.dumps({
     "deployed_hash_expected_count": len(expected_hashes),
     "grvt_replay_acceptance": {
         "status": safe_code(grvt_replay.get("status"), "missing"),
-        "issues": [
-            safe_code(value)
+        "issues": sorted({
+            value if value in replay_issue_codes else "issue_present"
             for value in (
                 grvt_replay.get("issues")
                 if isinstance(grvt_replay.get("issues"), list)
                 else []
             )[:8]
-        ],
+            if isinstance(value, str)
+        }),
         "generated_at": safe_timestamp(grvt_replay.get("generated_at")),
         "age_seconds": grvt_replay_age,
         "contract_pass": grvt_replay_contract,
@@ -1201,6 +1366,7 @@ def build_remote_command(config_path: Path, remote: dict[str, Any]) -> list[str]
             shlex.quote(remote_root),
             str(max_age),
             shlex.quote(json.dumps(expected_hashes, sort_keys=True)),
+            shlex.quote(json.dumps(sorted(REMOTE_REPLAY_ISSUE_CODES))),
         ]
     )
     return [
@@ -1286,6 +1452,122 @@ def sanitize_remote_runtime(
             False,
         )
 
+    def sanitize_issue_summaries(
+        raw: Any,
+    ) -> tuple[list[dict[str, Any]] | None, str]:
+        if not isinstance(raw, list) or len(raw) > 20:
+            return None, "runtime_issue_summaries_shape_invalid"
+        safe = []
+        for row in raw:
+            if (
+                not isinstance(row, dict)
+                or set(row)
+                != {
+                    "kind",
+                    "name_hash",
+                    "fingerprint_hash",
+                    "scope",
+                    "reason",
+                    "error_code",
+                    "contract_hash",
+                    "opening_event_match_count",
+                    "opening_event_opened_count",
+                    "opening_event_error_count",
+                    "v3_complete",
+                    "v3_deadline_exceeded",
+                    "v3_expected_query_count",
+                    "v3_attempted_query_count",
+                    "v3_pool_count",
+                    "v3_validation_error_count",
+                    "v3_scope_conflict_count",
+                    "v4_applicable",
+                    "v4_complete",
+                }
+            ):
+                return None, "runtime_issue_summary_row_shape_invalid"
+            scope_bools = {
+                key: strict_remote_bool(row.get(key), optional=True)
+                for key in (
+                    "v3_complete",
+                    "v3_deadline_exceeded",
+                    "v4_applicable",
+                    "v4_complete",
+                )
+            }
+            scope_ints = {
+                key: strict_remote_int(row.get(key), optional=True)
+                for key in (
+                    "opening_event_match_count",
+                    "opening_event_opened_count",
+                    "opening_event_error_count",
+                    "v3_expected_query_count",
+                    "v3_attempted_query_count",
+                    "v3_pool_count",
+                    "v3_validation_error_count",
+                    "v3_scope_conflict_count",
+                )
+            }
+            if (
+                not isinstance(row.get("kind"), str)
+                or not isinstance(row.get("name_hash"), str)
+                or re.fullmatch(r"[0-9a-f]{16}", row["name_hash"])
+                is None
+                or not isinstance(row.get("fingerprint_hash"), str)
+                or re.fullmatch(
+                    r"[0-9a-f]{16}", row["fingerprint_hash"]
+                )
+                is None
+                or row.get("scope") not in REMOTE_RUNTIME_ISSUE_SCOPES
+                or row.get("reason") not in REMOTE_RUNTIME_ISSUE_REASONS
+                or row.get("error_code") not in REMOTE_OPENING_ERROR_CODES
+                or not isinstance(row.get("contract_hash"), str)
+                or re.fullmatch(r"[0-9a-f]{16}", row["contract_hash"])
+                is None
+                or any(
+                    row.get(key) is not None and value is None
+                    for key, value in {
+                        **scope_bools,
+                        **scope_ints,
+                    }.items()
+                )
+            ):
+                return None, "runtime_issue_summary_value_invalid"
+            kind = row["kind"]
+            safe.append(
+                {
+                    "kind": (
+                        kind
+                        if kind in REMOTE_RUNTIME_ISSUE_CODES
+                        else "issue_present"
+                    ),
+                    "name_hash": row["name_hash"],
+                    "fingerprint_hash": row["fingerprint_hash"],
+                    "scope": row["scope"],
+                    "reason": row["reason"],
+                    "error_code": row["error_code"],
+                    "contract_hash": row["contract_hash"],
+                    **scope_bools,
+                    **scope_ints,
+                }
+            )
+        return safe, ""
+
+    def sanitize_replay_issues(raw: Any) -> list[str] | None:
+        if (
+            not isinstance(raw, list)
+            or len(raw) > 20
+            or any(not isinstance(item, str) for item in raw)
+        ):
+            return None
+        return sorted(
+            {
+                item
+                if item in REMOTE_REPLAY_ISSUE_CODES
+                else "issue_present"
+                for item in raw
+            }
+        )
+
     if type(max_age_seconds) is not int or max_age_seconds <= 0:
         return validation_error("max_age_invalid")
     if isinstance(value, dict) and set(value) == {"status"}:
@@ -1301,6 +1583,153 @@ def sanitize_remote_runtime(
         in REMOTE_VALIDATION_ERROR_CODES
     ):
         return dict(value), True
+    diagnostic_keys = {
+        "schema",
+        "status",
+        "validation_error_code",
+        "runtime_status",
+        "runtime_generated_at",
+        "runtime_age_seconds",
+        "runtime_issue_count",
+        "runtime_issue_codes",
+        "runtime_issue_summaries",
+        "verification_exists",
+        "verification_fail_count",
+        "verification_fail_check_hashes",
+        "watchlist_item_count",
+        "deployed_hash_parity_count",
+        "deployed_hash_expected_count",
+        "grvt_replay_acceptance",
+    }
+    if isinstance(value, dict) and set(value) == diagnostic_keys:
+        runtime_status = strict_remote_code(
+            value.get("runtime_status"),
+            {"healthy", "unhealthy", "missing", "error"},
+        )
+        runtime_generated_at = strict_remote_timestamp(
+            value.get("runtime_generated_at"), optional=True
+        )
+        runtime_age = strict_remote_int(value.get("runtime_age_seconds"))
+        runtime_issue_count = strict_remote_int(
+            value.get("runtime_issue_count")
+        )
+        raw_codes = value.get("runtime_issue_codes")
+        safe_summaries, summary_error = sanitize_issue_summaries(
+            value.get("runtime_issue_summaries")
+        )
+        verification_exists = strict_remote_bool(
+            value.get("verification_exists")
+        )
+        verification_fail_count = strict_remote_int(
+            value.get("verification_fail_count")
+        )
+        fail_hashes = value.get("verification_fail_check_hashes")
+        watchlist_item_count = strict_remote_int(
+            value.get("watchlist_item_count")
+        )
+        parity_count = strict_remote_int(
+            value.get("deployed_hash_parity_count")
+        )
+        parity_expected = strict_remote_int(
+            value.get("deployed_hash_expected_count")
+        )
+        replay_diagnostic = value.get("grvt_replay_acceptance")
+        replay_status = (
+            strict_remote_code(
+                replay_diagnostic.get("status"),
+                {"blocked", "pass", "fail", "missing", "error"},
+            )
+            if isinstance(replay_diagnostic, dict)
+            else None
+        )
+        replay_issues = (
+            sanitize_replay_issues(replay_diagnostic.get("issues"))
+            if isinstance(replay_diagnostic, dict)
+            else None
+        )
+        replay_generated_at = (
+            strict_remote_timestamp(
+                replay_diagnostic.get("generated_at"), optional=True
+            )
+            if isinstance(replay_diagnostic, dict)
+            else None
+        )
+        replay_age = (
+            strict_remote_int(
+                replay_diagnostic.get("age_seconds"), optional=True
+            )
+            if isinstance(replay_diagnostic, dict)
+            else None
+        )
+        if (
+            value.get("schema")
+            != "sniper_remote_health_acceptance.v1"
+            or value.get("status") != "fail"
+            or value.get("validation_error_code")
+            not in REMOTE_VALIDATION_ERROR_CODES
+            or None
+            in (
+                runtime_status,
+                runtime_generated_at,
+                runtime_age,
+                runtime_issue_count,
+                safe_summaries,
+                verification_exists,
+                verification_fail_count,
+                watchlist_item_count,
+                parity_count,
+                parity_expected,
+                replay_status,
+                replay_issues,
+                replay_generated_at,
+            )
+            or summary_error
+            or not isinstance(raw_codes, list)
+            or len(raw_codes) > 20
+            or any(
+                code
+                not in REMOTE_RUNTIME_ISSUE_CODES | {"issue_present"}
+                for code in raw_codes
+            )
+            or raw_codes != sorted(set(raw_codes))
+            or not isinstance(fail_hashes, list)
+            or len(fail_hashes) > 20
+            or any(
+                not isinstance(item, str)
+                or re.fullmatch(r"[0-9a-f]{16}", item) is None
+                for item in fail_hashes
+            )
+            or len(fail_hashes) != verification_fail_count
+            or not isinstance(replay_diagnostic, dict)
+            or set(replay_diagnostic)
+            != {"status", "issues", "generated_at", "age_seconds"}
+            or (
+                replay_diagnostic.get("age_seconds") is not None
+                and replay_age is None
+            )
+        ):
+            return validation_error("runtime_required_values_invalid")
+        return {
+            **value,
+            "runtime_status": runtime_status,
+            "runtime_generated_at": runtime_generated_at,
+            "runtime_age_seconds": runtime_age,
+            "runtime_issue_count": runtime_issue_count,
+            "runtime_issue_codes": list(raw_codes),
+            "runtime_issue_summaries": safe_summaries,
+            "verification_exists": verification_exists,
+            "verification_fail_count": verification_fail_count,
+            "verification_fail_check_hashes": list(fail_hashes),
+            "watchlist_item_count": watchlist_item_count,
+            "deployed_hash_parity_count": parity_count,
+            "deployed_hash_expected_count": parity_expected,
+            "grvt_replay_acceptance": {
+                "status": replay_status,
+                "issues": replay_issues,
+                "generated_at": replay_generated_at,
+                "age_seconds": replay_age,
+            },
+        }, True
     top_keys = {
         "schema",
         "status",
@@ -1454,55 +1883,11 @@ def sanitize_remote_runtime(
             for item in raw_runtime_issue_codes
         }
     )
-    issue_summaries = value.get("runtime_issue_summaries")
-    if not isinstance(issue_summaries, list) or len(issue_summaries) > 20:
-        return validation_error("runtime_issue_summaries_shape_invalid")
-    safe_issue_summaries = []
-    for row in issue_summaries:
-        if (
-            not isinstance(row, dict)
-            or set(row)
-            != {
-                "kind",
-                "name_hash",
-                "fingerprint_hash",
-                "scope",
-                "reason",
-                "error_code",
-                "contract_hash",
-            }
-        ):
-            return validation_error("runtime_issue_summary_row_shape_invalid")
-        if (
-            not isinstance(row.get("kind"), str)
-            or not isinstance(row.get("name_hash"), str)
-            or re.fullmatch(r"[0-9a-f]{16}", row["name_hash"]) is None
-            or not isinstance(row.get("fingerprint_hash"), str)
-            or re.fullmatch(r"[0-9a-f]{16}", row["fingerprint_hash"])
-            is None
-            or row.get("scope") not in REMOTE_RUNTIME_ISSUE_SCOPES
-            or row.get("reason") not in REMOTE_RUNTIME_ISSUE_REASONS
-            or row.get("error_code") not in REMOTE_OPENING_ERROR_CODES
-            or not isinstance(row.get("contract_hash"), str)
-            or re.fullmatch(r"[0-9a-f]{16}", row["contract_hash"]) is None
-        ):
-            return validation_error("runtime_issue_summary_value_invalid")
-        kind = row["kind"]
-        safe_issue_summaries.append(
-            {
-                "kind": (
-                    kind
-                    if kind in REMOTE_RUNTIME_ISSUE_CODES
-                    else "issue_present"
-                ),
-                "name_hash": row["name_hash"],
-                "fingerprint_hash": row["fingerprint_hash"],
-                "scope": row["scope"],
-                "reason": row["reason"],
-                "error_code": row["error_code"],
-                "contract_hash": row["contract_hash"],
-            }
-        )
+    safe_issue_summaries, issue_summary_error = sanitize_issue_summaries(
+        value.get("runtime_issue_summaries")
+    )
+    if issue_summary_error:
+        return validation_error(issue_summary_error)
     verification_exists = strict_remote_bool(value.get("verification_exists"))
     verification_fail_count = strict_remote_int(
         value.get("verification_fail_count")
@@ -1525,18 +1910,59 @@ def sanitize_remote_runtime(
     parity_count = strict_remote_int(value.get("deployed_hash_parity_count"))
     parity_expected = strict_remote_int(value.get("deployed_hash_expected_count"))
 
+    def runtime_diagnostic(
+        error_code: str,
+    ) -> tuple[dict[str, Any], bool]:
+        if None in (
+            runtime_status,
+            runtime_generated_at,
+            runtime_age,
+            runtime_issue_count,
+            safe_issue_summaries,
+            verification_exists,
+            verification_fail_count,
+            watchlist_item_count,
+            parity_count,
+            parity_expected,
+        ):
+            return validation_error("runtime_required_values_invalid")
+        return (
+            {
+                "schema": "sniper_remote_health_acceptance.v1",
+                "status": "fail",
+                "validation_error_code": error_code,
+                "runtime_status": runtime_status,
+                "runtime_generated_at": runtime_generated_at,
+                "runtime_age_seconds": runtime_age,
+                "runtime_issue_count": runtime_issue_count,
+                "runtime_issue_codes": runtime_issue_codes,
+                "runtime_issue_summaries": safe_issue_summaries,
+                "verification_exists": verification_exists,
+                "verification_fail_count": verification_fail_count,
+                "verification_fail_check_hashes": (
+                    verification_fail_check_hashes
+                ),
+                "watchlist_item_count": watchlist_item_count,
+                "deployed_hash_parity_count": parity_count,
+                "deployed_hash_expected_count": parity_expected,
+                "grvt_replay_acceptance": {
+                    "status": replay_status or "error",
+                    "issues": replay_issues,
+                    "generated_at": replay_generated_at or "",
+                    "age_seconds": replay_age,
+                },
+            },
+            False,
+        )
+
     replay_status = strict_remote_code(
         replay.get("status"),
-        {"pass", "fail", "missing", "error"},
+        {"blocked", "pass", "fail", "missing", "error"},
     )
     raw_replay_issues = replay.get("issues")
-    if (
-        not isinstance(raw_replay_issues, list)
-        or len(raw_replay_issues) > 20
-        or any(not isinstance(item, str) for item in raw_replay_issues)
-    ):
+    replay_issues = sanitize_replay_issues(raw_replay_issues)
+    if replay_issues is None:
         return validation_error("replay_summary_invalid")
-    replay_issues = [] if not raw_replay_issues else ["issue_present"]
     replay_age = strict_remote_int(replay.get("age_seconds"), optional=True)
     replay_generated_at = strict_remote_timestamp(
         replay.get("generated_at"), optional=True
@@ -1699,6 +2125,11 @@ def sanitize_remote_runtime(
             }
         )
 
+    if replay_status == "blocked" and (
+        not replay_issues or not replay_generated_at
+    ):
+        return runtime_diagnostic("replay_required_values_invalid")
+
     required_groups = (
         (
             "runtime_required_values_invalid",
@@ -1721,7 +2152,7 @@ def sanitize_remote_runtime(
                 replay_status,
                 replay_issues,
                 replay_age,
-                replay_generated_at,
+                replay_generated_at or None,
                 replay_classification,
                 replay_duplicate_count,
             ),
@@ -1746,15 +2177,17 @@ def sanitize_remote_runtime(
     )
     for error_code, values in required_groups:
         if any(item is None for item in values):
-            return validation_error(error_code)
+            if error_code == "runtime_required_values_invalid":
+                return validation_error(error_code)
+            return runtime_diagnostic(error_code)
     if any(item is None for item in replay_bools.values()):
-        return validation_error("replay_boolean_values_invalid")
+        return runtime_diagnostic("replay_boolean_values_invalid")
     if any(item is None for item in contract_counts.values()):
-        return validation_error("verdict_contract_counts_invalid")
+        return runtime_diagnostic("verdict_contract_counts_invalid")
     if contract.get("version") != "liquidity_verdict_coverage.v2":
-        return validation_error("verdict_contract_version_invalid")
+        return runtime_diagnostic("verdict_contract_version_invalid")
     if contract_activated_at != "2026-08-09T12:41:07+00:00":
-        return validation_error("verdict_contract_activation_invalid")
+        return runtime_diagnostic("verdict_contract_activation_invalid")
 
     contract_recomputed = (
         contract_counts["historical_unversioned_scope_count"] <= 3
@@ -1781,6 +2214,7 @@ def sanitize_remote_runtime(
     )
     remote_recomputed = (
         runtime_status == "healthy"
+        and bool(runtime_generated_at)
         and runtime_age <= max_age_seconds
         and runtime_issue_count == 0
         and runtime_issue_codes == []

@@ -594,6 +594,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             "expected_query_count": 0,
             "attempted_query_count": 0,
             "validation_error_count": 0,
+            "deadline_exceeded": False,
             "complete": False,
             "pools": [],
         }
@@ -667,21 +668,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     )
     matrix_deadline = time.monotonic() + max(1, budget_seconds)
     if TRACE_DEADLINE_AT is not None:
-        remaining = max(0.0, TRACE_DEADLINE_AT - time.monotonic())
-        try:
-            matrix_fraction = float(
-                os.environ.get(
-                    "ALPHA_OPENING_FACTORY_MATRIX_BUDGET_FRACTION",
-                    "0.25",
-                )
-            )
-        except ValueError:
-            matrix_fraction = 0.25
-        matrix_fraction = min(0.5, max(0.05, matrix_fraction))
-        matrix_deadline = min(
-            matrix_deadline,
-            time.monotonic() + remaining * matrix_fraction,
-        )
+        matrix_deadline = min(matrix_deadline, TRACE_DEADLINE_AT)
 
     def matrix_rpc(method: str, params: list[Any]) -> Any:
         try:
@@ -713,8 +700,18 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     if (
         cached.get("schema") == "opening_v3_factory_matrix.v2"
         and cached.get("configuration_hash") == configuration_hash
-        and int(cached.get("expected_query_count") or -1) == len(fee_rows)
+        and type(cached.get("expected_query_count")) is int
+        and cached.get("expected_query_count") == len(fee_rows)
+        and cached.get("status") == "complete_tracked_factory_matrix"
         and cached.get("complete") is True
+        and cached.get("snapshot_coherent") is True
+        and cached.get("deadline_exceeded") in (None, False)
+        and type(cached.get("attempted_query_count")) is int
+        and cached.get("attempted_query_count") == len(fee_rows)
+        and type(cached.get("validation_error_count")) is int
+        and cached.get("validation_error_count") == 0
+        and type(cached.get("scope_conflict_count")) is int
+        and cached.get("scope_conflict_count") == 0
         and isinstance(cached.get("pools"), list)
         and 0 < cached_as_of <= latest
         and cached_as_of >= required_as_of_block
@@ -731,12 +728,15 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 and strict_block_hash(canonical.get("hash"))
                 == norm(cached.get("as_of_block_hash"))
             ):
-                return copy.deepcopy(cached)
+                reused = copy.deepcopy(cached)
+                reused.setdefault("deadline_exceeded", False)
+                return reused
         except Exception:
             pass
     pools: dict[str, dict[str, Any]] = {}
     errors = 0
     attempted = 0
+    deadline_exceeded = False
     initial_block_hash = ""
     if fee_rows:
         try:
@@ -750,6 +750,9 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 )
             if not initial_block_hash:
                 errors += 1
+        except OpeningTraceDeadlineExceeded:
+            errors += 1
+            deadline_exceeded = True
         except Exception:
             errors += 1
 
@@ -836,6 +839,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             pools[pool] = pool_row
         except OpeningTraceDeadlineExceeded:
             errors += 1
+            deadline_exceeded = True
             break
         except Exception:
             errors += 1
@@ -858,6 +862,9 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 errors += 1
             else:
                 snapshot_coherent = True
+        except OpeningTraceDeadlineExceeded:
+            errors += 1
+            deadline_exceeded = True
         except Exception:
             errors += 1
     if not snapshot_coherent:
@@ -889,8 +896,12 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         )
         for row in pools.values()
     }
-    scope_conflict_count = len(cached_identities - current_identities)
-    if snapshot_coherent and scope_conflict_count:
+    scope_conflict_count = (
+        len(cached_identities - current_identities)
+        if snapshot_coherent and errors == 0
+        else 0
+    )
+    if scope_conflict_count:
         errors += scope_conflict_count
         pools.clear()
     complete = bool(fee_rows and attempted == len(fee_rows) and errors == 0)
@@ -917,6 +928,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         "expected_query_count": len(fee_rows),
         "attempted_query_count": attempted,
         "validation_error_count": errors,
+        "deadline_exceeded": deadline_exceeded,
         "scope_conflict_count": scope_conflict_count,
         "complete": complete,
         "pools": list(pools.values()),
@@ -7189,7 +7201,10 @@ def prepare_opening_scope(
         and (previous or {}).get("opening_buyer_scope_complete") is True
     ]
     if previous_rows:
-        event.update(cached_opening_scope_evidence(previous))
+        cached_evidence = cached_opening_scope_evidence(previous)
+        cached_evidence.pop("opening_v3_pool_scope", None)
+        cached_evidence.pop("opening_v4_pool_scope", None)
+        event.update(cached_evidence)
         return {
             "rows": copy.deepcopy(previous_rows),
             "selected_hashes": [],

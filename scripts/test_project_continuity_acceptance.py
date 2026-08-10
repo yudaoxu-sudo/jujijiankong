@@ -15,6 +15,7 @@ from unittest import mock
 from project_continuity_acceptance import (
     DEPLOY_PARITY_PATHS,
     REMOTE_PROBE,
+    REMOTE_REPLAY_ISSUE_CODES,
     build_remote_command,
     evaluate,
     path_matches_any,
@@ -33,6 +34,32 @@ HISTORICAL_SCOPE_RECONCILE_IDS = (
 def write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def safe_issue_summary(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "kind": "alpha_coverage_gap",
+        "name_hash": "0" * 16,
+        "fingerprint_hash": "0" * 16,
+        "scope": "",
+        "reason": "",
+        "error_code": "",
+        "contract_hash": "0" * 16,
+        "opening_event_match_count": 0,
+        "opening_event_opened_count": 0,
+        "opening_event_error_count": 0,
+        "v3_complete": None,
+        "v3_deadline_exceeded": None,
+        "v3_expected_query_count": None,
+        "v3_attempted_query_count": None,
+        "v3_pool_count": None,
+        "v3_validation_error_count": None,
+        "v3_scope_conflict_count": None,
+        "v4_applicable": None,
+        "v4_complete": None,
+    }
+    row.update(overrides)
+    return row
 
 
 def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
@@ -170,6 +197,7 @@ def run_remote_probe(root: Path, expected_hashes: dict[str, str]) -> dict:
             str(root),
             "1200",
             json.dumps(expected_hashes, sort_keys=True),
+            json.dumps(sorted(REMOTE_REPLAY_ISSUE_CODES)),
         ],
         check=True,
         capture_output=True,
@@ -392,6 +420,48 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "sniper_remote_health_acceptance.v1",
         )
 
+    def test_remote_runtime_generated_at_must_be_canonical_for_pass(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            healthy = run_remote_probe(root, expected_hashes)
+            health_path = root / "output/runtime_health/last_cycle.json"
+            health = json.loads(health_path.read_text(encoding="utf-8"))
+            health["generated_at"] = ""
+            write_json(health_path, health)
+            rejected = run_remote_probe(root, expected_hashes)
+            health["generated_at"] = "0001-01-01T00:00:00+14:00"
+            write_json(health_path, health)
+            overflow_rejected = run_remote_probe(root, expected_hashes)
+        self.assertEqual(rejected["status"], "fail")
+        self.assertEqual(overflow_rejected["status"], "fail")
+
+        forged = json.loads(json.dumps(healthy))
+        forged["runtime_generated_at"] = ""
+        sanitized, valid = sanitize_remote_runtime(forged)
+        resanitized, revalid = sanitize_remote_runtime(sanitized)
+        self.assertTrue(valid)
+        self.assertTrue(revalid)
+        self.assertEqual(resanitized, sanitized)
+        self.assertEqual(sanitized["status"], "fail")
+
+        diagnostic_input = json.loads(json.dumps(healthy))
+        diagnostic_input["status"] = "fail"
+        diagnostic_input["runtime_status"] = "unhealthy"
+        diagnostic_input["runtime_generated_at"] = ""
+        diagnostic_input["grvt_replay_acceptance"]["classification"] = None
+        diagnostic, diagnostic_valid = sanitize_remote_runtime(
+            diagnostic_input
+        )
+        rediagnostic, rediagnostic_valid = sanitize_remote_runtime(
+            diagnostic
+        )
+        self.assertFalse(diagnostic_valid)
+        self.assertTrue(rediagnostic_valid)
+        self.assertEqual(rediagnostic, diagnostic)
+
     def test_remote_unhealthy_runtime_keeps_safe_issue_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -481,6 +551,164 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             ]
         )
 
+        invalid_replay_payload = json.loads(json.dumps(remote_payload))
+        invalid_replay_payload["grvt_replay_acceptance"][
+            "classification"
+        ] = None
+        diagnostic, diagnostic_valid = sanitize_remote_runtime(
+            invalid_replay_payload
+        )
+        rediagnostic, rediagnostic_valid = sanitize_remote_runtime(
+            diagnostic
+        )
+        self.assertFalse(diagnostic_valid)
+        self.assertTrue(rediagnostic_valid)
+        self.assertEqual(rediagnostic, diagnostic)
+        self.assertEqual(diagnostic["status"], "fail")
+        self.assertEqual(
+            diagnostic["validation_error_code"],
+            "replay_required_values_invalid",
+        )
+        self.assertEqual(diagnostic["runtime_status"], "unhealthy")
+        self.assertEqual(
+            diagnostic["runtime_issue_codes"],
+            ["alpha_coverage_gap"],
+        )
+        self.assertEqual(len(diagnostic["runtime_issue_summaries"]), 1)
+        self.assertEqual(
+            diagnostic["grvt_replay_acceptance"],
+            {
+                "status": "pass",
+                "issues": [],
+                "generated_at": "2026-08-07T00:00:00+00:00",
+                "age_seconds": diagnostic["grvt_replay_acceptance"][
+                    "age_seconds"
+                ],
+            },
+        )
+        diagnostic_snapshot = healthy_snapshot()
+        diagnostic_snapshot["remote_runtime"] = invalid_replay_payload
+        diagnostic_result = evaluate(
+            diagnostic_snapshot,
+            allow_dirty=False,
+            remote_required=True,
+        )
+        self.assertEqual(diagnostic_result["status"], "fail")
+        self.assertEqual(
+            diagnostic_result["remote_runtime"],
+            diagnostic,
+        )
+
+    def test_remote_opening_issue_summary_requires_unique_event_match(
+        self,
+    ) -> None:
+        contract = "0x" + "a" * 40
+        event = {
+            "symbol": "GRVT",
+            "status": "opened",
+            "error": "opening_scope_error",
+            "refresh_error": "opening_scope_RpcDeadlineExceeded",
+            "token": {"address": contract},
+            "opening_v3_pool_scope": {
+                "complete": False,
+                "deadline_exceeded": True,
+                "expected_query_count": 32,
+                "attempted_query_count": 20,
+                "validation_error_count": 1,
+                "scope_conflict_count": 0,
+                "pools": [],
+            },
+            "opening_v4_pool_scope": {
+                "applicable": True,
+                "complete": True,
+            },
+        }
+        for event_count in (1, 2):
+            with self.subTest(event_count=event_count), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                expected_hashes, _ = remote_probe_fixture(root)
+                write_json(
+                    root / "output/runtime_health/last_cycle.json",
+                    {
+                        "schema": "runtime_health.v1",
+                        "status": "unhealthy",
+                        "generated_at": "2026-08-10T11:30:00+00:00",
+                        "issue_count": 1,
+                        "issues": [
+                            {
+                                "kind": "alpha_coverage_gap",
+                                "name": "GRVT",
+                                "fingerprint": (
+                                    "alpha_coverage_gap:bsc:"
+                                    + contract
+                                    + ":opening:opening liquidity flow coverage incomplete"
+                                ),
+                            }
+                        ],
+                    },
+                )
+                write_json(
+                    root / "output/alpha_opening_block_watch/latest.json",
+                    {"events": [event] * event_count},
+                )
+                payload = run_remote_probe(root, expected_hashes)
+            summary = payload["runtime_issue_summaries"][0]
+            self.assertEqual(
+                summary["opening_event_match_count"], event_count
+            )
+            self.assertEqual(
+                summary["opening_event_opened_count"], event_count
+            )
+            if event_count == 1:
+                self.assertEqual(summary["error_code"], "opening_scope_deadline")
+                self.assertTrue(summary["v3_deadline_exceeded"])
+                self.assertEqual(summary["v3_expected_query_count"], 32)
+                self.assertEqual(summary["v3_attempted_query_count"], 20)
+                self.assertTrue(summary["v4_applicable"])
+            else:
+                self.assertEqual(summary["error_code"], "")
+                self.assertIsNone(summary["v3_deadline_exceeded"])
+                self.assertIsNone(summary["v3_expected_query_count"])
+                self.assertIsNone(summary["v4_applicable"])
+            sanitized, valid = sanitize_remote_runtime(payload)
+            self.assertTrue(valid)
+            self.assertEqual(
+                sanitized["runtime_issue_summaries"], [summary]
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            write_json(
+                root / "output/runtime_health/last_cycle.json",
+                {
+                    "schema": "runtime_health.v1",
+                    "status": "unhealthy",
+                    "generated_at": "2026-08-10T11:30:00+00:00",
+                    "issue_count": 1,
+                    "issues": [
+                        {
+                            "kind": "alpha_coverage_gap",
+                            "name": "GRVT",
+                            "fingerprint": (
+                                "alpha_coverage_gap:bsc:"
+                                + ("0x" + "b" * 40)
+                                + ":opening:opening liquidity flow coverage incomplete"
+                            ),
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "output/alpha_opening_block_watch/latest.json",
+                {"events": [event]},
+            )
+            mismatch = run_remote_probe(root, expected_hashes)
+        mismatch_summary = mismatch["runtime_issue_summaries"][0]
+        self.assertEqual(mismatch_summary["opening_event_match_count"], 0)
+        self.assertEqual(mismatch_summary["error_code"], "")
+        self.assertIsNone(mismatch_summary["v3_complete"])
+
     def test_remote_nested_free_text_never_persists(self) -> None:
         marker = "synthetic_secret_api_key_abc123"
         with tempfile.TemporaryDirectory() as temporary:
@@ -505,15 +733,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         issue_payload["runtime_issue_count"] = 1
         issue_payload["runtime_issue_codes"] = [marker]
         issue_payload["runtime_issue_summaries"] = [
-            {
-                "kind": marker,
-                "name_hash": "0" * 16,
-                "fingerprint_hash": "2" * 16,
-                "scope": "",
-                "reason": "",
-                "error_code": "",
-                "contract_hash": "4" * 16,
-            }
+            safe_issue_summary(
+                kind=marker,
+                fingerprint_hash="2" * 16,
+                contract_hash="4" * 16,
+            )
         ]
         issue_payload["grvt_replay_acceptance"]["status"] = "fail"
         issue_payload["grvt_replay_acceptance"]["issues"] = [marker]
@@ -534,15 +758,12 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         recognized_payload["runtime_issue_count"] = 1
         recognized_payload["runtime_issue_codes"] = ["alpha_coverage_gap"]
         recognized_payload["runtime_issue_summaries"] = [
-            {
-                "kind": "alpha_coverage_gap",
-                "name_hash": "1" * 16,
-                "fingerprint_hash": "3" * 16,
-                "scope": "holder",
-                "reason": "",
-                "error_code": "",
-                "contract_hash": "5" * 16,
-            }
+            safe_issue_summary(
+                name_hash="1" * 16,
+                fingerprint_hash="3" * 16,
+                scope="holder",
+                contract_hash="5" * 16,
+            )
         ]
         recognized_snapshot = healthy_snapshot()
         recognized_snapshot["remote_runtime"] = recognized_payload
@@ -1310,6 +1531,86 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             payload = run_remote_probe(root, expected_hashes)
         self.assertEqual(payload["status"], "fail")
         self.assertFalse(payload["grvt_replay_acceptance"]["contract_pass"])
+
+    def test_remote_replay_count_fields_are_strict_integers(self) -> None:
+        mutations = {
+            "receipt_count": "2",
+            "elapsed_seconds": "80",
+            "pending_count": False,
+            "first_send_count": True,
+            "replay_duplicate_send_count": False,
+        }
+        for field, forged_value in mutations.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                expected_hashes, replay_path = remote_probe_fixture(root)
+                replay = json.loads(replay_path.read_text(encoding="utf-8"))
+                replay[field] = forged_value
+                write_json(replay_path, replay)
+                payload = run_remote_probe(root, expected_hashes)
+            self.assertEqual(payload["status"], "fail")
+            self.assertFalse(
+                payload["grvt_replay_acceptance"]["contract_pass"]
+            )
+
+    def test_remote_replay_generated_at_must_be_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            replay = json.loads(replay_path.read_text(encoding="utf-8"))
+            replay["generated_at"] = "not-a-time"
+            write_json(replay_path, replay)
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertFalse(payload["grvt_replay_acceptance"]["contract_pass"])
+
+        forged = json.loads(json.dumps(payload))
+        forged["grvt_replay_acceptance"].update(
+            {
+                "status": "pass",
+                "generated_at": "",
+                "contract_pass": True,
+            }
+        )
+        sanitized, valid = sanitize_remote_runtime(forged)
+        self.assertFalse(valid)
+        self.assertEqual(sanitized["status"], "fail")
+        self.assertEqual(
+            sanitized["validation_error_code"],
+            "replay_required_values_invalid",
+        )
+
+    def test_remote_replay_blocker_preserves_only_allowlisted_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            write_json(
+                replay_path,
+                {
+                    "schema": "grvt_liquidity_replay_acceptance.v1",
+                    "status": "blocked",
+                    "issues": ["canonical_transaction_rpc_failed"],
+                    "generated_at": "2026-08-10T14:00:00+00:00",
+                },
+            )
+            payload = run_remote_probe(root, expected_hashes)
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(
+            payload["grvt_replay_acceptance"]["status"], "blocked"
+        )
+        self.assertEqual(
+            payload["grvt_replay_acceptance"]["issues"],
+            ["canonical_transaction_rpc_failed"],
+        )
+        diagnostic, valid = sanitize_remote_runtime(payload)
+        rediagnostic, revalid = sanitize_remote_runtime(diagnostic)
+        self.assertFalse(valid)
+        self.assertTrue(revalid)
+        self.assertEqual(rediagnostic, diagnostic)
+        self.assertEqual(
+            diagnostic["grvt_replay_acceptance"]["issues"],
+            ["canonical_transaction_rpc_failed"],
+        )
 
     def test_remote_probe_accepts_old_grvt_artifact_with_matching_contract_and_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

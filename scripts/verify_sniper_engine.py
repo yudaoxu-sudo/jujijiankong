@@ -645,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "position_cost_watch.py",
         ROOT / "scripts" / "fast_lane_health.py",
         ROOT / "scripts" / "runtime_health_watch.py",
+        ROOT / "scripts" / "grvt_liquidity_replay_acceptance.py",
         ROOT / "scripts" / "project_continuity_local.py",
         ROOT / "scripts" / "project_continuity_acceptance.py",
         ROOT / "scripts" / "test_project_continuity_acceptance.py",

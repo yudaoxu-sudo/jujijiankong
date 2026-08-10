@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import importlib
 import copy
+import io
 import json
 import os
 import subprocess
 import time
 from contextlib import ExitStack
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -50,6 +52,263 @@ def complete_project_contract(
 
 
 class AeonSignalParsingRegressionTests(unittest.TestCase):
+    def test_runtime_replay_deadline_retry_and_blocked_artifact_are_bounded(
+        self,
+    ) -> None:
+        previous_offline = os.environ.get("SNIPER_OFFLINE")
+        previous_telegram = os.environ.get("DISABLE_TELEGRAM")
+        replay = importlib.import_module(
+            "scripts.grvt_liquidity_replay_acceptance"
+        )
+        if previous_offline is None:
+            os.environ.pop("SNIPER_OFFLINE", None)
+        else:
+            os.environ["SNIPER_OFFLINE"] = previous_offline
+        if previous_telegram is None:
+            os.environ.pop("DISABLE_TELEGRAM", None)
+        else:
+            os.environ["DISABLE_TELEGRAM"] = previous_telegram
+
+        rpc_calls: list[dict[str, object]] = []
+
+        def fake_runtime_rpc(
+            _chain: str,
+            _method: str,
+            _params: list[object],
+            **kwargs: object,
+        ) -> str:
+            rpc_calls.append(dict(kwargs))
+            return "0x1"
+
+        def successful_acceptance(rpc: object) -> dict[str, object]:
+            rpc("bsc", "eth_blockNumber", [])
+            rpc("bsc", "eth_blockNumber", [])
+            return {"status": "pass"}
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "runtime_rpc_call",
+                side_effect=fake_runtime_rpc,
+            ),
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=successful_acceptance,
+            ),
+        ):
+            result = replay.run_runtime_acceptance()
+
+        self.assertEqual(result, {"status": "pass"})
+        self.assertEqual(len(rpc_calls), 2)
+        self.assertEqual(
+            {row["deadline"] for row in rpc_calls},
+            {110.0},
+        )
+        self.assertEqual(
+            {row["timeout"] for row in rpc_calls},
+            {replay.RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS},
+        )
+        self.assertLessEqual(
+            replay.RUNTIME_REPLAY_ATTEMPT_SECONDS
+            * replay.RUNTIME_REPLAY_MAX_ATTEMPTS,
+            replay.RUNTIME_REPLAY_BUDGET_SECONDS,
+        )
+        self.assertLess(replay.RUNTIME_REPLAY_BUDGET_SECONDS, 240)
+        server_cycle = (
+            ROOT / "scripts" / "server_run_once.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "GRVT_LIQUIDITY_REPLAY_ACCEPTANCE_TIMEOUT_SECONDS:-240",
+            server_cycle,
+        )
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=[
+                    replay.AcceptanceFailure(
+                        "runtime_rpc_attempts_exhausted"
+                    ),
+                    {"status": "pass"},
+                ],
+            ) as retry,
+        ):
+            self.assertEqual(
+                replay.run_runtime_acceptance(), {"status": "pass"}
+            )
+        self.assertEqual(retry.call_count, 2)
+
+        def exercise_rpc(rpc: object) -> dict[str, object]:
+            rpc("bsc", "eth_blockNumber", [])
+            return {"status": "unreachable"}
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "runtime_rpc_call",
+                side_effect=RuntimeError("synthetic provider failure"),
+            ) as failed_rpc,
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=exercise_rpc,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_attempts_exhausted",
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(failed_rpc.call_count, 2)
+
+        deadline_calls: list[float] = []
+
+        def deadline_rpc(
+            _chain: str,
+            _method: str,
+            _params: list[object],
+            **kwargs: object,
+        ) -> object:
+            deadline_calls.append(float(kwargs["deadline"]))
+            raise replay.RpcDeadlineExceeded("fixture deadline")
+
+        with (
+            mock.patch.object(
+                replay.time,
+                "monotonic",
+                side_effect=[10.0, 10.0, 110.0, 110.0],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_rpc_call",
+                side_effect=deadline_rpc,
+            ),
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=exercise_rpc,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_deadline_exceeded",
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(deadline_calls, [110.0, 210.0])
+
+        with (
+            mock.patch.object(
+                replay.time,
+                "monotonic",
+                side_effect=[10.0, 10.0, 221.0],
+            ),
+            mock.patch.object(
+                replay,
+                "runtime_rpc_call",
+                side_effect=RuntimeError("synthetic provider failure"),
+            ) as expired_rpc,
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=exercise_rpc,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_attempts_exhausted",
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(expired_rpc.call_count, 1)
+
+        with (
+            mock.patch.object(
+                replay.time,
+                "monotonic",
+                side_effect=[10.0, 10.0, 221.0, 221.0],
+            ),
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                return_value={"status": "pass"},
+            ) as overrun,
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_deadline_exceeded",
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(overrun.call_count, 1)
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(
+                replay,
+                "run_acceptance",
+                side_effect=replay.AcceptanceFailure(
+                    "pool_identity_mismatch"
+                ),
+            ) as semantic,
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure, "pool_identity_mismatch"
+            ):
+                replay.run_runtime_acceptance()
+        self.assertEqual(semantic.call_count, 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output_root = Path(temporary)
+            output_path = output_root / "runtime_replay" / "latest.json"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "generated_at": "2000-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.utime(output_path, (1, 1))
+            revision_before = output_path.stat().st_mtime_ns
+            with (
+                mock.patch.object(replay, "OUTPUT_ROOT", output_root),
+                mock.patch.object(
+                    replay,
+                    "run_runtime_acceptance",
+                    side_effect=replay.AcceptanceFailure(
+                        "runtime_rpc_deadline_exceeded"
+                    ),
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "grvt_liquidity_replay_acceptance.py",
+                        "--rpc-mode",
+                        "runtime",
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                exit_code = replay.main()
+            blocked = json.loads(output_path.read_text(encoding="utf-8"))
+            revision_after = output_path.stat().st_mtime_ns
+        self.assertEqual(exit_code, 2)
+        self.assertGreater(revision_after, revision_before)
+        self.assertEqual(
+            blocked["issues"], ["runtime_rpc_deadline_exceeded"]
+        )
+        self.assertNotEqual(
+            blocked["generated_at"], "2000-01-01T00:00:00+00:00"
+        )
+
     def test_opening_sprint_retries_opened_incomplete_within_existing_bounds(
         self,
     ) -> None:
@@ -3611,6 +3870,60 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(event["opening_v3_pool_scope"]["schema"], "v3")
         self.assertEqual(event["opening_v4_pool_scope"]["schema"], "v4")
 
+    def test_opening_previous_rows_keep_refreshed_identity_scopes(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "seconds_until_start": -1,
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+        }
+        previous = {
+            "rows": [{"tx": "0x" + "3" * 64}],
+            "opening_buyer_scope_complete": True,
+            "opening_v3_pool_scope": {
+                "schema": "cached-v3",
+                "complete": True,
+            },
+            "opening_v4_pool_scope": {
+                "schema": "cached-v4",
+                "complete": True,
+            },
+            "opening_liquidity_coverage_complete": True,
+        }
+        refreshed_v3 = {"schema": "refreshed-v3", "complete": True}
+        refreshed_v4 = {"schema": "refreshed-v4", "complete": True}
+        with (
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value=refreshed_v3,
+            ),
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "supported_v4_manager_scope",
+                return_value=refreshed_v4,
+            ),
+            mock.patch.object(opening, "opening_transfer_logs") as logs,
+        ):
+            prepared = opening.prepare_opening_scope(event, previous)
+
+        logs.assert_not_called()
+        self.assertEqual(prepared["rows"], previous["rows"])
+        self.assertEqual(event["opening_v3_pool_scope"], refreshed_v3)
+        self.assertEqual(event["opening_v4_pool_scope"], refreshed_v4)
+
     def test_opening_build_budget_reallocates_unused_time(
         self,
     ) -> None:
@@ -6617,6 +6930,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             mode["value"] = "block_flip"
             incoherent_block = opening.supported_v3_pool_scope(event, 200)
             event["opening_v3_pool_scope"] = copy.deepcopy(good)
+            mode["value"] = "mixed"
+            partial_refresh = opening.supported_v3_pool_scope(event, 401)
+            event["opening_v3_pool_scope"] = copy.deepcopy(good)
             mode["value"] = "missing_cached_pool"
             scope_conflict = opening.supported_v3_pool_scope(event, 401)
             event["opening_v3_pool_scope"] = copy.deepcopy(scope_conflict)
@@ -6642,6 +6958,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertFalse(incoherent_block["complete"])
         self.assertFalse(incoherent_block["snapshot_coherent"])
         self.assertEqual(incoherent_block["pools"], [])
+        self.assertFalse(partial_refresh["complete"])
+        self.assertEqual(
+            partial_refresh["status"], "factory_matrix_partial"
+        )
+        self.assertEqual(partial_refresh["scope_conflict_count"], 0)
         self.assertFalse(scope_conflict["complete"])
         self.assertEqual(
             scope_conflict["status"],
@@ -6745,6 +7066,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertTrue(first["complete"])
         self.assertEqual(cached["as_of_block"], 200)
+        self.assertFalse(cached["deadline_exceeded"])
         self.assertEqual(reorg_refreshed["as_of_block"], 300)
         self.assertEqual(get_pool_calls, [100, 100, 100, 500])
         self.assertNotEqual(
@@ -6809,11 +7131,33 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             first = opening.supported_v3_pool_scope(event, 200)
             event["opening_v3_pool_scope"] = copy.deepcopy(first)
             cached = opening.supported_v3_pool_scope(event, 300)
+            rejected_caches = []
+            for field, value in {
+                "status": "factory_matrix_partial",
+                "snapshot_coherent": False,
+                "deadline_exceeded": True,
+                "expected_query_count": True,
+                "attempted_query_count": 0,
+                "validation_error_count": 1,
+                "scope_conflict_count": 1,
+            }.items():
+                with self.subTest(cache_field=field):
+                    forged = copy.deepcopy(first)
+                    forged[field] = value
+                    event["opening_v3_pool_scope"] = forged
+                    rejected_caches.append(
+                        opening.supported_v3_pool_scope(event, 300)
+                    )
 
         self.assertTrue(first["complete"])
         self.assertEqual(first["pools"], [])
         self.assertEqual(cached["as_of_block"], 200)
-        self.assertEqual(get_pool_calls, 1)
+        self.assertFalse(cached["deadline_exceeded"])
+        self.assertTrue(
+            all(row["as_of_block"] == 300 for row in rejected_caches)
+        )
+        self.assertTrue(all(row["complete"] for row in rejected_caches))
+        self.assertEqual(get_pool_calls, 1 + len(rejected_caches))
 
     def test_v3_factory_matrix_refreshes_stale_complete_scope(self) -> None:
         import scripts.alpha_opening_block_watch as opening
@@ -6890,7 +7234,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn(3000, factory["fee_tiers"])
         self.assertEqual(manager["class"], "lp_position_manager")
 
-    def test_v3_factory_matrix_reserves_event_budget(self) -> None:
+    def test_v3_factory_matrix_uses_identity_first_event_budget(self) -> None:
         import scripts.alpha_opening_block_watch as opening
 
         token = "0x" + "1" * 40
@@ -6942,7 +7286,141 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertTrue(result["complete"])
         self.assertTrue(deadlines)
-        self.assertLessEqual(max(deadlines), 101.25)
+        self.assertGreater(max(deadlines), 101.25)
+        self.assertLessEqual(max(deadlines), 105.0)
+
+    def test_v3_factory_matrix_completes_32_rows_within_event_deadline(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quotes = ["0x" + digit * 40 for digit in "2345"]
+        factories = ["0x" + digit * 40 for digit in "67"]
+        labels = {
+            **{
+                quote: {"class": "quote_token"}
+                for quote in quotes
+            },
+            **{
+                factory: {
+                    "class": "v3_factory",
+                    "fee_tiers": [100, 500, 3000, 10000],
+                }
+                for factory in factories
+            },
+        }
+        clock = {"now": 100.0}
+        deadlines: list[float] = []
+        block_hash = "0x" + "a" * 64
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **kwargs: object,
+        ) -> object:
+            deadline = float(kwargs["deadline"])
+            deadlines.append(deadline)
+            clock["now"] += 0.5
+            if clock["now"] > deadline:
+                raise opening.RpcDeadlineExceeded("fixture deadline")
+            if method == "eth_getBlockByNumber":
+                return {"hash": block_hash}
+            self.assertEqual(method, "eth_call")
+            return "0x" + "0" * 64
+
+        previous_deadline = opening.TRACE_DEADLINE_AT
+        opening.TRACE_DEADLINE_AT = 145.0
+        try:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"ALPHA_OPENING_FACTORY_MATRIX_BUDGET_SECONDS": "45"},
+                ),
+                mock.patch.object(
+                    opening,
+                    "global_address_labels",
+                    return_value=labels,
+                ),
+                mock.patch.object(
+                    opening.time,
+                    "monotonic",
+                    side_effect=monotonic,
+                ),
+                mock.patch.object(opening, "rpc_call", side_effect=rpc),
+            ):
+                result = opening.supported_v3_pool_scope(
+                    {
+                        "chain": "bsc",
+                        "opening_block": 100,
+                        "token": {"address": token},
+                        "quote": {"address": quotes[0]},
+                    },
+                    200,
+                )
+        finally:
+            opening.TRACE_DEADLINE_AT = previous_deadline
+
+        self.assertEqual(result["expected_query_count"], 32)
+        self.assertEqual(result["attempted_query_count"], 32)
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["deadline_exceeded"])
+        self.assertTrue(deadlines)
+        self.assertLessEqual(max(deadlines), 145.0)
+
+    def test_v3_factory_matrix_marks_final_snapshot_deadline(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        token = "0x" + "1" * 40
+        quote = "0x" + "2" * 40
+        factory = "0x" + "3" * 40
+        block_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal block_calls
+            if method == "eth_getBlockByNumber":
+                block_calls += 1
+                if block_calls == 2:
+                    raise opening.RpcDeadlineExceeded("fixture deadline")
+                return {"hash": "0x" + "a" * 64}
+            return "0x" + "0" * 64
+
+        with (
+            mock.patch.object(
+                opening,
+                "global_address_labels",
+                return_value={
+                    quote: {"class": "quote_token"},
+                    factory: {
+                        "class": "v3_factory",
+                        "fee_tiers": [100],
+                    },
+                },
+            ),
+            mock.patch.object(opening, "rpc_call", side_effect=rpc),
+        ):
+            result = opening.supported_v3_pool_scope(
+                {
+                    "chain": "bsc",
+                    "opening_block": 100,
+                    "token": {"address": token},
+                    "quote": {"address": quote},
+                },
+                200,
+            )
+
+        self.assertEqual(result["attempted_query_count"], 1)
+        self.assertTrue(result["deadline_exceeded"])
+        self.assertFalse(result["complete"])
 
     def test_manager_only_liquidity_scope_scans_filtered_events(
         self,
@@ -19465,8 +19943,14 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                     "opening_liquidity_watch_scope_hash": "7" * 64,
                     "opening_v3_pool_scope": {
                         "schema": "opening_v3_factory_matrix.v2",
+                        "status": "complete_tracked_factory_matrix",
                         "complete": True,
                         "snapshot_coherent": True,
+                        "deadline_exceeded": False,
+                        "expected_query_count": 1,
+                        "attempted_query_count": 1,
+                        "validation_error_count": 0,
+                        "scope_conflict_count": 0,
                         "configuration_hash": "8" * 64,
                         "as_of_block": 100,
                         "as_of_block_hash": cls._hash("9"),
@@ -20192,6 +20676,29 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(scope["v3_pool_count"], 1)
         self.assertEqual(scope["v4_pool_count"], 1)
 
+        for field, value in (
+            ("status", "factory_matrix_partial"),
+            ("snapshot_coherent", False),
+            ("deadline_exceeded", True),
+            ("expected_query_count", True),
+            ("attempted_query_count", 0),
+            ("validation_error_count", 1),
+            ("scope_conflict_count", 1),
+        ):
+            with self.subTest(v3_scope_field=field):
+                contradictory = copy.deepcopy(payload)
+                contradictory["events"][0]["opening_v3_pool_scope"][
+                    field
+                ] = value
+                rejected_scope = holder.opening_verified_pool_scope(
+                    contradictory,
+                    "TEST",
+                    "bsc",
+                    token,
+                )
+                self.assertFalse(rejected_scope["complete"])
+                self.assertEqual(rejected_scope["pool_scope"], [])
+
         refreshed = copy.deepcopy(payload)
         event = refreshed["events"][0]
         event["opening_v3_pool_scope"]["as_of_block"] = 200
@@ -20384,6 +20891,28 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                     ("bsc", self._address("1")),
                 )
             )
+            for field, value in {
+                "status": "factory_matrix_partial",
+                "deadline_exceeded": True,
+                "attempted_query_count": 0,
+                "validation_error_count": 1,
+                "scope_conflict_count": 1,
+            }.items():
+                with self.subTest(v3_field=field):
+                    invalid_scope = copy.deepcopy(payload)
+                    invalid_scope["events"][0][
+                        "opening_v3_pool_scope"
+                    ][field] = value
+                    opening_path.write_text(
+                        json.dumps(invalid_scope), encoding="utf-8"
+                    )
+                    self.assertFalse(
+                        opening_has_verified_liquidity_pool_scope(
+                            opening_path,
+                            ("bsc", self._address("1")),
+                        )
+                    )
+            opening_path.write_text(json.dumps(payload), encoding="utf-8")
             self.assertTrue(
                 opening_liquidity_gap_is_historical_only(
                     opening_path,
