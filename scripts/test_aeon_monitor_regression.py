@@ -26709,6 +26709,93 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertFalse(deferred_transition["conflict"])
         self.assertEqual(deferred_transition["source"], "holder")
 
+    def test_fast_liquidity_seed_conflict_reason_is_exact(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        scope = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+        }
+        retry = {
+            **scope,
+            "scope_coverage_from_block": 90,
+            "bootstrap_retry_pending": True,
+            "bootstrap_retry_window_blocks": 8,
+        }
+        checkpoint = {
+            **scope,
+            "scope_coverage_from_block": 90,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": True,
+            "next_catchup_window_blocks": 16,
+        }
+        pending = {
+            "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+            "pending": [{"reconcile_id": "1" * 64}],
+            "completed": [],
+            "deferred_events": [],
+        }
+        cases = (
+            (
+                {**scope, "reconciliation_state_invalid": True},
+                {},
+                "seed_conflict_invalid",
+            ),
+            (
+                scope,
+                {**scope, "scope_hash": "b" * 64},
+                "seed_conflict_scope",
+            ),
+            (
+                retry,
+                {
+                    **checkpoint,
+                    "scope_coverage_from_block": 100,
+                },
+                "seed_conflict_kind",
+            ),
+            (
+                checkpoint,
+                {
+                    **checkpoint,
+                    "latest_block_hash": self._hash("b"),
+                },
+                "seed_conflict_checkpoint_hash",
+            ),
+            (
+                checkpoint,
+                {**checkpoint, "catchup_active": False},
+                "seed_conflict_checkpoint_state",
+            ),
+            (
+                {**checkpoint, "reconciliation": pending},
+                {
+                    **checkpoint,
+                    "latest_block": 130,
+                    "latest_block_hash": self._hash("b"),
+                },
+                "seed_conflict_reconciliation",
+            ),
+            (
+                checkpoint,
+                {
+                    **checkpoint,
+                    "scope_coverage_from_block": 100,
+                    "latest_block": 130,
+                    "latest_block_hash": self._hash("b"),
+                },
+                "seed_conflict_progress",
+            ),
+        )
+        for left, right, reason in cases:
+            with self.subTest(reason=reason):
+                selection = fast.select_liquidity_seed(left, right)
+                self.assertTrue(selection["conflict"])
+                self.assertEqual(selection["source"], "none")
+                self.assertEqual(selection["conflict_reason"], reason)
+
     def test_fast_liquidity_invalid_seed_is_preserved_and_stops_provider(
         self,
     ) -> None:
@@ -26833,7 +26920,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
 
         build.assert_not_called()
         self.assertEqual(snapshot["status"], "unhealthy")
-        self.assertEqual(snapshot["issues"][0]["detail"], "seed_conflict")
+        self.assertEqual(
+            snapshot["issues"][0]["detail"],
+            "seed_conflict_invalid",
+        )
         self.assertEqual(
             snapshot["_next_state"]["tokens"][key]["liquidity"],
             raw_invalid,
@@ -26844,7 +26934,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(diagnostic["scope_seed_source"], "none")
         self.assertEqual(diagnostic["provider_status"], "not_attempted")
         self.assertEqual(diagnostic["coverage_status"], "invalid")
-        self.assertEqual(diagnostic["reason_code"], "seed_conflict")
+        self.assertEqual(
+            diagnostic["reason_code"],
+            "seed_conflict_invalid",
+        )
 
     def test_fast_liquidity_seed_conflict_stops_before_provider(
         self,
@@ -26927,14 +27020,20 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
 
         build.assert_not_called()
         self.assertEqual(snapshot["status"], "unhealthy")
-        self.assertEqual(snapshot["issues"][0]["detail"], "seed_conflict")
+        self.assertEqual(
+            snapshot["issues"][0]["detail"],
+            "seed_conflict_scope",
+        )
         diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
         self.assertEqual(diagnostic["scope_seed_source"], "none")
         self.assertEqual(diagnostic["input_state_kind"], "invalid")
         self.assertEqual(diagnostic["next_state_kind"], "invalid")
         self.assertEqual(diagnostic["provider_status"], "not_attempted")
         self.assertEqual(diagnostic["coverage_status"], "invalid")
-        self.assertEqual(diagnostic["reason_code"], "seed_conflict")
+        self.assertEqual(
+            diagnostic["reason_code"],
+            "seed_conflict_scope",
+        )
 
     def test_fast_liquidity_diagnostic_maps_safe_exception_reasons(
         self,

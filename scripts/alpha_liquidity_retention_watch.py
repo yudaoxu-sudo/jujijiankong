@@ -40,6 +40,17 @@ STATE_SCHEMA = "alpha_liquidity_retention_state.v1"
 SNAPSHOT_SCHEMA = "alpha_liquidity_retention_watch.v1"
 DEFAULT_BUDGET_SECONDS = 35
 MAX_BUDGET_SECONDS = 35
+LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
+    {
+        "seed_conflict_invalid",
+        "seed_conflict_scope",
+        "seed_conflict_kind",
+        "seed_conflict_checkpoint_hash",
+        "seed_conflict_checkpoint_state",
+        "seed_conflict_reconciliation",
+        "seed_conflict_progress",
+    }
+)
 
 
 class ReconciliationStateInvalid(ValueError):
@@ -563,16 +574,29 @@ def select_liquidity_seed(
 ) -> dict[str, Any]:
     seeds = {"standalone": standalone, "holder": holder_seed}
 
-    def outcome(source: str, *, conflict: bool = False) -> dict[str, Any]:
+    def outcome(
+        source: str,
+        *,
+        conflict_reason: str = "none",
+    ) -> dict[str, Any]:
         return {
             "seed": copy.deepcopy(seeds.get(source) or {}),
             "source": source,
-            "conflict": conflict,
+            "conflict": conflict_reason != "none",
+            "conflict_reason": conflict_reason,
         }
 
     present = [source for source, seed in seeds.items() if seed]
     if not present:
         return outcome("none")
+    if any(
+        liquidity_seed_state_kind(seeds[source]) == "invalid"
+        for source in present
+    ):
+        return outcome(
+            "none",
+            conflict_reason="seed_conflict_invalid",
+        )
     if len(present) == 1:
         return outcome(present[0])
     if not (
@@ -580,7 +604,7 @@ def select_liquidity_seed(
         and standalone.get("scope_hash") == holder_seed.get("scope_hash")
         and standalone.get("pool_scope") == holder_seed.get("pool_scope")
     ):
-        return outcome("none", conflict=True)
+        return outcome("none", conflict_reason="seed_conflict_scope")
 
     kinds = {
         source: liquidity_seed_state_kind(seed)
@@ -611,10 +635,10 @@ def select_liquidity_seed(
             retry.get("scope_coverage_from_block") or 0
         ):
             return outcome(checkpoint_source)
-        return outcome("none", conflict=True)
+        return outcome("none", conflict_reason="seed_conflict_kind")
 
     if kinds["standalone"] != kinds["holder"]:
-        return outcome("none", conflict=True)
+        return outcome("none", conflict_reason="seed_conflict_kind")
     kind = kinds["standalone"]
     if kind == "checkpoint":
         latest = {
@@ -627,7 +651,10 @@ def select_liquidity_seed(
             ).lower() != str(
                 holder_seed.get("latest_block_hash") or ""
             ).lower():
-                return outcome("none", conflict=True)
+                return outcome(
+                    "none",
+                    conflict_reason="seed_conflict_checkpoint_hash",
+                )
             checkpoint_state_fields = (
                 "catchup_active",
                 "catchup_live_from_block",
@@ -637,7 +664,10 @@ def select_liquidity_seed(
                 standalone.get(field) != holder_seed.get(field)
                 for field in checkpoint_state_fields
             ):
-                return outcome("none", conflict=True)
+                return outcome(
+                    "none",
+                    conflict_reason="seed_conflict_checkpoint_state",
+                )
         progress = latest
     elif kind == "bootstrap_retry":
         progress = {
@@ -645,16 +675,25 @@ def select_liquidity_seed(
             for source, seed in seeds.items()
         }
     else:
-        return outcome("none", conflict=True)
+        return outcome("none", conflict_reason="seed_conflict_kind")
 
     coverage_from = {
         source: int(seed.get("scope_coverage_from_block") or 0)
         for source, seed in seeds.items()
     }
-    dominates = {
+    progress_dominates = {
         source: bool(
             coverage_from[source] <= coverage_from[other]
             and progress[source] >= progress[other]
+        )
+        for source, other in (
+            ("standalone", "holder"),
+            ("holder", "standalone"),
+        )
+    }
+    dominates = {
+        source: bool(
+            progress_dominates[source]
             and (
                 kind != "checkpoint"
                 or liquidity_reconciliation_dominates(
@@ -672,11 +711,21 @@ def select_liquidity_seed(
         return outcome("standalone")
     if dominates["holder"]:
         return outcome("holder")
-    return outcome("none", conflict=True)
+    return outcome(
+        "none",
+        conflict_reason=(
+            "seed_conflict_reconciliation"
+            if kind == "checkpoint" and any(progress_dominates.values())
+            else "seed_conflict_progress"
+        ),
+    )
 
 
 def safe_error_message(exc: Exception) -> str:
     if isinstance(exc, LiquiditySeedConflict):
+        reason = str(exc)
+        if reason in LIQUIDITY_SEED_CONFLICT_REASONS:
+            return reason
         return "seed_conflict"
     if isinstance(exc, ReconciliationStateInvalid):
         return "liquidity_reconciliation_state_invalid"
@@ -901,6 +950,7 @@ def liquidity_runtime_diagnostic(
         "runtime_io_failed",
         "unexpected_runtime_error",
         "seed_conflict",
+        *LIQUIDITY_SEED_CONFLICT_REASONS,
     }
     if normalized_error_code in safe_error_codes:
         reason_code = normalized_error_code
@@ -1042,6 +1092,7 @@ def build_snapshot() -> dict[str, Any]:
                     "seed": {},
                     "source": "none",
                     "conflict": True,
+                    "conflict_reason": "seed_conflict_invalid",
                 }
             else:
                 selection = select_liquidity_seed(
@@ -1053,6 +1104,9 @@ def build_snapshot() -> dict[str, Any]:
             persisted_liquidity = selection["seed"]
             seed_source = str(selection["source"])
             seed_conflict = bool(selection["conflict"] is True)
+            seed_conflict_reason = str(
+                selection.get("conflict_reason") or "seed_conflict"
+            )
             if seed_source == "holder":
                 next_tokens[key] = {
                     "decimals": holder_token_state.get("decimals"),
@@ -1091,7 +1145,7 @@ def build_snapshot() -> dict[str, Any]:
             runtime_error_code = ""
             try:
                 if seed_conflict:
-                    raise LiquiditySeedConflict("seed conflict")
+                    raise LiquiditySeedConflict(seed_conflict_reason)
                 if persisted_liquidity.get(
                     "reconciliation_state_invalid"
                 ) is True:

@@ -920,17 +920,63 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         for reason_code in (
             "pool_scope_empty",
             "operator_attribution_failed",
+            "seed_conflict",
+            "seed_conflict_invalid",
+            "seed_conflict_scope",
+            "seed_conflict_kind",
+            "seed_conflict_checkpoint_hash",
+            "seed_conflict_checkpoint_state",
+            "seed_conflict_reconciliation",
+            "seed_conflict_progress",
         ):
             with self.subTest(reason_code=reason_code):
                 reason_diagnostic = {
                     **diagnostic,
                     "reason_code": reason_code,
                 }
-                reason_summary = probe([reason_diagnostic])[
-                    "runtime_issue_summaries"
-                ][0]
+                reason_payload = probe([reason_diagnostic])
+                reason_summary = reason_payload["runtime_issue_summaries"][0]
                 self.assertEqual(
                     reason_summary["retention_reason_code"],
+                    reason_code,
+                )
+                safe_reason, reason_valid = sanitize_remote_runtime(
+                    reason_payload
+                )
+                resafe_reason, rereason_valid = sanitize_remote_runtime(
+                    safe_reason
+                )
+                self.assertTrue(reason_valid)
+                self.assertTrue(rereason_valid)
+                self.assertEqual(resafe_reason, safe_reason)
+                self.assertEqual(
+                    safe_reason["runtime_issue_summaries"][0][
+                        "retention_reason_code"
+                    ],
+                    reason_code,
+                )
+
+                blocked_reason = json.loads(json.dumps(reason_payload))
+                blocked_reason["grvt_replay_acceptance"].update(
+                    {
+                        "status": "blocked",
+                        "issues": ["public_rpc_unavailable"],
+                        "age_seconds": 1,
+                    }
+                )
+                compact_reason, compact_reason_valid = (
+                    sanitize_remote_runtime(blocked_reason)
+                )
+                recompact_reason, recompact_reason_valid = (
+                    sanitize_remote_runtime(compact_reason)
+                )
+                self.assertFalse(compact_reason_valid)
+                self.assertTrue(recompact_reason_valid)
+                self.assertEqual(recompact_reason, compact_reason)
+                self.assertEqual(
+                    compact_reason["runtime_issue_summaries"][0][
+                        "retention_reason_code"
+                    ],
                     reason_code,
                 )
         sanitized, valid = sanitize_remote_runtime(payload)
