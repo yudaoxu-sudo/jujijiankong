@@ -722,12 +722,14 @@ def select_liquidity_seed(
         *,
         conflict_reason: str = "none",
         conflict_detail: dict[str, Any] | None = None,
+        progress_recovery: bool = False,
     ) -> dict[str, Any]:
         return {
             "seed": copy.deepcopy(seeds.get(source) or {}),
             "source": source,
             "conflict": conflict_reason != "none",
             "conflict_reason": conflict_reason,
+            "progress_recovery": progress_recovery,
             "conflict_detail": strict_liquidity_seed_conflict_detail(
                 conflict_detail
             ),
@@ -858,6 +860,29 @@ def select_liquidity_seed(
         return outcome("standalone")
     if dominates["holder"]:
         return outcome("holder")
+    cross_progress = [
+        (source, other)
+        for source, other in (
+            ("standalone", "holder"),
+            ("holder", "standalone"),
+        )
+        if kind == "checkpoint"
+        and coverage_from[source] < coverage_from[other]
+        and progress[source] < progress[other]
+    ]
+    if len(cross_progress) == 1:
+        source, other = cross_progress[0]
+        live_from = seeds[source].get("catchup_live_from_block")
+        if (
+            seeds[source].get("catchup_active") is True
+            and type(live_from) is int
+            and live_from > progress[other]
+            and liquidity_reconciliation_dominates(
+                seeds[source],
+                seeds[other],
+            )
+        ):
+            return outcome(source, progress_recovery=True)
     return outcome(
         "none",
         conflict_reason=(
@@ -1268,15 +1293,13 @@ def build_snapshot() -> dict[str, Any]:
             persisted_liquidity = selection["seed"]
             seed_source = str(selection["source"])
             seed_conflict = bool(selection["conflict"] is True)
+            progress_recovery = bool(
+                selection.get("progress_recovery") is True
+            )
             seed_conflict_reason = str(
                 selection.get("conflict_reason") or "seed_conflict"
             )
-            if seed_source == "holder":
-                next_tokens[key] = {
-                    "decimals": holder_token_state.get("decimals"),
-                    "liquidity": holder_seed,
-                }
-            elif (
+            if (
                 raw_persisted_liquidity
                 and standalone_seed_status == "invalid"
                 and not seed_conflict
@@ -1402,6 +1425,15 @@ def build_snapshot() -> dict[str, Any]:
                             liquidity_state=persisted_liquidity,
                         )
                     )
+                    if (
+                        progress_recovery
+                        and flow.get("checkpoint_reorg_recovery") is True
+                    ):
+                        next_liquidity_state = None
+                        seed_conflict = True
+                        raise LiquiditySeedConflict(
+                            "seed_conflict_checkpoint_hash"
+                        )
                     if next_liquidity_state is not None:
                         next_tokens[key] = {
                             "decimals": decimals,

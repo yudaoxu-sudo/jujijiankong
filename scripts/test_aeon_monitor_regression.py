@@ -26339,6 +26339,44 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             "_retention_event_kind": "v3_swap",
         }
 
+    @classmethod
+    def _progress_seeds(
+        cls,
+        holder: object,
+        scope: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        common = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": copy.deepcopy(scope["pool_scope"]),
+            "pool_count": len(scope["pool_scope"]),
+            "reconciliation": {
+                "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
+                "pending": [],
+                "completed": [],
+                "deferred_events": [],
+            },
+        }
+        return (
+            {
+                **common,
+                "scope_coverage_from_block": 90,
+                "latest_block": 120,
+                "latest_block_hash": cls._hash("a"),
+                "catchup_active": True,
+                "catchup_live_from_block": 131,
+            },
+            {
+                **common,
+                "scope_coverage_from_block": 100,
+                "latest_block": 130,
+                "latest_block_hash": cls._hash("b"),
+                "catchup_active": False,
+            },
+        )
+
     @staticmethod
     def _coverage_metadata(
         holder: object,
@@ -26579,6 +26617,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         selected = fast.select_liquidity_seed(bare, retry)
         self.assertEqual(selected["source"], "holder")
         self.assertEqual(selected["seed"], retry)
+        self.assertFalse(selected["progress_recovery"])
         selected = fast.select_liquidity_seed(checkpoint, newer_checkpoint)
         self.assertEqual(selected["source"], "holder")
         selected = fast.select_liquidity_seed(newer_checkpoint, checkpoint)
@@ -26636,6 +26675,58 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 self.assertTrue(selected["conflict"])
                 self.assertEqual(selected["source"], "none")
                 self.assertEqual(selected["seed"], {})
+
+    def test_fast_liquidity_progress_recovery_is_strict(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        scope = {
+            "scope_hash": "a" * 64,
+            "pool_scope": [{"protocol": "v3"}],
+        }
+        earlier, later = self._progress_seeds(holder, scope)
+        selected = fast.select_liquidity_seed(earlier, later)
+        self.assertFalse(selected["conflict"])
+        self.assertTrue(selected["progress_recovery"])
+        self.assertEqual(selected["source"], "standalone")
+        self.assertEqual(selected["seed"], earlier)
+        self.assertEqual(
+            selected["conflict_detail"],
+            fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+        )
+
+        empty_reconciliation = earlier["reconciliation"]
+        pending = {
+            **empty_reconciliation,
+            "pending": [{"reconcile_id": "1" * 64}],
+        }
+        duplicate = {
+            **empty_reconciliation,
+            "pending": [
+                {"reconcile_id": "2" * 64},
+                {"reconcile_id": "2" * 64},
+            ],
+        }
+        cases = (
+            ({**earlier, "catchup_live_from_block": 130}, later),
+            ({**earlier, "catchup_live_from_block": True}, later),
+            ({**earlier, "catchup_active": False}, later),
+            (earlier, {**later, "reconciliation": pending}),
+            ({**earlier, "reconciliation": duplicate}, later),
+        )
+        for candidate, counterpart in cases:
+            with self.subTest(candidate=candidate):
+                selected = fast.select_liquidity_seed(
+                    candidate,
+                    counterpart,
+                )
+                self.assertTrue(selected["conflict"])
+                self.assertFalse(selected["progress_recovery"])
+                self.assertEqual(selected["source"], "none")
+                self.assertEqual(
+                    selected["conflict_reason"],
+                    "seed_conflict_progress",
+                )
 
     def test_fast_liquidity_checkpoint_reconciliation_is_monotonic(
         self,
@@ -27919,17 +28010,18 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             "bsc",
             token,
         )
-        seed = {
-            "scope_state_schema_version": (
-                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
-            ),
-            "scope_hash": scope["scope_hash"],
-            "pool_scope": scope["pool_scope"],
-            "pool_count": scope["pool_count"],
+        earlier, later = self._progress_seeds(holder, scope)
+        earlier = {
+            **earlier,
+            "latest_block": 110,
+            "latest_block_hash": self._hash("e"),
+            "catchup_live_from_block": 121,
+        }
+        later = {
+            **later,
             "scope_coverage_from_block": 101,
             "latest_block": 120,
             "latest_block_hash": self._hash("f"),
-            "catchup_active": False,
         }
         config = {
             "items": [
@@ -27941,11 +28033,27 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 }
             ]
         }
+        mode = {"value": "unavailable"}
 
-        def fetch(_chain, pools, from_block, to_block, **_kwargs):
-            self.assertEqual((from_block, to_block), (121, 128))
+        def fetch(_chain, pools, from_block, to_block, **kwargs):
+            expected_from = (
+                90
+                if mode["value"] == "reorg"
+                else 121
+                if mode["value"] == "holder"
+                else 111
+            )
+            self.assertEqual(
+                (from_block, to_block, kwargs["alert_from_block"]),
+                (expected_from, 128, 121),
+            )
+            pool = next(
+                row for row in pools if row.get("protocol") == "v3"
+            )
             return (
-                [],
+                [] if mode["value"] in {"holder", "reorg"} else [
+                    self._event_row(pool, block=115, tx_digit="c")
+                ],
                 [],
                 False,
                 to_block,
@@ -27960,24 +28068,14 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             fast_state_path = temp / "state.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             opening_path.write_text('{"events": []}', encoding="utf-8")
+            fast_payload = {
+                "schema": fast.STATE_SCHEMA,
+                "tokens": {
+                    f"bsc:{token}": {"decimals": 18, "liquidity": earlier}
+                },
+            }
             fast_state_path.write_text(
-                json.dumps(
-                    {
-                        "schema": fast.STATE_SCHEMA,
-                        "tokens": {
-                            f"bsc:{token}": {
-                                "decimals": 18,
-                                "liquidity": {
-                                    **seed,
-                                    "latest_block": 110,
-                                    "latest_block_hash": self._hash("e"),
-                                    "catchup_active": True,
-                                    "next_catchup_window_blocks": 8,
-                                },
-                            }
-                        },
-                    }
-                ),
+                json.dumps({"schema": fast.STATE_SCHEMA, "tokens": {}}),
                 encoding="utf-8",
             )
             holder_state_path.write_text(
@@ -27986,7 +28084,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                         "tokens": {
                             f"bsc:{token}": {
                                 "decimals": 18,
-                                "retention_flow": {"liquidity": seed},
+                                "retention_flow": {"liquidity": later},
                             }
                         }
                     }
@@ -28010,7 +28108,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 mock.patch.object(
                     fast,
                     "strict_token_metadata",
-                    return_value=(18, 10**24),
+                    return_value=(18, 1_000_000),
                 ),
                 mock.patch.object(holder, "latest_block", return_value=130),
                 mock.patch.object(
@@ -28021,26 +28119,67 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 mock.patch.object(
                     holder,
                     "liquidity_checkpoint_block_hash",
-                    return_value=self._hash("f"),
+                    side_effect=lambda _chain, block: (
+                        ""
+                        if mode["value"] == "unavailable"
+                        else self._hash(
+                            "d"
+                            if mode["value"] == "reorg" and block == 110
+                            else "e" if block == 110 else "f"
+                        )
+                    ),
                 ),
                 mock.patch.dict(
                     os.environ,
                     {"ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "2"},
                 ),
             ):
+                unavailable = fast.build_snapshot()
+                mode["value"] = "holder"
+                holder_success = fast.build_snapshot()
+                fast_state_path.write_text(
+                    json.dumps(fast_payload), encoding="utf-8"
+                )
+                mode["value"] = "valid"
                 snapshot = fast.build_snapshot()
+                mode["value"] = "reorg"
+                reorg = fast.build_snapshot()
 
         flow = snapshot["projects"][0]["retention_flow"][
             "liquidity_retention"
         ]
+        self.assertEqual(unavailable["_next_state"]["tokens"], {})
+        self.assertEqual(
+            unavailable["projects"][0]["scope_seed_source"], "holder"
+        )
+        self.assertEqual(holder_success["status"], "healthy")
+        self.assertEqual(
+            holder_success["projects"][0]["scope_seed_source"], "holder"
+        )
+        self.assertEqual(
+            holder_success["_next_state"]["tokens"][f"bsc:{token}"][
+                "liquidity"
+            ]["latest_block"],
+            128,
+        )
         self.assertEqual(snapshot["status"], "healthy")
         self.assertEqual(snapshot["required_count"], 1)
         self.assertEqual(snapshot["complete_count"], 1)
-        self.assertEqual(snapshot["projects"][0]["scope_seed_source"], "holder")
-        self.assertEqual(flow["previous_latest_block"], 120)
-        self.assertEqual(flow["scan_from_block"], 121)
+        self.assertEqual(snapshot["alert_count"], 0)
+        self.assertEqual(
+            snapshot["projects"][0]["scope_seed_source"], "standalone"
+        )
+        self.assertEqual(flow["previous_latest_block"], 110)
+        self.assertEqual(flow["scan_from_block"], 111)
         self.assertEqual(flow["latest_block"], 128)
         self.assertTrue(flow["continuous"])
+        self.assertTrue(flow["events"][0]["historical_catchup"])
+        self.assertEqual(
+            snapshot["_next_state"]["tokens"][f"bsc:{token}"][
+                "liquidity"
+            ]["latest_block"],
+            128,
+        )
         diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
         self.assertEqual(
             set(diagnostic),
@@ -28068,7 +28207,7 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         )
         self.assertEqual(diagnostic["standalone_seed_status"], "valid")
         self.assertEqual(diagnostic["holder_seed_status"], "valid")
-        self.assertEqual(diagnostic["scope_seed_source"], "holder")
+        self.assertEqual(diagnostic["scope_seed_source"], "standalone")
         self.assertEqual(diagnostic["input_state_kind"], "checkpoint")
         self.assertEqual(diagnostic["next_state_kind"], "checkpoint")
         self.assertIsNone(diagnostic["input_retry_window_blocks"])
@@ -28090,6 +28229,19 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(diagnostic["provider_status"], "complete")
         self.assertEqual(diagnostic["coverage_status"], "complete")
         self.assertEqual(diagnostic["reason_code"], "none")
+        self.assertEqual(reorg["status"], "unhealthy")
+        self.assertEqual(
+            reorg["issues"][0]["detail"],
+            "seed_conflict_checkpoint_hash",
+        )
+        self.assertEqual(reorg["_next_state"], fast_payload)
+        reorg_diagnostic = reorg["projects"][0]["runtime_diagnostic"]
+        self.assertEqual(len(reorg_diagnostic), 19)
+        self.assertEqual(
+            reorg_diagnostic["reason_code"],
+            "seed_conflict_checkpoint_hash",
+        )
+        self.assertEqual(reorg_diagnostic["coverage_status"], "invalid")
 
     def test_fast_liquidity_delivery_failure_retains_checkpoint(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
