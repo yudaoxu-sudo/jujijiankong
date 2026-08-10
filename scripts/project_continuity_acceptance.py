@@ -110,6 +110,31 @@ REMOTE_OPENING_ERROR_CODES = frozenset(
         "opening_scope_value_error",
     }
 )
+REMOTE_OPENING_LIQUIDITY_COVERAGE_STATUSES = frozenset(
+    {
+        "complete_historical_opening_window",
+        "complete_recent_window",
+        "carried_verified_old_opening",
+        "deadline_exceeded",
+        "log_coverage_truncated",
+        "empty_watch_scope_unverified",
+        "explicit_liquidity_scope_unverified",
+        "v4_pool_scope_incomplete",
+        "empty_tracked_factory_matrix",
+        "pool_scope_incomplete",
+        "factory_matrix_unavailable",
+        "factory_matrix_scope_conflict",
+        "factory_matrix_partial",
+        "factory_matrix_config_invalid",
+        "factory_matrix_config_missing",
+        "unattributable_liquidity_manager_scope",
+        "pool_swap_attribution_incomplete",
+        "event_decode_incomplete",
+        "unknown_incomplete_coverage",
+        "mixed",
+        "unknown",
+    }
+)
 REMOTE_RETENTION_SEED_STATUSES = frozenset(
     {"missing", "valid", "invalid"}
 )
@@ -447,6 +472,27 @@ retention_reason_codes = {
     "pool_scope_empty",
     "operator_attribution_failed",
     "unknown",
+}
+opening_liquidity_coverage_statuses = {
+    "complete_historical_opening_window",
+    "complete_recent_window",
+    "carried_verified_old_opening",
+    "deadline_exceeded",
+    "log_coverage_truncated",
+    "empty_watch_scope_unverified",
+    "explicit_liquidity_scope_unverified",
+    "v4_pool_scope_incomplete",
+    "empty_tracked_factory_matrix",
+    "pool_scope_incomplete",
+    "factory_matrix_unavailable",
+    "factory_matrix_scope_conflict",
+    "factory_matrix_partial",
+    "factory_matrix_config_invalid",
+    "factory_matrix_config_missing",
+    "unattributable_liquidity_manager_scope",
+    "pool_swap_attribution_incomplete",
+    "event_decode_incomplete",
+    "unknown_incomplete_coverage",
 }
 
 def read_json(path):
@@ -1086,21 +1132,26 @@ if not isinstance(opening_rows, list):
     opening_rows = []
 
 def runtime_issue_opening_events(row):
-    symbol = str(row.get("name") or "").upper()
+    if runtime_issue_scope(row) != "opening":
+        return []
     parts = str(row.get("fingerprint") or "").split(":")
+    chain = parts[1].lower() if len(parts) > 3 else ""
     contract = parts[2].lower() if len(parts) > 2 else ""
+    if (
+        re.fullmatch(r"[a-z0-9_-]{1,32}", chain) is None
+        or re.fullmatch(r"0x[0-9a-f]{40}", contract) is None
+    ):
+        return []
     exact = []
-    symbolic = []
     for event in opening_rows:
         if not isinstance(event, dict):
             continue
         token = event.get("token") if isinstance(event.get("token"), dict) else {}
         event_contract = str(token.get("address") or "").lower()
-        if contract and event_contract == contract:
+        event_chain = str(event.get("chain") or "").lower()
+        if event_chain == chain and event_contract == contract:
             exact.append(event)
-        elif str(event.get("symbol") or "").upper() == symbol:
-            symbolic.append(event)
-    return exact if contract else symbolic
+    return exact
 
 def runtime_issue_error_code(row):
     if runtime_issue_scope(row) != "opening":
@@ -1309,6 +1360,103 @@ def runtime_issue_pool_scope(row):
         "v4_complete": safe_bool(v4.get("complete")),
     }
 
+def runtime_issue_opening_diagnostic(row):
+    empty = {
+        "opening_v3_reported_pool_row_count_total": None,
+        "opening_v4_reported_pool_row_count_total": None,
+        "opening_liquidity_scope_complete_count": None,
+        "opening_liquidity_coverage_complete_count": None,
+        "opening_liquidity_event_incomplete_count": None,
+        "opening_pool_swap_decode_error_total": None,
+        "opening_liquidity_coverage_status": None,
+    }
+    if runtime_issue_scope(row) != "opening":
+        return empty
+    opened = [
+        event
+        for event in runtime_issue_opening_events(row)
+        if event.get("status") == "opened"
+    ]
+    if not opened:
+        return empty
+
+    def reported_pool_row_count(scope_key):
+        total = 0
+        for event in opened:
+            scope = event.get(scope_key)
+            if (
+                not isinstance(scope, dict)
+                or "pools" not in scope
+                or not isinstance(scope.get("pools"), list)
+                or any(
+                    not isinstance(pool, dict)
+                    for pool in scope["pools"]
+                )
+            ):
+                return None
+            total += len(scope["pools"])
+        return total
+
+    coverage_values = [
+        event.get("opening_liquidity_coverage_status")
+        for event in opened
+    ]
+    if all(
+        isinstance(value, str)
+        and value in opening_liquidity_coverage_statuses
+        for value in coverage_values
+    ):
+        unique_coverage = set(coverage_values)
+        coverage_status = (
+            next(iter(unique_coverage))
+            if len(unique_coverage) == 1
+            else "mixed"
+        )
+    else:
+        coverage_status = "unknown"
+
+    pool_swap_decode_error_total = 0
+    for event in opened:
+        flow = event.get("liquidity_flow")
+        if (
+            not isinstance(flow, dict)
+            or "pool_swap_decode_errors" not in flow
+            or type(flow.get("pool_swap_decode_errors")) is not int
+            or flow.get("pool_swap_decode_errors") < 0
+        ):
+            pool_swap_decode_error_total = None
+            break
+        pool_swap_decode_error_total += flow["pool_swap_decode_errors"]
+
+    return {
+        "opening_v3_reported_pool_row_count_total": (
+            reported_pool_row_count("opening_v3_pool_scope")
+        ),
+        "opening_v4_reported_pool_row_count_total": (
+            reported_pool_row_count("opening_v4_pool_scope")
+        ),
+        "opening_liquidity_scope_complete_count": sum(
+            event.get("opening_liquidity_scope_complete") is True
+            for event in opened
+        ),
+        "opening_liquidity_coverage_complete_count": sum(
+            event.get("opening_liquidity_coverage_complete") is True
+            for event in opened
+        ),
+        "opening_liquidity_event_incomplete_count": sum(
+            not isinstance(event.get("liquidity_flow"), dict)
+            or event["liquidity_flow"].get(
+                "liquidity_event_coverage_complete"
+            )
+            is not True
+            for event in opened
+        ),
+        "opening_pool_swap_decode_error_total": (
+            pool_swap_decode_error_total
+        ),
+        "opening_liquidity_coverage_status": coverage_status,
+    }
+
 def runtime_issue_retention_summary(row):
     empty = {
         "retention_project_match_count": 0,
@@ -1448,6 +1596,7 @@ runtime_issue_summaries = [
         "error_code": runtime_issue_error_code(row),
         "contract_hash": runtime_issue_contract_hash(row),
         **runtime_issue_pool_scope(row),
+        **runtime_issue_opening_diagnostic(row),
         **runtime_issue_retention_summary(row),
     }
     for row in (health.get("issues") or [])
@@ -1880,6 +2029,13 @@ def sanitize_remote_runtime(
                     "opening_event_match_count",
                     "opening_event_opened_count",
                     "opening_event_error_count",
+                    "opening_v3_reported_pool_row_count_total",
+                    "opening_v4_reported_pool_row_count_total",
+                    "opening_liquidity_scope_complete_count",
+                    "opening_liquidity_coverage_complete_count",
+                    "opening_liquidity_event_incomplete_count",
+                    "opening_pool_swap_decode_error_total",
+                    "opening_liquidity_coverage_status",
                     "v3_scope_complete_count",
                     "v3_scope_deadline_count",
                     "v3_expected_query_count_total",
@@ -1939,6 +2095,12 @@ def sanitize_remote_runtime(
                     "opening_event_match_count",
                     "opening_event_opened_count",
                     "opening_event_error_count",
+                    "opening_v3_reported_pool_row_count_total",
+                    "opening_v4_reported_pool_row_count_total",
+                    "opening_liquidity_scope_complete_count",
+                    "opening_liquidity_coverage_complete_count",
+                    "opening_liquidity_event_incomplete_count",
+                    "opening_pool_swap_decode_error_total",
                     "v3_scope_complete_count",
                     "v3_scope_deadline_count",
                     "v3_expected_query_count_total",
@@ -2020,6 +2182,13 @@ def sanitize_remote_runtime(
                     "unknown",
                 ),
             }
+            opening_codes = {
+                "opening_liquidity_coverage_status": safe_optional_code(
+                    row.get("opening_liquidity_coverage_status"),
+                    REMOTE_OPENING_LIQUIDITY_COVERAGE_STATUSES,
+                    "unknown",
+                ),
+            }
             if (
                 not isinstance(row.get("kind"), str)
                 or not isinstance(row.get("name_hash"), str)
@@ -2047,6 +2216,33 @@ def sanitize_remote_runtime(
             ):
                 return None, "runtime_issue_summary_value_invalid"
             kind = row["kind"]
+            safe_opening_ints = {
+                key: scope_ints[key]
+                for key in (
+                    "opening_v3_reported_pool_row_count_total",
+                    "opening_v4_reported_pool_row_count_total",
+                    "opening_liquidity_scope_complete_count",
+                    "opening_liquidity_coverage_complete_count",
+                    "opening_liquidity_event_incomplete_count",
+                    "opening_pool_swap_decode_error_total",
+                )
+            }
+            safe_opening_codes = dict(opening_codes)
+            if (
+                row["scope"] != "opening"
+                or not scope_ints["opening_event_opened_count"]
+            ):
+                safe_opening_ints = {
+                    key: None for key in safe_opening_ints
+                }
+                safe_opening_codes = {
+                    key: None for key in safe_opening_codes
+                }
+            else:
+                safe_opening_codes = {
+                    key: value if value is not None else "unknown"
+                    for key, value in safe_opening_codes.items()
+                }
             safe_retention_match_count = retention_match_count
             safe_retention_bools = {
                 key: scope_bools[key]
@@ -2098,6 +2294,8 @@ def sanitize_remote_runtime(
                     "contract_hash": row["contract_hash"],
                     **scope_bools,
                     **scope_ints,
+                    **safe_opening_ints,
+                    **safe_opening_codes,
                     "retention_project_match_count": (
                         safe_retention_match_count
                     ),

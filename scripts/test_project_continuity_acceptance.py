@@ -48,6 +48,13 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "opening_event_match_count": 0,
         "opening_event_opened_count": 0,
         "opening_event_error_count": 0,
+        "opening_v3_reported_pool_row_count_total": None,
+        "opening_v4_reported_pool_row_count_total": None,
+        "opening_liquidity_scope_complete_count": None,
+        "opening_liquidity_coverage_complete_count": None,
+        "opening_liquidity_event_incomplete_count": None,
+        "opening_pool_swap_decode_error_total": None,
+        "opening_liquidity_coverage_status": None,
         "v3_scope_complete_count": 0,
         "v3_scope_deadline_count": 0,
         "v3_expected_query_count_total": 0,
@@ -222,7 +229,12 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
     return expected_hashes, replay_path
 
 
-def run_remote_probe(root: Path, expected_hashes: dict[str, str]) -> dict:
+def run_remote_probe(
+    root: Path,
+    expected_hashes: dict[str, str],
+    *,
+    cwd: Path | None = None,
+) -> dict:
     result = subprocess.run(
         [
             sys.executable,
@@ -236,6 +248,7 @@ def run_remote_probe(root: Path, expected_hashes: dict[str, str]) -> dict:
         check=True,
         capture_output=True,
         text=True,
+        cwd=cwd,
     )
     return json.loads(result.stdout)
 
@@ -705,6 +718,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         contract = "0x" + "a" * 40
         event = {
             "symbol": "GRVT",
+            "chain": "bsc",
             "status": "opened",
             "error": "opening_scope_error",
             "refresh_error": "opening_scope_RpcDeadlineExceeded",
@@ -725,6 +739,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "opening_v4_pool_scope": {
                 "applicable": True,
                 "complete": True,
+                "pools": [],
             },
         }
         for event_count in (1, 2):
@@ -762,6 +777,28 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             )
             self.assertEqual(
                 summary["opening_event_opened_count"], event_count
+            )
+            self.assertEqual(
+                summary["opening_v3_reported_pool_row_count_total"], 0
+            )
+            self.assertEqual(
+                summary["opening_v4_reported_pool_row_count_total"], 0
+            )
+            self.assertEqual(
+                summary["opening_liquidity_scope_complete_count"], 0
+            )
+            self.assertEqual(
+                summary["opening_liquidity_coverage_complete_count"], 0
+            )
+            self.assertEqual(
+                summary["opening_liquidity_event_incomplete_count"],
+                event_count,
+            )
+            self.assertIsNone(
+                summary["opening_pool_swap_decode_error_total"]
+            )
+            self.assertEqual(
+                summary["opening_liquidity_coverage_status"], "unknown"
             )
             self.assertEqual(summary["v3_scope_complete_count"], 0)
             self.assertEqual(
@@ -841,6 +878,263 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(mismatch_summary["opening_event_match_count"], 0)
         self.assertEqual(mismatch_summary["error_code"], "")
         self.assertIsNone(mismatch_summary["v3_complete"])
+        self.assertIsNone(
+            mismatch_summary["opening_v3_reported_pool_row_count_total"]
+        )
+        self.assertIsNone(
+            mismatch_summary["opening_v4_reported_pool_row_count_total"]
+        )
+        self.assertIsNone(
+            mismatch_summary["opening_liquidity_coverage_status"]
+        )
+
+    def test_remote_opening_liquidity_diagnostic_is_safe_and_aggregated(
+        self,
+    ) -> None:
+        for forbidden in (
+            "from scripts import alpha_holder_concentration_watch",
+            "import alpha_holder_concentration_watch",
+            "load_local_env",
+            "os.environ",
+            ".env",
+            "Path.cwd",
+        ):
+            self.assertNotIn(forbidden, REMOTE_PROBE)
+
+        contract = "0x" + "a" * 40
+
+        def opening_event(
+            coverage_status: object,
+            *,
+            event_coverage_complete: object = True,
+            pool_swap_decode_errors: object = 0,
+            chain: str = "bsc",
+        ) -> dict[str, object]:
+            return {
+                "symbol": "GRVT",
+                "chain": chain,
+                "status": "opened",
+                "token": {"address": contract},
+                "opening_liquidity_scope_complete": True,
+                "opening_liquidity_coverage_complete": False,
+                "opening_liquidity_coverage_status": coverage_status,
+                "liquidity_flow": {
+                    "liquidity_event_coverage_complete": (
+                        event_coverage_complete
+                    ),
+                    "pool_swap_decode_errors": pool_swap_decode_errors,
+                },
+                "opening_v3_pool_scope": {"pools": []},
+                "opening_v4_pool_scope": {"pools": []},
+            }
+
+        def probe(events: list[dict[str, object]]) -> dict[str, object]:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                expected_hashes, _ = remote_probe_fixture(root)
+                write_json(
+                    root / "output/runtime_health/last_cycle.json",
+                    {
+                        "schema": "runtime_health.v1",
+                        "status": "unhealthy",
+                        "generated_at": "2026-08-10T11:30:00+00:00",
+                        "issue_count": 1,
+                        "issues": [
+                            {
+                                "kind": "alpha_coverage_gap",
+                                "name": "GRVT",
+                                "fingerprint": (
+                                    "alpha_coverage_gap:bsc:"
+                                    + contract
+                                    + ":opening:opening liquidity flow coverage incomplete"
+                                ),
+                            }
+                        ],
+                    },
+                )
+                write_json(
+                    root / "output/alpha_opening_block_watch/latest.json",
+                    {"events": events},
+                )
+                unrelated_cwd = root / "unrelated-cwd"
+                unrelated_cwd.mkdir()
+                return run_remote_probe(
+                    root,
+                    expected_hashes,
+                    cwd=unrelated_cwd,
+                )
+
+        def summary(event: dict[str, object]) -> dict[str, object]:
+            return probe([event])["runtime_issue_summaries"][0]
+
+        first = opening_event(
+            "event_decode_incomplete",
+            event_coverage_complete=False,
+        )
+        first["opening_v4_pool_scope"]["pools"] = [{}]
+        second = opening_event(
+            "pool_swap_attribution_incomplete",
+            pool_swap_decode_errors=3,
+        )
+        second["opening_v3_pool_scope"]["pools"] = [{}]
+        cross_chain = opening_event(
+            "complete_recent_window",
+            pool_swap_decode_errors=99,
+            chain="ethereum",
+        )
+        cross_chain["opening_v3_pool_scope"]["pools"] = [{}, {}]
+        cross_chain["opening_v4_pool_scope"]["pools"] = [{}, {}]
+        payload = probe([first, second, cross_chain])
+        opening = payload["runtime_issue_summaries"][0]
+        self.assertEqual(opening["opening_event_match_count"], 2)
+        self.assertEqual(opening["opening_event_opened_count"], 2)
+        self.assertEqual(
+            opening["opening_v3_reported_pool_row_count_total"], 1
+        )
+        self.assertEqual(
+            opening["opening_v4_reported_pool_row_count_total"], 1
+        )
+        self.assertEqual(
+            opening["opening_liquidity_scope_complete_count"], 2
+        )
+        self.assertEqual(
+            opening["opening_liquidity_coverage_complete_count"], 0
+        )
+        self.assertEqual(
+            opening["opening_liquidity_event_incomplete_count"], 1
+        )
+        self.assertEqual(
+            opening["opening_pool_swap_decode_error_total"], 3
+        )
+        self.assertEqual(
+            opening["opening_liquidity_coverage_status"], "mixed"
+        )
+
+        zero = summary(opening_event("complete_recent_window"))
+        self.assertEqual(
+            zero["opening_v3_reported_pool_row_count_total"], 0
+        )
+        self.assertEqual(
+            zero["opening_v4_reported_pool_row_count_total"], 0
+        )
+
+        malformed_scopes = (
+            ("scope_missing", None),
+            ("scope_not_mapping", []),
+            ("pools_missing", {}),
+            ("pools_not_list", {"pools": {}}),
+            ("pool_row_not_mapping", {"pools": [[]]}),
+        )
+        for scope_key, total_key, other_total_key in (
+            (
+                "opening_v3_pool_scope",
+                "opening_v3_reported_pool_row_count_total",
+                "opening_v4_reported_pool_row_count_total",
+            ),
+            (
+                "opening_v4_pool_scope",
+                "opening_v4_reported_pool_row_count_total",
+                "opening_v3_reported_pool_row_count_total",
+            ),
+        ):
+            for case, replacement in malformed_scopes:
+                with self.subTest(scope_key=scope_key, case=case):
+                    event = opening_event("complete_recent_window")
+                    if replacement is None:
+                        del event[scope_key]
+                    else:
+                        event[scope_key] = replacement
+                    malformed = summary(event)
+                    self.assertIsNone(malformed[total_key])
+                    self.assertEqual(malformed[other_total_key], 0)
+
+        for status in (
+            "complete_recent_window",
+            "event_decode_incomplete",
+            "pool_swap_attribution_incomplete",
+        ):
+            with self.subTest(coverage_status=status):
+                self.assertEqual(
+                    summary(opening_event(status))[
+                        "opening_liquidity_coverage_status"
+                    ],
+                    status,
+                )
+        marker = "untrusted opening provider detail"
+        for raw_status in (marker, "no_verified_pool"):
+            with self.subTest(unknown_coverage_status=raw_status):
+                unknown = probe([opening_event(raw_status)])
+                self.assertEqual(
+                    unknown["runtime_issue_summaries"][0][
+                        "opening_liquidity_coverage_status"
+                    ],
+                    "unknown",
+                )
+                self.assertNotIn(
+                    raw_status,
+                    json.dumps(unknown, sort_keys=True),
+                )
+
+        for case, decode_value in (
+            ("missing", None),
+            ("bool", True),
+            ("string", "1"),
+            ("negative", -1),
+        ):
+            with self.subTest(decode_case=case):
+                event = opening_event(
+                    "pool_swap_attribution_incomplete",
+                    pool_swap_decode_errors=decode_value,
+                )
+                if case == "missing":
+                    del event["liquidity_flow"][
+                        "pool_swap_decode_errors"
+                    ]
+                self.assertIsNone(
+                    summary(event)["opening_pool_swap_decode_error_total"]
+                )
+        nonmapping_flow = opening_event(
+            "pool_swap_attribution_incomplete"
+        )
+        nonmapping_flow["liquidity_flow"] = []
+        nonmapping = summary(nonmapping_flow)
+        self.assertIsNone(
+            nonmapping["opening_pool_swap_decode_error_total"]
+        )
+        self.assertEqual(
+            nonmapping["opening_liquidity_event_incomplete_count"], 1
+        )
+
+        sanitized, valid = sanitize_remote_runtime(payload)
+        self.assertTrue(valid)
+        self.assertEqual(sanitized, payload)
+        resanitized, revalid = sanitize_remote_runtime(sanitized)
+        self.assertTrue(revalid)
+        self.assertEqual(resanitized, sanitized)
+
+        compact_source = json.loads(json.dumps(payload))
+        compact_source["grvt_replay_acceptance"]["range_changed"] = None
+        compact, compact_valid = sanitize_remote_runtime(compact_source)
+        self.assertFalse(compact_valid)
+        self.assertEqual(compact["status"], "fail")
+        self.assertEqual(
+            compact["runtime_issue_summaries"],
+            payload["runtime_issue_summaries"],
+        )
+        recompact, recompact_valid = sanitize_remote_runtime(compact)
+        self.assertTrue(recompact_valid)
+        self.assertEqual(recompact, compact)
+
+        invalid_count = json.loads(json.dumps(payload))
+        invalid_count["runtime_issue_summaries"][0][
+            "opening_v3_reported_pool_row_count_total"
+        ] = "1"
+        rejected, rejected_valid = sanitize_remote_runtime(invalid_count)
+        self.assertFalse(rejected_valid)
+        self.assertEqual(
+            rejected["validation_error_code"],
+            "runtime_issue_summary_value_invalid",
+        )
 
     def test_remote_retention_diagnostic_is_safe_strict_and_unique(
         self,
