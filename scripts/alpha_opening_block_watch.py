@@ -7170,6 +7170,18 @@ def prepare_opening_scope(
         and "seconds_until_start" in event
         and -bootstrap_max_age <= seconds_until <= 0
     )
+    for key in (
+        "opening_v3_pool_scope",
+        "opening_v4_pool_scope",
+    ):
+        cached = (previous or {}).get(key)
+        if isinstance(cached, dict):
+            event[key] = copy.deepcopy(cached)
+    pool_scope = supported_v3_pool_scope(event, latest)
+    event["opening_v3_pool_scope"] = copy.deepcopy(pool_scope)
+    watch = liquidity_watch_addresses(event, pool_scope)
+    v4_scope = supported_v4_manager_scope(event, latest, watch)
+    event["opening_v4_pool_scope"] = copy.deepcopy(v4_scope)
     previous_rows = [
         row
         for row in (previous or {}).get("rows", [])

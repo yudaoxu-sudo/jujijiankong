@@ -2938,6 +2938,15 @@ assert readback_gate['can_follow'] is False, readback_gate
         opening_watch_text = (
             ROOT / "scripts" / "alpha_opening_block_watch.py"
         ).read_text(encoding="utf-8")
+        prepare_scope_text = opening_watch_text.split(
+            "def prepare_opening_scope(",
+            1,
+        )[1].split("\ndef ", 1)[0]
+        identity_before_transfer = (
+            prepare_scope_text.index("supported_v3_pool_scope(")
+            < prepare_scope_text.index("supported_v4_manager_scope(")
+            < prepare_scope_text.index("opening_transfer_logs(")
+        )
         opening_sprint_ok = all(
             marker in opening_sprint_text
             for marker in (
@@ -2950,6 +2959,7 @@ assert readback_gate['can_follow'] is False, readback_gate
                 "ALPHA_OPENING_SPRINT_POST_SECONDS",
                 'timeout "${hard_timeout}s"',
                 "return 75",
+                "opening_coverage_complete",
             )
         ) and all(
             marker in opening_watch_text
@@ -2958,7 +2968,7 @@ assert readback_gate['can_follow'] is False, readback_gate
                 "confirmed_sell_evidence",
                 "last_full_trace_attempt_at",
             )
-        )
+        ) and identity_before_transfer
         opening_sprint_msg = (
             "deep fan-out caps, RPC deadline, total sprint budget, incremental recipient cursors, sell evidence identity, and bounded full retry present"
             if opening_sprint_ok

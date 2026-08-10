@@ -780,10 +780,47 @@ def opening_time_for_item(item: dict[str, Any], chain: str) -> datetime | None:
         and (parsed := parse_utc8(row.get("start_time_utc8"))) is not None
     ]
     facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+    fact_opening_times = []
     for key in ("opening_time_utc", "opening_time_utc8"):
-        parsed = parse_iso(facts.get(key)) if key.endswith("_utc") else parse_utc8(facts.get(key))
-        if parsed is not None:
-            starts.append(parsed)
+        raw = facts.get(key)
+        if raw in (None, ""):
+            continue
+        parsed = parse_iso(raw) if key.endswith("_utc") else parse_utc8(raw)
+        if parsed is None:
+            return None
+        fact_opening_times.append(parsed)
+    if len(set(fact_opening_times)) > 1:
+        return None
+    starts.extend(fact_opening_times)
+    if not starts:
+        listing_utc_raw = facts.get("listing_time_utc")
+        listing_utc8_raw = facts.get("listing_time_utc8")
+        listing_utc = (
+            parse_iso(listing_utc_raw)
+            if listing_utc_raw not in (None, "")
+            else None
+        )
+        listing_utc8 = (
+            parse_utc8(listing_utc8_raw)
+            if listing_utc8_raw not in (None, "")
+            else None
+        )
+        if (
+            listing_utc_raw not in (None, "")
+            and listing_utc is None
+        ) or (
+            listing_utc8_raw not in (None, "")
+            and listing_utc8 is None
+        ):
+            return None
+        if (
+            listing_utc is not None
+            and listing_utc8 is not None
+            and listing_utc != listing_utc8
+        ):
+            return None
+        if listing_utc is not None or listing_utc8 is not None:
+            starts.append(listing_utc or listing_utc8)
     if not starts:
         return None
     current = now_utc()

@@ -50,6 +50,97 @@ def complete_project_contract(
 
 
 class AeonSignalParsingRegressionTests(unittest.TestCase):
+    def test_opening_sprint_retries_opened_incomplete_within_existing_bounds(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir()
+            stub = scripts_dir / "alpha_opening_block_watch.py"
+            stub.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+
+
+def opening_coverage_complete(event):
+    return all(
+        event.get(key) is True
+        for key in (
+            "opening_cohort_coverage_complete",
+            "opening_log_required_windows_complete",
+            "opening_liquidity_coverage_complete",
+            "opening_buyer_scope_complete",
+        )
+    )
+
+
+if __name__ == "__main__":
+    counter_path = Path("output/opening_sprint_fixture_count.txt")
+    counter_path.parent.mkdir(parents=True, exist_ok=True)
+    count = int(counter_path.read_text() or "0") + 1 if counter_path.exists() else 1
+    counter_path.write_text(str(count))
+    complete = count >= 2 and os.environ.get(
+        "OPENING_SPRINT_FIXTURE_ALWAYS_INCOMPLETE"
+    ) != "1"
+    event = {
+        "status": "opened",
+        "opening_cohort_coverage_complete": complete,
+        "opening_log_required_windows_complete": complete,
+        "opening_liquidity_coverage_complete": complete,
+        "opening_buyer_scope_complete": complete,
+    }
+    Path("output/alpha_opening_block_watch").mkdir(parents=True, exist_ok=True)
+    Path("output/alpha_opening_block_watch/latest.json").write_text(
+        json.dumps({"events": [event]})
+    )
+""",
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env.update(
+                {
+                    "SNIPER_PROJECT_DIR": str(root),
+                    "ALPHA_OPENING_SPRINT_INTERVAL_SECONDS": "0",
+                    "ALPHA_OPENING_SPRINT_MAX_RUNS": "3",
+                    "ALPHA_OPENING_SPRINT_TOTAL_SECONDS": "30",
+                    "ALPHA_OPENING_SPRINT_TRACE_DEADLINE_SECONDS": "5",
+                    "ALPHA_OPENING_SPRINT_POST_SECONDS": "1",
+                }
+            )
+
+            completed = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "alpha_opening_sprint.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            completed_runs = int(
+                (root / "output/opening_sprint_fixture_count.txt").read_text()
+            )
+            (root / "output/opening_sprint_fixture_count.txt").unlink()
+            env["OPENING_SPRINT_FIXTURE_ALWAYS_INCOMPLETE"] = "1"
+            bounded = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "alpha_opening_sprint.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            bounded_runs = int(
+                (root / "output/opening_sprint_fixture_count.txt").read_text()
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed_runs, 2)
+        self.assertEqual(bounded.returncode, 0, bounded.stderr)
+        self.assertEqual(bounded_runs, 3)
+
     def test_opening_sprint_inner_timeout_is_bounded_and_remapped(self) -> None:
         if os.environ.get("SNIPER_OFFLINE") == "1":
             source = (ROOT / "scripts" / "alpha_opening_sprint.sh").read_text(encoding="utf-8")
@@ -3395,6 +3486,130 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(calls[:2], ["liquidity", "receipt"])
+
+    def test_opening_identity_scope_precedes_transfer_prefetch(self) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        cached_v3 = {"schema": "cached-v3", "complete": True}
+        cached_v4 = {"schema": "cached-v4", "complete": True}
+        refreshed_v3 = {"schema": "refreshed-v3", "complete": True}
+        refreshed_v4 = {"schema": "refreshed-v4", "complete": True}
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "seconds_until_start": -1,
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+        }
+        previous = {
+            "rows": [],
+            "opening_v3_pool_scope": cached_v3,
+            "opening_v4_pool_scope": cached_v4,
+            "opening_liquidity_coverage_complete": True,
+        }
+        calls: list[str] = []
+
+        def v3(current: dict[str, object], _latest: int) -> dict[str, object]:
+            calls.append("v3")
+            self.assertEqual(current["opening_v3_pool_scope"], cached_v3)
+            self.assertIsNot(current["opening_v3_pool_scope"], cached_v3)
+            return refreshed_v3
+
+        def watch(
+            current: dict[str, object],
+            scope: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append("watch")
+            self.assertEqual(current["opening_v3_pool_scope"], refreshed_v3)
+            self.assertEqual(scope, refreshed_v3)
+            return {}
+
+        def v4(
+            current: dict[str, object],
+            _latest: int,
+            _watch: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append("v4")
+            self.assertEqual(current["opening_v4_pool_scope"], cached_v4)
+            self.assertIsNot(current["opening_v4_pool_scope"], cached_v4)
+            return refreshed_v4
+
+        def logs(
+            _current: dict[str, object],
+            _latest: int,
+        ) -> list[dict[str, object]]:
+            calls.append("logs")
+            raise opening.OpeningTraceDeadlineExceeded("fixture deadline")
+
+        with (
+            mock.patch.object(opening, "supported_v3_pool_scope", side_effect=v3),
+            mock.patch.object(opening, "liquidity_watch_addresses", side_effect=watch),
+            mock.patch.object(opening, "supported_v4_manager_scope", side_effect=v4),
+            mock.patch.object(opening, "opening_transfer_logs", side_effect=logs),
+            self.assertRaises(opening.OpeningTraceDeadlineExceeded),
+        ):
+            opening.prepare_opening_scope(event, previous)
+
+        self.assertEqual(calls, ["v3", "watch", "v4", "logs"])
+        self.assertEqual(event["opening_v3_pool_scope"], refreshed_v3)
+        self.assertEqual(event["opening_v4_pool_scope"], refreshed_v4)
+        self.assertNotIn("opening_liquidity_coverage_complete", event)
+
+    def test_opening_identity_scope_ignores_malformed_cached_values(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "seconds_until_start": -1,
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+        }
+        previous = {
+            "rows": [],
+            "opening_v3_pool_scope": "malformed",
+            "opening_v4_pool_scope": [],
+        }
+
+        def v3(current: dict[str, object], _latest: int) -> dict[str, object]:
+            self.assertNotIn("opening_v3_pool_scope", current)
+            return {"schema": "v3", "complete": True}
+
+        def v4(
+            current: dict[str, object],
+            _latest: int,
+            _watch: dict[str, object],
+        ) -> dict[str, object]:
+            self.assertNotIn("opening_v4_pool_scope", current)
+            return {"schema": "v4", "complete": True}
+
+        with (
+            mock.patch.object(opening, "supported_v3_pool_scope", side_effect=v3),
+            mock.patch.object(opening, "liquidity_watch_addresses", return_value={}),
+            mock.patch.object(opening, "supported_v4_manager_scope", side_effect=v4),
+            mock.patch.object(opening, "opening_transfer_logs", return_value=[]),
+            mock.patch.object(
+                opening,
+                "opening_buyer_scope_from_transfer_logs",
+                return_value=(
+                    [],
+                    {
+                        "opening_buyer_scope_complete": True,
+                        "opening_buyer_scope_addresses": [],
+                    },
+                ),
+            ),
+        ):
+            opening.prepare_opening_scope(event, previous)
+
+        self.assertEqual(event["opening_v3_pool_scope"]["schema"], "v3")
+        self.assertEqual(event["opening_v4_pool_scope"]["schema"], "v4")
 
     def test_opening_build_budget_reallocates_unused_time(
         self,
@@ -16955,6 +17170,79 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             window["reason"],
             "opening_to_30d_retention",
         )
+
+    def test_retention_uses_only_tracked_fact_listing_time_fallbacks(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        fixed_now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        expected = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+        fixtures = (
+            {"facts": {"listing_time_utc": "2026-08-10T09:00:00+00:00"}},
+            {"facts": {"listing_time_utc8": "2026-08-10 17:00"}},
+        )
+        with mock.patch.object(holder, "now_utc", return_value=fixed_now):
+            for item in fixtures:
+                with self.subTest(item=item):
+                    self.assertEqual(
+                        holder.opening_time_for_item(item, "bsc"),
+                        expected,
+                    )
+                    self.assertEqual(
+                        holder.retention_window(item, "bsc")["status"],
+                        "active",
+                    )
+            for item in (
+                {"facts": {"listing_time_utc": "not-a-time"}},
+                {
+                    "facts": {
+                        "listing_time_utc": "not-a-time",
+                        "listing_time_utc8": "2026-08-10 17:00",
+                    }
+                },
+                {
+                    "facts": {
+                        "listing_time_utc": (
+                            "2026-08-10T09:00:00+00:00"
+                        ),
+                        "listing_time_utc8": "2026-08-10 18:00",
+                    }
+                },
+                {
+                    "facts": {
+                        "opening_time_utc": "not-a-time",
+                        "listing_time_utc": (
+                            "2026-08-10T09:00:00+00:00"
+                        ),
+                    }
+                },
+                {
+                    "facts": {
+                        "opening_time_utc": (
+                            "2026-08-10T09:00:00+00:00"
+                        ),
+                        "opening_time_utc8": "2026-08-10 18:00",
+                        "listing_time_utc": (
+                            "2026-08-10T09:00:00+00:00"
+                        ),
+                    }
+                },
+                {
+                    "known_times": [
+                        {"time_utc": "2026-08-10T09:00:00+00:00"}
+                    ]
+                },
+                {},
+            ):
+                with self.subTest(item=item):
+                    self.assertIsNone(
+                        holder.opening_time_for_item(item, "bsc")
+                    )
+                    self.assertEqual(
+                        holder.retention_window(item, "bsc")["reason"],
+                        "opening_time_unavailable",
+                    )
 
     def test_incomplete_scope_query_does_not_commit_rebaseline(
         self,

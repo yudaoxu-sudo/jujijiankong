@@ -23,6 +23,8 @@ DEPLOY_PARITY_PATHS = (
     "input/dos_airdrop_pressure_evidence_2026-08-10.json",
     "input/dos_alpha_200_sell_receipt_2026-08-10.json",
     "scripts/alpha_holder_concentration_watch.py",
+    "scripts/alpha_opening_block_watch.py",
+    "scripts/alpha_opening_sprint.sh",
     "scripts/alpha_liquidity_retention_watch.py",
     "scripts/alpha_prelaunch_watch.py",
     "scripts/fast_lane_health.py",

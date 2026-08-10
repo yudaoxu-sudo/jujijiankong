@@ -54,15 +54,28 @@ min_seconds_until() {
   python3 - <<'PY'
 import json
 from pathlib import Path
+from scripts.alpha_opening_block_watch import opening_coverage_complete
 
 path = Path("output/alpha_opening_block_watch/latest.json")
 if not path.exists():
     print("999999")
     raise SystemExit
 payload = json.loads(path.read_text(encoding="utf-8"))
+events = [
+    event
+    for event in payload.get("events", [])
+    if isinstance(event, dict)
+]
+if any(
+    event.get("status") == "opened"
+    and not opening_coverage_complete(event)
+    for event in events
+):
+    print("1")
+    raise SystemExit
 values = [
     int(event.get("seconds_until_start") or 0)
-    for event in payload.get("events", [])
+    for event in events
     if event.get("status") == "waiting"
 ]
 print(min(values) if values else "999999")
