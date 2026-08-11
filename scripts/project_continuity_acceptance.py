@@ -238,6 +238,18 @@ REMOTE_RETENTION_RECONCILIATION_CONFLICT_SHAPES = frozenset(
         "invalid",
     }
 )
+REMOTE_RETENTION_CROSS_PROGRESS_SOURCES = frozenset(
+    {"none", "standalone", "holder", "invalid"}
+)
+REMOTE_RETENTION_RECONCILIATION_RELATIONS = frozenset(
+    {
+        "not_applicable",
+        "not_evaluated",
+        "dominates",
+        "not_dominant",
+        "invalid",
+    }
+)
 REMOTE_REPLAY_ISSUE_CODES = frozenset(
     {
         "canonical_block_identity_mismatch",
@@ -463,6 +475,10 @@ retention_diagnostic_keys = {
     "reason_code",
     "checkpoint_relation",
     "reconciliation_conflict_shape",
+    "cross_progress_source",
+    "latest_gap_blocks",
+    "live_boundary_shortfall_blocks",
+    "reconciliation_relation",
     "missing_previous_pending_count",
     "missing_previous_completed_count",
     "missing_previous_deferred_count",
@@ -541,6 +557,14 @@ retention_reconciliation_conflict_shapes = {
     "missing_deferred_add",
     "missing_deferred_other",
     "mixed",
+}
+retention_cross_progress_sources = {"none", "standalone", "holder"}
+retention_reconciliation_relations = {
+    "not_applicable",
+    "not_evaluated",
+    "dominates",
+    "not_dominant",
+    "invalid",
 }
 opening_liquidity_coverage_statuses = {
     "complete_historical_opening_window",
@@ -1678,6 +1702,10 @@ def runtime_issue_retention_summary(row):
         "retention_reason_code": None,
         "retention_checkpoint_relation": None,
         "retention_reconciliation_conflict_shape": None,
+        "retention_cross_progress_source": None,
+        "retention_latest_gap_blocks": None,
+        "retention_live_boundary_shortfall_blocks": None,
+        "retention_reconciliation_relation": None,
         "retention_missing_previous_pending_count": None,
         "retention_missing_previous_completed_count": None,
         "retention_missing_previous_deferred_count": None,
@@ -1704,9 +1732,102 @@ def runtime_issue_retention_summary(row):
     if len(matched) != 1:
         return result
     diagnostic = matched[0].get("runtime_diagnostic")
+
+    def cross_progress_valid(value):
+        source = value.get("cross_progress_source")
+        gap = value.get("latest_gap_blocks")
+        shortfall = value.get("live_boundary_shortfall_blocks")
+        relation = value.get("reconciliation_relation")
+        reason = value.get("reason_code")
+        cross_blockers = {
+            "seed_conflict_progress_catchup_inactive",
+            "seed_conflict_progress_live_boundary_invalid",
+            "seed_conflict_progress_live_boundary_not_ahead",
+            "seed_conflict_progress_reconciliation_not_dominant",
+        }
+        counts_valid = all(
+            type(value.get(key)) is int and value.get(key) >= 0
+            for key in (
+                "missing_previous_pending_count",
+                "missing_previous_completed_count",
+                "missing_previous_deferred_count",
+            )
+        )
+        if source == "none":
+            return (
+                gap is None
+                and shortfall is None
+                and relation == "not_applicable"
+                and counts_valid
+                and reason not in cross_blockers
+            )
+        if (
+            source not in {"standalone", "holder"}
+            or type(gap) is not int
+            or gap <= 0
+            or value.get("checkpoint_relation")
+            not in {"not_applicable", "progress_incomparable"}
+            or value.get("reconciliation_conflict_shape")
+            != "not_applicable"
+            or not all(
+                type(value.get(key)) is int and value.get(key) == 0
+                for key in (
+                    "missing_previous_pending_count",
+                    "missing_previous_completed_count",
+                    "missing_previous_deferred_count",
+                )
+            )
+        ):
+            return False
+        if value.get("checkpoint_relation") == "not_applicable":
+            return bool(
+                relation == "dominates"
+                and shortfall == 0
+                and reason not in cross_blockers
+            )
+        if reason == "seed_conflict_progress_catchup_inactive":
+            return bool(
+                relation == "not_evaluated"
+                and (
+                    shortfall is None
+                    or type(shortfall) is int and shortfall >= 0
+                )
+            )
+        if reason == "seed_conflict_progress_live_boundary_invalid":
+            return relation == "not_evaluated" and shortfall is None
+        if reason == "seed_conflict_progress_live_boundary_not_ahead":
+            return bool(
+                relation == "not_evaluated"
+                and type(shortfall) is int
+                and shortfall > 0
+            )
+        return bool(
+            reason == "seed_conflict_progress_reconciliation_not_dominant"
+            and relation in {"not_dominant", "invalid"}
+            and shortfall == 0
+        )
+
     shape_valid = bool(
         isinstance(diagnostic, dict)
         and set(diagnostic) == retention_diagnostic_keys
+        and all(
+            isinstance(diagnostic.get(key), str)
+            for key in (
+                "standalone_seed_status",
+                "holder_seed_status",
+                "scope_seed_source",
+                "input_state_kind",
+                "next_state_kind",
+                "provider_status",
+                "coverage_status",
+                "reason_code",
+                "checkpoint_relation",
+                "reconciliation_conflict_shape",
+                "cross_progress_source",
+                "reconciliation_relation",
+            )
+        )
+        and cross_progress_valid(diagnostic)
     )
     if not shape_valid:
         return {
@@ -1721,6 +1842,8 @@ def runtime_issue_retention_summary(row):
             "retention_reason_code": "unknown",
             "retention_checkpoint_relation": "invalid",
             "retention_reconciliation_conflict_shape": "invalid",
+            "retention_cross_progress_source": "invalid",
+            "retention_reconciliation_relation": "invalid",
         }
 
     def fixed_enum(value, allowed, fallback):
@@ -1797,6 +1920,22 @@ def runtime_issue_retention_summary(row):
         "retention_reconciliation_conflict_shape": fixed_enum(
             diagnostic.get("reconciliation_conflict_shape"),
             retention_reconciliation_conflict_shapes,
+            "invalid",
+        ),
+        "retention_cross_progress_source": fixed_enum(
+            diagnostic.get("cross_progress_source"),
+            retention_cross_progress_sources,
+            "invalid",
+        ),
+        "retention_latest_gap_blocks": nonnegative_int(
+            diagnostic.get("latest_gap_blocks")
+        ),
+        "retention_live_boundary_shortfall_blocks": nonnegative_int(
+            diagnostic.get("live_boundary_shortfall_blocks")
+        ),
+        "retention_reconciliation_relation": fixed_enum(
+            diagnostic.get("reconciliation_relation"),
+            retention_reconciliation_relations,
             "invalid",
         ),
         "retention_missing_previous_pending_count": nonnegative_int(
@@ -2305,6 +2444,10 @@ def sanitize_remote_runtime(
                     "retention_reason_code",
                     "retention_checkpoint_relation",
                     "retention_reconciliation_conflict_shape",
+                    "retention_cross_progress_source",
+                    "retention_latest_gap_blocks",
+                    "retention_live_boundary_shortfall_blocks",
+                    "retention_reconciliation_relation",
                     "retention_missing_previous_pending_count",
                     "retention_missing_previous_completed_count",
                     "retention_missing_previous_deferred_count",
@@ -2356,6 +2499,8 @@ def sanitize_remote_runtime(
                     "v3_scope_conflict_count",
                     "retention_input_retry_window_blocks",
                     "retention_next_retry_window_blocks",
+                    "retention_latest_gap_blocks",
+                    "retention_live_boundary_shortfall_blocks",
                     "retention_missing_previous_pending_count",
                     "retention_missing_previous_completed_count",
                     "retention_missing_previous_deferred_count",
@@ -2433,7 +2578,138 @@ def sanitize_remote_runtime(
                         "invalid",
                     )
                 ),
+                "retention_cross_progress_source": safe_optional_code(
+                    row.get("retention_cross_progress_source"),
+                    REMOTE_RETENTION_CROSS_PROGRESS_SOURCES,
+                    "invalid",
+                ),
+                "retention_reconciliation_relation": safe_optional_code(
+                    row.get("retention_reconciliation_relation"),
+                    REMOTE_RETENTION_RECONCILIATION_RELATIONS,
+                    "invalid",
+                ),
             }
+
+            def retention_cross_progress_valid() -> bool:
+                source = retention_codes[
+                    "retention_cross_progress_source"
+                ]
+                gap = scope_ints["retention_latest_gap_blocks"]
+                shortfall = scope_ints[
+                    "retention_live_boundary_shortfall_blocks"
+                ]
+                relation = retention_codes[
+                    "retention_reconciliation_relation"
+                ]
+                reason = retention_codes["retention_reason_code"]
+                cross_blockers = {
+                    "seed_conflict_progress_catchup_inactive",
+                    "seed_conflict_progress_live_boundary_invalid",
+                    "seed_conflict_progress_live_boundary_not_ahead",
+                    "seed_conflict_progress_reconciliation_not_dominant",
+                }
+                if source == "none":
+                    return bool(
+                        gap is None
+                        and shortfall is None
+                        and relation == "not_applicable"
+                        and all(
+                            type(scope_ints[key]) is int
+                            for key in (
+                                "retention_missing_previous_pending_count",
+                                "retention_missing_previous_completed_count",
+                                "retention_missing_previous_deferred_count",
+                            )
+                        )
+                        and reason not in cross_blockers
+                    )
+                if source in {"standalone", "holder"}:
+                    checkpoint_relation = retention_codes[
+                        "retention_checkpoint_relation"
+                    ]
+                    if (
+                        type(gap) is not int
+                        or gap <= 0
+                        or checkpoint_relation
+                        not in {"not_applicable", "progress_incomparable"}
+                        or retention_codes[
+                            "retention_reconciliation_conflict_shape"
+                        ]
+                        != "not_applicable"
+                        or not all(
+                            scope_ints[key] == 0
+                            for key in (
+                                "retention_missing_previous_pending_count",
+                                "retention_missing_previous_completed_count",
+                                "retention_missing_previous_deferred_count",
+                            )
+                        )
+                    ):
+                        return False
+                    if checkpoint_relation == "not_applicable":
+                        return bool(
+                            relation == "dominates"
+                            and shortfall == 0
+                            and reason not in cross_blockers
+                        )
+                    if reason == "seed_conflict_progress_catchup_inactive":
+                        return bool(
+                            relation == "not_evaluated"
+                            and (
+                                shortfall is None
+                                or type(shortfall) is int
+                                and shortfall >= 0
+                            )
+                        )
+                    if (
+                        reason
+                        == "seed_conflict_progress_live_boundary_invalid"
+                    ):
+                        return bool(
+                            relation == "not_evaluated"
+                            and shortfall is None
+                        )
+                    if (
+                        reason
+                        == "seed_conflict_progress_live_boundary_not_ahead"
+                    ):
+                        return bool(
+                            relation == "not_evaluated"
+                            and type(shortfall) is int
+                            and shortfall > 0
+                        )
+                    return bool(
+                        reason
+                        == (
+                            "seed_conflict_progress_"
+                            "reconciliation_not_dominant"
+                        )
+                        and relation in {"not_dominant", "invalid"}
+                        and shortfall == 0
+                    )
+                return bool(
+                    source == "invalid"
+                    and retention_codes[
+                        "retention_checkpoint_relation"
+                    ]
+                    == "invalid"
+                    and retention_codes[
+                        "retention_reconciliation_conflict_shape"
+                    ]
+                    == "invalid"
+                    and relation == "invalid"
+                    and gap is None
+                    and shortfall is None
+                    and all(
+                        scope_ints[key] is None
+                        for key in (
+                            "retention_missing_previous_pending_count",
+                            "retention_missing_previous_completed_count",
+                            "retention_missing_previous_deferred_count",
+                        )
+                    )
+                )
+
             opening_codes = {
                 "opening_liquidity_coverage_status": safe_optional_code(
                     row.get("opening_liquidity_coverage_status"),
@@ -2469,6 +2745,17 @@ def sanitize_remote_runtime(
                         **scope_bools,
                         **scope_ints,
                     }.items()
+                )
+                or (
+                    row.get("scope") == "liquidity_retention"
+                    and retention_match_count == 1
+                    and (
+                        any(
+                            value is None
+                            for value in retention_codes.values()
+                        )
+                        or not retention_cross_progress_valid()
+                    )
                 )
                 or (
                     row.get("scope") == "opening"
@@ -2534,6 +2821,8 @@ def sanitize_remote_runtime(
                 for key in (
                     "retention_input_retry_window_blocks",
                     "retention_next_retry_window_blocks",
+                    "retention_latest_gap_blocks",
+                    "retention_live_boundary_shortfall_blocks",
                     "retention_missing_previous_pending_count",
                     "retention_missing_previous_completed_count",
                     "retention_missing_previous_deferred_count",

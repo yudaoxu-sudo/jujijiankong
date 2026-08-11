@@ -64,6 +64,10 @@ LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT = {
     "missing_previous_pending_count": 0,
     "missing_previous_completed_count": 0,
     "missing_previous_deferred_count": 0,
+    "cross_progress_source": "none",
+    "latest_gap_blocks": None,
+    "live_boundary_shortfall_blocks": None,
+    "reconciliation_relation": "not_applicable",
 }
 ReconciliationDetail = tuple[set[str], set[str], set[str], list[str], set[str]]
 
@@ -579,6 +583,69 @@ def liquidity_reconciliation_detail(seed: dict[str, Any]) -> ReconciliationDetai
     return (*identities, completed_order, deferred_adds)
 
 
+def liquidity_cross_progress_detail(
+    seeds: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    detail = {
+        key: copy.deepcopy(LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT[key])
+        for key in (
+            "cross_progress_source",
+            "latest_gap_blocks",
+            "live_boundary_shortfall_blocks",
+            "reconciliation_relation",
+        )
+    }
+    latest = {
+        source: int(seed.get("latest_block") or 0)
+        for source, seed in seeds.items()
+    }
+    coverage_from = {
+        source: int(seed.get("scope_coverage_from_block") or 0)
+        for source, seed in seeds.items()
+    }
+    cross_progress = [
+        (source, other)
+        for source, other in (
+            ("standalone", "holder"),
+            ("holder", "standalone"),
+        )
+        if coverage_from[source] < coverage_from[other]
+        and latest[source] < latest[other]
+    ]
+    if len(cross_progress) != 1:
+        return detail
+
+    source, other = cross_progress[0]
+    detail.update(
+        {
+            "cross_progress_source": source,
+            "latest_gap_blocks": latest[other] - latest[source],
+            "reconciliation_relation": "not_evaluated",
+        }
+    )
+    live_from = seeds[source].get("catchup_live_from_block")
+    if type(live_from) is not int:
+        return detail
+    shortfall = max(0, latest[other] + 1 - live_from)
+    detail["live_boundary_shortfall_blocks"] = shortfall
+    if seeds[source].get("catchup_active") is not True or shortfall > 0:
+        return detail
+
+    if (
+        liquidity_reconciliation_identities(seeds[source]) is None
+        or liquidity_reconciliation_identities(seeds[other]) is None
+    ):
+        detail["reconciliation_relation"] = "invalid"
+    elif liquidity_reconciliation_dominates(
+        seeds[source],
+        seeds[other],
+    ):
+        detail["reconciliation_relation"] = "dominates"
+    else:
+        detail["reconciliation_relation"] = "not_dominant"
+    return detail
+
+
 def liquidity_reconciliation_conflict_detail(
     seeds: dict[str, dict[str, Any]],
     progress_dominates: dict[str, bool],
@@ -595,9 +662,11 @@ def liquidity_reconciliation_conflict_detail(
     elif progress_dominates.get("holder") is True:
         relation = "holder_newer"
     else:
+        cross_detail = liquidity_cross_progress_detail(seeds)
         return {
             **detail,
             "checkpoint_relation": "progress_incomparable",
+            **cross_detail,
         }
 
     rows = {
@@ -626,6 +695,7 @@ def liquidity_reconciliation_conflict_detail(
         left = missing(standalone_rows, holder_rows)
         right = missing(holder_rows, standalone_rows)
         return {
+            **detail,
             "checkpoint_relation": relation,
             "reconciliation_conflict_shape": "mixed",
             "missing_previous_pending_count": len(left[0]) + len(right[0]),
@@ -664,6 +734,7 @@ def liquidity_reconciliation_conflict_detail(
         shapes.add("missing_deferred_other")
     shape = next(iter(shapes)) if len(shapes) == 1 else "mixed"
     return {
+        **detail,
         "checkpoint_relation": relation,
         "reconciliation_conflict_shape": shape,
         "missing_previous_pending_count": len(pending),
@@ -680,15 +751,64 @@ def strict_liquidity_seed_conflict_detail(value: Any) -> dict[str, Any]:
         "missing_pending missing_completed_unproven missing_deferred_add "
         "missing_deferred_other mixed"
     )
+    cross_sources = "none standalone holder"
+    reconciliation_relations = (
+        "not_applicable not_evaluated dominates not_dominant invalid"
+    )
     if (
         not isinstance(value, dict)
         or set(value) != set(fallback)
         or value.get("checkpoint_relation") not in relations.split()
         or value.get("reconciliation_conflict_shape") not in shapes.split()
+        or value.get("cross_progress_source") not in cross_sources.split()
+        or value.get("reconciliation_relation")
+        not in reconciliation_relations.split()
         or any(
             type(value.get(key)) is not int or value[key] < 0
             for key in fallback
             if key.endswith("_count")
+        )
+        or any(
+            value.get(key) is not None
+            and (type(value[key]) is not int or value[key] < 0)
+            for key in (
+                "latest_gap_blocks",
+                "live_boundary_shortfall_blocks",
+            )
+        )
+        or (
+            value.get("cross_progress_source") == "none"
+            and (
+                value.get("latest_gap_blocks") is not None
+                or value.get("live_boundary_shortfall_blocks") is not None
+                or value.get("reconciliation_relation") != "not_applicable"
+            )
+        )
+        or (
+            value.get("cross_progress_source") != "none"
+            and (
+                type(value.get("latest_gap_blocks")) is not int
+                or value.get("latest_gap_blocks") <= 0
+                or value.get("reconciliation_relation") == "not_applicable"
+                or value.get("checkpoint_relation")
+                not in {"not_applicable", "progress_incomparable"}
+                or (
+                    (value.get("checkpoint_relation") == "not_applicable")
+                    != (value.get("reconciliation_relation") == "dominates")
+                )
+                or value.get("reconciliation_conflict_shape")
+                != "not_applicable"
+                or any(
+                    value.get(key) != 0
+                    for key in fallback
+                    if key.endswith("_count")
+                )
+                or (
+                    value.get("reconciliation_relation")
+                    in {"dominates", "not_dominant", "invalid"}
+                    and value.get("live_boundary_shortfall_blocks") != 0
+                )
+            )
         )
     ):
         return fallback
@@ -899,7 +1019,14 @@ def select_liquidity_seed(
                     "seed_conflict_progress_reconciliation_not_dominant"
                 )
             else:
-                return outcome(source, progress_recovery=True)
+                return outcome(
+                    source,
+                    progress_recovery=True,
+                    conflict_detail={
+                        **LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                        **liquidity_cross_progress_detail(seeds),
+                    },
+                )
         else:
             progress_conflict_reason = "seed_conflict_progress"
     return outcome(
@@ -1200,6 +1327,20 @@ def liquidity_runtime_diagnostic(
     else:
         reason_code = "unknown"
 
+    conflict_detail = strict_liquidity_seed_conflict_detail(
+        seed_conflict_detail
+    )
+    if seed_conflict and error_code not in {
+        "seed_conflict_reconciliation_same_checkpoint",
+        "seed_conflict_reconciliation_cross_checkpoint",
+        "seed_conflict_progress",
+        "seed_conflict_progress_catchup_inactive",
+        "seed_conflict_progress_live_boundary_invalid",
+        "seed_conflict_progress_live_boundary_not_ahead",
+        "seed_conflict_progress_reconciliation_not_dominant",
+    }:
+        conflict_detail = dict(LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT)
+
     return {
         "standalone_seed_status": standalone_seed_status,
         "holder_seed_status": holder_seed_status,
@@ -1215,7 +1356,7 @@ def liquidity_runtime_diagnostic(
         "provider_status": provider_status,
         "coverage_status": coverage_status,
         "reason_code": reason_code,
-        **strict_liquidity_seed_conflict_detail(seed_conflict_detail),
+        **conflict_detail,
     }
 
 

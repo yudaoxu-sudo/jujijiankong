@@ -95,6 +95,10 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "retention_reason_code": None,
         "retention_checkpoint_relation": None,
         "retention_reconciliation_conflict_shape": None,
+        "retention_cross_progress_source": None,
+        "retention_latest_gap_blocks": None,
+        "retention_live_boundary_shortfall_blocks": None,
+        "retention_reconciliation_relation": None,
         "retention_missing_previous_pending_count": None,
         "retention_missing_previous_completed_count": None,
         "retention_missing_previous_deferred_count": None,
@@ -1200,23 +1204,29 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         diagnostic = {
             "standalone_seed_status": "valid",
             "holder_seed_status": "missing",
-            "scope_seed_source": "standalone",
-            "input_state_kind": "checkpoint",
-            "next_state_kind": "checkpoint",
-            "input_retry_window_blocks": 16,
-            "next_retry_window_blocks": 8,
-            "deadline_exceeded": True,
+            "scope_seed_source": "none",
+            "input_state_kind": "invalid",
+            "next_state_kind": "invalid",
+            "input_retry_window_blocks": None,
+            "next_retry_window_blocks": None,
+            "deadline_exceeded": False,
             "selected_window_complete": False,
             "requested_window_complete": False,
             "query_scope_complete": False,
-            "provider_status": "deadline",
-            "coverage_status": "checkpoint_retry_pending",
-            "reason_code": "retryable_min_window_exhausted",
-            "checkpoint_relation": "same_checkpoint",
+            "provider_status": "not_attempted",
+            "coverage_status": "invalid",
+            "reason_code": (
+                "seed_conflict_progress_live_boundary_not_ahead"
+            ),
+            "checkpoint_relation": "progress_incomparable",
             "reconciliation_conflict_shape": "not_applicable",
-            "missing_previous_pending_count": 1,
-            "missing_previous_completed_count": 2,
-            "missing_previous_deferred_count": 3,
+            "cross_progress_source": "standalone",
+            "latest_gap_blocks": 10,
+            "live_boundary_shortfall_blocks": 1,
+            "reconciliation_relation": "not_evaluated",
+            "missing_previous_pending_count": 0,
+            "missing_previous_completed_count": 0,
+            "missing_previous_deferred_count": 0,
         }
 
         def probe(
@@ -1272,6 +1282,51 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(summary["retention_project_match_count"], 1)
         for key, value in diagnostic.items():
             self.assertEqual(summary[f"retention_{key}"], value)
+
+        def diagnostic_for_reason(reason_code: str) -> dict[str, object]:
+            value = {**diagnostic, "reason_code": reason_code}
+            if reason_code == "seed_conflict_progress_catchup_inactive":
+                value.update(
+                    reconciliation_relation="not_evaluated",
+                    live_boundary_shortfall_blocks=0,
+                )
+            elif (
+                reason_code
+                == "seed_conflict_progress_live_boundary_invalid"
+            ):
+                value.update(
+                    reconciliation_relation="not_evaluated",
+                    live_boundary_shortfall_blocks=None,
+                )
+            elif (
+                reason_code
+                == "seed_conflict_progress_live_boundary_not_ahead"
+            ):
+                value.update(
+                    reconciliation_relation="not_evaluated",
+                    live_boundary_shortfall_blocks=1,
+                )
+            elif (
+                reason_code
+                == (
+                    "seed_conflict_progress_"
+                    "reconciliation_not_dominant"
+                )
+            ):
+                value.update(
+                    reconciliation_relation="not_dominant",
+                    live_boundary_shortfall_blocks=0,
+                )
+            else:
+                value.update(
+                    checkpoint_relation="not_applicable",
+                    cross_progress_source="none",
+                    latest_gap_blocks=None,
+                    live_boundary_shortfall_blocks=None,
+                    reconciliation_relation="not_applicable",
+                )
+            return value
+
         for reason_code in (
             "pool_scope_empty",
             "operator_attribution_failed",
@@ -1292,10 +1347,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "seed_conflict_progress_reconciliation_not_dominant",
         ):
             with self.subTest(reason_code=reason_code):
-                reason_diagnostic = {
-                    **diagnostic,
-                    "reason_code": reason_code,
-                }
+                reason_diagnostic = diagnostic_for_reason(reason_code)
                 reason_payload = probe([reason_diagnostic])
                 reason_summary = reason_payload["runtime_issue_summaries"][0]
                 self.assertEqual(
@@ -1375,8 +1427,17 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         ):
             for enum_value in values:
                 with self.subTest(field=field, enum_value=enum_value):
+                    enum_diagnostic = {
+                        **diagnostic,
+                        "reason_code": "seed_conflict",
+                        "cross_progress_source": "none",
+                        "latest_gap_blocks": None,
+                        "live_boundary_shortfall_blocks": None,
+                        "reconciliation_relation": "not_applicable",
+                        field: enum_value,
+                    }
                     enum_payload = probe(
-                        [{**diagnostic, field: enum_value}]
+                        [enum_diagnostic]
                     )
                     enum_summary = enum_payload[
                         "runtime_issue_summaries"
@@ -1394,6 +1455,74 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                         ],
                         enum_value,
                     )
+        for invalid_fields in (
+            {"latest_gap_blocks": 0},
+            {"checkpoint_relation": "same_checkpoint"},
+            {"reconciliation_conflict_shape": "mixed"},
+            {"missing_previous_pending_count": 1},
+            {
+                "reconciliation_relation": "dominates",
+                "live_boundary_shortfall_blocks": 1,
+            },
+            {
+                "checkpoint_relation": "not_applicable",
+                "reconciliation_relation": "not_evaluated",
+                "live_boundary_shortfall_blocks": 0,
+            },
+            {"reason_code": "deadline_exceeded"},
+            {
+                "cross_progress_source": "none",
+                "latest_gap_blocks": None,
+                "live_boundary_shortfall_blocks": None,
+                "reconciliation_relation": "not_applicable",
+                "missing_previous_pending_count": None,
+            },
+            {"provider_status": None},
+        ):
+            with self.subTest(invalid_cross_fields=invalid_fields):
+                invalid_probe = probe(
+                    [{**diagnostic, **invalid_fields}]
+                )
+                invalid_summary = invalid_probe[
+                    "runtime_issue_summaries"
+                ][0]
+                self.assertEqual(
+                    invalid_summary["retention_cross_progress_source"],
+                    "invalid",
+                )
+                self.assertEqual(
+                    invalid_summary["retention_checkpoint_relation"],
+                    "invalid",
+                )
+                self.assertEqual(
+                    invalid_summary[
+                        "retention_reconciliation_conflict_shape"
+                    ],
+                    "invalid",
+                )
+                self.assertEqual(
+                    invalid_summary["retention_reconciliation_relation"],
+                    "invalid",
+                )
+                safe_invalid, invalid_valid = sanitize_remote_runtime(
+                    invalid_probe
+                )
+                self.assertTrue(invalid_valid)
+                self.assertEqual(
+                    safe_invalid["runtime_issue_summaries"][0],
+                    invalid_summary,
+                )
+
+                forged = json.loads(json.dumps(payload))
+                forged_summary = forged["runtime_issue_summaries"][0]
+                for key, value in invalid_fields.items():
+                    forged_summary[f"retention_{key}"] = value
+                rejected, rejected_valid = sanitize_remote_runtime(forged)
+                self.assertFalse(rejected_valid)
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "runtime_issue_summary_value_invalid",
+                )
         sanitized, valid = sanitize_remote_runtime(payload)
         resanitized, revalid = sanitize_remote_runtime(sanitized)
         self.assertTrue(valid)
@@ -1442,6 +1571,10 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "reason_code": marker,
             "checkpoint_relation": marker,
             "reconciliation_conflict_shape": marker,
+            "cross_progress_source": marker,
+            "latest_gap_blocks": True,
+            "live_boundary_shortfall_blocks": -1,
+            "reconciliation_relation": marker,
             "missing_previous_pending_count": True,
             "missing_previous_completed_count": -1,
             "missing_previous_deferred_count": marker,
@@ -1479,6 +1612,22 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             ],
             "invalid",
         )
+        self.assertEqual(
+            malformed_summary["retention_cross_progress_source"],
+            "invalid",
+        )
+        self.assertEqual(
+            malformed_summary["retention_reconciliation_relation"],
+            "invalid",
+        )
+        self.assertIsNone(
+            malformed_summary["retention_latest_gap_blocks"]
+        )
+        self.assertIsNone(
+            malformed_summary[
+                "retention_live_boundary_shortfall_blocks"
+            ]
+        )
         self.assertIsNone(
             malformed_summary["retention_input_retry_window_blocks"]
         )
@@ -1507,7 +1656,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         )
 
         missing_key = dict(diagnostic)
-        missing_key.pop("reason_code")
+        missing_key.pop("cross_progress_source")
         missing_key_payload = probe([missing_key])
         missing_key_summary = missing_key_payload[
             "runtime_issue_summaries"
@@ -1536,6 +1685,39 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             missing_key_summary[
                 "retention_missing_previous_pending_count"
             ]
+        )
+
+        extra_key_payload = probe(
+            [{**diagnostic, "untrusted_extra": marker}]
+        )
+        extra_key_summary = extra_key_payload[
+            "runtime_issue_summaries"
+        ][0]
+        self.assertEqual(
+            extra_key_summary["retention_cross_progress_source"],
+            "invalid",
+        )
+        self.assertIsNone(
+            extra_key_summary["retention_latest_gap_blocks"]
+        )
+        self.assertNotIn(
+            marker, json.dumps(extra_key_payload, sort_keys=True)
+        )
+
+        unmatched_payload = probe([])
+        unmatched_summary = unmatched_payload[
+            "runtime_issue_summaries"
+        ][0]
+        self.assertEqual(
+            unmatched_summary["retention_project_match_count"], 0
+        )
+        self.assertTrue(
+            all(
+                value is None
+                for key, value in unmatched_summary.items()
+                if key.startswith("retention_")
+                and key != "retention_project_match_count"
+            )
         )
 
         duplicate_payload = probe([diagnostic, diagnostic])
@@ -1591,28 +1773,19 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         tampered_summary[
             "retention_reconciliation_conflict_shape"
         ] = marker
+        tampered_summary["retention_cross_progress_source"] = marker
+        tampered_summary["retention_reconciliation_relation"] = marker
         safe_tampered, tampered_valid = sanitize_remote_runtime(tampered)
         resafe_tampered, retampered_valid = sanitize_remote_runtime(
             safe_tampered
         )
-        self.assertTrue(tampered_valid)
+        self.assertFalse(tampered_valid)
         self.assertTrue(retampered_valid)
         self.assertEqual(resafe_tampered, safe_tampered)
         self.assertNotIn(marker, json.dumps(safe_tampered, sort_keys=True))
-        safe_summary = safe_tampered["runtime_issue_summaries"][0]
         self.assertEqual(
-            safe_summary["retention_scope_seed_source"], "invalid"
-        )
-        self.assertEqual(
-            safe_summary["retention_provider_status"], "unknown"
-        )
-        self.assertEqual(safe_summary["retention_reason_code"], "unknown")
-        self.assertEqual(
-            safe_summary["retention_checkpoint_relation"], "invalid"
-        )
-        self.assertEqual(
-            safe_summary["retention_reconciliation_conflict_shape"],
-            "invalid",
+            safe_tampered["validation_error_code"],
+            "runtime_issue_summary_value_invalid",
         )
 
     def test_remote_retention_extended_int_rejects_bool(self) -> None:
@@ -1624,7 +1797,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             safe_issue_summary(
                 scope="liquidity_retention",
                 retention_project_match_count=1,
-                retention_missing_previous_pending_count=True,
+                retention_latest_gap_blocks=True,
             )
         ]
         rejected, valid = sanitize_remote_runtime(payload)
@@ -1633,6 +1806,46 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             rejected["validation_error_code"],
             "runtime_issue_summary_value_invalid",
         )
+
+        for value in (-1, False):
+            with self.subTest(value=value):
+                malformed = json.loads(json.dumps(payload))
+                malformed["runtime_issue_summaries"] = [
+                    safe_issue_summary(
+                        scope="liquidity_retention",
+                        retention_project_match_count=1,
+                        retention_live_boundary_shortfall_blocks=value,
+                    )
+                ]
+                rejected, valid = sanitize_remote_runtime(malformed)
+                self.assertFalse(valid)
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "runtime_issue_summary_value_invalid",
+                )
+
+    def test_remote_retention_exact_row_shape_rejects_missing_and_extra(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            payload = run_remote_probe(root, expected_hashes)
+        for mutation in ("missing", "extra"):
+            with self.subTest(mutation=mutation):
+                malformed = json.loads(json.dumps(payload))
+                row = safe_issue_summary()
+                if mutation == "missing":
+                    row.pop("retention_cross_progress_source")
+                else:
+                    row["retention_untrusted_extra"] = "detail"
+                malformed["runtime_issue_summaries"] = [row]
+                rejected, valid = sanitize_remote_runtime(malformed)
+                self.assertFalse(valid)
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "runtime_issue_summary_row_shape_invalid",
+                )
 
     def test_remote_nested_free_text_never_persists(self) -> None:
         marker = "synthetic_secret_api_key_abc123"

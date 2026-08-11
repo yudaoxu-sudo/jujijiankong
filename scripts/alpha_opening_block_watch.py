@@ -816,6 +816,9 @@ def supported_v3_pool_scope(
         configuration_hash,
         latest,
     )
+    identity_cursor_cache = event.get(
+        "_opening_snapshot_v3_identity_cursor"
+    )
     row_cache_value = (
         row_cache.get(row_cache_key)
         if isinstance(row_cache, dict)
@@ -839,6 +842,8 @@ def supported_v3_pool_scope(
         and cached_cycle_rows is None
     ):
         row_cache.pop(row_cache_key, None)
+        if isinstance(identity_cursor_cache, dict):
+            identity_cursor_cache.pop(row_cache_key, None)
     if cycle_rows_only and (
         cached_cycle_rows is None
         or len(cached_cycle_rows["rows"]) != len(fee_rows)
@@ -865,6 +870,12 @@ def supported_v3_pool_scope(
         min(10.0, max(1.0, matrix_seconds / 5.0)),
     )
     row_deadline = matrix_deadline - close_reserve_seconds
+    row_seconds = max(0.0, row_deadline - matrix_started_at)
+    identity_reserve_seconds = min(
+        row_seconds,
+        max(1.0, min(row_seconds / 2.0, timeout * 5.0)),
+    )
+    lookup_deadline = row_deadline - identity_reserve_seconds
 
     def matrix_rpc(
         method: str,
@@ -1024,39 +1035,92 @@ def supported_v3_pool_scope(
             successful_rows = cached_cycle_rows["rows"]
         elif isinstance(row_cache, dict):
             row_cache.pop(row_cache_key, None)
+            if isinstance(identity_cursor_cache, dict):
+                identity_cursor_cache.pop(row_cache_key, None)
     if cycle_rows_only and len(successful_rows) != len(fee_rows):
         return copy.deepcopy(cached)
+    pending_identity_rows: list[
+        tuple[str, dict[str, Any], int, str, str]
+    ] = []
+    verified_rows: list[
+        tuple[str, dict[str, Any], int, str, str, str, str]
+    ] = []
     for factory, factory_row, fee, quote in fee_rows:
         attempted += 1
         query_key = (factory, fee, quote)
-        provider_stage = "factory_lookup"
         try:
             if row_cache_enabled and query_key in successful_rows:
                 cached_row = successful_rows[query_key]
                 if cached_row is None:
                     continue
                 pool, _factory, token0, token1, _fee = cached_row
-            else:
-                data = (
-                    V3_GET_POOL_SELECTOR
-                    + encode_address_word(token)
-                    + encode_address_word(quote)
-                    + encode_uint(fee)
-                )
-                state, pool = strict_abi_address_return(
-                    matrix_rpc(
-                        "eth_call",
-                        [{"to": factory, "data": data}, block_tag],
-                        row_deadline,
+                verified_rows.append(
+                    (
+                        factory, factory_row, fee, quote,
+                        pool, token0, token1,
                     )
                 )
-                if state == "zero":
-                    if row_cache_enabled:
-                        successful_rows[query_key] = None
-                    continue
-                if state != "address":
-                    response_validation_errors += 1
-                    continue
+                continue
+            data = (
+                V3_GET_POOL_SELECTOR
+                + encode_address_word(token)
+                + encode_address_word(quote)
+                + encode_uint(fee)
+            )
+            state, pool = strict_abi_address_return(
+                matrix_rpc(
+                    "eth_call",
+                    [{"to": factory, "data": data}, block_tag],
+                    lookup_deadline,
+                )
+            )
+            if state == "zero":
+                if row_cache_enabled:
+                    successful_rows[query_key] = None
+                continue
+            if state != "address":
+                response_validation_errors += 1
+                continue
+            pending_identity_rows.append(
+                (factory, factory_row, fee, quote, pool)
+            )
+        except OpeningTraceDeadlineExceeded:
+            deadline_exceeded = True
+            break
+        except Exception:
+            provider_errors += 1
+            provider_error_stages.add("factory_lookup")
+    identity_next_index = 0
+    fee_row_positions = {
+        (factory, fee, quote): index
+        for index, (factory, _factory_row, fee, quote)
+        in enumerate(fee_rows)
+    }
+    if (
+        pending_identity_rows
+        and row_cache_enabled
+        and isinstance(identity_cursor_cache, dict)
+    ):
+        raw_identity_index = identity_cursor_cache.get(row_cache_key, 0)
+        if (
+            type(raw_identity_index) is not int
+            or not 0 <= raw_identity_index < len(fee_rows)
+        ):
+            identity_cursor_cache.pop(row_cache_key, None)
+        else:
+            identity_next_index = raw_identity_index
+            pending_identity_rows.sort(
+                key=lambda row: (
+                    fee_row_positions[(row[0], row[2], row[3])]
+                    - identity_next_index
+                )
+                % len(fee_rows)
+            )
+    if pending_identity_rows:
+        for factory, factory_row, fee, quote, pool in pending_identity_rows:
+            query_key = (factory, fee, quote)
+            provider_stage = "pool_code"
+            try:
 
                 def pool_call(selector: str) -> Any:
                     return matrix_rpc(
@@ -1065,7 +1129,6 @@ def supported_v3_pool_scope(
                         row_deadline,
                     )
 
-                provider_stage = "pool_code"
                 code = matrix_rpc(
                     "eth_getCode",
                     [pool, block_tag],
@@ -1101,42 +1164,60 @@ def supported_v3_pool_scope(
                 ):
                     identity_mismatches += 1
                     continue
-            pool_row = {
-                "address": pool,
-                "factory": factory,
-                "protocol": factory_row.get("protocol", "v3"),
-                "token0": token0,
-                "token1": token1,
-                "fee": fee,
-                "as_of_block": latest,
-            }
-            quote_row = labels.get(quote) or {}
-            quote_symbol = str(
-                quote_row.get("symbol") or ""
-            ).strip().upper()
-            try:
-                quote_decimals = int(quote_row.get("decimals"))
-            except (TypeError, ValueError):
-                quote_decimals = -1
-            if quote_symbol and 0 <= quote_decimals <= 36:
-                pool_row.update(
-                    {
-                        "quote_token": quote,
-                        "quote_symbol": quote_symbol,
-                        "quote_decimals": quote_decimals,
-                    }
+                if row_cache_enabled:
+                    successful_rows[query_key] = (
+                        pool, factory, token0, token1, fee
+                    )
+                verified_rows.append(
+                    (
+                        factory, factory_row, fee, quote,
+                        pool, token0, token1,
+                    )
                 )
-            if row_cache_enabled:
-                successful_rows[query_key] = (
-                    pool, factory, token0, token1, fee
-                )
-            pools[pool] = pool_row
-        except OpeningTraceDeadlineExceeded:
-            deadline_exceeded = True
-            break
-        except Exception:
-            provider_errors += 1
-            provider_error_stages.add(provider_stage)
+            except OpeningTraceDeadlineExceeded:
+                deadline_exceeded = True
+                if row_cache_enabled and isinstance(
+                    identity_cursor_cache, dict
+                ):
+                    identity_cursor_cache[row_cache_key] = (
+                        fee_row_positions[(factory, fee, quote)] + 1
+                    ) % len(fee_rows)
+                break
+            except Exception:
+                provider_errors += 1
+                provider_error_stages.add(provider_stage)
+    verified_rows.sort(
+        key=lambda row: fee_row_positions[(row[0], row[2], row[3])]
+    )
+    for (
+        factory, factory_row, fee, quote, pool, token0, token1
+    ) in verified_rows:
+        pool_row = {
+            "address": pool,
+            "factory": factory,
+            "protocol": factory_row.get("protocol", "v3"),
+            "token0": token0,
+            "token1": token1,
+            "fee": fee,
+            "as_of_block": latest,
+        }
+        quote_row = labels.get(quote) or {}
+        quote_symbol = str(
+            quote_row.get("symbol") or ""
+        ).strip().upper()
+        try:
+            quote_decimals = int(quote_row.get("decimals"))
+        except (TypeError, ValueError):
+            quote_decimals = -1
+        if quote_symbol and 0 <= quote_decimals <= 36:
+            pool_row.update(
+                {
+                    "quote_token": quote,
+                    "quote_symbol": quote_symbol,
+                    "quote_decimals": quote_decimals,
+                }
+            )
+        pools[pool] = pool_row
     pool_addresses = [
         row[0]
         for row in successful_rows.values()
@@ -1149,6 +1230,8 @@ def supported_v3_pool_scope(
         pools.clear()
         if isinstance(row_cache, dict):
             row_cache.pop(row_cache_key, None)
+        if isinstance(identity_cursor_cache, dict):
+            identity_cursor_cache.pop(row_cache_key, None)
     as_of_block_hash = ""
     snapshot_coherent = False
     if fee_rows and initial_block_hash:
@@ -1174,6 +1257,8 @@ def supported_v3_pool_scope(
             provider_error_stages.add("snapshot_close")
     if not snapshot_coherent and isinstance(row_cache, dict):
         row_cache.pop(row_cache_key, None)
+        if isinstance(identity_cursor_cache, dict):
+            identity_cursor_cache.pop(row_cache_key, None)
     if cycle_rows_only and not snapshot_coherent:
         return copy.deepcopy(cached)
     if not snapshot_coherent:
@@ -1290,6 +1375,8 @@ def supported_v3_pool_scope(
         )
     ):
         cycle_cache[cycle_cache_key] = copy.deepcopy(result)
+    if complete and isinstance(identity_cursor_cache, dict):
+        identity_cursor_cache.pop(row_cache_key, None)
     return result
 
 
@@ -7083,12 +7170,16 @@ def build_snapshot() -> dict[str, Any]:
     snapshot_log_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     snapshot_v3_scope_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     snapshot_v3_row_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    snapshot_v3_identity_cursor: dict[tuple[Any, ...], int] = {}
     for event in current_events:
         event["_opening_snapshot_log_cache"] = snapshot_log_cache
         event["_opening_snapshot_v3_scope_cache"] = (
             snapshot_v3_scope_cache
         )
         event["_opening_snapshot_v3_row_cache"] = snapshot_v3_row_cache
+        event["_opening_snapshot_v3_identity_cursor"] = (
+            snapshot_v3_identity_cursor
+        )
     current_identity_counts: dict[
         tuple[str, str, int, str, str, str],
         int,
@@ -7389,6 +7480,7 @@ def build_snapshot() -> dict[str, Any]:
         event.pop("_opening_snapshot_log_cache", None)
         event.pop("_opening_snapshot_v3_scope_cache", None)
         event.pop("_opening_snapshot_v3_row_cache", None)
+        event.pop("_opening_snapshot_v3_identity_cursor", None)
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))

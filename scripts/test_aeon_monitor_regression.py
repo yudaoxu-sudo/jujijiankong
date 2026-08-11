@@ -73,6 +73,7 @@ class _V3CycleFixture:
         }
         self.scope_cache: dict[object, object] = {}
         self.row_cache: dict[object, object] = {}
+        self.identity_cursor: dict[object, object] = {}
 
     @staticmethod
     def address_result(value: str) -> str:
@@ -99,6 +100,7 @@ class _V3CycleFixture:
             "quote": {"address": self.quote},
             "_opening_snapshot_v3_scope_cache": self.scope_cache,
             "_opening_snapshot_v3_row_cache": self.row_cache,
+            "_opening_snapshot_v3_identity_cursor": self.identity_cursor,
         }
         if previous is not None:
             event["opening_v3_pool_scope"] = previous
@@ -4554,6 +4556,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "pool_id": f"pool-{index}",
                 "_opening_snapshot_v3_scope_cache": {"stale": {}},
                 "_opening_snapshot_v3_row_cache": {"stale": {}},
+                "_opening_snapshot_v3_identity_cursor": {"stale": 1},
             }
             for index, (symbol, digit) in enumerate(
                 (("FIRST", "1"), ("SECOND", "2")),
@@ -4635,6 +4638,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(
             all(
                 "_opening_snapshot_v3_row_cache" not in event
+                for event in snapshot["events"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "_opening_snapshot_v3_identity_cursor" not in event
                 for event in snapshot["events"]
             )
         )
@@ -7953,7 +7962,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         code_calls = 0
         identity_calls = 0
         block_deadlines: list[float] = []
-        row_deadlines: list[float] = []
+        lookup_deadlines: list[float] = []
+        identity_deadlines: list[float] = []
         phase = {"value": 1}
 
         def rpc(
@@ -7968,9 +7978,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 if phase["value"] == 1:
                     block_deadlines.append(deadline)
                 return {"hash": "0x" + "a" * 64}
-            if phase["value"] == 1:
-                row_deadlines.append(deadline)
             if method == "eth_getCode":
+                if phase["value"] == 1:
+                    identity_deadlines.append(deadline)
                 code_calls += 1
                 return "0x6000"
             self.assertEqual(method, "eth_call")
@@ -7978,6 +7988,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             to = str(call["to"])
             data = str(call["data"])
             if to == fixture.factory:
+                if phase["value"] == 1:
+                    lookup_deadlines.append(deadline)
                 fee = int(data[-64:], 16)
                 get_pool_calls[fee] += 1
                 if fee == 3000 and phase["value"] == 1:
@@ -7987,6 +7999,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 if fee in {100, 3000}:
                     return "0x" + "0" * 64
                 return fixture.address_result(fixture.pool)
+            if phase["value"] == 1:
+                identity_deadlines.append(deadline)
             identity_calls += 1
             return fixture.pool_identity_result(data, 500)
 
@@ -8014,7 +8028,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(code_calls, 1)
         self.assertEqual(identity_calls, 4)
         self.assertEqual(len(block_deadlines), 2)
-        self.assertLess(max(row_deadlines), block_deadlines[-1])
+        self.assertLess(max(lookup_deadlines), min(identity_deadlines))
+        self.assertLess(max(identity_deadlines), block_deadlines[-1])
         self.assertNotIn(
             "opening_v3_factory_matrix_cycle_rows",
             json.dumps(first, sort_keys=True),
@@ -8022,6 +8037,96 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertNotIn(
             "opening_v3_factory_matrix_cycle_rows",
             json.dumps(second, sort_keys=True),
+        )
+
+    def test_v3_cycle_rows_lookup_all_before_slow_pool_identity(
+        self,
+    ) -> None:
+        fixture = _V3CycleFixture((100, 500, 3000, 10000))
+        pools = {
+            100: fixture.pool,
+            500: "0x" + "5" * 40,
+            3000: "0x" + "6" * 40,
+        }
+        get_pool_calls = {100: 0, 500: 0, 3000: 0, 10000: 0}
+        phase = {"value": 1}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            if method == "eth_getCode":
+                return "0x6000"
+            self.assertEqual(method, "eth_call")
+            call = params[0]
+            to = str(call["to"])
+            data = str(call["data"])
+            if to == fixture.factory:
+                fee = int(data[-64:], 16)
+                get_pool_calls[fee] += 1
+                pool = pools.get(fee)
+                return (
+                    fixture.address_result(pool)
+                    if pool
+                    else "0x" + "0" * 64
+                )
+            fee = next(
+                candidate_fee
+                for candidate_fee, candidate_pool in pools.items()
+                if to == candidate_pool
+            )
+            if (
+                (fee == 100 and phase["value"] == 1)
+                or (fee == 500 and phase["value"] in {2, 3})
+            ):
+                raise fixture.opening.RpcDeadlineExceeded(
+                    "fixture identity deadline"
+                )
+            return fixture.pool_identity_result(data, fee)
+
+        results: list[dict[str, object]] = []
+        cached_rows: list[dict[int, object]] = []
+        with fixture.patches(rpc):
+            for current_phase in (1, 2, 3, 4):
+                phase["value"] = current_phase
+                results.append(
+                    fixture.opening.supported_v3_pool_scope(
+                        fixture.event(), 200
+                    )
+                )
+                raw = next(iter(fixture.row_cache.values()))
+                cached_rows.append(
+                    {
+                        key[1]: copy.deepcopy(value)
+                        for key, value in raw["rows"].items()
+                    }
+                )
+
+        self.assertFalse(results[0]["complete"])
+        self.assertFalse(results[1]["complete"])
+        self.assertFalse(results[2]["complete"])
+        self.assertTrue(results[3]["complete"])
+        self.assertTrue(results[0]["deadline_exceeded"])
+        self.assertTrue(results[1]["deadline_exceeded"])
+        self.assertTrue(results[2]["deadline_exceeded"])
+        self.assertTrue(results[0]["snapshot_coherent"])
+        self.assertTrue(results[1]["snapshot_coherent"])
+        self.assertEqual(
+            get_pool_calls,
+            {100: 3, 500: 4, 3000: 3, 10000: 1},
+        )
+        self.assertEqual(len(results[3]["pools"]), 3)
+        self.assertEqual(cached_rows[0], {10000: None})
+        self.assertEqual(cached_rows[1], {10000: None})
+        self.assertEqual(set(cached_rows[2]), {100, 3000, 10000})
+        self.assertNotIn(500, cached_rows[2])
+        self.assertEqual(
+            set(cached_rows[3]),
+            {100, 500, 3000, 10000},
         )
 
     def test_v3_cycle_rows_cross_history_and_recompute_conflict(
@@ -8190,6 +8295,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         fixture = _V3CycleFixture()
         get_pool_calls = {100: 0, 500: 0}
         active_fee = {"value": 0}
+        pending_fees: list[int] = []
 
         def rpc(
             _chain: str,
@@ -8200,15 +8306,16 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             if method == "eth_getBlockByNumber":
                 return {"hash": "0x" + "a" * 64}
             if method == "eth_getCode":
+                active_fee["value"] = pending_fees.pop(0)
                 return "0x6000"
             call = params[0]
             data = str(call["data"])
             if call["to"] == fixture.factory:
                 fee = int(data[-64:], 16)
-                active_fee["value"] = fee
                 get_pool_calls[fee] += 1
                 if fee == 500 and get_pool_calls[fee] == 1:
                     raise RuntimeError("provider unavailable")
+                pending_fees.append(fee)
                 return fixture.address_result(fixture.pool)
             return fixture.pool_identity_result(
                 data, active_fee["value"]
@@ -27599,7 +27706,28 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(selected["seed"], earlier)
         self.assertEqual(
             selected["conflict_detail"],
-            fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+            {
+                **fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                "cross_progress_source": "standalone",
+                "latest_gap_blocks": 10,
+                "live_boundary_shortfall_blocks": 0,
+                "reconciliation_relation": "dominates",
+            },
+        )
+
+        reversed_selected = fast.select_liquidity_seed(later, earlier)
+        self.assertFalse(reversed_selected["conflict"])
+        self.assertTrue(reversed_selected["progress_recovery"])
+        self.assertEqual(reversed_selected["source"], "holder")
+        self.assertEqual(
+            reversed_selected["conflict_detail"],
+            {
+                **fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                "cross_progress_source": "holder",
+                "latest_gap_blocks": 10,
+                "live_boundary_shortfall_blocks": 0,
+                "reconciliation_relation": "dominates",
+            },
         )
 
         empty_reconciliation = earlier["reconciliation"]
@@ -27654,6 +27782,52 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                     selected["conflict_reason"],
                     reason,
                 )
+
+        boundary_blocked = fast.select_liquidity_seed(
+            {**earlier, "catchup_live_from_block": 130},
+            later,
+        )
+        self.assertEqual(
+            boundary_blocked["conflict_detail"],
+            {
+                **fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                "checkpoint_relation": "progress_incomparable",
+                "cross_progress_source": "standalone",
+                "latest_gap_blocks": 10,
+                "live_boundary_shortfall_blocks": 1,
+                "reconciliation_relation": "not_evaluated",
+            },
+        )
+
+        reconciliation_blocked = fast.select_liquidity_seed(
+            earlier,
+            {**later, "reconciliation": pending},
+        )
+        self.assertEqual(
+            reconciliation_blocked["conflict_detail"][
+                "reconciliation_relation"
+            ],
+            "not_dominant",
+        )
+        reconciliation_invalid = fast.select_liquidity_seed(
+            {**earlier, "reconciliation": duplicate},
+            later,
+        )
+        self.assertEqual(
+            reconciliation_invalid["conflict_detail"][
+                "reconciliation_relation"
+            ],
+            "invalid",
+        )
+
+        unrelated = fast.select_liquidity_seed(
+            earlier,
+            {**later, "scope_hash": "b" * 64},
+        )
+        self.assertEqual(
+            unrelated["conflict_detail"],
+            fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+        )
 
         retry_earlier = {
             key: copy.deepcopy(value)
@@ -27855,6 +28029,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             "missing_previous_pending_count",
             "missing_previous_completed_count",
             "missing_previous_deferred_count",
+            "cross_progress_source",
+            "latest_gap_blocks",
+            "live_boundary_shortfall_blocks",
+            "reconciliation_relation",
         )
 
         def expected(
@@ -27862,7 +28040,20 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             shape: str = "not_applicable",
             counts: tuple[int, int, int] = (0, 0, 0),
         ) -> dict[str, object]:
-            return dict(zip(detail_keys, (relation, shape, *counts)))
+            return dict(
+                zip(
+                    detail_keys,
+                    (
+                        relation,
+                        shape,
+                        *counts,
+                        "none",
+                        None,
+                        None,
+                        "not_applicable",
+                    ),
+                )
+            )
 
         def reconciliation(
             *,
@@ -28006,9 +28197,68 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             seed_conflict=True,
             seed_conflict_detail=rollover_detail,
         )
-        self.assertEqual(len(diagnostic), 19)
+        self.assertEqual(
+            set(diagnostic),
+            {
+                "standalone_seed_status",
+                "holder_seed_status",
+                "scope_seed_source",
+                "input_state_kind",
+                "next_state_kind",
+                "input_retry_window_blocks",
+                "next_retry_window_blocks",
+                "deadline_exceeded",
+                "selected_window_complete",
+                "requested_window_complete",
+                "query_scope_complete",
+                "provider_status",
+                "coverage_status",
+                "reason_code",
+            }
+            | set(fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT),
+        )
         for key, value in rollover_detail.items():
             self.assertEqual(diagnostic[key], value)
+
+        valid_cross_detail = {
+            **fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+            "cross_progress_source": "standalone",
+            "latest_gap_blocks": 10,
+            "live_boundary_shortfall_blocks": 0,
+            "reconciliation_relation": "dominates",
+        }
+        for key, invalid_value in (
+            ("cross_progress_source", "unknown"),
+            ("latest_gap_blocks", True),
+            ("latest_gap_blocks", -1),
+            ("live_boundary_shortfall_blocks", False),
+            ("live_boundary_shortfall_blocks", -1),
+            ("reconciliation_relation", "unknown"),
+        ):
+            with self.subTest(key=key, invalid_value=invalid_value):
+                self.assertEqual(
+                    fast.strict_liquidity_seed_conflict_detail(
+                        {**valid_cross_detail, key: invalid_value}
+                    ),
+                    fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                )
+        for invalid_fields in (
+            {"latest_gap_blocks": 0},
+            {"live_boundary_shortfall_blocks": None},
+            {"live_boundary_shortfall_blocks": 1},
+            {"checkpoint_relation": "same_checkpoint"},
+            {"checkpoint_relation": "progress_incomparable"},
+            {"reconciliation_relation": "not_dominant"},
+            {"reconciliation_conflict_shape": "mixed"},
+            {"missing_previous_pending_count": 1},
+        ):
+            with self.subTest(invalid_fields=invalid_fields):
+                self.assertEqual(
+                    fast.strict_liquidity_seed_conflict_detail(
+                        {**valid_cross_detail, **invalid_fields}
+                    ),
+                    fast.LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT,
+                )
 
     def test_fast_liquidity_seed_conflict_reason_is_exact(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
@@ -29161,6 +29411,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 "missing_previous_pending_count",
                 "missing_previous_completed_count",
                 "missing_previous_deferred_count",
+                "cross_progress_source",
+                "latest_gap_blocks",
+                "live_boundary_shortfall_blocks",
+                "reconciliation_relation",
             },
         )
         self.assertEqual(diagnostic["standalone_seed_status"], "valid")
@@ -29180,6 +29434,16 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(diagnostic["missing_previous_pending_count"], 0)
         self.assertEqual(diagnostic["missing_previous_completed_count"], 0)
         self.assertEqual(diagnostic["missing_previous_deferred_count"], 0)
+        self.assertEqual(
+            diagnostic["cross_progress_source"], "standalone"
+        )
+        self.assertEqual(diagnostic["latest_gap_blocks"], 10)
+        self.assertEqual(
+            diagnostic["live_boundary_shortfall_blocks"], 0
+        )
+        self.assertEqual(
+            diagnostic["reconciliation_relation"], "dominates"
+        )
         self.assertTrue(diagnostic["deadline_exceeded"] is False)
         self.assertTrue(diagnostic["selected_window_complete"] is True)
         self.assertTrue(diagnostic["requested_window_complete"] is True)
@@ -29194,12 +29458,20 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         )
         self.assertEqual(reorg["_next_state"], fast_payload)
         reorg_diagnostic = reorg["projects"][0]["runtime_diagnostic"]
-        self.assertEqual(len(reorg_diagnostic), 19)
+        self.assertEqual(set(reorg_diagnostic), set(diagnostic))
         self.assertEqual(
             reorg_diagnostic["reason_code"],
             "seed_conflict_checkpoint_hash",
         )
         self.assertEqual(reorg_diagnostic["coverage_status"], "invalid")
+        self.assertEqual(reorg_diagnostic["cross_progress_source"], "none")
+        self.assertIsNone(reorg_diagnostic["latest_gap_blocks"])
+        self.assertIsNone(
+            reorg_diagnostic["live_boundary_shortfall_blocks"]
+        )
+        self.assertEqual(
+            reorg_diagnostic["reconciliation_relation"], "not_applicable"
+        )
 
     def test_fast_liquidity_delivery_failure_retains_checkpoint(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
