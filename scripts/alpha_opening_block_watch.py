@@ -610,7 +610,71 @@ def strict_complete_v3_cycle_scope(
     )
 
 
-def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any]:
+def strict_v3_cycle_row_cache(
+    value: Any,
+    chain: str,
+    token: str,
+    configuration_hash: str,
+    latest: int,
+    query_keys: set[tuple[str, int, str]],
+) -> dict[str, Any] | None:
+    if not (
+        isinstance(value, dict)
+        and set(value) == {
+            "schema", "chain", "target_token", "configuration_hash",
+            "as_of_block", "as_of_block_hash", "expected_query_count",
+            "rows",
+        }
+        and value.get("schema")
+        == "opening_v3_factory_matrix_cycle_rows.v1"
+        and value.get("chain") == chain
+        and value.get("target_token") == token
+        and value.get("configuration_hash") == configuration_hash
+        and type(value.get("as_of_block")) is int
+        and value.get("as_of_block") == latest
+        and strict_block_hash(value.get("as_of_block_hash"))
+        and type(value.get("expected_query_count")) is int
+        and value.get("expected_query_count") == len(query_keys)
+        and isinstance(value.get("rows"), dict)
+    ):
+        return None
+    rows = value["rows"]
+    if not set(rows).issubset(query_keys):
+        return None
+    pool_addresses: set[str] = set()
+    for query_key, row in rows.items():
+        factory, fee, quote = query_key
+        if row is None:
+            continue
+        if not (
+            isinstance(row, tuple)
+            and len(row) == 5
+            and is_address(row[0])
+            and row[0] == norm(row[0])
+            and row[0] != ZERO
+            and row[1] == factory
+            and is_address(row[2])
+            and is_address(row[3])
+            and row[2] == norm(row[2])
+            and row[3] == norm(row[3])
+            and {row[2], row[3]}
+            == {token, quote}
+            and type(row[4]) is int
+            and row[4] == fee
+        ):
+            return None
+        if row[0] in pool_addresses:
+            return None
+        pool_addresses.add(row[0])
+    return copy.deepcopy(value)
+
+
+def supported_v3_pool_scope(
+    event: dict[str, Any],
+    latest: int,
+    *,
+    cycle_rows_only: bool = False,
+) -> dict[str, Any]:
     cached = event.get("opening_v3_pool_scope") or {}
     last_verified_scope = (
         cached
@@ -706,6 +770,11 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         if opening_block > 0
         else latest
     )
+    query_keys = {
+        (factory, fee, quote)
+        for factory, _factory_row, fee, quote in fee_rows
+    }
+    row_cache_enabled = len(fee_rows) == len(query_keys)
     last_verified_pool_identities = {
         (
             norm(row.get("address")),
@@ -739,6 +808,42 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         latest,
         last_verified_pool_identity_fingerprint,
     )
+    row_cache = event.get("_opening_snapshot_v3_row_cache")
+    row_cache_key = (
+        "opening_v3_factory_matrix_cycle_rows.v1",
+        chain,
+        token,
+        configuration_hash,
+        latest,
+    )
+    row_cache_value = (
+        row_cache.get(row_cache_key)
+        if isinstance(row_cache, dict)
+        else None
+    )
+    cached_cycle_rows = (
+        strict_v3_cycle_row_cache(
+            row_cache_value,
+            chain,
+            token,
+            configuration_hash,
+            latest,
+            query_keys,
+        )
+        if row_cache_enabled
+        else None
+    )
+    if (
+        isinstance(row_cache, dict)
+        and row_cache_key in row_cache
+        and cached_cycle_rows is None
+    ):
+        row_cache.pop(row_cache_key, None)
+    if cycle_rows_only and (
+        cached_cycle_rows is None
+        or len(cached_cycle_rows["rows"]) != len(fee_rows)
+    ):
+        return copy.deepcopy(cached)
     cycle_cached = (
         cycle_cache.get(cycle_cache_key)
         if isinstance(cycle_cache, dict)
@@ -750,18 +855,29 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     budget_seconds = int(
         os.environ.get("ALPHA_OPENING_FACTORY_MATRIX_BUDGET_SECONDS", "45")
     )
-    matrix_deadline = time.monotonic() + max(1, budget_seconds)
+    matrix_started_at = time.monotonic()
+    matrix_deadline = matrix_started_at + max(1, budget_seconds)
     if TRACE_DEADLINE_AT is not None:
         matrix_deadline = min(matrix_deadline, TRACE_DEADLINE_AT)
+    matrix_seconds = max(0.0, matrix_deadline - matrix_started_at)
+    close_reserve_seconds = min(
+        matrix_seconds,
+        min(10.0, max(1.0, matrix_seconds / 5.0)),
+    )
+    row_deadline = matrix_deadline - close_reserve_seconds
 
-    def matrix_rpc(method: str, params: list[Any]) -> Any:
+    def matrix_rpc(
+        method: str,
+        params: list[Any],
+        deadline: float = matrix_deadline,
+    ) -> Any:
         try:
             return rpc_call(
                 event["chain"],
                 method,
                 params,
                 timeout=bounded_trace_timeout(timeout),
-                deadline=matrix_deadline,
+                deadline=deadline,
             )
         except RpcDeadlineExceeded:
             raise OpeningTraceDeadlineExceeded(
@@ -878,6 +994,9 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     attempted = 0
     deadline_exceeded = False
     initial_block_hash = ""
+    successful_rows: dict[
+        tuple[str, int, str], tuple[str, str, str, str, int] | None
+    ] = {}
     if fee_rows:
         try:
             initial_block = matrix_rpc(
@@ -896,69 +1015,92 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             provider_errors += 1
             provider_error_stages.add("snapshot_open")
 
+    if cached_cycle_rows is not None:
+        if (
+            initial_block_hash
+            and initial_block_hash
+            == norm(cached_cycle_rows.get("as_of_block_hash"))
+        ):
+            successful_rows = cached_cycle_rows["rows"]
+        elif isinstance(row_cache, dict):
+            row_cache.pop(row_cache_key, None)
+    if cycle_rows_only and len(successful_rows) != len(fee_rows):
+        return copy.deepcopy(cached)
     for factory, factory_row, fee, quote in fee_rows:
         attempted += 1
-        data = (
-            V3_GET_POOL_SELECTOR
-            + encode_address_word(token)
-            + encode_address_word(quote)
-            + encode_uint(fee)
-        )
+        query_key = (factory, fee, quote)
         provider_stage = "factory_lookup"
         try:
-            state, pool = strict_abi_address_return(
-                matrix_rpc(
-                    "eth_call",
-                    [{"to": factory, "data": data}, block_tag],
+            if row_cache_enabled and query_key in successful_rows:
+                cached_row = successful_rows[query_key]
+                if cached_row is None:
+                    continue
+                pool, _factory, token0, token1, _fee = cached_row
+            else:
+                data = (
+                    V3_GET_POOL_SELECTOR
+                    + encode_address_word(token)
+                    + encode_address_word(quote)
+                    + encode_uint(fee)
                 )
-            )
-            if state == "zero":
-                continue
-            if state != "address":
-                response_validation_errors += 1
-                continue
-
-            def pool_call(selector: str) -> Any:
-                return matrix_rpc(
-                    "eth_call",
-                    [{"to": pool, "data": selector}, block_tag],
+                state, pool = strict_abi_address_return(
+                    matrix_rpc(
+                        "eth_call",
+                        [{"to": factory, "data": data}, block_tag],
+                        row_deadline,
+                    )
                 )
+                if state == "zero":
+                    if row_cache_enabled:
+                        successful_rows[query_key] = None
+                    continue
+                if state != "address":
+                    response_validation_errors += 1
+                    continue
 
-            provider_stage = "pool_code"
-            code = matrix_rpc(
-                "eth_getCode",
-                [pool, block_tag],
-            )
-            provider_stage = "pool_identity"
-            token0_state, token0 = strict_abi_address_return(
-                pool_call("0x0dfe1681")
-            )
-            token1_state, token1 = strict_abi_address_return(
-                pool_call("0xd21220a7")
-            )
-            factory_state, actual_factory = strict_abi_address_return(
-                pool_call("0xc45a0155")
-            )
-            actual_fee = strict_abi_uint_return(
-                pool_call("0xddca3f43"),
-                24,
-            )
-            if (
-                not has_runtime_bytecode(code)
-                or token0_state != "address"
-                or token1_state != "address"
-                or factory_state != "address"
-                or actual_fee is None
-            ):
-                response_validation_errors += 1
-                continue
-            if (
-                {token0, token1} != {token, quote}
-                or actual_factory != factory
-                or actual_fee != fee
-            ):
-                identity_mismatches += 1
-                continue
+                def pool_call(selector: str) -> Any:
+                    return matrix_rpc(
+                        "eth_call",
+                        [{"to": pool, "data": selector}, block_tag],
+                        row_deadline,
+                    )
+
+                provider_stage = "pool_code"
+                code = matrix_rpc(
+                    "eth_getCode",
+                    [pool, block_tag],
+                    row_deadline,
+                )
+                provider_stage = "pool_identity"
+                token0_state, token0 = strict_abi_address_return(
+                    pool_call("0x0dfe1681")
+                )
+                token1_state, token1 = strict_abi_address_return(
+                    pool_call("0xd21220a7")
+                )
+                factory_state, actual_factory = strict_abi_address_return(
+                    pool_call("0xc45a0155")
+                )
+                actual_fee = strict_abi_uint_return(
+                    pool_call("0xddca3f43"),
+                    24,
+                )
+                if (
+                    not has_runtime_bytecode(code)
+                    or token0_state != "address"
+                    or token1_state != "address"
+                    or factory_state != "address"
+                    or actual_fee is None
+                ):
+                    response_validation_errors += 1
+                    continue
+                if (
+                    {token0, token1} != {token, quote}
+                    or actual_factory != factory
+                    or actual_fee != fee
+                ):
+                    identity_mismatches += 1
+                    continue
             pool_row = {
                 "address": pool,
                 "factory": factory,
@@ -984,6 +1126,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                         "quote_decimals": quote_decimals,
                     }
                 )
+            if row_cache_enabled:
+                successful_rows[query_key] = (
+                    pool, factory, token0, token1, fee
+                )
             pools[pool] = pool_row
         except OpeningTraceDeadlineExceeded:
             deadline_exceeded = True
@@ -991,9 +1137,21 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         except Exception:
             provider_errors += 1
             provider_error_stages.add(provider_stage)
+    pool_addresses = [
+        row[0]
+        for row in successful_rows.values()
+        if row is not None
+    ]
+    duplicate_pool_count = len(pool_addresses) - len(set(pool_addresses))
+    if duplicate_pool_count:
+        identity_mismatches += duplicate_pool_count
+        successful_rows.clear()
+        pools.clear()
+        if isinstance(row_cache, dict):
+            row_cache.pop(row_cache_key, None)
     as_of_block_hash = ""
     snapshot_coherent = False
-    if fee_rows and attempted == len(fee_rows):
+    if fee_rows and initial_block_hash:
         try:
             as_of_block = matrix_rpc(
                 "eth_getBlockByNumber",
@@ -1005,8 +1163,6 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 )
             if not as_of_block_hash:
                 response_validation_errors += 1
-            elif not initial_block_hash:
-                pass
             elif as_of_block_hash != initial_block_hash:
                 snapshot_errors += 1
             else:
@@ -1016,6 +1172,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         except Exception:
             provider_errors += 1
             provider_error_stages.add("snapshot_close")
+    if not snapshot_coherent and isinstance(row_cache, dict):
+        row_cache.pop(row_cache_key, None)
+    if cycle_rows_only and not snapshot_coherent:
+        return copy.deepcopy(cached)
     if not snapshot_coherent:
         pools.clear()
     current_identities = {
@@ -1050,6 +1210,10 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     complete = bool(
         fee_rows
         and attempted == len(fee_rows)
+        and (
+            not row_cache_enabled
+            or len(successful_rows) == len(fee_rows)
+        )
         and errors == 0
         and not deadline_exceeded
     )
@@ -1101,6 +1265,22 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             }
         )
     if (
+        isinstance(row_cache, dict)
+        and row_cache_enabled
+        and snapshot_coherent
+        and successful_rows
+    ):
+        row_cache[row_cache_key] = {
+            "schema": "opening_v3_factory_matrix_cycle_rows.v1",
+            "chain": chain,
+            "target_token": token,
+            "configuration_hash": configuration_hash,
+            "as_of_block": latest,
+            "as_of_block_hash": as_of_block_hash,
+            "expected_query_count": len(fee_rows),
+            "rows": copy.deepcopy(successful_rows),
+        }
+    if (
         isinstance(cycle_cache, dict)
         and strict_complete_v3_cycle_scope(
             result,
@@ -1111,6 +1291,34 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
     ):
         cycle_cache[cycle_cache_key] = copy.deepcopy(result)
     return result
+
+
+def promote_complete_v3_cycle_rows(event: dict[str, Any]) -> None:
+    current = event.get("opening_v3_pool_scope")
+    if not (
+        isinstance(current, dict)
+        and current.get("complete") is not True
+        and type(current.get("expected_query_count")) is int
+        and current.get("expected_query_count") > 0
+    ):
+        return
+    try:
+        latest = int(event["latest_block"])
+    except (KeyError, TypeError, ValueError):
+        return
+    try:
+        promoted = supported_v3_pool_scope(
+            event,
+            latest,
+            cycle_rows_only=True,
+        )
+    except Exception:
+        return
+    if (
+        promoted.get("complete") is True
+        or promoted.get("status") == "factory_matrix_scope_conflict"
+    ):
+        event["opening_v3_pool_scope"] = copy.deepcopy(promoted)
 
 
 def strict_v4_pool_key_return(data: Any) -> dict[str, Any] | None:
@@ -6874,11 +7082,13 @@ def build_snapshot() -> dict[str, Any]:
         return deadline_snapshot_from_previous(previous_snapshot)
     snapshot_log_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     snapshot_v3_scope_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    snapshot_v3_row_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     for event in current_events:
         event["_opening_snapshot_log_cache"] = snapshot_log_cache
         event["_opening_snapshot_v3_scope_cache"] = (
             snapshot_v3_scope_cache
         )
+        event["_opening_snapshot_v3_row_cache"] = snapshot_v3_row_cache
     current_identity_counts: dict[
         tuple[str, str, int, str, str, str],
         int,
@@ -7001,6 +7211,9 @@ def build_snapshot() -> dict[str, Any]:
             prepared_scopes[id(event)] = exc
         finally:
             TRACE_DEADLINE_AT = overall_deadline
+
+    for event, _previous in scope_targets:
+        promote_complete_v3_cycle_rows(event)
 
     build_target_count = sum(
         1
@@ -7175,6 +7388,7 @@ def build_snapshot() -> dict[str, Any]:
                     )
         event.pop("_opening_snapshot_log_cache", None)
         event.pop("_opening_snapshot_v3_scope_cache", None)
+        event.pop("_opening_snapshot_v3_row_cache", None)
         events.append(event)
     alerts = [key for event in events for key in event_alert_keys(event)]
     seen = set(read_json(SEEN_PATH, []))

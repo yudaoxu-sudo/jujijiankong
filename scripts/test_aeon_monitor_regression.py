@@ -51,6 +51,77 @@ def complete_project_contract(
     }
 
 
+class _V3CycleFixture:
+    def __init__(self, fees: tuple[int, ...] = (100, 500)) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        self.opening = opening
+        self.token, self.quote, self.factory, self.pool = (
+            "0x" + digit * 40 for digit in "1234"
+        )
+        self.labels = {
+            self.quote: {
+                "class": "quote_token",
+                "symbol": "QUOTE",
+                "decimals": 18,
+            },
+            self.factory: {
+                "class": "v3_factory",
+                "protocol": "test_v3",
+                "fee_tiers": list(fees),
+            },
+        }
+        self.scope_cache: dict[object, object] = {}
+        self.row_cache: dict[object, object] = {}
+
+    @staticmethod
+    def address_result(value: str) -> str:
+        return "0x" + "0" * 24 + value[2:]
+
+    def pool_identity_result(self, data: str, fee: int) -> str:
+        if data == "0x0dfe1681":
+            return self.address_result(self.token)
+        if data == "0xd21220a7":
+            return self.address_result(self.quote)
+        if data == "0xc45a0155":
+            return self.address_result(self.factory)
+        return "0x" + f"{fee:064x}"
+
+    def event(
+        self,
+        previous: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        event: dict[str, object] = {
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "token": {"address": self.token},
+            "quote": {"address": self.quote},
+            "_opening_snapshot_v3_scope_cache": self.scope_cache,
+            "_opening_snapshot_v3_row_cache": self.row_cache,
+        }
+        if previous is not None:
+            event["opening_v3_pool_scope"] = previous
+        return event
+
+    def patches(self, rpc: object) -> ExitStack:
+        stack = ExitStack()
+        stack.enter_context(
+            mock.patch.object(
+                self.opening,
+                "global_address_labels",
+                return_value=self.labels,
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(self.opening, "rpc_call", side_effect=rpc)
+        )
+        stack.enter_context(
+            mock.patch.object(self.opening, "TRACE_DEADLINE_AT", None)
+        )
+        return stack
+
+
 class AeonSignalParsingRegressionTests(unittest.TestCase):
     def test_runtime_replay_deadline_retry_and_blocked_artifact_are_bounded(
         self,
@@ -4482,6 +4553,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "start_time_utc": f"2026-07-30T0{index}:00:00+00:00",
                 "pool_id": f"pool-{index}",
                 "_opening_snapshot_v3_scope_cache": {"stale": {}},
+                "_opening_snapshot_v3_row_cache": {"stale": {}},
             }
             for index, (symbol, digit) in enumerate(
                 (("FIRST", "1"), ("SECOND", "2")),
@@ -4557,6 +4629,12 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertTrue(
             all(
                 "_opening_snapshot_v3_scope_cache" not in event
+                for event in snapshot["events"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "_opening_snapshot_v3_row_cache" not in event
                 for event in snapshot["events"]
             )
         )
@@ -7866,6 +7944,373 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(get_pool_calls, 1)
         self.assertEqual(block_calls, 4)
         self.assertEqual(len(cycle_cache), 1)
+
+    def test_v3_cycle_rows_reuse_zero_and_verified_pool_then_promote(
+        self,
+    ) -> None:
+        fixture = _V3CycleFixture((100, 500, 3000))
+        get_pool_calls = {100: 0, 500: 0, 3000: 0}
+        code_calls = 0
+        identity_calls = 0
+        block_deadlines: list[float] = []
+        row_deadlines: list[float] = []
+        phase = {"value": 1}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **kwargs: object,
+        ) -> object:
+            nonlocal code_calls, identity_calls
+            deadline = float(kwargs["deadline"])
+            if method == "eth_getBlockByNumber":
+                if phase["value"] == 1:
+                    block_deadlines.append(deadline)
+                return {"hash": "0x" + "a" * 64}
+            if phase["value"] == 1:
+                row_deadlines.append(deadline)
+            if method == "eth_getCode":
+                code_calls += 1
+                return "0x6000"
+            self.assertEqual(method, "eth_call")
+            call = params[0]
+            to = str(call["to"])
+            data = str(call["data"])
+            if to == fixture.factory:
+                fee = int(data[-64:], 16)
+                get_pool_calls[fee] += 1
+                if fee == 3000 and phase["value"] == 1:
+                    raise fixture.opening.RpcDeadlineExceeded(
+                        "fixture row deadline"
+                    )
+                if fee in {100, 3000}:
+                    return "0x" + "0" * 64
+                return fixture.address_result(fixture.pool)
+            identity_calls += 1
+            return fixture.pool_identity_result(data, 500)
+
+        first_event = fixture.event()
+        second_event = fixture.event()
+        with fixture.patches(rpc):
+            first = fixture.opening.supported_v3_pool_scope(
+                first_event, 200
+            )
+            first_event["opening_v3_pool_scope"] = copy.deepcopy(first)
+            phase["value"] = 2
+            second = fixture.opening.supported_v3_pool_scope(
+                second_event, 200
+            )
+            fixture.opening.promote_complete_v3_cycle_rows(first_event)
+
+        self.assertFalse(first["complete"])
+        self.assertTrue(first["deadline_exceeded"])
+        self.assertTrue(first["snapshot_coherent"])
+        self.assertTrue(second["complete"])
+        self.assertTrue(
+            first_event["opening_v3_pool_scope"]["complete"]
+        )
+        self.assertEqual(get_pool_calls, {100: 1, 500: 1, 3000: 2})
+        self.assertEqual(code_calls, 1)
+        self.assertEqual(identity_calls, 4)
+        self.assertEqual(len(block_deadlines), 2)
+        self.assertLess(max(row_deadlines), block_deadlines[-1])
+        self.assertNotIn(
+            "opening_v3_factory_matrix_cycle_rows",
+            json.dumps(first, sort_keys=True),
+        )
+        self.assertNotIn(
+            "opening_v3_factory_matrix_cycle_rows",
+            json.dumps(second, sort_keys=True),
+        )
+
+    def test_v3_cycle_rows_cross_history_and_recompute_conflict(
+        self,
+    ) -> None:
+        fixture = _V3CycleFixture()
+        calls = {100: 0, 500: 0}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            self.assertEqual(method, "eth_call")
+            data = str(params[0]["data"])
+            fee = int(data[-64:], 16)
+            calls[fee] += 1
+            if fee == 500 and calls[fee] == 1:
+                raise RuntimeError("provider unavailable")
+            return "0x" + "0" * 64
+
+        previous = {
+            "schema": "opening_v3_factory_matrix.v2",
+            "complete": True,
+            "pools": [
+                {
+                    "address": fixture.pool,
+                    "factory": fixture.factory,
+                    "token0": fixture.token,
+                    "token1": fixture.quote,
+                    "fee": 500,
+                }
+            ],
+        }
+        history_event = fixture.event(previous)
+        current_event = fixture.event()
+        with fixture.patches(rpc):
+            partial = fixture.opening.supported_v3_pool_scope(
+                history_event,
+                200,
+            )
+            history_event["opening_v3_pool_scope"] = copy.deepcopy(
+                partial
+            )
+            current = fixture.opening.supported_v3_pool_scope(
+                current_event,
+                200,
+            )
+            fixture.opening.promote_complete_v3_cycle_rows(history_event)
+
+        self.assertFalse(partial["complete"])
+        self.assertTrue(current["complete"])
+        promoted = history_event["opening_v3_pool_scope"]
+        self.assertFalse(promoted["complete"])
+        self.assertEqual(
+            promoted["status"],
+            "factory_matrix_scope_conflict",
+        )
+        self.assertEqual(promoted["scope_conflict_count"], 1)
+        self.assertEqual(calls, {100: 1, 500: 2})
+
+    def test_v3_cycle_row_promotion_rejects_bad_cache_without_row_rpc(
+        self,
+    ) -> None:
+        for mutation, expected_block_calls in (
+            ("reorg", 2),
+            ("zero_address", 0),
+            ("extra_field", 0),
+            ("top_level_none", 0),
+            ("close_provider", 2),
+            ("close_deadline", 2),
+        ):
+            fixture = _V3CycleFixture()
+            calls = {100: 0, 500: 0}
+            block_hash = {"value": "a"}
+            block_calls = 0
+            block_failure = {"at": 0, "deadline": False}
+
+            def rpc(
+                _chain: str,
+                method: str,
+                params: list[object],
+                **_kwargs: object,
+            ) -> object:
+                nonlocal block_calls
+                if method == "eth_getBlockByNumber":
+                    block_calls += 1
+                    if block_calls == block_failure["at"]:
+                        if block_failure["deadline"]:
+                            raise fixture.opening.RpcDeadlineExceeded(
+                                "fixture close deadline"
+                            )
+                        raise RuntimeError("fixture close unavailable")
+                    return {
+                        "hash": "0x" + block_hash["value"] * 64
+                    }
+                data = str(params[0]["data"])
+                fee = int(data[-64:], 16)
+                calls[fee] += 1
+                if fee == 500 and calls[fee] == 1:
+                    raise RuntimeError("provider unavailable")
+                return "0x" + "0" * 64
+
+            first_event = fixture.event()
+            with self.subTest(mutation=mutation), fixture.patches(rpc):
+                first = fixture.opening.supported_v3_pool_scope(
+                    first_event, 200
+                )
+                self.assertFalse(first["complete"])
+                first_event["opening_v3_pool_scope"] = copy.deepcopy(
+                    first
+                )
+                second = fixture.opening.supported_v3_pool_scope(
+                    fixture.event(), 200
+                )
+                self.assertTrue(second["complete"])
+                row_calls_before = copy.deepcopy(calls)
+                block_calls_before = block_calls
+                raw = next(
+                    value
+                    for value in fixture.row_cache.values()
+                    if value.get("schema")
+                    == "opening_v3_factory_matrix_cycle_rows.v1"
+                )
+                if mutation == "top_level_none":
+                    fixture.row_cache[next(iter(fixture.row_cache))] = None
+                elif mutation in {"zero_address", "extra_field"}:
+                    key = next(iter(raw["rows"]))
+                    forged = (
+                        fixture.opening.ZERO
+                        if mutation == "zero_address"
+                        else fixture.pool,
+                        key[0],
+                        fixture.token,
+                        fixture.quote,
+                        key[1],
+                    )
+                    raw["rows"][key] = (
+                        forged + ("poison",)
+                        if mutation == "extra_field"
+                        else forged
+                    )
+                elif mutation == "reorg":
+                    block_hash["value"] = "b"
+                else:
+                    fixture.scope_cache.clear()
+                    block_failure["at"] = block_calls + 2
+                    block_failure["deadline"] = (
+                        mutation == "close_deadline"
+                    )
+                fixture.opening.promote_complete_v3_cycle_rows(
+                    first_event
+                )
+            self.assertEqual(calls, row_calls_before)
+            self.assertEqual(
+                block_calls - block_calls_before,
+                expected_block_calls,
+            )
+            self.assertEqual(first_event["opening_v3_pool_scope"], first)
+            self.assertEqual(fixture.row_cache, {})
+
+    def test_v3_cycle_rows_reject_duplicate_pool_identity(self) -> None:
+        fixture = _V3CycleFixture()
+        get_pool_calls = {100: 0, 500: 0}
+        active_fee = {"value": 0}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            if method == "eth_getCode":
+                return "0x6000"
+            call = params[0]
+            data = str(call["data"])
+            if call["to"] == fixture.factory:
+                fee = int(data[-64:], 16)
+                active_fee["value"] = fee
+                get_pool_calls[fee] += 1
+                if fee == 500 and get_pool_calls[fee] == 1:
+                    raise RuntimeError("provider unavailable")
+                return fixture.address_result(fixture.pool)
+            return fixture.pool_identity_result(
+                data, active_fee["value"]
+            )
+
+        with fixture.patches(rpc):
+            first = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+            second = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+
+        self.assertFalse(first["complete"])
+        self.assertFalse(second["complete"])
+        self.assertEqual(second["identity_mismatch_count"], 1)
+        self.assertEqual(second["pools"], [])
+        self.assertEqual(fixture.row_cache, {})
+        self.assertEqual(get_pool_calls, {100: 1, 500: 2})
+
+    def test_v3_cycle_rows_disable_cache_for_duplicate_query(self) -> None:
+        fixture = _V3CycleFixture((100, 100))
+        get_pool_calls = 0
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal get_pool_calls
+            if method == "eth_getBlockByNumber":
+                return {"hash": "0x" + "a" * 64}
+            if method == "eth_getCode":
+                return "0x6000"
+            call = params[0]
+            data = str(call["data"])
+            if call["to"] == fixture.factory:
+                get_pool_calls += 1
+                return (
+                    "0x" + "0" * 64
+                    if get_pool_calls == 1
+                    else fixture.address_result(fixture.pool)
+                )
+            return fixture.pool_identity_result(data, 100)
+
+        with fixture.patches(rpc):
+            result = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["expected_query_count"], 2)
+        self.assertEqual(result["attempted_query_count"], 2)
+        self.assertEqual(len(result["pools"]), 1)
+        self.assertEqual(get_pool_calls, 2)
+        self.assertEqual(fixture.row_cache, {})
+
+    def test_v3_cycle_rows_retry_unverified_nonzero_pool(self) -> None:
+        for failure in ("code", "token0", "factory", "fee"):
+            fixture = _V3CycleFixture((100,))
+            phase = {"value": 1}
+            get_pool_calls = 0
+
+            def rpc(
+                _chain: str,
+                method: str,
+                params: list[object],
+                **_kwargs: object,
+            ) -> object:
+                nonlocal get_pool_calls
+                if method == "eth_getBlockByNumber":
+                    return {"hash": "0x" + "a" * 64}
+                if method == "eth_getCode":
+                    if phase["value"] == 1 and failure == "code":
+                        raise RuntimeError("provider unavailable")
+                    return "0x6000"
+                call = params[0]
+                data = str(call["data"])
+                if call["to"] == fixture.factory:
+                    get_pool_calls += 1
+                    return fixture.address_result(fixture.pool)
+                if phase["value"] == 1:
+                    if failure == "token0" and data == "0x0dfe1681":
+                        return "0x"
+                    if failure == "factory" and data == "0xc45a0155":
+                        return fixture.address_result("0x" + "5" * 40)
+                    if failure == "fee" and data == "0xddca3f43":
+                        return "0x" + f"{500:064x}"
+                return fixture.pool_identity_result(data, 100)
+
+            with self.subTest(failure=failure), fixture.patches(rpc):
+                first = fixture.opening.supported_v3_pool_scope(
+                    fixture.event(), 200
+                )
+                self.assertFalse(first["complete"])
+                self.assertEqual(fixture.row_cache, {})
+                phase["value"] = 2
+                second = fixture.opening.supported_v3_pool_scope(
+                    fixture.event(), 200
+                )
+            self.assertTrue(second["complete"])
+            self.assertEqual(get_pool_calls, 2)
 
     def test_v3_factory_matrix_cycle_cache_revalidates_block_hash(
         self,
