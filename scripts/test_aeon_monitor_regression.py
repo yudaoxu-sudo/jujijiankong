@@ -4740,12 +4740,45 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             }
 
         calls: list[str] = []
+        clock = {"now": 0.0}
+        recovery_deadlines: list[float] = []
+        build_deadlines: list[float] = []
+        partial_v3_scope = {
+            "schema": "opening_v3_factory_matrix.v2",
+            "status": "factory_matrix_partial",
+            "configuration_hash": "a" * 64,
+            "as_of_block": 200,
+            "complete": False,
+            "deadline_exceeded": True,
+            "snapshot_coherent": True,
+            "expected_query_count": 32,
+            "attempted_query_count": 10,
+            "validation_error_count": 1,
+            "scope_conflict_count": 0,
+            "provider_error_count": 1,
+            "response_validation_error_count": 0,
+            "identity_mismatch_count": 0,
+            "snapshot_error_count": 0,
+            "pools": [],
+        }
+        complete_v3_scope = {
+            **partial_v3_scope,
+            "status": "complete_tracked_factory_matrix",
+            "complete": True,
+            "deadline_exceeded": False,
+            "attempted_query_count": 32,
+            "validation_error_count": 0,
+            "provider_error_count": 0,
+        }
 
         def prepare(
             current: dict[str, object],
             _previous: dict[str, object] | None,
         ) -> dict[str, object]:
             calls.append(f"prepare:{current['symbol']}")
+            current["opening_v3_pool_scope"] = copy.deepcopy(
+                partial_v3_scope
+            )
             return {
                 "rows": [],
                 "selected_hashes": [],
@@ -4759,11 +4792,29 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             _prepared: dict[str, object],
         ) -> dict[str, object]:
             calls.append(f"build:{current['symbol']}")
+            build_deadlines.append(float(opening.TRACE_DEADLINE_AT or 0))
+            self.assertTrue(
+                current["opening_v3_pool_scope"]["complete"]
+            )
             return {
                 "status": "opened",
                 "rows": [],
                 "analysis": {},
             }
+
+        def retry_v3(
+            current: dict[str, object],
+            _latest: int,
+        ) -> dict[str, object]:
+            calls.append(f"retry:{current['symbol']}")
+            recovery_deadlines.append(
+                float(opening.TRACE_DEADLINE_AT or 0)
+            )
+            clock["now"] = recovery_deadlines[-1]
+            return copy.deepcopy(complete_v3_scope)
+
+        def promote(current: dict[str, object]) -> None:
+            calls.append(f"promote:{current['symbol']}")
 
         current_events = [event("ONE", "1"), event("TWO", "2")]
         with (
@@ -4772,6 +4823,11 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 {"ALPHA_OPENING_TRACE_DEADLINE_SECONDS": "100"},
             ),
             mock.patch.object(opening, "TRACE_DEADLINE_AT", None),
+            mock.patch.object(
+                opening.time,
+                "monotonic",
+                side_effect=lambda: clock["now"],
+            ),
             mock.patch.object(
                 opening,
                 "read_json",
@@ -4796,6 +4852,16 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 "build_opened_event",
                 side_effect=build,
             ),
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                side_effect=retry_v3,
+            ),
+            mock.patch.object(
+                opening,
+                "promote_complete_v3_cycle_rows",
+                side_effect=promote,
+            ),
         ):
             opening.build_snapshot()
 
@@ -4804,6 +4870,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             [
                 "prepare:ONE",
                 "prepare:TWO",
+                "retry:ONE",
+                "retry:TWO",
+                "promote:ONE",
+                "promote:TWO",
                 "build:ONE",
                 "build:TWO",
             ],
@@ -4815,6 +4885,30 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(budgets[0], budgets[1])
         self.assertGreater(budgets[0], 0)
         self.assertLess(budgets[0], 50)
+        self.assertEqual(max(recovery_deadlines), 65.0)
+        self.assertLess(max(recovery_deadlines), min(build_deadlines))
+        self.assertTrue(
+            opening.v3_scope_cycle_retryable(
+                current_events[0], partial_v3_scope
+            )
+        )
+        for field in (
+            "response_validation_error_count",
+            "identity_mismatch_count",
+            "snapshot_error_count",
+            "scope_conflict_count",
+        ):
+            with self.subTest(field=field):
+                self.assertFalse(
+                    opening.v3_scope_cycle_retryable(
+                        current_events[0],
+                        {
+                            **partial_v3_scope,
+                            field: 1,
+                            "validation_error_count": 2,
+                        },
+                    )
+                )
 
     def test_intraday_defaults_keep_the_fast_window_coverage_budget(self) -> None:
         text = (ROOT / "scripts" / "alpha_intraday_flow_watch.py").read_text(
@@ -28358,6 +28452,80 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 self.assertEqual(selection["source"], "none")
                 self.assertEqual(selection["conflict_reason"], reason)
 
+    def test_fast_liquidity_scope_conflict_reason_is_exact(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        first = {
+            "protocol": "v3",
+            "address": self._address("1"),
+            "pool_id": "",
+            "factory": self._address("a"),
+            "fee": 100,
+        }
+        second = {
+            **first,
+            "address": self._address("2"),
+            "fee": 500,
+        }
+
+        def seed(pools: list[dict[str, object]]) -> dict[str, object]:
+            return {
+                "scope_hash": holder.liquidity_pool_scope_hash(pools),
+                "pool_scope": copy.deepcopy(pools),
+            }
+
+        def current(pools: list[dict[str, object]]) -> dict[str, object]:
+            return {
+                "status": "verified_pool_scope",
+                "complete": True,
+                "source": "opening",
+                "pool_scope": copy.deepcopy(pools),
+                "scope_hash": holder.liquidity_pool_scope_hash(pools),
+            }
+
+        narrow = seed([first])
+        expanded = seed([first, second])
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                current([first, second]), expanded, narrow
+            ),
+            "seed_conflict_scope_current_standalone_strict_expansion",
+        )
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                current([first, second]), narrow, expanded
+            ),
+            "seed_conflict_scope_current_holder_strict_expansion",
+        )
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                {"status": "current_opening_scope_incomplete"},
+                narrow,
+                expanded,
+            ),
+            "seed_conflict_scope_current_incomplete",
+        )
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                current([second]), narrow, expanded
+            ),
+            "seed_conflict_scope_current_neither",
+        )
+        changed = {**first, "fee": 3000}
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                current([changed]), narrow, seed([changed])
+            ),
+            "seed_conflict_scope_row_conflict",
+        )
+        self.assertEqual(
+            fast.liquidity_scope_conflict_reason(
+                current([first]), narrow, expanded
+            ),
+            "seed_conflict_scope_not_strict_expansion",
+        )
+
     def test_fast_liquidity_invalid_seed_is_preserved_and_stops_provider(
         self,
     ) -> None:
@@ -28515,13 +28683,26 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             "chain": "bsc",
             "address": token,
         }
+        first_pool = {
+            "protocol": "v3",
+            "address": self._address("2"),
+            "pool_id": "",
+            "fee": 100,
+        }
+        second_pool = {
+            **first_pool,
+            "address": self._address("3"),
+            "fee": 500,
+        }
         standalone = {
-            "scope_hash": "a" * 64,
-            "pool_scope": [{"protocol": "v3"}],
+            "scope_hash": holder.liquidity_pool_scope_hash(
+                [first_pool, second_pool]
+            ),
+            "pool_scope": [first_pool, second_pool],
         }
         holder_seed = {
-            "scope_hash": "b" * 64,
-            "pool_scope": [{"protocol": "v3"}],
+            "scope_hash": holder.liquidity_pool_scope_hash([first_pool]),
+            "pool_scope": [first_pool],
             "scope_coverage_from_block": 100,
             "bootstrap_retry_pending": True,
             "bootstrap_retry_window_blocks": 8,
@@ -28575,16 +28756,39 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             ),
             mock.patch.object(
                 holder,
+                "opening_verified_pool_scope",
+                return_value={
+                    "status": "verified_pool_scope",
+                    "complete": True,
+                    "source": "opening",
+                    "pool_scope": [first_pool, second_pool],
+                    "scope_hash": standalone["scope_hash"],
+                },
+            ) as scope_probe,
+            mock.patch.object(
+                holder,
                 "build_token_liquidity_retention",
             ) as build,
         ):
             snapshot = fast.build_snapshot()
 
         build.assert_not_called()
+        self.assertEqual(
+            scope_probe.call_args.kwargs["persisted_scope"],
+            {},
+        )
+        self.assertEqual(
+            snapshot["_next_state"]["tokens"][key]["liquidity"],
+            standalone,
+        )
+        self.assertEqual(snapshot["_next_state"], current_state)
         self.assertEqual(snapshot["status"], "unhealthy")
         self.assertEqual(
             snapshot["issues"][0]["detail"],
-            "seed_conflict_scope",
+            (
+                "seed_conflict_scope_current_"
+                "standalone_strict_expansion"
+            ),
         )
         diagnostic = snapshot["projects"][0]["runtime_diagnostic"]
         self.assertEqual(diagnostic["scope_seed_source"], "none")
@@ -28594,7 +28798,10 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(diagnostic["coverage_status"], "invalid")
         self.assertEqual(
             diagnostic["reason_code"],
-            "seed_conflict_scope",
+            (
+                "seed_conflict_scope_current_"
+                "standalone_strict_expansion"
+            ),
         )
 
     def test_fast_liquidity_diagnostic_maps_safe_exception_reasons(

@@ -610,6 +610,65 @@ def strict_complete_v3_cycle_scope(
     )
 
 
+def v3_scope_cycle_retryable(
+    event: dict[str, Any],
+    scope: Any,
+) -> bool:
+    latest = event.get("latest_block")
+    count_fields = (
+        "provider_error_count",
+        "response_validation_error_count",
+        "identity_mismatch_count",
+        "snapshot_error_count",
+        "scope_conflict_count",
+    )
+    if not (
+        isinstance(scope, dict)
+        and scope.get("schema") == "opening_v3_factory_matrix.v2"
+        and scope.get("status") == "factory_matrix_partial"
+        and isinstance(scope.get("configuration_hash"), str)
+        and re.fullmatch(
+            r"[0-9a-f]{64}", scope["configuration_hash"]
+        )
+        is not None
+        and type(latest) is int
+        and type(scope.get("as_of_block")) is int
+        and scope.get("as_of_block") == latest
+        and scope.get("complete") is not True
+        and type(scope.get("deadline_exceeded")) is bool
+        and type(scope.get("expected_query_count")) is int
+        and scope.get("expected_query_count") > 0
+        and type(scope.get("attempted_query_count")) is int
+        and 0
+        <= scope.get("attempted_query_count")
+        <= scope.get("expected_query_count")
+        and all(
+            type(scope.get(field)) is int and scope.get(field) >= 0
+            for field in count_fields
+        )
+        and type(scope.get("validation_error_count")) is int
+        and scope.get("validation_error_count")
+        == sum(scope.get(field) for field in count_fields)
+        and isinstance(scope.get("pools"), list)
+    ):
+        return False
+    return bool(
+        (
+            scope.get("deadline_exceeded") is True
+            or scope.get("provider_error_count") > 0
+        )
+        and all(
+            scope.get(field) == 0
+            for field in (
+                "response_validation_error_count",
+                "identity_mismatch_count",
+                "snapshot_error_count",
+                "scope_conflict_count",
+            )
+        )
+    )
+
+
 def strict_v3_cycle_row_cache(
     value: Any,
     chain: str,
@@ -7262,6 +7321,7 @@ def build_snapshot() -> dict[str, Any]:
     ]
     overall_deadline = TRACE_DEADLINE_AT
     scope_seconds: float | None = None
+    scope_phase_deadline: float | None = None
     if overall_deadline is not None and scope_targets:
         try:
             scope_fraction = float(
@@ -7273,20 +7333,25 @@ def build_snapshot() -> dict[str, Any]:
         except ValueError:
             scope_fraction = 0.65
         scope_fraction = min(0.9, max(0.1, scope_fraction))
+        scope_started_at = time.monotonic()
         total_remaining = max(
             0.0,
-            overall_deadline - time.monotonic(),
+            overall_deadline - scope_started_at,
+        )
+        scope_phase_deadline = min(
+            overall_deadline,
+            scope_started_at + total_remaining * scope_fraction,
         )
         scope_seconds = max(
             1.0,
-            total_remaining
-            * scope_fraction
+            max(0.0, scope_phase_deadline - scope_started_at)
             / len(scope_targets),
         )
     for event, previous in scope_targets:
         if overall_deadline is not None and scope_seconds is not None:
             TRACE_DEADLINE_AT = min(
                 overall_deadline,
+                scope_phase_deadline or overall_deadline,
                 time.monotonic() + scope_seconds,
             )
             event["opening_scope_budget_seconds"] = round(
@@ -7300,6 +7365,40 @@ def build_snapshot() -> dict[str, Any]:
             )
         except Exception as exc:
             prepared_scopes[id(event)] = exc
+        finally:
+            TRACE_DEADLINE_AT = overall_deadline
+
+    retry_scope_targets = [
+        event
+        for event, _previous in scope_targets
+        if not isinstance(prepared_scopes.get(id(event)), Exception)
+        and v3_scope_cycle_retryable(
+            event,
+            event.get("opening_v3_pool_scope"),
+        )
+    ]
+    for retry_index, event in enumerate(retry_scope_targets):
+        if scope_phase_deadline is None or overall_deadline is None:
+            break
+        now = time.monotonic()
+        remaining_seconds = max(0.0, scope_phase_deadline - now)
+        if remaining_seconds <= 0:
+            break
+        remaining_targets = len(retry_scope_targets) - retry_index
+        TRACE_DEADLINE_AT = min(
+            overall_deadline,
+            scope_phase_deadline,
+            now + remaining_seconds / max(1, remaining_targets),
+        )
+        try:
+            event["opening_v3_pool_scope"] = copy.deepcopy(
+                supported_v3_pool_scope(
+                    event,
+                    int(event["latest_block"]),
+                )
+            )
+        except Exception:
+            pass
         finally:
             TRACE_DEADLINE_AT = overall_deadline
 

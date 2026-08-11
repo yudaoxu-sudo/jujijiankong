@@ -44,6 +44,12 @@ LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
     {
         "seed_conflict_invalid",
         "seed_conflict_scope",
+        "seed_conflict_scope_current_standalone_strict_expansion",
+        "seed_conflict_scope_current_holder_strict_expansion",
+        "seed_conflict_scope_current_neither",
+        "seed_conflict_scope_current_incomplete",
+        "seed_conflict_scope_row_conflict",
+        "seed_conflict_scope_not_strict_expansion",
         "seed_conflict_kind",
         "seed_conflict_checkpoint_hash",
         "seed_conflict_checkpoint_state",
@@ -815,6 +821,103 @@ def strict_liquidity_seed_conflict_detail(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def liquidity_scope_conflict_reason(
+    current_scope: Any,
+    standalone: dict[str, Any],
+    holder_seed: dict[str, Any],
+) -> str:
+    if not (
+        isinstance(current_scope, dict)
+        and current_scope.get("status") == "verified_pool_scope"
+        and current_scope.get("complete") is True
+        and current_scope.get("source") == "opening"
+        and isinstance(current_scope.get("pool_scope"), list)
+        and current_scope.get("pool_scope")
+        and isinstance(current_scope.get("scope_hash"), str)
+        and current_scope.get("scope_hash")
+        == holder.liquidity_pool_scope_hash(current_scope["pool_scope"])
+    ):
+        return "seed_conflict_scope_current_incomplete"
+
+    current_pools = current_scope["pool_scope"]
+
+    def scope_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = value.get("pool_scope")
+        return rows if isinstance(rows, list) else []
+
+    def identity(row: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(row.get("protocol") or ""),
+            holder.norm(row.get("address")),
+            holder.norm(row.get("pool_id")),
+        )
+
+    def indexed(
+        rows: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], dict[str, Any]] | None:
+        if any(not isinstance(row, dict) for row in rows):
+            return None
+        indexed_rows = {identity(row): row for row in rows}
+        if len(indexed_rows) != len(rows):
+            return None
+        return indexed_rows
+
+    current_by_identity = indexed(current_pools)
+    seed_rows = {
+        "standalone": scope_rows(standalone),
+        "holder": scope_rows(holder_seed),
+    }
+    seed_by_identity = {
+        source: indexed(rows) for source, rows in seed_rows.items()
+    }
+    if current_by_identity is None or any(
+        value is None for value in seed_by_identity.values()
+    ):
+        return "seed_conflict_scope_row_conflict"
+
+    current_hash = current_scope["scope_hash"]
+    matches = [
+        source
+        for source, seed in (
+            ("standalone", standalone),
+            ("holder", holder_seed),
+        )
+        if seed.get("scope_hash") == current_hash
+        and seed_rows[source] == current_pools
+    ]
+    if len(matches) != 1:
+        for indexed_seed in seed_by_identity.values():
+            if any(
+                identity_key in current_by_identity
+                and current_by_identity[identity_key] != row
+                for identity_key, row in indexed_seed.items()
+            ):
+                return "seed_conflict_scope_row_conflict"
+        return "seed_conflict_scope_current_neither"
+
+    current_source = matches[0]
+    other_source = "holder" if current_source == "standalone" else "standalone"
+    other_by_identity = seed_by_identity[other_source]
+    if any(
+        identity_key in current_by_identity
+        and current_by_identity[identity_key] != row
+        for identity_key, row in other_by_identity.items()
+    ):
+        return "seed_conflict_scope_row_conflict"
+    if (
+        len(current_by_identity) > len(other_by_identity)
+        and all(
+            current_by_identity.get(identity_key) == row
+            for identity_key, row in other_by_identity.items()
+        )
+    ):
+        return (
+            "seed_conflict_scope_current_"
+            f"{current_source}_strict_expansion"
+        )
+    return "seed_conflict_scope_not_strict_expansion"
+
+
 def liquidity_reconciliation_dominates(
     candidate: dict[str, Any],
     previous: dict[str, Any],
@@ -1437,6 +1540,7 @@ def build_snapshot() -> dict[str, Any]:
                 standalone_seed_status,
                 holder_seed_status,
             }:
+                standalone_seed = {}
                 selection = {
                     "seed": {},
                     "source": "none",
@@ -1444,10 +1548,13 @@ def build_snapshot() -> dict[str, Any]:
                     "conflict_reason": "seed_conflict_invalid",
                 }
             else:
-                selection = select_liquidity_seed(
+                standalone_seed = (
                     persisted_liquidity
                     if standalone_seed_status == "valid"
-                    else {},
+                    else {}
+                )
+                selection = select_liquidity_seed(
+                    standalone_seed,
                     holder_seed if holder_seed_status == "valid" else {},
                 )
             persisted_liquidity = selection["seed"]
@@ -1491,6 +1598,22 @@ def build_snapshot() -> dict[str, Any]:
             exception_recorded = False
             runtime_error_code = ""
             try:
+                if (
+                    seed_conflict
+                    and seed_conflict_reason == "seed_conflict_scope"
+                ):
+                    current_scope = holder.opening_verified_pool_scope(
+                        opening_payload,
+                        opening_symbol,
+                        chain,
+                        token,
+                        persisted_scope={},
+                    )
+                    seed_conflict_reason = liquidity_scope_conflict_reason(
+                        current_scope,
+                        standalone_seed,
+                        holder_seed,
+                    )
                 if seed_conflict:
                     raise LiquiditySeedConflict(seed_conflict_reason)
                 if persisted_liquidity.get(
