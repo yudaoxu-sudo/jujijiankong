@@ -182,6 +182,13 @@ if [[ "${RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE:-0}" == "1" ]]; then
     python3 scripts/grvt_liquidity_replay_acceptance.py \
       --rpc-mode runtime \
       --output output/grvt_liquidity_replay_acceptance/latest.json
+else
+  run_step "${GRVT_LIQUIDITY_REPLAY_ACCEPTANCE_TIMEOUT_SECONDS:-240}" \
+    env DISABLE_TELEGRAM=1 \
+    python3 scripts/grvt_liquidity_replay_acceptance.py \
+      --rpc-mode runtime \
+      --output output/grvt_liquidity_replay_acceptance/latest.json \
+      --refresh-if-runtime-coverage-missing
 fi
 run_step "${SURF_AUX_MARKET_TIMEOUT_SECONDS:-180}" python3 scripts/surf_aux_market_watch.py
 if [[ "${RUN_ARX_OPENING_REFRESH:-0}" == "1" || ! -s output/arx_opening_block_watch/latest.json ]]; then

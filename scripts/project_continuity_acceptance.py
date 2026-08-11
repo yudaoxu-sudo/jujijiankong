@@ -910,6 +910,7 @@ grvt_replay_hashes = grvt_replay.get("code_hashes") if isinstance(grvt_replay.ge
 grvt_replay_hash_parity = all(
     grvt_replay_hashes.get(relative_path) == expected_hashes.get(relative_path)
     for relative_path in (
+        "sniper_engine/rpc.py",
         "scripts/alpha_holder_concentration_watch.py",
         "scripts/grvt_liquidity_replay_acceptance.py",
         "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",

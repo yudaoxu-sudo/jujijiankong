@@ -227,10 +227,29 @@ class RpcFailoverTests(unittest.TestCase):
         )
         self.assertNotIn(rpc.DEFAULT_RPCS["bsc"], calls)
 
-    def test_non_log_calls_keep_existing_bsc_default(self) -> None:
+    def test_non_log_calls_use_official_bsc_read_fallbacks(self) -> None:
         self.assertEqual(
             rpc.rpc_urls("bsc", "eth_blockNumber"),
             [rpc.DEFAULT_RPCS["bsc"], *rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"]],
+        )
+        self.assertEqual(
+            rpc.DEFAULT_RPCS["bsc"],
+            "https://bsc-dataseed.bnbchain.org/",
+        )
+        self.assertEqual(
+            rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][0],
+            "https://bsc-dataseed-public.bnbchain.org/",
+        )
+        self.assertEqual(
+            tuple(rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"]),
+            (
+                "https://bsc.rpc.blxrbdn.com",
+                "https://bsc-rpc.publicnode.com",
+            ),
+        )
+        self.assertNotIn(
+            rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][0],
+            rpc.rpc_urls("bsc", "eth_getLogs"),
         )
 
     def test_method_defaults_are_deduped_against_configured_fallbacks(self) -> None:

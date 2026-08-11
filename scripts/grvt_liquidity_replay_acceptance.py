@@ -22,6 +22,7 @@ os.environ["DISABLE_TELEGRAM"] = "1"
 
 from sniper_engine.rpc import (  # noqa: E402
     DEFAULT_RPCS,
+    LOG_CAPABLE_PUBLIC_RPCS,
     READ_CAPABLE_PUBLIC_RPCS,
     RpcDeadlineExceeded,
     adaptive_get_logs,
@@ -39,6 +40,12 @@ FIXTURE_PATH = (
     / "fixtures"
     / "grvt_v3_quote_only_removal_receipt_2026-08-07.json"
 )
+ACCEPTANCE_CODE_PATHS = (
+    "sniper_engine/rpc.py",
+    "scripts/alpha_holder_concentration_watch.py",
+    "scripts/grvt_liquidity_replay_acceptance.py",
+    "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
+)
 OUTPUT_ROOT = ROOT / "output"
 Rpc = Callable[[str, str, list[Any]], Any]
 PUBLIC_RPCS = tuple(
@@ -46,12 +53,41 @@ PUBLIC_RPCS = tuple(
         [DEFAULT_RPCS["bsc"], *READ_CAPABLE_PUBLIC_RPCS["bsc"]]
     )
 )
+PUBLIC_LOG_RPCS = tuple(LOG_CAPABLE_PUBLIC_RPCS["bsc"])
 RUNTIME_REPLAY_BUDGET_SECONDS = 210
 RUNTIME_REPLAY_ATTEMPT_SECONDS = 100
 RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS = 8
 RUNTIME_REPLAY_TRANSIENT_ISSUES = {
     "runtime_rpc_attempts_exhausted",
     "runtime_rpc_deadline_exceeded",
+}
+RUNTIME_RPC_CONTROL_ISSUES = {
+    *RUNTIME_REPLAY_TRANSIENT_ISSUES,
+    "runtime_rpc_attempt_coverage_incomplete",
+    "runtime_rpc_no_eligible_candidates",
+}
+PASS_REPLAY_REQUIRED_FIELDS = {
+    "receipt_count": 2,
+    "elapsed_seconds": 80,
+    "classification": "range_repositioned",
+    "range_changed": True,
+    "source_pool_equals_destination_pool": True,
+    "operator_basis": "transaction_sender_eoa",
+    "quote_boundary_complete": True,
+    "relative_materiality_proven": True,
+    "raw_removal_alert_eligible": False,
+    "pending_count": 0,
+    "normal_replay_dedup_pass": True,
+    "first_send_count": 1,
+    "replay_duplicate_send_count": 0,
+}
+RUNTIME_RPC_COVERAGE_KEYS = {
+    "schema",
+    "eligible_count",
+    "attempted_count",
+    "unattempted_count",
+    "terminal_reason",
+    "decision_coverage_complete",
 }
 
 
@@ -63,6 +99,119 @@ class RuntimeReplayCoverageFailure(AcceptanceFailure):
     def __init__(self, issue: str, coverage: dict[str, Any]) -> None:
         super().__init__(issue)
         self.coverage = coverage
+
+
+def exact_runtime_rpc_coverage_status(path: Path) -> str:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "grvt_liquidity_replay_acceptance.v1"
+        or payload.get("code_hashes") != acceptance_code_hashes()
+    ):
+        return ""
+    status = payload.get("status")
+    issues = payload.get("issues")
+    generated_at = payload.get("generated_at")
+    try:
+        parsed_generated_at = datetime.fromisoformat(str(generated_at))
+        if parsed_generated_at.tzinfo is None:
+            return ""
+        if parsed_generated_at.utcoffset() != timedelta(0):
+            return ""
+    except (OverflowError, TypeError, ValueError):
+        return ""
+    if (
+        status not in {"pass", "blocked"}
+        or not isinstance(issues, list)
+        or (status == "pass" and issues != [])
+        or (
+            status == "blocked"
+            and not (
+                len(issues) == 1
+                and isinstance(issues[0], str)
+                and bool(issues[0])
+            )
+        )
+    ):
+        return ""
+    coverage = payload.get("runtime_rpc_coverage")
+    if not isinstance(coverage, dict) or set(coverage) != RUNTIME_RPC_COVERAGE_KEYS:
+        return ""
+    eligible = coverage.get("eligible_count")
+    attempted = coverage.get("attempted_count")
+    unattempted = coverage.get("unattempted_count")
+    terminal = coverage.get("terminal_reason")
+    decision_complete = coverage.get("decision_coverage_complete")
+    if (
+        coverage.get("schema") != "runtime_rpc_attempt_coverage.v1"
+        or any(
+            type(value) is not int or value < 0
+            for value in (eligible, attempted, unattempted)
+        )
+        or attempted > eligible
+        or unattempted != eligible - attempted
+        or eligible
+        != len(tuple(dict.fromkeys(rpc_urls("bsc", "eth_getLogs"))))
+        or type(decision_complete) is not bool
+        or decision_complete is not True
+    ):
+        return ""
+    terminal_valid = {
+        "pass": status == "pass" and decision_complete is True and attempted > 0,
+        "semantic_failure": (
+            status == "blocked" and decision_complete is True and attempted > 0
+        ),
+        "transient_attempts_exhausted": (
+            status == "blocked"
+            and decision_complete is True
+            and eligible > 0
+            and attempted == eligible
+        ),
+        "no_eligible_candidates": (
+            status == "blocked"
+            and decision_complete is True
+            and eligible == attempted == unattempted == 0
+        ),
+        "overall_deadline_exceeded": (
+            status == "blocked" and decision_complete is True and attempted > 0
+        ),
+    }.get(terminal, False)
+    expected_issue = {
+        "transient_attempts_exhausted": "runtime_rpc_attempts_exhausted",
+        "no_eligible_candidates": "runtime_rpc_no_eligible_candidates",
+        "overall_deadline_exceeded": "runtime_rpc_deadline_exceeded",
+    }.get(terminal)
+    pass_contract_valid = all(
+        (
+            type(payload.get(key)) is type(expected)
+            if type(expected) in {bool, int}
+            else True
+        )
+        and payload.get(key) == expected
+        for key, expected in PASS_REPLAY_REQUIRED_FIELDS.items()
+    )
+    return status if (
+        terminal_valid
+        and (terminal != "pass" or pass_contract_valid)
+        and (
+            terminal != "semantic_failure"
+            or issues[0] not in RUNTIME_RPC_CONTROL_ISSUES
+        )
+        and (
+            expected_issue is None
+            or issues == [expected_issue]
+        )
+    ) else ""
+
+
+def acceptance_code_hashes() -> dict[str, str]:
+    return {
+        relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
+        for relative in ACCEPTANCE_CODE_PATHS
+    }
 
 
 def runtime_replay_rpc_call(
@@ -196,7 +345,8 @@ def fixed_public_rpc(chain: str, method: str, params: list[Any]) -> Any:
     if chain != "bsc":
         raise AcceptanceFailure("unsupported_chain")
     deadline = time.monotonic() + 45
-    for endpoint in PUBLIC_RPCS:
+    endpoints = PUBLIC_LOG_RPCS if method == "eth_getLogs" else PUBLIC_RPCS
+    for endpoint in endpoints:
         try:
             if method == "eth_getLogs":
                 require(
@@ -853,14 +1003,6 @@ def run_acceptance(rpc: Rpc) -> dict[str, Any]:
         "raw_removal_alert_eligible": False,
         "pending_count": 0,
         "normal_replay_dedup_pass": True,
-        "code_hashes": {
-            relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
-            for relative in (
-                "scripts/alpha_holder_concentration_watch.py",
-                "scripts/grvt_liquidity_replay_acceptance.py",
-                "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
-            )
-        },
         **sink,
     }
 
@@ -873,7 +1015,38 @@ def main() -> int:
         default="public",
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--refresh-if-runtime-coverage-missing",
+        action="store_true",
+    )
     args = parser.parse_args()
+    output_path = None
+    if args.output is not None:
+        output_path = args.output
+        if not output_path.is_absolute():
+            output_path = ROOT / output_path
+        output_path = output_path.resolve()
+        try:
+            output_path.relative_to(OUTPUT_ROOT.resolve())
+        except ValueError:
+            output_path = None
+    if args.refresh_if_runtime_coverage_missing:
+        if args.rpc_mode != "runtime" or args.output is None or output_path is None:
+            parser.error(
+                "conditional runtime coverage refresh requires a project output path"
+            )
+        exact_status = exact_runtime_rpc_coverage_status(output_path)
+        if exact_status:
+            print(
+                json.dumps(
+                    {
+                        "schema": "grvt_liquidity_replay_refresh.v1",
+                        "status": f"skipped_exact_{exact_status}_runtime_rpc_coverage",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0 if exact_status == "pass" else 2
     try:
         result = (
             run_acceptance(fixed_public_rpc)
@@ -905,14 +1078,9 @@ def main() -> int:
     else:
         exit_code = 0
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
+    result["code_hashes"] = acceptance_code_hashes()
     if args.output is not None:
-        output_path = args.output
-        if not output_path.is_absolute():
-            output_path = ROOT / output_path
-        output_path = output_path.resolve()
-        try:
-            output_path.relative_to(OUTPUT_ROOT.resolve())
-        except ValueError:
+        if output_path is None:
             result = {
                 "schema": "grvt_liquidity_replay_acceptance.v1",
                 "status": "blocked",

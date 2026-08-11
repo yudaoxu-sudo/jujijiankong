@@ -450,6 +450,43 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ],
         )
 
+        public_log_calls: list[str] = []
+
+        def public_log_rpc(
+            endpoint: str,
+            _method: str,
+            _params: list[object],
+            **_kwargs: object,
+        ) -> list[object]:
+            public_log_calls.append(endpoint)
+            return []
+
+        with (
+            mock.patch.object(
+                replay,
+                "adaptive_get_logs",
+                side_effect=lambda query, fetch, **_kwargs: fetch(query),
+            ),
+            mock.patch.object(
+                replay,
+                "rpc_call_url",
+                side_effect=public_log_rpc,
+            ),
+        ):
+            self.assertEqual(
+                replay.fixed_public_rpc(
+                    "bsc",
+                    "eth_getLogs",
+                    [{"fromBlock": "0x1", "toBlock": "0x1"}],
+                ),
+                [],
+            )
+        self.assertEqual(public_log_calls, [replay.PUBLIC_LOG_RPCS[0]])
+        self.assertNotIn(
+            replay.READ_CAPABLE_PUBLIC_RPCS["bsc"][0],
+            public_log_calls,
+        )
+
         with tempfile.TemporaryDirectory() as temporary:
             output_root = Path(temporary)
             output_path = output_root / "runtime_replay" / "latest.json"
@@ -512,6 +549,203 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         )
         self.assertNotEqual(
             blocked["generated_at"], "2000-01-01T00:00:00+00:00"
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(
+                replay,
+                "rpc_urls",
+                return_value=["fixture-a", "fixture-b"],
+            ),
+        ):
+            output_root = Path(temporary)
+            output_path = output_root / "runtime_replay" / "latest.json"
+            output_path.parent.mkdir(parents=True)
+            exact_blocked = {
+                "schema": "grvt_liquidity_replay_acceptance.v1",
+                "status": "blocked",
+                "issues": ["runtime_rpc_attempts_exhausted"],
+                "runtime_rpc_coverage": {
+                    "schema": "runtime_rpc_attempt_coverage.v1",
+                    "eligible_count": 2,
+                    "attempted_count": 2,
+                    "unattempted_count": 0,
+                    "terminal_reason": "transient_attempts_exhausted",
+                    "decision_coverage_complete": True,
+                },
+                "generated_at": "2026-08-11T00:00:00+00:00",
+                "code_hashes": replay.acceptance_code_hashes(),
+            }
+            output_path.write_text(
+                json.dumps(exact_blocked),
+                encoding="utf-8",
+            )
+            revision_before = output_path.stat().st_mtime_ns
+            with (
+                mock.patch.object(replay, "OUTPUT_ROOT", output_root),
+                mock.patch.object(
+                    replay,
+                    "run_runtime_acceptance",
+                    side_effect=AssertionError("exact coverage must skip RPC"),
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "grvt_liquidity_replay_acceptance.py",
+                        "--rpc-mode",
+                        "runtime",
+                        "--output",
+                        str(output_path),
+                        "--refresh-if-runtime-coverage-missing",
+                    ],
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(replay.main(), 2)
+            self.assertEqual(output_path.stat().st_mtime_ns, revision_before)
+
+            exact_pass = copy.deepcopy(exact_blocked)
+            exact_pass["status"] = "pass"
+            exact_pass["issues"] = []
+            exact_pass["runtime_rpc_coverage"].update(
+                {
+                    "attempted_count": 1,
+                    "unattempted_count": 1,
+                    "terminal_reason": "pass",
+                }
+            )
+            exact_pass.update(copy.deepcopy(replay.PASS_REPLAY_REQUIRED_FIELDS))
+            output_path.write_text(json.dumps(exact_pass), encoding="utf-8")
+            pass_revision = output_path.stat().st_mtime_ns
+            with (
+                mock.patch.object(replay, "OUTPUT_ROOT", output_root),
+                mock.patch.object(
+                    replay,
+                    "run_runtime_acceptance",
+                    side_effect=AssertionError("exact pass must skip RPC"),
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "grvt_liquidity_replay_acceptance.py",
+                        "--rpc-mode",
+                        "runtime",
+                        "--output",
+                        str(output_path),
+                        "--refresh-if-runtime-coverage-missing",
+                    ],
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(replay.main(), 0)
+            self.assertEqual(output_path.stat().st_mtime_ns, pass_revision)
+
+            minimal_pass = copy.deepcopy(exact_pass)
+            minimal_pass.pop("receipt_count")
+            output_path.write_text(json.dumps(minimal_pass), encoding="utf-8")
+            self.assertFalse(
+                replay.exact_runtime_rpc_coverage_status(output_path)
+            )
+
+            semantic_mismatch = copy.deepcopy(exact_blocked)
+            semantic_mismatch["runtime_rpc_coverage"][
+                "terminal_reason"
+            ] = "semantic_failure"
+            output_path.write_text(
+                json.dumps(semantic_mismatch),
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                replay.exact_runtime_rpc_coverage_status(output_path)
+            )
+
+            stale_hash = copy.deepcopy(exact_blocked)
+            stale_hash["code_hashes"]["sniper_engine/rpc.py"] = "0" * 64
+            output_path.write_text(json.dumps(stale_hash), encoding="utf-8")
+            self.assertFalse(
+                replay.exact_runtime_rpc_coverage_status(output_path)
+            )
+
+            incomplete = copy.deepcopy(exact_blocked)
+            incomplete["runtime_rpc_coverage"].update(
+                {
+                    "eligible_count": 2,
+                    "attempted_count": 1,
+                    "unattempted_count": 1,
+                    "terminal_reason": "attempt_budget_incomplete",
+                    "decision_coverage_complete": False,
+                }
+            )
+            incomplete["issues"] = [
+                "runtime_rpc_attempt_coverage_incomplete"
+            ]
+            output_path.write_text(json.dumps(incomplete), encoding="utf-8")
+            self.assertFalse(
+                replay.exact_runtime_rpc_coverage_status(output_path)
+            )
+            output_path.write_bytes(b"\xff")
+            self.assertFalse(
+                replay.exact_runtime_rpc_coverage_status(output_path)
+            )
+
+            exact_blocked["runtime_rpc_coverage"]["attempted_count"] = True
+            output_path.write_text(
+                json.dumps(exact_blocked),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(replay, "OUTPUT_ROOT", output_root),
+                mock.patch.object(
+                    replay,
+                    "run_runtime_acceptance",
+                    return_value={
+                        "schema": "grvt_liquidity_replay_acceptance.v1",
+                        "status": "pass",
+                        "runtime_rpc_coverage": {
+                            "schema": "runtime_rpc_attempt_coverage.v1",
+                            "eligible_count": 1,
+                            "attempted_count": 1,
+                            "unattempted_count": 0,
+                            "terminal_reason": "pass",
+                            "decision_coverage_complete": True,
+                        },
+                    },
+                ) as refreshed,
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "grvt_liquidity_replay_acceptance.py",
+                        "--rpc-mode",
+                        "runtime",
+                        "--output",
+                        str(output_path),
+                        "--refresh-if-runtime-coverage-missing",
+                    ],
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(replay.main(), 0)
+            self.assertEqual(refreshed.call_count, 1)
+            refreshed_payload = json.loads(
+                output_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(refreshed_payload["status"], "pass")
+
+        server_cycle = (
+            ROOT / "scripts" / "server_run_once.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "--refresh-if-runtime-coverage-missing",
+            server_cycle,
+        )
+        self.assertIn("env DISABLE_TELEGRAM=1", server_cycle)
+        self.assertLess(
+            server_cycle.index("flock -n 9"),
+            server_cycle.index("--refresh-if-runtime-coverage-missing"),
         )
 
     def test_opening_sprint_retries_opened_incomplete_within_existing_bounds(

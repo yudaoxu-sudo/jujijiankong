@@ -14,7 +14,7 @@ from sniper_engine.env import load_local_env
 load_local_env()
 
 DEFAULT_RPCS = {
-    "bsc": "https://bsc-dataseed.binance.org/",
+    "bsc": "https://bsc-dataseed.bnbchain.org/",
     "base": "https://mainnet.base.org",
 }
 
@@ -25,7 +25,10 @@ LOG_CAPABLE_PUBLIC_RPCS = {
     ),
 }
 READ_CAPABLE_PUBLIC_RPCS = {
-    "bsc": LOG_CAPABLE_PUBLIC_RPCS["bsc"],
+    "bsc": (
+        "https://bsc-dataseed-public.bnbchain.org/",
+        *LOG_CAPABLE_PUBLIC_RPCS["bsc"],
+    ),
 }
 
 DISABLED_NODE_REAL = False
