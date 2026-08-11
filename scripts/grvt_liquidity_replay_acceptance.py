@@ -49,7 +49,6 @@ PUBLIC_RPCS = tuple(
 RUNTIME_REPLAY_BUDGET_SECONDS = 210
 RUNTIME_REPLAY_ATTEMPT_SECONDS = 100
 RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS = 8
-RUNTIME_REPLAY_MAX_ATTEMPTS = 2
 RUNTIME_REPLAY_TRANSIENT_ISSUES = {
     "runtime_rpc_attempts_exhausted",
     "runtime_rpc_deadline_exceeded",
@@ -58,6 +57,12 @@ RUNTIME_REPLAY_TRANSIENT_ISSUES = {
 
 class AcceptanceFailure(RuntimeError):
     pass
+
+
+class RuntimeReplayCoverageFailure(AcceptanceFailure):
+    def __init__(self, issue: str, coverage: dict[str, Any]) -> None:
+        super().__init__(issue)
+        self.coverage = coverage
 
 
 def runtime_replay_rpc_call(
@@ -95,19 +100,42 @@ def runtime_replay_rpc_call(
 
 def run_runtime_acceptance() -> dict[str, Any]:
     overall_deadline = time.monotonic() + RUNTIME_REPLAY_BUDGET_SECONDS
-    last_issue = "runtime_rpc_attempts_exhausted"
-    runtime_endpoints = iter(
-        tuple(dict.fromkeys(rpc_urls("bsc", "eth_getLogs")))
+    runtime_endpoints = tuple(
+        dict.fromkeys(rpc_urls("bsc", "eth_getLogs"))
     )
-    for attempt in range(RUNTIME_REPLAY_MAX_ATTEMPTS):
-        try:
-            endpoint = next(runtime_endpoints)
-        except StopIteration:
-            raise AcceptanceFailure(last_issue) from None
-        attempt_deadline = min(
-            overall_deadline,
-            time.monotonic() + RUNTIME_REPLAY_ATTEMPT_SECONDS,
+    attempted_count = 0
+
+    def coverage(
+        terminal_reason: str,
+        decision_coverage_complete: bool,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "runtime_rpc_attempt_coverage.v1",
+            "eligible_count": len(runtime_endpoints),
+            "attempted_count": attempted_count,
+            "unattempted_count": len(runtime_endpoints) - attempted_count,
+            "terminal_reason": terminal_reason,
+            "decision_coverage_complete": decision_coverage_complete,
+        }
+
+    if not runtime_endpoints:
+        raise RuntimeReplayCoverageFailure(
+            "runtime_rpc_no_eligible_candidates",
+            coverage("no_eligible_candidates", True),
+        ) from None
+
+    for endpoint in runtime_endpoints:
+        attempt_started_at = time.monotonic()
+        remaining = overall_deadline - attempt_started_at
+        if remaining < RUNTIME_REPLAY_ATTEMPT_SECONDS:
+            raise RuntimeReplayCoverageFailure(
+                "runtime_rpc_attempt_coverage_incomplete",
+                coverage("attempt_budget_incomplete", False),
+            ) from None
+        attempt_deadline = (
+            attempt_started_at + RUNTIME_REPLAY_ATTEMPT_SECONDS
         )
+        attempted_count += 1
         rpc_issue = ""
 
         def bounded_runtime_rpc(
@@ -135,22 +163,28 @@ def run_runtime_acceptance() -> dict[str, Any]:
         try:
             result = run_acceptance(bounded_runtime_rpc)
             if time.monotonic() > overall_deadline:
-                raise AcceptanceFailure(
-                    "runtime_rpc_deadline_exceeded"
-                )
-            return result
+                raise RuntimeReplayCoverageFailure(
+                    "runtime_rpc_deadline_exceeded",
+                    coverage("overall_deadline_exceeded", True),
+                ) from None
+            return {
+                **result,
+                "runtime_rpc_coverage": coverage("pass", True),
+            }
         except AcceptanceFailure as exc:
-            last_issue = rpc_issue or str(exc)
-            retryable = last_issue in RUNTIME_REPLAY_TRANSIENT_ISSUES
-            remaining_attempts = attempt + 1 < RUNTIME_REPLAY_MAX_ATTEMPTS
-            if (
-                retryable
-                and remaining_attempts
-                and time.monotonic() < overall_deadline
-            ):
-                continue
-            raise AcceptanceFailure(last_issue) from None
-    raise AcceptanceFailure(last_issue)
+            if isinstance(exc, RuntimeReplayCoverageFailure):
+                raise
+            issue = rpc_issue or str(exc)
+            retryable = issue in RUNTIME_REPLAY_TRANSIENT_ISSUES
+            if not retryable:
+                raise RuntimeReplayCoverageFailure(
+                    issue,
+                    coverage("semantic_failure", True),
+                ) from None
+    raise RuntimeReplayCoverageFailure(
+        "runtime_rpc_attempts_exhausted",
+        coverage("transient_attempts_exhausted", True),
+    ) from None
 
 
 def require(condition: bool, issue: str) -> None:
@@ -846,6 +880,14 @@ def main() -> int:
             if args.rpc_mode == "public"
             else run_runtime_acceptance()
         )
+    except RuntimeReplayCoverageFailure as exc:
+        result = {
+            "schema": "grvt_liquidity_replay_acceptance.v1",
+            "status": "blocked",
+            "issues": [str(exc)],
+            "runtime_rpc_coverage": exc.coverage,
+        }
+        exit_code = 2
     except AcceptanceFailure as exc:
         result = {
             "schema": "grvt_liquidity_replay_acceptance.v1",

@@ -603,6 +603,7 @@ def strict_complete_v3_cycle_scope(
             and scope.get(field) == 0
             for field in zero_count_fields
         )
+        and scope.get("provider_error_stage") == "none"
         and scope.get("deadline_exceeded") is False
         and scope.get("complete") is True
         and isinstance(scope.get("pools"), list)
@@ -632,6 +633,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             "expected_query_count": 0,
             "attempted_query_count": 0,
             "provider_error_count": 0,
+            "provider_error_stage": "none",
             "response_validation_error_count": 0,
             "identity_mismatch_count": 0,
             "snapshot_error_count": 0,
@@ -822,6 +824,9 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             )
         )
     )
+    cached_stage_compatible = cached.get(
+        "provider_error_stage"
+    ) in (None, "none")
     if (
         not cycle_cache_revalidation_failed
         and cached.get("schema") == "opening_v3_factory_matrix.v2"
@@ -839,6 +844,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         and type(cached.get("scope_conflict_count")) is int
         and cached.get("scope_conflict_count") == 0
         and cached_diagnostic_counts_compatible
+        and cached_stage_compatible
         and isinstance(cached.get("pools"), list)
         and 0 < cached_as_of <= latest
         and cached_as_of >= required_as_of_block
@@ -859,11 +865,13 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                 reused.setdefault("deadline_exceeded", False)
                 for field in diagnostic_count_fields:
                     reused.setdefault(field, 0)
+                reused.setdefault("provider_error_stage", "none")
                 return reused
         except Exception:
             pass
     pools: dict[str, dict[str, Any]] = {}
     provider_errors = 0
+    provider_error_stages: set[str] = set()
     response_validation_errors = 0
     identity_mismatches = 0
     snapshot_errors = 0
@@ -886,6 +894,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             deadline_exceeded = True
         except Exception:
             provider_errors += 1
+            provider_error_stages.add("snapshot_open")
 
     for factory, factory_row, fee, quote in fee_rows:
         attempted += 1
@@ -895,6 +904,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             + encode_address_word(quote)
             + encode_uint(fee)
         )
+        provider_stage = "factory_lookup"
         try:
             state, pool = strict_abi_address_return(
                 matrix_rpc(
@@ -914,10 +924,12 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
                     [{"to": pool, "data": selector}, block_tag],
                 )
 
+            provider_stage = "pool_code"
             code = matrix_rpc(
                 "eth_getCode",
                 [pool, block_tag],
             )
+            provider_stage = "pool_identity"
             token0_state, token0 = strict_abi_address_return(
                 pool_call("0x0dfe1681")
             )
@@ -978,6 +990,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             break
         except Exception:
             provider_errors += 1
+            provider_error_stages.add(provider_stage)
     as_of_block_hash = ""
     snapshot_coherent = False
     if fee_rows and attempted == len(fee_rows):
@@ -1002,6 +1015,7 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
             deadline_exceeded = True
         except Exception:
             provider_errors += 1
+            provider_error_stages.add("snapshot_close")
     if not snapshot_coherent:
         pools.clear()
     current_identities = {
@@ -1062,6 +1076,13 @@ def supported_v3_pool_scope(event: dict[str, Any], latest: int) -> dict[str, Any
         "expected_query_count": len(fee_rows),
         "attempted_query_count": attempted,
         "provider_error_count": provider_errors,
+        "provider_error_stage": (
+            next(iter(provider_error_stages))
+            if len(provider_error_stages) == 1
+            else "mixed"
+            if provider_error_stages
+            else "none"
+        ),
         "response_validation_error_count": response_validation_errors,
         "identity_mismatch_count": identity_mismatches,
         "snapshot_error_count": snapshot_errors,
@@ -1712,17 +1733,36 @@ def liquidity_watch_scope_hash(
     ).hexdigest()
 
 
-def scan_key_liquidity_flows(event: dict[str, Any], latest: int) -> dict[str, Any]:
+def scan_key_liquidity_flows(
+    event: dict[str, Any],
+    latest: int,
+    *,
+    reuse_prepared_scopes: bool = False,
+) -> dict[str, Any]:
     max_age_seconds = event_int_setting(
         event,
         "opening_liquidity_max_age_seconds",
         "ALPHA_OPENING_LIQUIDITY_MAX_AGE_SECONDS",
         10800,
     )
-    pool_scope = supported_v3_pool_scope(event, latest)
+    prepared_v3_scope = event.get("opening_v3_pool_scope")
+    pool_scope = (
+        copy.deepcopy(prepared_v3_scope)
+        if reuse_prepared_scopes
+        and isinstance(prepared_v3_scope, dict)
+        and prepared_v3_scope.get("complete") is not True
+        else supported_v3_pool_scope(event, latest)
+    )
     event["opening_v3_pool_scope"] = copy.deepcopy(pool_scope)
     watch = liquidity_watch_addresses(event, pool_scope)
-    v4_scope = supported_v4_manager_scope(event, latest, watch)
+    prepared_v4_scope = event.get("opening_v4_pool_scope")
+    v4_scope = (
+        copy.deepcopy(prepared_v4_scope)
+        if reuse_prepared_scopes
+        and isinstance(prepared_v4_scope, dict)
+        and prepared_v4_scope.get("complete") is not True
+        else supported_v4_manager_scope(event, latest, watch)
+    )
     event["opening_v4_pool_scope"] = copy.deepcopy(v4_scope)
     for pool in v4_scope.get("pools", []):
         address = norm(pool.get("address"))
@@ -7417,6 +7457,7 @@ def build_opened_event(
         liquidity_flow = scan_key_liquidity_flows(
             event,
             latest,
+            reuse_prepared_scopes=True,
         )
         event["liquidity_flow"] = liquidity_flow
         event["opening_liquidity_coverage_complete"] = (

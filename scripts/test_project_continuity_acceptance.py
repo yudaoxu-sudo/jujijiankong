@@ -62,6 +62,7 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
         "v3_validation_error_count_total": 0,
         "v3_scope_conflict_count_total": 0,
         "v3_provider_error_count_total": 0,
+        "v3_provider_error_stage": None,
         "v3_response_validation_error_count_total": 0,
         "v3_identity_mismatch_count_total": 0,
         "v3_snapshot_error_count_total": 0,
@@ -100,6 +101,23 @@ def safe_issue_summary(**overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def safe_replay_rpc_coverage(
+    *,
+    terminal_reason: str = "pass",
+    eligible_count: int = 2,
+    attempted_count: int = 1,
+    decision_coverage_complete: bool = True,
+) -> dict[str, object]:
+    return {
+        "schema": "runtime_rpc_attempt_coverage.v1",
+        "eligible_count": eligible_count,
+        "attempted_count": attempted_count,
+        "unattempted_count": eligible_count - attempted_count,
+        "terminal_reason": terminal_reason,
+        "decision_coverage_complete": decision_coverage_complete,
+    }
 
 
 def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
@@ -226,6 +244,7 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
             "raw_removal_alert_eligible": False,
             "pending_count": 0,
             "normal_replay_dedup_pass": True,
+            "runtime_rpc_coverage": safe_replay_rpc_coverage(),
             "first_send_count": 1,
             "replay_duplicate_send_count": 0,
             "code_hashes": expected_hashes,
@@ -702,6 +721,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 "age_seconds": diagnostic["grvt_replay_acceptance"][
                     "age_seconds"
                 ],
+                "runtime_rpc_coverage": safe_replay_rpc_coverage(),
             },
         )
         diagnostic_snapshot = healthy_snapshot()
@@ -734,6 +754,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 "expected_query_count": 32,
                 "attempted_query_count": 20,
                 "provider_error_count": 0,
+                "provider_error_stage": "none",
                 "response_validation_error_count": 1,
                 "identity_mismatch_count": 0,
                 "snapshot_error_count": 0,
@@ -751,6 +772,17 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             with self.subTest(event_count=event_count), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 expected_hashes, _ = remote_probe_fixture(root)
+                events = [event]
+                if event_count == 2:
+                    provider_failed = json.loads(json.dumps(event))
+                    provider_failed["opening_v3_pool_scope"].update(
+                        {
+                            "provider_error_count": 1,
+                            "provider_error_stage": "factory_lookup",
+                            "validation_error_count": 2,
+                        }
+                    )
+                    events.append(provider_failed)
                 write_json(
                     root / "output/runtime_health/last_cycle.json",
                     {
@@ -773,7 +805,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 )
                 write_json(
                     root / "output/alpha_opening_block_watch/latest.json",
-                    {"events": [event] * event_count},
+                    {"events": events},
                 )
                 payload = run_remote_probe(root, expected_hashes)
             summary = payload["runtime_issue_summaries"][0]
@@ -818,13 +850,21 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 20 * event_count,
             )
             self.assertEqual(
-                summary["v3_validation_error_count_total"], event_count
+                summary["v3_validation_error_count_total"],
+                1 if event_count == 1 else 3,
             )
             self.assertEqual(
                 summary["v3_response_validation_error_count_total"],
                 event_count,
             )
-            self.assertEqual(summary["v3_provider_error_count_total"], 0)
+            self.assertEqual(
+                summary["v3_provider_error_count_total"],
+                0 if event_count == 1 else 1,
+            )
+            self.assertEqual(
+                summary["v3_provider_error_stage"],
+                "none" if event_count == 1 else "factory_lookup",
+            )
             self.assertEqual(summary["v3_identity_mismatch_count_total"], 0)
             self.assertEqual(summary["v3_snapshot_error_count_total"], 0)
             self.assertEqual(summary["v3_metadata_invalid_count"], 0)
@@ -850,6 +890,17 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             self.assertEqual(
                 sanitized["runtime_issue_summaries"], [summary]
             )
+            if event_count == 1:
+                forged = json.loads(json.dumps(payload))
+                forged["runtime_issue_summaries"][0][
+                    "v3_provider_error_stage"
+                ] = "snapshot_open"
+                rejected, forged_valid = sanitize_remote_runtime(forged)
+                self.assertFalse(forged_valid)
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "runtime_issue_summary_value_invalid",
+                )
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1273,6 +1324,13 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                         "status": "blocked",
                         "issues": ["public_rpc_unavailable"],
                         "age_seconds": 1,
+                        "runtime_rpc_coverage": safe_replay_rpc_coverage(
+                            terminal_reason=(
+                                "transient_attempts_exhausted"
+                            ),
+                            eligible_count=1,
+                            attempted_count=1,
+                        ),
                     }
                 )
                 compact_reason, compact_reason_valid = (
@@ -1348,6 +1406,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 "status": "blocked",
                 "issues": ["public_rpc_unavailable"],
                 "age_seconds": 1,
+                "runtime_rpc_coverage": safe_replay_rpc_coverage(
+                    terminal_reason="transient_attempts_exhausted",
+                    eligible_count=1,
+                    attempted_count=1,
+                ),
             }
         )
         compact, compact_valid = sanitize_remote_runtime(blocked)
@@ -2444,6 +2507,117 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "replay_required_values_invalid",
         )
 
+    def test_remote_replay_rpc_coverage_is_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, replay_path = remote_probe_fixture(root)
+            payload = run_remote_probe(root, expected_hashes)
+            replay = json.loads(replay_path.read_text(encoding="utf-8"))
+            replay["runtime_rpc_coverage"]["eligible_count"] = True
+            write_json(replay_path, replay)
+            invalid_probe = run_remote_probe(root, expected_hashes)
+
+        coverage = payload["grvt_replay_acceptance"][
+            "runtime_rpc_coverage"
+        ]
+        self.assertEqual(coverage["terminal_reason"], "pass")
+        self.assertTrue(coverage["decision_coverage_complete"])
+        sanitized, valid = sanitize_remote_runtime(payload)
+        self.assertTrue(valid)
+        self.assertEqual(
+            sanitized["grvt_replay_acceptance"][
+                "runtime_rpc_coverage"
+            ],
+            coverage,
+        )
+        self.assertIsNone(
+            invalid_probe["grvt_replay_acceptance"][
+                "runtime_rpc_coverage"
+            ]
+        )
+        self.assertFalse(
+            invalid_probe["grvt_replay_acceptance"]["contract_pass"]
+        )
+
+        for field, value in (
+            ("eligible_count", True),
+            ("unattempted_count", 0),
+            ("terminal_reason", "untrusted"),
+            ("attempted_count", -1),
+            ("decision_coverage_complete", False),
+            ("extra", "untrusted"),
+        ):
+            with self.subTest(field=field):
+                forged = json.loads(json.dumps(payload))
+                forged["grvt_replay_acceptance"][
+                    "runtime_rpc_coverage"
+                ][field] = value
+                rejected, forged_valid = sanitize_remote_runtime(forged)
+                self.assertFalse(forged_valid)
+                self.assertEqual(rejected["status"], "fail")
+                self.assertEqual(
+                    rejected["validation_error_code"],
+                    "replay_required_values_invalid",
+                )
+
+        blocked_cases = (
+            (
+                "runtime_rpc_attempt_coverage_incomplete",
+                safe_replay_rpc_coverage(
+                    terminal_reason="attempt_budget_incomplete",
+                    eligible_count=3,
+                    attempted_count=2,
+                    decision_coverage_complete=False,
+                ),
+            ),
+            (
+                "runtime_rpc_no_eligible_candidates",
+                safe_replay_rpc_coverage(
+                    terminal_reason="no_eligible_candidates",
+                    eligible_count=0,
+                    attempted_count=0,
+                ),
+            ),
+            (
+                "runtime_rpc_deadline_exceeded",
+                safe_replay_rpc_coverage(
+                    terminal_reason="overall_deadline_exceeded",
+                    eligible_count=2,
+                    attempted_count=1,
+                ),
+            ),
+        )
+        for issue, expected in blocked_cases:
+            with (
+                self.subTest(issue=issue),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                expected_hashes, replay_path = remote_probe_fixture(root)
+                write_json(
+                    replay_path,
+                    {
+                        "schema": "grvt_liquidity_replay_acceptance.v1",
+                        "status": "blocked",
+                        "issues": [issue],
+                        "generated_at": "2026-08-10T14:00:00+00:00",
+                        "runtime_rpc_coverage": expected,
+                    },
+                )
+                blocked = run_remote_probe(root, expected_hashes)
+            self.assertEqual(
+                blocked["grvt_replay_acceptance"][
+                    "runtime_rpc_coverage"
+                ],
+                expected,
+            )
+            diagnostic, valid = sanitize_remote_runtime(blocked)
+            self.assertFalse(valid)
+            self.assertEqual(
+                diagnostic["validation_error_code"],
+                "replay_runtime_blocked",
+            )
+
     def test_remote_replay_blocker_preserves_only_allowlisted_issue(self) -> None:
         marker = "untrusted_blocked_replay_detail"
         with tempfile.TemporaryDirectory() as temporary:
@@ -2456,6 +2630,11 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                     "status": "blocked",
                     "issues": ["canonical_transaction_rpc_failed"],
                     "generated_at": "2026-08-10T14:00:00+00:00",
+                    "runtime_rpc_coverage": safe_replay_rpc_coverage(
+                        terminal_reason="semantic_failure",
+                        eligible_count=2,
+                        attempted_count=1,
+                    ),
                 },
             )
             payload = run_remote_probe(root, expected_hashes)

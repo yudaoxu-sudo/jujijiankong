@@ -135,6 +135,18 @@ REMOTE_OPENING_LIQUIDITY_COVERAGE_STATUSES = frozenset(
         "unknown",
     }
 )
+REMOTE_V3_PROVIDER_ERROR_STAGES = frozenset(
+    {
+        "none",
+        "snapshot_open",
+        "factory_lookup",
+        "pool_code",
+        "pool_identity",
+        "snapshot_close",
+        "mixed",
+        "unknown",
+    }
+)
 REMOTE_RETENTION_SEED_STATUSES = frozenset(
     {"missing", "valid", "invalid"}
 )
@@ -265,7 +277,9 @@ REMOTE_REPLAY_ISSUE_CODES = frozenset(
         "raw_removal_was_not_suppressed",
         "relative_materiality_not_proven",
         "runtime_rpc_attempts_exhausted",
+        "runtime_rpc_attempt_coverage_incomplete",
         "runtime_rpc_deadline_exceeded",
+        "runtime_rpc_no_eligible_candidates",
         "telegram_range_message_incomplete",
         "telegram_receipt_ledger_mismatch",
         "telegram_seen_ledger_mismatch",
@@ -549,6 +563,15 @@ opening_liquidity_coverage_statuses = {
     "event_decode_incomplete",
     "unknown_incomplete_coverage",
 }
+v3_provider_error_stages = {
+    "none",
+    "snapshot_open",
+    "factory_lookup",
+    "pool_code",
+    "pool_identity",
+    "snapshot_close",
+    "mixed",
+}
 
 def read_json(path):
     try:
@@ -640,6 +663,82 @@ def safe_int(value, default=None):
 
 def safe_bool(value):
     return value if type(value) is bool else None
+
+def safe_runtime_rpc_coverage(value, replay_status):
+    keys = {
+        "schema",
+        "eligible_count",
+        "attempted_count",
+        "unattempted_count",
+        "terminal_reason",
+        "decision_coverage_complete",
+    }
+    terminal_reasons = {
+        "pass",
+        "semantic_failure",
+        "transient_attempts_exhausted",
+        "attempt_budget_incomplete",
+        "no_eligible_candidates",
+        "overall_deadline_exceeded",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        return None
+    eligible = value.get("eligible_count")
+    attempted = value.get("attempted_count")
+    unattempted = value.get("unattempted_count")
+    terminal = value.get("terminal_reason")
+    decision_complete = value.get("decision_coverage_complete")
+    if (
+        value.get("schema") != "runtime_rpc_attempt_coverage.v1"
+        or any(type(item) is not int or item < 0 for item in (
+            eligible, attempted, unattempted
+        ))
+        or attempted > eligible
+        or unattempted != eligible - attempted
+        or terminal not in terminal_reasons
+        or type(decision_complete) is not bool
+    ):
+        return None
+    terminal_valid = {
+        "pass": (
+            replay_status == "pass"
+            and decision_complete is True
+            and attempted > 0
+        ),
+        "semantic_failure": (
+            replay_status == "blocked"
+            and decision_complete is True
+            and attempted > 0
+        ),
+        "transient_attempts_exhausted": (
+            replay_status == "blocked"
+            and decision_complete is True
+            and eligible > 0
+            and attempted == eligible
+        ),
+        "attempt_budget_incomplete": (
+            replay_status == "blocked"
+            and decision_complete is False
+            and attempted > 0
+            and unattempted > 0
+        ),
+        "no_eligible_candidates": (
+            replay_status == "blocked"
+            and decision_complete is True
+            and eligible == attempted == unattempted == 0
+        ),
+        "overall_deadline_exceeded": (
+            replay_status == "blocked"
+            and decision_complete is True
+            and attempted > 0
+        ),
+    }
+    if terminal_valid.get(terminal) is not True:
+        return None
+    return {
+        key: value[key]
+        for key in sorted(keys)
+    }
 
 def safe_contract_version(value):
     rendered = str(value or "")
@@ -803,6 +902,10 @@ verification_fail_check_hashes = sorted(
 grvt_replay_path = root / "output" / "grvt_liquidity_replay_acceptance" / "latest.json"
 grvt_replay = read_json(grvt_replay_path)
 grvt_replay_age = max(0, int(time.time() - grvt_replay_path.stat().st_mtime)) if grvt_replay_path.exists() else None
+grvt_replay_rpc_coverage = safe_runtime_rpc_coverage(
+    grvt_replay.get("runtime_rpc_coverage"),
+    grvt_replay.get("status"),
+)
 grvt_replay_hashes = grvt_replay.get("code_hashes") if isinstance(grvt_replay.get("code_hashes"), dict) else {}
 grvt_replay_hash_parity = all(
     grvt_replay_hashes.get(relative_path) == expected_hashes.get(relative_path)
@@ -832,6 +935,9 @@ grvt_replay_contract = (
     and type(grvt_replay.get("pending_count")) is int
     and grvt_replay.get("pending_count") == 0
     and grvt_replay.get("normal_replay_dedup_pass") is True
+    and isinstance(grvt_replay_rpc_coverage, dict)
+    and grvt_replay_rpc_coverage.get("terminal_reason") == "pass"
+    and grvt_replay_rpc_coverage.get("decision_coverage_complete") is True
     and type(grvt_replay.get("first_send_count")) is int
     and grvt_replay.get("first_send_count") == 1
     and type(grvt_replay.get("replay_duplicate_send_count")) is int
@@ -1264,6 +1370,7 @@ def runtime_issue_pool_scope(row):
         "v3_validation_error_count_total": 0,
         "v3_scope_conflict_count_total": 0,
         "v3_provider_error_count_total": 0,
+        "v3_provider_error_stage": None,
         "v3_response_validation_error_count_total": 0,
         "v3_identity_mismatch_count_total": 0,
         "v3_snapshot_error_count_total": 0,
@@ -1307,6 +1414,31 @@ def runtime_issue_pool_scope(row):
         "identity_mismatch_count",
         "snapshot_error_count",
     )
+    stage_rows_valid = bool(v3_scopes) and all(
+        type(scope.get("provider_error_count")) is int
+        and scope.get("provider_error_count") >= 0
+        and scope.get("provider_error_stage") in v3_provider_error_stages
+        and (
+            (scope.get("provider_error_count") == 0)
+            == (scope.get("provider_error_stage") == "none")
+        )
+        for scope in v3_scopes
+    )
+    if stage_rows_valid:
+        unique_stages = {
+            scope.get("provider_error_stage")
+            for scope in v3_scopes
+            if scope.get("provider_error_count") > 0
+        }
+        provider_error_stage = (
+            "none"
+            if not unique_stages
+            else next(iter(unique_stages))
+            if len(unique_stages) == 1
+            else "mixed"
+        )
+    else:
+        provider_error_stage = "unknown"
     def nonnegative_count(scope, key):
         value = scope.get(key)
         return value if type(value) is int and value >= 0 else 0
@@ -1346,6 +1478,7 @@ def runtime_issue_pool_scope(row):
             nonnegative_count(scope, "provider_error_count")
             for scope in v3_scopes
         ),
+        "v3_provider_error_stage": provider_error_stage,
         "v3_response_validation_error_count_total": sum(
             nonnegative_count(scope, "response_validation_error_count")
             for scope in v3_scopes
@@ -1374,6 +1507,19 @@ def runtime_issue_pool_scope(row):
                         type(scope.get(key)) is not int
                         or scope.get(key) < 0
                         for key in v3_classification_count_fields
+                    )
+                )
+                or (
+                    scope.get("provider_error_stage")
+                    not in v3_provider_error_stages
+                    or (
+                        scope.get("provider_error_count") == 0
+                        and scope.get("provider_error_stage") != "none"
+                    )
+                    or (
+                        type(scope.get("provider_error_count")) is int
+                        and scope.get("provider_error_count") > 0
+                        and scope.get("provider_error_stage") == "none"
                     )
                 )
             )
@@ -1751,6 +1897,7 @@ print(json.dumps({
         }),
         "generated_at": safe_timestamp(grvt_replay.get("generated_at")),
         "age_seconds": grvt_replay_age,
+        "runtime_rpc_coverage": grvt_replay_rpc_coverage,
         "contract_pass": grvt_replay_contract,
         "classification": safe_code(grvt_replay.get("classification")),
         "range_changed": safe_bool(grvt_replay.get("range_changed")),
@@ -2124,6 +2271,7 @@ def sanitize_remote_runtime(
                     "v3_validation_error_count_total",
                     "v3_scope_conflict_count_total",
                     "v3_provider_error_count_total",
+                    "v3_provider_error_stage",
                     "v3_response_validation_error_count_total",
                     "v3_identity_mismatch_count_total",
                     "v3_snapshot_error_count_total",
@@ -2291,6 +2439,11 @@ def sanitize_remote_runtime(
                     REMOTE_OPENING_LIQUIDITY_COVERAGE_STATUSES,
                     "unknown",
                 ),
+                "v3_provider_error_stage": safe_optional_code(
+                    row.get("v3_provider_error_stage"),
+                    REMOTE_V3_PROVIDER_ERROR_STAGES,
+                    "unknown",
+                ),
             }
             if (
                 not isinstance(row.get("kind"), str)
@@ -2315,6 +2468,25 @@ def sanitize_remote_runtime(
                         **scope_bools,
                         **scope_ints,
                     }.items()
+                )
+                or (
+                    row.get("scope") == "opening"
+                    and scope_ints["opening_event_opened_count"]
+                    and scope_ints["v3_metadata_invalid_count"] == 0
+                    and opening_codes["v3_provider_error_stage"]
+                    not in (None, "unknown")
+                    and (
+                        (
+                            scope_ints[
+                                "v3_provider_error_count_total"
+                            ]
+                            == 0
+                        )
+                        != (
+                            opening_codes["v3_provider_error_stage"]
+                            == "none"
+                        )
+                    )
                 )
             ):
                 return None, "runtime_issue_summary_value_invalid"
@@ -2428,6 +2600,94 @@ def sanitize_remote_runtime(
             }
         )
 
+    def sanitize_replay_rpc_coverage(
+        raw: Any,
+        replay_status: str | None,
+        *,
+        optional: bool = False,
+    ) -> dict[str, Any] | None:
+        if raw is None and optional:
+            return None
+        keys = {
+            "schema",
+            "eligible_count",
+            "attempted_count",
+            "unattempted_count",
+            "terminal_reason",
+            "decision_coverage_complete",
+        }
+        terminal_reasons = {
+            "pass",
+            "semantic_failure",
+            "transient_attempts_exhausted",
+            "attempt_budget_incomplete",
+            "no_eligible_candidates",
+            "overall_deadline_exceeded",
+        }
+        if not isinstance(raw, dict) or set(raw) != keys:
+            return None
+        eligible = strict_remote_int(raw.get("eligible_count"))
+        attempted = strict_remote_int(raw.get("attempted_count"))
+        unattempted = strict_remote_int(raw.get("unattempted_count"))
+        terminal = strict_remote_code(
+            raw.get("terminal_reason"), terminal_reasons
+        )
+        decision_complete = strict_remote_bool(
+            raw.get("decision_coverage_complete")
+        )
+        if (
+            raw.get("schema") != "runtime_rpc_attempt_coverage.v1"
+            or None in (eligible, attempted, unattempted, terminal)
+            or attempted > eligible
+            or unattempted != eligible - attempted
+            or decision_complete is None
+        ):
+            return None
+        terminal_valid = {
+            "pass": (
+                replay_status == "pass"
+                and decision_complete is True
+                and attempted > 0
+            ),
+            "semantic_failure": (
+                replay_status == "blocked"
+                and decision_complete is True
+                and attempted > 0
+            ),
+            "transient_attempts_exhausted": (
+                replay_status == "blocked"
+                and decision_complete is True
+                and eligible > 0
+                and attempted == eligible
+            ),
+            "attempt_budget_incomplete": (
+                replay_status == "blocked"
+                and decision_complete is False
+                and attempted > 0
+                and unattempted > 0
+            ),
+            "no_eligible_candidates": (
+                replay_status == "blocked"
+                and decision_complete is True
+                and eligible == attempted == unattempted == 0
+            ),
+            "overall_deadline_exceeded": (
+                replay_status == "blocked"
+                and decision_complete is True
+                and attempted > 0
+            ),
+        }
+        if terminal_valid.get(terminal) is not True:
+            return None
+        return {
+            "schema": "runtime_rpc_attempt_coverage.v1",
+            "eligible_count": eligible,
+            "attempted_count": attempted,
+            "unattempted_count": unattempted,
+            "terminal_reason": terminal,
+            "decision_coverage_complete": decision_complete,
+        }
+
     if type(max_age_seconds) is not int or max_age_seconds <= 0:
         return validation_error("max_age_invalid")
     if isinstance(value, dict) and set(value) == {"status"}:
@@ -2521,6 +2781,15 @@ def sanitize_remote_runtime(
             if isinstance(replay_diagnostic, dict)
             else None
         )
+        replay_rpc_coverage = (
+            sanitize_replay_rpc_coverage(
+                replay_diagnostic.get("runtime_rpc_coverage"),
+                replay_status,
+                optional=True,
+            )
+            if isinstance(replay_diagnostic, dict)
+            else None
+        )
         if (
             value.get("schema")
             != "sniper_remote_health_acceptance.v1"
@@ -2562,7 +2831,17 @@ def sanitize_remote_runtime(
             or len(fail_hashes) != verification_fail_count
             or not isinstance(replay_diagnostic, dict)
             or set(replay_diagnostic)
-            != {"status", "issues", "generated_at", "age_seconds"}
+            != {
+                "status",
+                "issues",
+                "generated_at",
+                "age_seconds",
+                "runtime_rpc_coverage",
+            }
+            or (
+                replay_diagnostic.get("runtime_rpc_coverage") is not None
+                and replay_rpc_coverage is None
+            )
             or (
                 replay_diagnostic.get("age_seconds") is not None
                 and replay_age is None
@@ -2588,6 +2867,7 @@ def sanitize_remote_runtime(
                 "issues": replay_issues,
                 "generated_at": replay_generated_at,
                 "age_seconds": replay_age,
+                "runtime_rpc_coverage": replay_rpc_coverage,
             },
         }, True
     top_keys = {
@@ -2620,6 +2900,7 @@ def sanitize_remote_runtime(
         "contract_pass",
         "normal_replay_dedup_pass",
         "replay_duplicate_send_count",
+        "runtime_rpc_coverage",
         "quote_boundary_complete",
         "range_changed",
         "relative_materiality_proven",
@@ -2815,6 +3096,7 @@ def sanitize_remote_runtime(
                     "issues": replay_issues,
                     "generated_at": replay_generated_at or "",
                     "age_seconds": replay_age,
+                    "runtime_rpc_coverage": replay_rpc_coverage,
                 },
             },
             False,
@@ -2831,6 +3113,10 @@ def sanitize_remote_runtime(
     replay_age = strict_remote_int(replay.get("age_seconds"), optional=True)
     replay_generated_at = strict_remote_timestamp(
         replay.get("generated_at"), optional=True
+    )
+    replay_rpc_coverage = sanitize_replay_rpc_coverage(
+        replay.get("runtime_rpc_coverage"),
+        replay_status,
     )
     replay_classification = strict_remote_code(
         replay.get("classification"),
@@ -3000,7 +3286,9 @@ def sanitize_remote_runtime(
         )
 
     if replay_status == "blocked" and (
-        not replay_issues or not replay_generated_at
+        not replay_issues
+        or not replay_generated_at
+        or replay_rpc_coverage is None
     ):
         return runtime_diagnostic("replay_required_values_invalid")
     if replay_status == "blocked":
@@ -3031,6 +3319,7 @@ def sanitize_remote_runtime(
                 replay_generated_at or None,
                 replay_classification,
                 replay_duplicate_count,
+                replay_rpc_coverage,
             ),
         ),
         (
@@ -3087,6 +3376,8 @@ def sanitize_remote_runtime(
         and replay_bools["range_changed"] is True
         and replay_bools["relative_materiality_proven"] is True
         and replay_bools["source_pool_equals_destination_pool"] is True
+        and replay_rpc_coverage.get("terminal_reason") == "pass"
+        and replay_rpc_coverage.get("decision_coverage_complete") is True
     )
     remote_recomputed = (
         runtime_status == "healthy"
@@ -3169,6 +3460,7 @@ def sanitize_remote_runtime(
             "classification": replay_classification,
             **replay_bools,
             "replay_duplicate_send_count": replay_duplicate_count,
+            "runtime_rpc_coverage": replay_rpc_coverage,
         },
         "grvt_liquidity": {
             "status": liquidity_status,

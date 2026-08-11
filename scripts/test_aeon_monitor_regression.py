@@ -91,7 +91,7 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(
                 replay,
                 "rpc_urls",
-                return_value=["fixture-a", "fixture-b"],
+                return_value=["fixture-a", "fixture-b", "fixture-c"],
             ),
             mock.patch.object(
                 replay,
@@ -106,7 +106,13 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         ):
             result = replay.run_runtime_acceptance()
 
-        self.assertEqual(result, {"status": "pass"})
+        self.assertEqual(result["status"], "pass")
+        coverage = result["runtime_rpc_coverage"]
+        self.assertEqual(coverage["eligible_count"], 3)
+        self.assertEqual(coverage["attempted_count"], 1)
+        self.assertEqual(coverage["unattempted_count"], 2)
+        self.assertEqual(coverage["terminal_reason"], "pass")
+        self.assertTrue(coverage["decision_coverage_complete"])
         self.assertEqual(len(rpc_calls), 2)
         self.assertEqual(
             {row["endpoint"] for row in rpc_calls}, {"fixture-a"}
@@ -120,8 +126,7 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             {replay.RUNTIME_REPLAY_RPC_TIMEOUT_SECONDS},
         )
         self.assertLessEqual(
-            replay.RUNTIME_REPLAY_ATTEMPT_SECONDS
-            * replay.RUNTIME_REPLAY_MAX_ATTEMPTS,
+            replay.RUNTIME_REPLAY_ATTEMPT_SECONDS * 2,
             replay.RUNTIME_REPLAY_BUDGET_SECONDS,
         )
         self.assertLess(replay.RUNTIME_REPLAY_BUDGET_SECONDS, 240)
@@ -138,7 +143,7 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(
                 replay,
                 "rpc_urls",
-                return_value=["fixture-a", "fixture-b"],
+                return_value=["fixture-a", "fixture-b", "fixture-c"],
             ),
             mock.patch.object(
                 replay,
@@ -147,14 +152,19 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
                     replay.AcceptanceFailure(
                         "runtime_rpc_attempts_exhausted"
                     ),
+                    replay.AcceptanceFailure(
+                        "runtime_rpc_attempts_exhausted"
+                    ),
                     {"status": "pass"},
                 ],
             ) as retry,
         ):
-            self.assertEqual(
-                replay.run_runtime_acceptance(), {"status": "pass"}
-            )
-        self.assertEqual(retry.call_count, 2)
+            retried = replay.run_runtime_acceptance()
+            self.assertEqual(retried["status"], "pass")
+        self.assertEqual(
+            retried["runtime_rpc_coverage"]["attempted_count"], 3
+        )
+        self.assertEqual(retry.call_count, 3)
 
         def exercise_rpc(rpc: object) -> dict[str, object]:
             rpc("bsc", "eth_blockNumber", [])
@@ -181,15 +191,23 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 replay.AcceptanceFailure,
                 "runtime_rpc_attempts_exhausted",
-            ):
+            ) as all_failed:
                 replay.run_runtime_acceptance()
         self.assertEqual(failed_rpc.call_count, 2)
         self.assertEqual(
             [call.args[0] for call in failed_rpc.call_args_list],
             ["fixture-a", "fixture-b"],
         )
+        self.assertEqual(
+            all_failed.exception.coverage["terminal_reason"],
+            "transient_attempts_exhausted",
+        )
+        self.assertEqual(
+            all_failed.exception.coverage["attempted_count"], 2
+        )
 
         deadline_calls: list[float] = []
+        clock = {"value": 10.0}
 
         def deadline_rpc(
             _endpoint: str,
@@ -199,13 +217,14 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             **kwargs: object,
         ) -> object:
             deadline_calls.append(float(kwargs["deadline"]))
+            clock["value"] = float(kwargs["deadline"])
             raise replay.RpcDeadlineExceeded("fixture deadline")
 
         with (
             mock.patch.object(
                 replay.time,
                 "monotonic",
-                side_effect=[10.0, 10.0, 110.0, 110.0],
+                side_effect=lambda: clock["value"],
             ),
             mock.patch.object(
                 replay,
@@ -225,27 +244,32 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 replay.AcceptanceFailure,
-                "runtime_rpc_deadline_exceeded",
-            ):
+                "runtime_rpc_attempts_exhausted",
+            ) as exhausted:
                 replay.run_runtime_acceptance()
         self.assertEqual(deadline_calls, [110.0, 210.0])
+        self.assertTrue(exhausted.exception.coverage[
+            "decision_coverage_complete"
+        ])
 
+        clock["value"] = 10.0
+        deadline_calls.clear()
         with (
             mock.patch.object(
                 replay.time,
                 "monotonic",
-                side_effect=[10.0, 10.0, 221.0],
+                side_effect=lambda: clock["value"],
             ),
             mock.patch.object(
                 replay,
                 "rpc_urls",
-                return_value=["fixture-a", "fixture-b"],
+                return_value=["fixture-a", "fixture-b", "fixture-c"],
             ),
             mock.patch.object(
                 replay,
                 "runtime_replay_rpc_call",
-                side_effect=RuntimeError("synthetic provider failure"),
-            ) as expired_rpc,
+                side_effect=deadline_rpc,
+            ) as budgeted_rpc,
             mock.patch.object(
                 replay,
                 "run_acceptance",
@@ -254,16 +278,36 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 replay.AcceptanceFailure,
-                "runtime_rpc_attempts_exhausted",
-            ):
+                "runtime_rpc_attempt_coverage_incomplete",
+            ) as incomplete:
                 replay.run_runtime_acceptance()
-        self.assertEqual(expired_rpc.call_count, 1)
+        self.assertEqual(budgeted_rpc.call_count, 2)
+        self.assertEqual(
+            incomplete.exception.coverage["eligible_count"], 3
+        )
+        self.assertEqual(
+            incomplete.exception.coverage["attempted_count"], 2
+        )
+        self.assertEqual(
+            incomplete.exception.coverage["unattempted_count"], 1
+        )
+        self.assertFalse(
+            incomplete.exception.coverage[
+                "decision_coverage_complete"
+            ]
+        )
+
+        clock["value"] = 10.0
+
+        def overrun_acceptance(_rpc: object) -> dict[str, object]:
+            clock["value"] = 221.0
+            return {"status": "pass"}
 
         with (
             mock.patch.object(
                 replay.time,
                 "monotonic",
-                side_effect=[10.0, 10.0, 221.0, 221.0],
+                side_effect=lambda: clock["value"],
             ),
             mock.patch.object(
                 replay,
@@ -273,7 +317,7 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(
                 replay,
                 "run_acceptance",
-                return_value={"status": "pass"},
+                side_effect=overrun_acceptance,
             ) as overrun,
         ):
             with self.assertRaisesRegex(
@@ -288,7 +332,7 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             mock.patch.object(
                 replay,
                 "rpc_urls",
-                return_value=["fixture-a"],
+                return_value=["fixture-a", "fixture-b"],
             ),
             mock.patch.object(
                 replay,
@@ -300,9 +344,19 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 replay.AcceptanceFailure, "pool_identity_mismatch"
-            ):
+            ) as semantic_failure:
                 replay.run_runtime_acceptance()
         self.assertEqual(semantic.call_count, 1)
+        self.assertEqual(
+            semantic_failure.exception.coverage["terminal_reason"],
+            "semantic_failure",
+        )
+        self.assertEqual(
+            semantic_failure.exception.coverage["attempted_count"], 1
+        )
+        self.assertEqual(
+            semantic_failure.exception.coverage["unattempted_count"], 1
+        )
 
         with (
             mock.patch.object(replay.time, "monotonic", return_value=10.0),
@@ -328,6 +382,22 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
             ):
                 replay.run_runtime_acceptance()
         self.assertEqual(only_endpoint.call_count, 1)
+
+        with (
+            mock.patch.object(replay.time, "monotonic", return_value=10.0),
+            mock.patch.object(replay, "rpc_urls", return_value=[]),
+        ):
+            with self.assertRaisesRegex(
+                replay.AcceptanceFailure,
+                "runtime_rpc_no_eligible_candidates",
+            ) as no_candidates:
+                replay.run_runtime_acceptance()
+        self.assertEqual(no_candidates.exception.coverage[
+            "eligible_count"
+        ], 0)
+        self.assertTrue(no_candidates.exception.coverage[
+            "decision_coverage_complete"
+        ])
 
         endpoint_calls: list[tuple[str, str]] = []
 
@@ -400,8 +470,18 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
                 mock.patch.object(
                     replay,
                     "run_runtime_acceptance",
-                    side_effect=replay.AcceptanceFailure(
-                        "runtime_rpc_deadline_exceeded"
+                    side_effect=replay.RuntimeReplayCoverageFailure(
+                        "runtime_rpc_attempt_coverage_incomplete",
+                        {
+                            "schema": "runtime_rpc_attempt_coverage.v1",
+                            "eligible_count": 3,
+                            "attempted_count": 2,
+                            "unattempted_count": 1,
+                            "terminal_reason": (
+                                "attempt_budget_incomplete"
+                            ),
+                            "decision_coverage_complete": False,
+                        },
                     ),
                 ),
                 mock.patch.object(
@@ -423,7 +503,12 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertGreater(revision_after, revision_before)
         self.assertEqual(
-            blocked["issues"], ["runtime_rpc_deadline_exceeded"]
+            blocked["issues"], ["runtime_rpc_attempt_coverage_incomplete"]
+        )
+        self.assertFalse(
+            blocked["runtime_rpc_coverage"][
+                "decision_coverage_complete"
+            ]
         )
         self.assertNotEqual(
             blocked["generated_at"], "2000-01-01T00:00:00+00:00"
@@ -3818,7 +3903,10 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         def scan(
             _event: dict[str, object],
             _latest: int,
+            *,
+            reuse_prepared_scopes: bool = False,
         ) -> dict[str, object]:
+            self.assertTrue(reuse_prepared_scopes)
             calls.append("liquidity")
             return {
                 "risk": "none",
@@ -4044,6 +4132,100 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertEqual(event["opening_v3_pool_scope"], refreshed_v3)
         self.assertEqual(event["opening_v4_pool_scope"], refreshed_v4)
 
+    def test_opening_prepared_partial_scope_is_not_queried_twice(
+        self,
+    ) -> None:
+        import scripts.alpha_opening_block_watch as opening
+
+        event = {
+            "symbol": "TEST",
+            "chain": "bsc",
+            "opening_block": 100,
+            "latest_block": 200,
+            "seconds_until_start": -1,
+            "token": {"address": "0x" + "1" * 40},
+            "quote": {"address": "0x" + "2" * 40},
+        }
+        partial_v3 = {
+            "schema": "opening_v3_factory_matrix.v2",
+            "status": "factory_matrix_partial",
+            "complete": False,
+            "pools": [],
+        }
+        complete_v4 = {
+            "schema": "opening_v4_manager_scope.v1",
+            "complete": True,
+            "pools": [],
+        }
+        with (
+            mock.patch.object(
+                opening,
+                "supported_v3_pool_scope",
+                return_value=partial_v3,
+            ) as v3,
+            mock.patch.object(
+                opening,
+                "supported_v4_manager_scope",
+                return_value=complete_v4,
+            ) as v4,
+            mock.patch.object(
+                opening,
+                "liquidity_watch_addresses",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "opening_transfer_logs",
+                return_value=[],
+            ),
+            mock.patch.object(
+                opening,
+                "opening_buyer_scope_from_transfer_logs",
+                return_value=(
+                    [],
+                    {
+                        "opening_buyer_scope_complete": True,
+                        "opening_buyer_scope_addresses": [],
+                    },
+                ),
+            ),
+            mock.patch.object(
+                opening,
+                "liquidity_flow_watch",
+                return_value={},
+            ),
+            mock.patch.object(
+                opening,
+                "attributable_liquidity_watch",
+                return_value={},
+            ),
+        ):
+            opening.prepare_opening_scope(event, None)
+            result = opening.scan_key_liquidity_flows(
+                event,
+                200,
+                reuse_prepared_scopes=True,
+            )
+            self.assertEqual(v3.call_count, 1)
+            event["opening_v3_pool_scope"] = {
+                **partial_v3,
+                "complete": True,
+            }
+            event["opening_v4_pool_scope"] = {
+                **complete_v4,
+                "complete": False,
+            }
+            revalidated = opening.scan_key_liquidity_flows(
+                event,
+                200,
+                reuse_prepared_scopes=True,
+            )
+
+        self.assertFalse(result["scope_complete"])
+        self.assertFalse(revalidated["scope_complete"])
+        self.assertEqual(v3.call_count, 2)
+        self.assertEqual(v4.call_count, 2)
+
     def test_opening_build_budget_reallocates_unused_time(
         self,
     ) -> None:
@@ -4194,7 +4376,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     "coverage_complete": True,
                     "coverage_status": "complete_historical_opening_window",
                 },
-            ),
+            ) as scan,
             mock.patch.object(
                 opening,
                 "analyze_opened",
@@ -4212,6 +4394,9 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
 
         self.assertTrue(event["opening_cohort_coverage_complete"])
         self.assertTrue(event["opening_buyer_scope_complete"])
+        self.assertTrue(
+            scan.call_args.kwargs["reuse_prepared_scopes"]
+        )
         self.assertFalse(event["opening_receipt_classification_complete"])
         self.assertEqual(event["opening_receipt_selected_tx_count"], 0)
         self.assertEqual(result["refresh_status"], "partial_trace_deadline")
@@ -6987,6 +7172,14 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 block_calls[current_mode] = (
                     block_calls.get(current_mode, 0) + 1
                 )
+                if (
+                    current_mode == "provider_snapshot_open"
+                    and block_calls[current_mode] == 1
+                ) or (
+                    current_mode == "provider_snapshot_close"
+                    and block_calls[current_mode] > 1
+                ):
+                    raise RuntimeError("provider unavailable")
                 suffix = (
                     "b"
                     if current_mode == "block_flip"
@@ -6995,6 +7188,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                 )
                 return {"hash": "0x" + suffix * 64}
             if method == "eth_getCode":
+                if mode["value"] == "provider_pool_code":
+                    raise RuntimeError("provider unavailable")
                 return {
                     "code_none": None,
                     "code_zero": "0x00",
@@ -7005,6 +7200,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             to = str(call["to"])
             data = str(call["data"])
             if to == factory:
+                if mode["value"] == "provider_factory_lookup":
+                    raise RuntimeError("provider unavailable")
                 if mode["value"] == "abi_malformed":
                     return address_result(pool) + "00"
                 counterasset = "0x" + data[98:138]
@@ -7018,6 +7215,8 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
                     else "0x" + "0" * 64
                 )
             if data == "0x0dfe1681":
+                if mode["value"] == "provider_pool_identity":
+                    raise RuntimeError("provider unavailable")
                 return address_result(token)
             if data == "0xd21220a7":
                 return address_result(quote)
@@ -7056,6 +7255,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             malformed_abi = opening.supported_v3_pool_scope(event, 200)
             mode["value"] = "block_flip"
             incoherent_block = opening.supported_v3_pool_scope(event, 200)
+            stage_results = {}
+            event.pop("opening_v3_pool_scope", None)
+            for stage_mode in (
+                "provider_snapshot_open",
+                "provider_factory_lookup",
+                "provider_pool_code",
+                "provider_pool_identity",
+                "provider_snapshot_close",
+            ):
+                mode["value"] = stage_mode
+                block_calls[stage_mode] = 0
+                stage_results[stage_mode] = (
+                    opening.supported_v3_pool_scope(event, 200)
+                )
             event["opening_v3_pool_scope"] = copy.deepcopy(good)
             mode["value"] = "mixed"
             partial_refresh = opening.supported_v3_pool_scope(event, 401)
@@ -7078,6 +7291,7 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             "snapshot_error_count",
         ):
             self.assertEqual(good[field], 0)
+        self.assertEqual(good["provider_error_stage"], "none")
         self.assertFalse(mismatch["complete"])
         self.assertEqual(mismatch["pools"], [])
         self.assertEqual(mismatch["validation_error_count"], 1)
@@ -7105,6 +7319,20 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         )
         self.assertEqual(partial_refresh["scope_conflict_count"], 0)
         self.assertEqual(partial_refresh["provider_error_count"], 1)
+        expected_stages = {
+            "provider_snapshot_open": "snapshot_open",
+            "provider_factory_lookup": "factory_lookup",
+            "provider_pool_code": "pool_code",
+            "provider_pool_identity": "pool_identity",
+            "provider_snapshot_close": "snapshot_close",
+        }
+        for stage_mode, result in stage_results.items():
+            with self.subTest(stage_mode=stage_mode):
+                self.assertGreater(result["provider_error_count"], 0)
+                self.assertEqual(
+                    result["provider_error_stage"],
+                    expected_stages[stage_mode],
+                )
         self.assertFalse(scope_conflict["complete"])
         self.assertEqual(
             scope_conflict["status"],
