@@ -21,12 +21,15 @@ DEFAULT_RPCS = {
 LOG_CAPABLE_PUBLIC_RPCS = {
     "bsc": (
         "https://bsc.rpc.blxrbdn.com",
-        "https://bsc-rpc.publicnode.com",
+        "https://rpc-bsc.blockmachine.io",
     ),
 }
 READ_CAPABLE_PUBLIC_RPCS = {
     "bsc": (
         "https://bsc-dataseed-public.bnbchain.org/",
+        "https://bsc-dataseed.nariox.org/",
+        "https://bsc-dataseed.defibit.io/",
+        "https://bsc-dataseed.ninicoin.io/",
         *LOG_CAPABLE_PUBLIC_RPCS["bsc"],
     ),
 }

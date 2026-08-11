@@ -227,6 +227,31 @@ class RpcFailoverTests(unittest.TestCase):
         )
         self.assertNotIn(rpc.DEFAULT_RPCS["bsc"], calls)
 
+    def test_get_logs_falls_through_to_second_public_candidate(self) -> None:
+        first, second = rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"]
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            if req.full_url == second:
+                return _FakeResponse({"jsonrpc": "2.0", "id": 1, "result": []})
+            raise HTTPError(
+                req.full_url,
+                503,
+                "Service Unavailable",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+
+        urllib.request.urlopen = fake_urlopen
+        result = rpc.rpc_call(
+            "bsc",
+            "eth_getLogs",
+            [{"fromBlock": "latest", "toBlock": "latest"}],
+        )
+        self.assertEqual(result, [])
+        self.assertEqual(calls, [first, second])
+
     def test_non_log_calls_use_official_bsc_read_fallbacks(self) -> None:
         self.assertEqual(
             rpc.rpc_urls("bsc", "eth_blockNumber"),
@@ -237,19 +262,61 @@ class RpcFailoverTests(unittest.TestCase):
             "https://bsc-dataseed.bnbchain.org/",
         )
         self.assertEqual(
-            rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][0],
-            "https://bsc-dataseed-public.bnbchain.org/",
+            tuple(rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"]),
+            (
+                "https://bsc-dataseed-public.bnbchain.org/",
+                "https://bsc-dataseed.nariox.org/",
+                "https://bsc-dataseed.defibit.io/",
+                "https://bsc-dataseed.ninicoin.io/",
+                *rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"],
+            ),
         )
         self.assertEqual(
             tuple(rpc.LOG_CAPABLE_PUBLIC_RPCS["bsc"]),
             (
                 "https://bsc.rpc.blxrbdn.com",
-                "https://bsc-rpc.publicnode.com",
+                "https://rpc-bsc.blockmachine.io",
             ),
         )
-        self.assertNotIn(
-            rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][0],
-            rpc.rpc_urls("bsc", "eth_getLogs"),
+        log_urls = rpc.rpc_urls("bsc", "eth_getLogs")
+        for read_only_url in rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][:4]:
+            self.assertNotIn(read_only_url, log_urls)
+
+    def test_read_only_call_reaches_all_official_bsc_fallbacks_before_legacy(self) -> None:
+        target = "https://bsc-dataseed.ninicoin.io/"
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            if req.full_url == target:
+                return _FakeResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": "0x" + "0" * 64,
+                    }
+                )
+            raise HTTPError(
+                req.full_url,
+                503,
+                "Service Unavailable",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+
+        urllib.request.urlopen = fake_urlopen
+        result = rpc.rpc_call(
+            "bsc",
+            "eth_call",
+            [{"to": "0x" + "1" * 40, "data": "0x12345678"}, "0x1"],
+        )
+        self.assertEqual(result, "0x" + "0" * 64)
+        self.assertEqual(
+            calls,
+            [
+                rpc.DEFAULT_RPCS["bsc"],
+                *rpc.READ_CAPABLE_PUBLIC_RPCS["bsc"][:4],
+            ],
         )
 
     def test_method_defaults_are_deduped_against_configured_fallbacks(self) -> None:
