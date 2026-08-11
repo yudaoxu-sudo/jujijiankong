@@ -51,6 +51,7 @@ USDT_BY_CHAIN = {
 SUPPORTED_CHAINS = {"bsc"}
 DEFAULT_MAX_SELECTED = 64
 DEFAULT_RETENTION_DAYS = 30
+PENDING_MONITORING_ACTIVATION = "pending_manual_onboarding"
 DEFAULT_INTRADAY_MAX_AGE_HOURS = 72
 DEFAULT_OPENING_MAX_LOGS = 30000
 DEFAULT_SCHEMA_MIN_RATIO = 0.5
@@ -158,7 +159,11 @@ def apply_monitoring_policy(
     for raw_item in items:
         item = copy.deepcopy(raw_item)
         symbol = str(item.get("symbol") or "").strip().upper()
-        item["active_monitoring"] = bool(symbol and symbol in focused)
+        item["active_monitoring"] = (
+            False
+            if item.get("active_monitoring") is False
+            else bool(symbol and symbol in focused)
+        )
         scoped.append(item)
     return scoped
 
@@ -2396,8 +2401,16 @@ def merge_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str,
         merged[key] = max(int(merged.get(key) or 0), int(candidate.get(key) or 0))
     if not merged.get("project_operator_probe"):
         merged["project_operator_probe"] = candidate.get("project_operator_probe")
-    reactivated = existing.get("active_monitoring") is False
-    merged["active_monitoring"] = True
+    preserve_pending_activation = (
+        existing.get("active_monitoring") is False
+        and existing.get("monitoring_activation")
+        == PENDING_MONITORING_ACTIVATION
+    )
+    reactivated = (
+        existing.get("active_monitoring") is False
+        and not preserve_pending_activation
+    )
+    merged["active_monitoring"] = not preserve_pending_activation
     if reactivated:
         merged.setdefault("facts", {})[
             "catalog_active_monitoring_policy"
@@ -2545,7 +2558,11 @@ def build_runtime_watchlist(
 
     def candidate_is_active(item: dict[str, Any]) -> bool:
         if monitoring_policy:
-            return str(item.get("symbol") or "").strip().upper() in focused_symbols
+            return (
+                item.get("active_monitoring") is not False
+                and str(item.get("symbol") or "").strip().upper()
+                in focused_symbols
+            )
         return item.get("active_monitoring") is not False
 
     active_symbols = sorted(active_monitoring_symbols({"items": items}))
@@ -2607,7 +2624,11 @@ def public_summary(
 
     def candidate_is_active(item: dict[str, Any]) -> bool:
         if monitoring_policy:
-            return str(item.get("symbol") or "").strip().upper() in focused_symbols
+            return (
+                item.get("active_monitoring") is not False
+                and str(item.get("symbol") or "").strip().upper()
+                in focused_symbols
+            )
         return item.get("active_monitoring") is not False
 
     return {

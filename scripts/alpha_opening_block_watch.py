@@ -31,6 +31,10 @@ from sniper_engine.rpc import (
 )
 from sniper_engine.telegram_send_receipt import read_telegram_send_receipt, record_telegram_send_receipt
 from scripts.build_pancake_v4_roundtrip_fixture import build_fixture
+from scripts.alpha_onboarding_preflight import (
+    opening_known_time_rows,
+    opening_known_time_value,
+)
 
 
 getcontext().prec = 80
@@ -6681,15 +6685,8 @@ def first_value_by_prefix(payload: dict[str, Any], prefix: str) -> str:
 
 def opening_pool_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
     opening_times: list[str] = []
-    for value in item.get("known_times", []):
-        if not isinstance(value, dict):
-            continue
-        reason = str(value.get("reason") or "").lower()
-        if not any(marker in reason for marker in ("listing", "opening", "launch", "上线", "开盘")):
-            continue
-        text = str(
-            value.get("time") or value.get("startedTime") or value.get("start_time") or ""
-        ).strip()
+    for value in opening_known_time_rows(item):
+        text = str(opening_known_time_value(value)).strip()
         if text and text not in opening_times:
             opening_times.append(text)
 
@@ -6708,6 +6705,17 @@ def opening_pool_rows(item: dict[str, Any]) -> list[dict[str, Any]]:
         row = missing_time_rows[0]
         row["start_time_utc8"] = opening_times[0]
         rows.append(row)
+    if not rows and not missing_time_rows and len(opening_times) == 1:
+        rows.append(
+            {
+                "chain": CHAIN,
+                "pool_id": "",
+                "start_time_utc8": opening_times[0],
+                "source": "canonical_opening_known_time",
+                "opening_anchor_status": "discovery_pending",
+                "quote_address": USDT,
+            }
+        )
     return rows
 
 

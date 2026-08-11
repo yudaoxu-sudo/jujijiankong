@@ -269,6 +269,13 @@ def install_guard(repo_root, offline_tmp_root):
                 "sniper-offline-guard: mutation outside offline temp blocked (%s)" % event
             )
 
+    def _require_temp_fd(fd, event):
+        path = _fd_base(fd)
+        if path is None or not _in_temp(path):
+            raise RuntimeError(
+                "sniper-offline-guard: mutation outside offline temp blocked (%s)" % event
+            )
+
     def _reject_env_path(path):
         name = _os.path.basename(path)
         if name.lower().startswith(".env") and path != repo_example_env:
@@ -375,6 +382,9 @@ def install_guard(repo_root, offline_tmp_root):
             argv = args[1] if len(args) > 1 else None
             env = args[2] if len(args) > 2 else None
             _require_guarded_python_child(executable, argv, env)
+            return
+        if event == "os.chmod" and args and isinstance(args[0], int):
+            _require_temp_fd(args[0], event)
             return
         if event in _SINGLE_PATH_MUTATIONS:
             path_index, dir_fd_index = _SINGLE_PATH_MUTATIONS[event]
@@ -624,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "alpha_project_watch.py",
         ROOT / "scripts" / "alpha_holder_concentration_watch.py",
         ROOT / "scripts" / "alpha_liquidity_retention_watch.py",
+        ROOT / "scripts" / "alpha_onboarding_preflight.py",
         ROOT / "scripts" / "alpha_prelaunch_research.py",
         ROOT / "scripts" / "alpha_prelaunch_watch.py",
         ROOT / "scripts" / "alpha_opening_block_watch.py",
@@ -649,6 +660,9 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "project_continuity_local.py",
         ROOT / "scripts" / "project_continuity_acceptance.py",
         ROOT / "scripts" / "test_project_continuity_acceptance.py",
+        ROOT / "scripts" / "test_alpha_onboarding_preflight.py",
+        ROOT / "scripts" / "test_generic_monitoring_pipeline.py",
+        ROOT / "scripts" / "test_generic_onboarding_identity.py",
         ROOT / "scripts" / "test_sniper_engine_units.py",
         ROOT / "scripts" / "test_aeon_monitor_regression.py",
         ROOT / "scripts" / "test_dos_prelaunch_config.py",
@@ -2093,6 +2107,28 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
+    generic_onboarding_test = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "scripts.test_alpha_onboarding_preflight",
+            "scripts.test_generic_onboarding_identity",
+            "scripts.test_generic_monitoring_pipeline",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    checks.append(
+        (
+            "generic Alpha onboarding pipeline regression tests",
+            generic_onboarding_test.returncode == 0,
+            generic_onboarding_test.stderr.strip()
+            or generic_onboarding_test.stdout.strip(),
+        )
+    )
+
     sniper_unit_test = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "test_sniper_engine_units.py")],
         cwd=ROOT,
@@ -2786,8 +2822,15 @@ assert readback_gate['can_follow'] is False, readback_gate
             and 'wait "$liquidity_pid"' in fast_lane_text
             and "ALPHA_WATCHLIST_PATH" in fast_lane_text
             and "BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS" in fast_lane_text
-            and "watchlist_policy_status" in fast_lane_text
-            and "runtime_policy_status" in fast_lane_text
+            and "select_and_materialize_watchlist" in fast_lane_text
+            and "watchlist_policy_status" not in fast_lane_text
+            and "runtime_policy_status" not in fast_lane_text
+            and "configured_policy_status" not in fast_lane_text
+            and 'export ALPHA_WATCHLIST_PATH="$materialized_watchlist"'
+            in fast_lane_text
+            and fast_lane_text.index("select_and_materialize_watchlist")
+            < fast_lane_text.index("alpha_onboarding_preflight.py")
+            < fast_lane_text.index("alpha_prelaunch_watch.py")
             and "DISABLE_TELEGRAM" in fast_lane_text
             and "ALPHA_HOLDER_TELEGRAM=0" in fast_lane_text
             and '--failure-file "$FAST_LANE_FAILURE_FILE"'
@@ -2899,6 +2942,15 @@ assert readback_gate['can_follow'] is False, readback_gate
             and "MONITOR_DISABLED_PROJECTS" in server_run_text
             and "step failed with status" in server_run_text
             and "RUNTIME_HEALTH_FAILURE_FILE" in server_run_text
+            and "select_and_materialize_watchlist" in server_run_text
+            and "watchlist_policy_status" not in server_run_text
+            and "runtime_policy_status" not in server_run_text
+            and "configured_policy_status" not in server_run_text
+            and 'export ALPHA_WATCHLIST_PATH="$materialized_watchlist"'
+            in server_run_text
+            and server_run_text.index("select_and_materialize_watchlist")
+            < server_run_text.index("alpha_onboarding_preflight.py")
+            < server_run_text.index("alpha_project_watch.py")
             and runtime_health_run in server_run_text
             and verification_run in server_run_text
             and server_run_text.index(verification_run) < server_run_text.index(runtime_health_run)
@@ -3334,6 +3386,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "alpha_project_watch.py"),
         str(ROOT / "scripts" / "alpha_holder_concentration_watch.py"),
         str(ROOT / "scripts" / "alpha_liquidity_retention_watch.py"),
+        str(ROOT / "scripts" / "alpha_onboarding_preflight.py"),
         str(ROOT / "scripts" / "alpha_prelaunch_research.py"),
         str(ROOT / "scripts" / "alpha_prelaunch_watch.py"),
         str(ROOT / "scripts" / "alpha_opening_block_watch.py"),
@@ -3354,6 +3407,9 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "runtime_health_watch.py"),
         str(ROOT / "scripts" / "project_continuity_acceptance.py"),
         str(ROOT / "scripts" / "test_project_continuity_acceptance.py"),
+        str(ROOT / "scripts" / "test_alpha_onboarding_preflight.py"),
+        str(ROOT / "scripts" / "test_generic_monitoring_pipeline.py"),
+        str(ROOT / "scripts" / "test_generic_onboarding_identity.py"),
         str(ROOT / "scripts" / "test_sniper_engine_units.py"),
         str(ROOT / "scripts" / "test_aeon_monitor_regression.py"),
         str(ROOT / "scripts" / "test_dos_prelaunch_config.py"),
@@ -6498,8 +6554,10 @@ assert (project_dir / 'logs').is_dir(), project_dir
     registry_test_code = """
 from pathlib import Path
 from scripts.ingest_alpha_signal import parse_signal
+import sniper_engine.project_registry as project_registry
 from sniper_engine.project_registry import merge_signal, read_json, REGISTRY_PATH, SUMMARY_PATH
 
+project_registry.LOCK_PATH = REGISTRY_PATH.with_name('sniper_project_registry_test.lock')
 for path in [REGISTRY_PATH, SUMMARY_PATH]:
     path.unlink(missing_ok=True)
 

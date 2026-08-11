@@ -824,6 +824,25 @@ class AeonSignalParsingRegressionTests(unittest.TestCase):
     def test_opening_sprint_retries_opened_incomplete_within_existing_bounds(
         self,
     ) -> None:
+        if os.environ.get("SNIPER_OFFLINE_TMP_ROOT"):
+            source = (ROOT / "scripts" / "alpha_opening_sprint.sh").read_text(
+                encoding="utf-8"
+            )
+            required_contract = (
+                'event.get("status") == "opened"',
+                "and not opening_coverage_complete(event)",
+                'print("1")',
+                "for ((i = 1; i < max_runs; i++)); do",
+                'secs="$(min_seconds_until)"',
+                "if (( secs <= 0 || secs > window )); then",
+                "if (( remaining <= interval + post_seconds )); then",
+                'sleep "$interval"',
+                "run_once\ndone",
+            )
+            positions = [source.index(item) for item in required_contract]
+            self.assertEqual(positions, sorted(positions))
+            return
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             scripts_dir = root / "scripts"
@@ -3536,22 +3555,50 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
         self.assertIn("SIGNAL_RUNTIME_CONTEXT=0", fast)
         self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", fast)
         self.assertIn("BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS", heavy)
-        self.assertIn("watchlist_policy_status", fast)
-        self.assertIn("watchlist_policy_status", heavy)
-        self.assertIn("runtime_policy_status", fast)
-        self.assertIn("runtime_policy_status", heavy)
-        self.assertIn("configured_policy_status", fast)
-        self.assertIn("configured_policy_status", heavy)
+        self.assertIn("select_and_materialize_watchlist", fast)
+        self.assertIn("select_and_materialize_watchlist", heavy)
+        self.assertNotIn("watchlist_policy_status", fast)
+        self.assertNotIn("watchlist_policy_status", heavy)
+        self.assertNotIn("runtime_policy_status", fast)
+        self.assertNotIn("runtime_policy_status", heavy)
+        self.assertNotIn("configured_policy_status", fast)
+        self.assertNotIn("configured_policy_status", heavy)
+        for label, source, downstream in (
+            ("fast", fast, "alpha_prelaunch_watch.py"),
+            ("heavy", heavy, "alpha_project_watch.py"),
+        ):
+            with self.subTest(cycle=label):
+                materialize_index = source.index(
+                    "select_and_materialize_watchlist"
+                )
+                export_index = source.index(
+                    'export ALPHA_WATCHLIST_PATH="$materialized_watchlist"'
+                )
+                preflight_index = source.index(
+                    "alpha_onboarding_preflight.py",
+                    materialize_index,
+                )
+                self.assertLess(
+                    source.index("configured_watchlist"),
+                    materialize_index,
+                )
+                self.assertLess(materialize_index, export_index)
+                self.assertLess(export_index, preflight_index)
+                self.assertLess(preflight_index, source.index(downstream))
+                self.assertIn(
+                    "Alpha watchlist cycle snapshot unavailable",
+                    source,
+                )
         self.assertLess(
-            fast.index("configured_policy_status"),
+            fast.index("configured_watchlist"),
             fast.index("alpha_prelaunch_watch.py"),
         )
         self.assertLess(
-            heavy.index("configured_policy_status"),
+            heavy.index("configured_watchlist"),
             heavy.index("alpha_project_watch.py"),
         )
-        self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', fast)
-        self.assertIn('[[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]', heavy)
+        self.assertIn('configured_watchlist="${ALPHA_WATCHLIST_PATH:-}"', fast)
+        self.assertIn('configured_watchlist="${ALPHA_WATCHLIST_PATH:-}"', heavy)
         self.assertIn(
             "flock is required for overlap protection",
             fast,
@@ -21779,7 +21826,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                         "snapshot_coherent": True,
                         "configuration_hash": "a" * 64,
                         "as_of_block": 100,
-                        "as_of_block_hash": cls._hash("b"),
+                        "as_of_block_hash": cls._hash("9"),
                         "pools": [
                             {
                                 "address": manager,
@@ -22483,6 +22530,39 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(scope["pool_count"], 2)
         self.assertEqual(scope["v3_pool_count"], 1)
         self.assertEqual(scope["v4_pool_count"], 1)
+        self.assertEqual(
+            scope["snapshot_refs"],
+            [
+                {
+                    "block": 100,
+                    "block_hash": self._hash("9"),
+                }
+            ],
+        )
+
+        for field, block_hash in (
+            ("opening_v3_pool_scope", "0x" + "0" * 64),
+            ("opening_v4_pool_scope", self._hash("b")),
+        ):
+            invalid_snapshot = copy.deepcopy(payload)
+            invalid_snapshot["events"][0][field]["as_of_block_hash"] = block_hash
+            self.assertFalse(
+                holder.opening_verified_pool_scope(
+                    invalid_snapshot, "TEST", "bsc", token
+                )["complete"]
+            )
+
+        for field in (
+            "opening_v3_pool_scope",
+            "opening_v4_pool_scope",
+        ):
+            invalid_height = copy.deepcopy(payload)
+            invalid_height["events"][0][field]["as_of_block"] = True
+            self.assertFalse(
+                holder.opening_verified_pool_scope(
+                    invalid_height, "TEST", "bsc", token
+                )["complete"]
+            )
 
         classification_fields = (
             "provider_error_count",
@@ -22548,7 +22628,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         event["opening_v3_pool_scope"]["as_of_block"] = 200
         event["opening_v3_pool_scope"]["as_of_block_hash"] = self._hash("c")
         event["opening_v4_pool_scope"]["as_of_block"] = 200
-        event["opening_v4_pool_scope"]["as_of_block_hash"] = self._hash("d")
+        event["opening_v4_pool_scope"]["as_of_block_hash"] = self._hash("c")
         self.assertEqual(
             holder.opening_verified_pool_scope(
                 refreshed,
@@ -22557,6 +22637,60 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 token,
             )["scope_hash"],
             scope["scope_hash"],
+        )
+
+        different_snapshot_heights = copy.deepcopy(payload)
+        later_event = copy.deepcopy(
+            different_snapshot_heights["events"][0]
+        )
+        later_event["opening_v3_pool_scope"]["as_of_block"] = 101
+        later_event["opening_v3_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("c")
+        later_event["opening_v4_pool_scope"]["as_of_block"] = 102
+        later_event["opening_v4_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("d")
+        different_snapshot_heights["events"].append(later_event)
+        multi_snapshot_scope = holder.opening_verified_pool_scope(
+            different_snapshot_heights,
+            "TEST",
+            "bsc",
+            token,
+        )
+        self.assertTrue(multi_snapshot_scope["complete"])
+        self.assertEqual(
+            multi_snapshot_scope["snapshot_refs"],
+            [
+                {"block": 100, "block_hash": self._hash("9")},
+                {"block": 101, "block_hash": self._hash("c")},
+                {"block": 102, "block_hash": self._hash("d")},
+            ],
+        )
+
+        cross_event_hash_conflict = copy.deepcopy(payload)
+        conflicting_snapshot_event = copy.deepcopy(
+            cross_event_hash_conflict["events"][0]
+        )
+        conflicting_snapshot_event["opening_v3_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("b")
+        conflicting_snapshot_event["opening_v4_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("b")
+        cross_event_hash_conflict["events"].append(
+            conflicting_snapshot_event
+        )
+        rejected_snapshot_conflict = holder.opening_verified_pool_scope(
+            cross_event_hash_conflict,
+            "TEST",
+            "bsc",
+            token,
+        )
+        self.assertFalse(rejected_snapshot_conflict["complete"])
+        self.assertEqual(
+            rejected_snapshot_conflict["status"],
+            "current_opening_scope_incomplete",
         )
 
         persisted = {
@@ -22575,6 +22709,11 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         )
         self.assertEqual(fallback["source"], "state")
         self.assertEqual(fallback["pool_scope"], scope["pool_scope"])
+        self.assertNotIn("snapshot_refs", fallback)
+        self.assertEqual(
+            holder.opening_scope_canonical_issue("bsc", fallback),
+            "liquidity_opening_scope_hash_unavailable",
+        )
 
         flow_incomplete = copy.deepcopy(payload)
         flow_event = flow_incomplete["events"][0]
@@ -23650,7 +23789,11 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             mock.patch.object(
                 holder,
                 "liquidity_checkpoint_block_hash",
-                return_value=self._hash("a"),
+                side_effect=lambda _chain, block: (
+                    self._hash("9")
+                    if block == 100
+                    else self._hash("a")
+                ),
             ),
             mock.patch.dict(
                 os.environ,
@@ -23769,7 +23912,11 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             mock.patch.object(
                 holder,
                 "liquidity_checkpoint_block_hash",
-                return_value=self._hash("a"),
+                side_effect=lambda _chain, block: (
+                    self._hash("9")
+                    if block == 100
+                    else self._hash("a")
+                ),
             ),
             mock.patch.dict(
                 os.environ,
@@ -26560,6 +26707,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
 
     def test_liquidity_cursor_rebaseline_then_advances_previous_plus_one(self) -> None:
         import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
 
         payload = self._opening_payload()
         token = self._address("1")
@@ -26622,7 +26770,11 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             mock.patch.object(
                 holder,
                 "liquidity_checkpoint_block_hash",
-                return_value=self._hash("e"),
+                side_effect=lambda _chain, block: (
+                    self._hash("9")
+                    if block == 100
+                    else self._hash("e")
+                ),
             ),
             mock.patch.dict(
                 os.environ,
@@ -26668,6 +26820,21 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                     "fee": 3000,
                 }
             )
+            current_scope = holder.opening_verified_pool_scope(
+                payload, "TEST", "bsc", token
+            )
+            forged_expanded = {
+                **copy.deepcopy(second_state),
+                "scope_hash": current_scope["scope_hash"],
+                "pool_scope": current_scope["pool_scope"],
+                "pool_count": current_scope["pool_count"],
+                "scope_coverage_from_block": 0,
+            }
+            recovery = fast.select_current_scope_recovery(
+                current_scope, second_state, forged_expanded
+            )
+            self.assertEqual(recovery["source"], "standalone")
+            self.assertEqual(recovery["seed"], second_state)
             third, third_state = holder.build_token_liquidity_retention(
                 item={"chain": "bsc"},
                 symbol="TEST",
@@ -26677,7 +26844,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 decimals=18,
                 supply_raw=10**24,
                 opening_payload=payload,
-                liquidity_state=second_state,
+                liquidity_state=recovery["seed"],
             )
             assert third_state is not None
             payload["events"][0]["opening_v3_pool_scope"][
@@ -26708,6 +26875,7 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
         self.assertTrue(third["scope_changed"])
         self.assertEqual(third["scan_from_block"], 991)
         self.assertEqual(third["alert_from_block"], 991)
+        self.assertNotEqual(third_state["scope_coverage_from_block"], 0)
         self.assertIsNotNone(third_state)
         self.assertEqual(shrink["status"], "coverage_gap")
         self.assertEqual(
@@ -26715,6 +26883,513 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
             "liquidity_scope_not_strict_expansion",
         )
         self.assertIsNone(shrink_state)
+
+    def test_liquidity_scope_rebaseline_verifies_previous_checkpoint(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload,
+            "TEST",
+            "bsc",
+            token,
+        )
+        state = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "pool_count": scope["pool_count"],
+            "scope_coverage_from_block": 90,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": False,
+        }
+        payload["events"][0]["opening_v3_pool_scope"]["pools"].append(
+            {
+                "address": self._address("d"),
+                "factory": self._address("4"),
+                "token0": token,
+                "token1": self._address("2"),
+                "fee": 3000,
+            }
+        )
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+
+        for canonical, reason, reorged in (
+            ("", "liquidity_checkpoint_hash_unavailable", False),
+            (
+                self._hash("b"),
+                "liquidity_checkpoint_hash_mismatch",
+                True,
+            ),
+        ):
+            with self.subTest(reason=reason):
+                logs = mock.Mock(return_value=([], [], False, 130, {}))
+                with (
+                    mock.patch.object(
+                        holder,
+                        "retention_window",
+                        return_value=active,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "bounded_retention_liquidity_logs",
+                        logs,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "liquidity_checkpoint_block_hash",
+                        side_effect=lambda _chain, block: (
+                            self._hash("9")
+                            if block == 100
+                            else canonical
+                            if block == 120
+                            else self._hash("c")
+                        ),
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                            "ALPHA_RETENTION_LIQUIDITY_SCOPE_CHANGE_RESCAN_BLOCKS": "10",
+                        },
+                    ),
+                ):
+                    flow, next_state = (
+                        holder.build_token_liquidity_retention(
+                            item={"chain": "bsc"},
+                            symbol="TEST",
+                            chain="bsc",
+                            token=token,
+                            tip=130,
+                            decimals=18,
+                            supply_raw=10**24,
+                            opening_payload=payload,
+                            liquidity_state=state,
+                        )
+                    )
+
+                logs.assert_not_called()
+                self.assertEqual(flow["status"], "coverage_gap")
+                self.assertEqual(flow["reason"], reason)
+                self.assertIs(
+                    flow.get("checkpoint_reorg_recovery", False),
+                    reorged,
+                )
+                self.assertIsNone(next_state)
+
+    def test_liquidity_scope_rebaseline_verifies_all_opening_snapshots(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        later_event = copy.deepcopy(payload["events"][0])
+        later_event["opening_v3_pool_scope"]["as_of_block"] = 101
+        later_event["opening_v3_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("c")
+        later_event["opening_v4_pool_scope"]["as_of_block"] = 102
+        later_event["opening_v4_pool_scope"][
+            "as_of_block_hash"
+        ] = self._hash("d")
+        payload["events"].append(later_event)
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+
+        for canonical_by_block, reason, expected_queries in (
+            (
+                {
+                    100: self._hash("9"),
+                    101: self._hash("c"),
+                    102: "",
+                },
+                "liquidity_opening_scope_hash_unavailable",
+                [100, 101, 102],
+            ),
+            (
+                {
+                    100: self._hash("9"),
+                    101: self._hash("e"),
+                },
+                "liquidity_opening_scope_hash_mismatch",
+                [100, 101],
+            ),
+        ):
+            with self.subTest(reason=reason):
+                queries: list[int] = []
+                logs = mock.Mock(
+                    return_value=([], [], False, 130, {})
+                )
+
+                def canonical(_chain: str, block: int) -> str:
+                    queries.append(block)
+                    return canonical_by_block.get(block, self._hash("f"))
+
+                with (
+                    mock.patch.object(
+                        holder,
+                        "retention_window",
+                        return_value=active,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "bounded_retention_liquidity_logs",
+                        logs,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "liquidity_checkpoint_block_hash",
+                        side_effect=canonical,
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                        },
+                    ),
+                ):
+                    flow, next_state = (
+                        holder.build_token_liquidity_retention(
+                            item={"chain": "bsc"},
+                            symbol="TEST",
+                            chain="bsc",
+                            token=token,
+                            tip=130,
+                            decimals=18,
+                            supply_raw=10**24,
+                            opening_payload=payload,
+                            liquidity_state={},
+                        )
+                    )
+
+                logs.assert_not_called()
+                self.assertEqual(queries, expected_queries)
+                self.assertEqual(flow["status"], "coverage_gap")
+                self.assertEqual(flow["reason"], reason)
+                self.assertIsNone(next_state)
+
+    def test_liquidity_scope_rebaseline_requires_confirmed_opening_snapshot(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        for key in (
+            "opening_v3_pool_scope",
+            "opening_v4_pool_scope",
+        ):
+            payload["events"][0][key]["as_of_block"] = 131
+        logs = mock.Mock()
+        canonical = mock.Mock(return_value=self._hash("9"))
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+
+        with (
+            mock.patch.object(
+                holder,
+                "retention_window",
+                return_value=active,
+            ),
+            mock.patch.object(
+                holder,
+                "bounded_retention_liquidity_logs",
+                logs,
+            ),
+            mock.patch.object(
+                holder,
+                "liquidity_checkpoint_block_hash",
+                canonical,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                },
+            ),
+        ):
+            flow, next_state = holder.build_token_liquidity_retention(
+                item={"chain": "bsc"},
+                symbol="TEST",
+                chain="bsc",
+                token=token,
+                tip=130,
+                decimals=18,
+                supply_raw=10**24,
+                opening_payload=payload,
+                liquidity_state={},
+            )
+
+        logs.assert_not_called()
+        canonical.assert_not_called()
+        self.assertEqual(flow["status"], "coverage_gap")
+        self.assertEqual(
+            flow["reason"],
+            "liquidity_opening_scope_hash_unavailable",
+        )
+        self.assertIsNone(next_state)
+
+    def test_liquidity_scope_rebaseline_rechecks_opening_snapshot_before_commit(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+
+        def fetch(
+            _chain: str,
+            pools: list[dict[str, object]],
+            _from_block: int,
+            to_block: int,
+            **_event_scope: object,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            scope_count = len(
+                holder.retention_liquidity_query_scopes(pools)
+            )
+            return (
+                [],
+                [],
+                False,
+                to_block,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": to_block,
+                    "selected_to_block": to_block,
+                    "attempt_count": 1,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
+            )
+
+        for post_hash, reason in (
+            ("", "liquidity_opening_scope_hash_unavailable"),
+            (
+                self._hash("b"),
+                "liquidity_opening_scope_hash_mismatch",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                opening_queries = 0
+
+                def canonical(_chain: str, block: int) -> str:
+                    nonlocal opening_queries
+                    if block == 100:
+                        opening_queries += 1
+                        return (
+                            self._hash("9")
+                            if opening_queries == 1
+                            else post_hash
+                        )
+                    return self._hash("c")
+
+                logs = mock.Mock(side_effect=fetch)
+                with (
+                    mock.patch.object(
+                        holder,
+                        "retention_window",
+                        return_value=active,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "bounded_retention_liquidity_logs",
+                        logs,
+                    ),
+                    mock.patch.object(
+                        holder,
+                        "liquidity_checkpoint_block_hash",
+                        side_effect=canonical,
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "ALPHA_RETENTION_LIQUIDITY_BOOTSTRAP_BLOCKS": "10",
+                            "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                        },
+                    ),
+                ):
+                    flow, next_state = (
+                        holder.build_token_liquidity_retention(
+                            item={"chain": "bsc"},
+                            symbol="TEST",
+                            chain="bsc",
+                            token=token,
+                            tip=130,
+                            decimals=18,
+                            supply_raw=10**24,
+                            opening_payload=payload,
+                            liquidity_state={},
+                        )
+                    )
+
+                logs.assert_called_once()
+                self.assertEqual(opening_queries, 2)
+                self.assertEqual(flow["status"], "coverage_gap")
+                self.assertEqual(flow["reason"], reason)
+                self.assertIsNone(next_state)
+
+    def test_same_scope_checkpoint_before_opening_ref_revalidates_ref(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+
+        payload = self._opening_payload()
+        token = self._address("1")
+        scope = holder.opening_verified_pool_scope(
+            payload, "TEST", "bsc", token
+        )
+        state = {
+            "scope_state_schema_version": (
+                holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+            ),
+            "scope_hash": scope["scope_hash"],
+            "pool_scope": scope["pool_scope"],
+            "pool_count": scope["pool_count"],
+            "scope_coverage_from_block": 90,
+            "latest_block": 99,
+            "latest_block_hash": self._hash("a"),
+            "catchup_active": False,
+        }
+        query_count = len(
+            holder.retention_liquidity_query_scopes(scope["pool_scope"])
+        )
+        logs = mock.Mock(
+            return_value=(
+                [],
+                [],
+                False,
+                130,
+                {
+                    "query_scope_complete": True,
+                    "query_count": query_count,
+                    "scope_batch_count": query_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": query_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": 130,
+                    "selected_to_block": 130,
+                    "attempt_count": 1,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
+            )
+        )
+
+        def build(candidate_state, canonical_hash):
+            with (
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value={"status": "active", "age_hours": 1},
+                ),
+                mock.patch.object(
+                    holder, "bounded_retention_liquidity_logs", logs
+                ),
+                mock.patch.object(
+                    holder,
+                    "liquidity_checkpoint_block_hash",
+                    side_effect=canonical_hash,
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                    },
+                ),
+            ):
+                return holder.build_token_liquidity_retention(
+                    item={"chain": "bsc"},
+                    symbol="TEST",
+                    chain="bsc",
+                    token=token,
+                    tip=130,
+                    decimals=18,
+                    supply_raw=10**24,
+                    opening_payload=payload,
+                    liquidity_state=candidate_state,
+                )
+
+        flow, next_state = build(
+            state,
+            lambda _chain, block: (
+                self._hash("a")
+                if block == 99
+                else self._hash("b")
+                if block == 100
+                else self._hash("c")
+            ),
+        )
+
+        logs.assert_not_called()
+        self.assertEqual(
+            flow["reason"], "liquidity_opening_scope_hash_mismatch"
+        )
+        self.assertIsNone(next_state)
+
+        logs.reset_mock()
+        covered_queries: list[int] = []
+        covered_state = {
+            **state,
+            "latest_block": 120,
+            "latest_block_hash": self._hash("a"),
+        }
+
+        def canonical_covered(_chain: str, block: int) -> str:
+            covered_queries.append(block)
+            if block == 120:
+                return self._hash("a")
+            return self._hash("c")
+
+        _covered_flow, covered_next_state = build(
+            covered_state,
+            canonical_covered,
+        )
+        logs.assert_called_once()
+        self.assertNotIn(100, covered_queries)
+        self.assertIsNotNone(covered_next_state)
 
     def test_selected_catchup_window_can_deliver_only_live_events(
         self,
@@ -27030,8 +27705,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 "liquidity_checkpoint_block_hash",
                 side_effect=[
                     self._hash("b"),
+                    self._hash("9"),
                     self._hash("c"),
                     self._hash("c"),
+                    self._hash("9"),
                 ],
             ),
             mock.patch.dict(
@@ -27087,8 +27764,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 "liquidity_checkpoint_block_hash",
                 side_effect=[
                     self._hash("b"),
+                    self._hash("9"),
                     self._hash("c"),
                     self._hash("c"),
+                    self._hash("9"),
                 ],
             ),
             mock.patch.dict(
@@ -27167,8 +27846,10 @@ class ContinuousLiquidityRetentionRegressionTests(unittest.TestCase):
                 "liquidity_checkpoint_block_hash",
                 side_effect=[
                     self._hash("b"),
+                    self._hash("9"),
                     self._hash("c"),
                     self._hash("c"),
+                    self._hash("9"),
                 ],
             ),
             mock.patch.dict(
@@ -27693,7 +28374,11 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
                 mock.patch.object(
                     holder,
                     "liquidity_checkpoint_block_hash",
-                    return_value=self._hash("f"),
+                    side_effect=lambda _chain, block: (
+                        self._hash("9")
+                        if block == 100
+                        else self._hash("f")
+                    ),
                 ),
                 mock.patch.dict(
                     os.environ,
@@ -28592,6 +29277,429 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
             ),
             "seed_conflict_scope_not_strict_expansion",
         )
+
+    def test_fast_liquidity_current_scope_recovery_is_strict(self) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        current = holder.opening_verified_pool_scope(
+            self._opening_payload(), "TEST", "bsc", self._address("1")
+        )
+
+        def checkpoint(pools):
+            scope = {
+                "scope_hash": holder.liquidity_pool_scope_hash(pools),
+                "pool_scope": pools,
+            }
+            return self._progress_seeds(holder, scope)[0]
+
+        narrow = checkpoint(current["pool_scope"][:1])
+        expanded = checkpoint(current["pool_scope"])
+        pending = {
+            "reconcile_id": "1" * 64,
+            "first_seen_at": "2026-08-11T00:00:00+00:00",
+            "source_event": {"tx": self._hash("c")},
+        }
+        for seed, minute in ((narrow, "01"), (expanded, "02")):
+            seed["reconciliation"]["pending"] = [copy.deepcopy(pending)]
+            seed["reconciliation"]["updated_at"] = (
+                f"2026-08-11T00:{minute}:00+00:00"
+            )
+        recovered = fast.select_current_scope_recovery(
+            current, narrow, expanded
+        )
+        self.assertEqual(recovered["source"], "standalone")
+        self.assertEqual(recovered["seed"], narrow)
+
+        mutated = copy.deepcopy(expanded)
+        mutated["reconciliation"]["pending"][0]["source_event"] = {
+            "tx": self._hash("d")
+        }
+        self.assertTrue(
+            fast.liquidity_reconciliation_dominates(mutated, narrow)
+        )
+        self.assertEqual(
+            fast.select_current_scope_recovery(current, narrow, mutated),
+            {},
+        )
+
+        bootstrap = {
+            key: value for key, value in expanded.items()
+            if key not in {"latest_block", "latest_block_hash",
+                           "catchup_active", "catchup_live_from_block",
+                           "reconciliation"}
+        }
+        bootstrap.update({"bootstrap_retry_pending": True,
+                          "bootstrap_retry_window_blocks": 8})
+        for rejected in (
+            {**expanded, "latest_block": 121,
+             "latest_block_hash": self._hash("b")},
+            bootstrap,
+        ):
+            with self.subTest(rejected=fast.liquidity_seed_state_kind(rejected)):
+                self.assertEqual(
+                    fast.select_current_scope_recovery(
+                        current, narrow, rejected
+                    ),
+                    {},
+                )
+
+    def test_fast_liquidity_scope_recovery_opening_reorg_preserves_state(
+        self,
+    ) -> None:
+        import scripts.alpha_holder_concentration_watch as holder
+        import scripts.alpha_liquidity_retention_watch as fast
+
+        token = self._address("1")
+        key = f"bsc:{token}"
+        opening = self._opening_payload()
+        narrow_scope = holder.opening_verified_pool_scope(
+            opening,
+            "TEST",
+            "bsc",
+            token,
+        )
+        opening["events"][0]["opening_v3_pool_scope"]["pools"].append(
+            {
+                "address": self._address("d"),
+                "factory": self._address("4"),
+                "token0": token,
+                "token1": self._address("2"),
+                "fee": 3000,
+            }
+        )
+        expanded_scope = holder.opening_verified_pool_scope(
+            opening,
+            "TEST",
+            "bsc",
+            token,
+        )
+
+        def checkpoint(scope):
+            value = self._progress_seeds(holder, scope)[0]
+            value.update(
+                {
+                    "latest_block": 120,
+                    "latest_block_hash": self._hash("a"),
+                    "scope_coverage_from_block": 90,
+                    "catchup_active": False,
+                }
+            )
+            value.pop("catchup_live_from_block", None)
+            return value
+
+        narrow = checkpoint(narrow_scope)
+        expanded = checkpoint(expanded_scope)
+        fast_payload = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {key: {"decimals": 18, "liquidity": narrow}},
+        }
+        retry_payload = {
+            "schema": fast.STATE_SCHEMA,
+            "tokens": {
+                key: {
+                    "decimals": 18,
+                    "liquidity": {
+                        "scope_state_schema_version": (
+                            holder.LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION
+                        ),
+                        "scope_hash": expanded_scope["scope_hash"],
+                        "pool_scope": expanded_scope["pool_scope"],
+                        "pool_count": expanded_scope["pool_count"],
+                        "scope_coverage_from_block": 90,
+                        "bootstrap_retry_pending": True,
+                        "bootstrap_retry_window_blocks": 8,
+                    },
+                }
+            },
+        }
+        holder_payload = {
+            "tokens": {
+                key: {
+                    "decimals": 18,
+                    "retention_flow": {"liquidity": expanded},
+                }
+            }
+        }
+        config = {
+            "items": [
+                {
+                    "symbol": "TEST",
+                    "priority": "P1_MONITOR",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": token}
+                    ],
+                }
+            ]
+        }
+        active = {
+            "status": "active",
+            "reason": "opening_to_30d_retention",
+            "opening_time_utc": "2026-07-30T00:00:00+00:00",
+            "age_hours": 1,
+        }
+        canonical = {
+            "opening": "",
+            "opening_post": "",
+            "opening_queries": 0,
+        }
+
+        def canonical_hash(_chain: str, block: int) -> str:
+            if block == 100:
+                canonical["opening_queries"] += 1
+                return (
+                    canonical["opening"]
+                    if canonical["opening_queries"] == 1
+                    else canonical["opening_post"]
+                )
+            if block == 131:
+                return self._hash("9")
+            if block == 120:
+                return self._hash("a")
+            return self._hash("c")
+
+        def fetch(
+            _chain: str,
+            pools: list[dict[str, object]],
+            _from_block: int,
+            to_block: int,
+            **_event_scope: object,
+        ) -> tuple[
+            list[dict[str, object]],
+            list[str],
+            bool,
+            int,
+            dict[str, object],
+        ]:
+            scope_count = len(
+                holder.retention_liquidity_query_scopes(pools)
+            )
+            return (
+                [],
+                [],
+                False,
+                to_block,
+                {
+                    "query_scope_complete": True,
+                    "query_count": scope_count,
+                    "scope_batch_count": scope_count,
+                    "query_chunk_count": 1,
+                    "expected_query_count": scope_count,
+                    "v4_manager_count": 1,
+                    "event_filter_count": 6,
+                    "applicable": True,
+                    "active": False,
+                    "requested_to_block": to_block,
+                    "selected_to_block": to_block,
+                    "attempt_count": 1,
+                    "complete_selected_window": True,
+                    "complete_requested_window": True,
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            config_path = temp / "watchlist.json"
+            opening_path = temp / "opening.json"
+            fast_state_path = temp / "fast-state.json"
+            holder_state_path = temp / "holder-state.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            opening_path.write_text(
+                json.dumps(opening), encoding="utf-8"
+            )
+            fast_state_path.write_text(
+                json.dumps(fast_payload), encoding="utf-8"
+            )
+            holder_state_path.write_text(
+                json.dumps(holder_payload), encoding="utf-8"
+            )
+            with (
+                mock.patch.object(fast, "CONFIG_PATH", config_path),
+                mock.patch.object(fast, "STATE_PATH", fast_state_path),
+                mock.patch.object(holder, "STATE_PATH", holder_state_path),
+                mock.patch.object(
+                    holder,
+                    "OPENING_CONTEXT_PATH",
+                    opening_path,
+                ),
+                mock.patch.object(
+                    holder,
+                    "retention_window",
+                    return_value=active,
+                ),
+                mock.patch.object(
+                    fast,
+                    "strict_token_metadata",
+                    return_value=(18, 10**24),
+                ),
+                mock.patch.object(holder, "latest_block", return_value=130),
+                mock.patch.object(
+                    holder,
+                    "bounded_retention_liquidity_logs",
+                    side_effect=fetch,
+                ) as logs,
+                mock.patch.object(
+                    holder,
+                    "liquidity_checkpoint_block_hash",
+                    side_effect=canonical_hash,
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ALPHA_RETENTION_LIQUIDITY_CONFIRMATION_BLOCKS": "0",
+                    },
+                ),
+            ):
+                ahead_opening = copy.deepcopy(opening)
+                for scope_key in (
+                    "opening_v3_pool_scope",
+                    "opening_v4_pool_scope",
+                ):
+                    ahead_opening["events"][0][scope_key][
+                        "as_of_block"
+                    ] = 131
+                opening_path.write_text(
+                    json.dumps(ahead_opening),
+                    encoding="utf-8",
+                )
+                ahead = fast.build_snapshot()
+                logs.assert_not_called()
+                opening_path.write_text(
+                    json.dumps(opening),
+                    encoding="utf-8",
+                )
+                unavailable = fast.build_snapshot()
+                canonical.update(
+                    {
+                        "opening": self._hash("9"),
+                        "opening_post": self._hash("b"),
+                        "opening_queries": 0,
+                    }
+                )
+                snapshot = fast.build_snapshot()
+                snapshot_opening_queries = canonical["opening_queries"]
+                logs.assert_called_once()
+                logs.reset_mock()
+                fast_state_path.write_text(
+                    json.dumps(retry_payload), encoding="utf-8"
+                )
+                holder_state_path.write_text(
+                    '{"tokens": {}}', encoding="utf-8"
+                )
+                canonical.update(
+                    {
+                        "opening": self._hash("b"),
+                        "opening_post": self._hash("b"),
+                        "opening_queries": 0,
+                    }
+                )
+                retry_reorg = fast.build_snapshot()
+                opening_path.write_text(
+                    '{"events": []}', encoding="utf-8"
+                )
+                retry_missing = fast.build_snapshot()
+
+            logs.assert_not_called()
+            self.assertEqual(snapshot_opening_queries, 2)
+            self.assertEqual(ahead["status"], "unhealthy")
+            self.assertEqual(ahead["_next_state"], fast_payload)
+            self.assertEqual(
+                ahead["issues"][0]["detail"],
+                "liquidity_opening_scope_hash_unavailable",
+            )
+            self.assertEqual(unavailable["status"], "unhealthy")
+            self.assertEqual(unavailable["_next_state"], fast_payload)
+            self.assertEqual(
+                unavailable["issues"][0]["detail"],
+                "liquidity_opening_scope_hash_unavailable",
+            )
+            self.assertEqual(
+                unavailable["projects"][0]["retention_flow"][
+                    "liquidity_retention"
+                ]["reason"],
+                "liquidity_opening_scope_hash_unavailable",
+            )
+            self.assertEqual(
+                unavailable["projects"][0]["runtime_diagnostic"][
+                    "reason_code"
+                ],
+                "liquidity_opening_scope_hash_unavailable",
+            )
+            self.assertEqual(snapshot["status"], "unhealthy")
+            self.assertEqual(
+                snapshot["issues"][0]["detail"],
+                "liquidity_opening_scope_hash_mismatch",
+            )
+            self.assertEqual(snapshot["_next_state"], fast_payload)
+            self.assertEqual(
+                snapshot["projects"][0]["retention_flow"][
+                    "liquidity_retention"
+                ]["reason"],
+                "liquidity_opening_scope_hash_mismatch",
+            )
+            self.assertEqual(
+                snapshot["projects"][0]["runtime_diagnostic"][
+                    "reason_code"
+                ],
+                "liquidity_opening_scope_hash_mismatch",
+            )
+            for blocked, reason in (
+                (
+                    retry_reorg,
+                    "liquidity_opening_scope_hash_mismatch",
+                ),
+                (
+                    retry_missing,
+                    "liquidity_opening_scope_hash_unavailable",
+                ),
+            ):
+                self.assertEqual(blocked["status"], "unhealthy")
+                self.assertEqual(blocked["issues"][0]["detail"], reason)
+                self.assertEqual(blocked["_next_state"], retry_payload)
+
+            for blocked_snapshot, retained_state in (
+                (ahead, fast_payload),
+                (snapshot, fast_payload),
+                (retry_reorg, retry_payload),
+                (retry_missing, retry_payload),
+            ):
+                fast_state_path.write_text(
+                    json.dumps(retained_state), encoding="utf-8"
+                )
+                with (
+                    mock.patch.object(fast, "OUT_DIR", temp),
+                    mock.patch.object(
+                        fast,
+                        "LATEST_PATH",
+                        temp / "latest.json",
+                    ),
+                    mock.patch.object(
+                        fast,
+                        "REPORT_PATH",
+                        temp / "latest.md",
+                    ),
+                    mock.patch.object(
+                        fast,
+                        "STATE_PATH",
+                        fast_state_path,
+                    ),
+                    mock.patch.object(
+                        fast,
+                        "build_snapshot",
+                        return_value=copy.deepcopy(blocked_snapshot),
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {"DISABLE_TELEGRAM": "1"},
+                    ),
+                ):
+                    self.assertEqual(fast.run_once(), 1)
+
+                saved = json.loads(
+                    fast_state_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(saved, retained_state)
 
     def test_fast_liquidity_invalid_seed_is_preserved_and_stops_provider(
         self,
@@ -29728,23 +30836,28 @@ class LiquidityFastLaneRegressionTests(unittest.TestCase):
         self.assertEqual(reorg["status"], "unhealthy")
         self.assertEqual(
             reorg["issues"][0]["detail"],
-            "seed_conflict_checkpoint_hash",
+            "liquidity_opening_scope_hash_unavailable",
         )
         self.assertEqual(reorg["_next_state"], fast_payload)
         reorg_diagnostic = reorg["projects"][0]["runtime_diagnostic"]
         self.assertEqual(set(reorg_diagnostic), set(diagnostic))
         self.assertEqual(
             reorg_diagnostic["reason_code"],
-            "seed_conflict_checkpoint_hash",
-        )
-        self.assertEqual(reorg_diagnostic["coverage_status"], "invalid")
-        self.assertEqual(reorg_diagnostic["cross_progress_source"], "none")
-        self.assertIsNone(reorg_diagnostic["latest_gap_blocks"])
-        self.assertIsNone(
-            reorg_diagnostic["live_boundary_shortfall_blocks"]
+            "liquidity_opening_scope_hash_unavailable",
         )
         self.assertEqual(
-            reorg_diagnostic["reconciliation_relation"], "not_applicable"
+            reorg_diagnostic["coverage_status"],
+            "incomplete_without_retry",
+        )
+        self.assertEqual(
+            reorg_diagnostic["cross_progress_source"], "standalone"
+        )
+        self.assertEqual(reorg_diagnostic["latest_gap_blocks"], 10)
+        self.assertEqual(
+            reorg_diagnostic["live_boundary_shortfall_blocks"], 0
+        )
+        self.assertEqual(
+            reorg_diagnostic["reconciliation_relation"], "dominates"
         )
 
     def test_fast_liquidity_delivery_failure_retains_checkpoint(self) -> None:

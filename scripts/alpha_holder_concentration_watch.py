@@ -475,6 +475,60 @@ def liquidity_checkpoint_block_hash(chain: str, block: int) -> str:
     )
 
 
+def opening_scope_canonical_issue(
+    chain: str,
+    scope: dict[str, Any],
+    *,
+    maximum_block: int | None = None,
+) -> str:
+    if scope.get("source") not in {"opening", "state"}:
+        return ""
+    refs = opening_scope_snapshot_refs(
+        scope,
+        maximum_block=maximum_block,
+    )
+    if refs is None:
+        return "liquidity_opening_scope_hash_unavailable"
+    for block, block_hash in refs:
+        canonical_hash = liquidity_checkpoint_block_hash(
+            chain,
+            block,
+        )
+        if not canonical_hash:
+            return "liquidity_opening_scope_hash_unavailable"
+        if canonical_hash != block_hash:
+            return "liquidity_opening_scope_hash_mismatch"
+    return ""
+
+
+def opening_scope_snapshot_refs(
+    scope: dict[str, Any],
+    *,
+    maximum_block: int | None = None,
+) -> list[tuple[int, str]] | None:
+    if scope.get("source") != "opening":
+        return None
+    refs = scope.get("snapshot_refs")
+    if not isinstance(refs, list) or not refs:
+        return None
+    normalized: list[tuple[int, str]] = []
+    for ref in refs:
+        if (
+            not isinstance(ref, dict)
+            or set(ref) != {"block", "block_hash"}
+            or type(ref.get("block")) is not int
+            or ref["block"] <= 0
+            or (
+                maximum_block is not None
+                and ref["block"] > maximum_block
+            )
+            or not valid_nonzero_hash32(ref.get("block_hash"))
+        ):
+            return None
+        normalized.append((ref["block"], norm(ref["block_hash"])))
+    return normalized
+
+
 def call_uint(chain: str, contract: str, data: str) -> int:
     raw = holder_rpc_call(
         chain,
@@ -1204,6 +1258,10 @@ def valid_hash32(value: Any) -> bool:
     return re.fullmatch(r"0x[a-f0-9]{64}", norm(str(value or ""))) is not None
 
 
+def valid_nonzero_hash32(value: Any) -> bool:
+    return valid_hash32(value) and int(norm(value)[2:], 16) != 0
+
+
 def valid_sha256(value: Any) -> bool:
     return re.fullmatch(r"[a-f0-9]{64}", norm(str(value or ""))) is not None
 
@@ -1580,6 +1638,7 @@ def opening_verified_pool_scope(
         }
 
     pools: list[dict[str, Any]] = []
+    snapshot_hash_by_block: dict[int, str] = {}
     for event in matching:
         v3_scope = event.get("opening_v3_pool_scope")
         v4_scope = event.get("opening_v4_pool_scope")
@@ -1641,8 +1700,9 @@ def opening_verified_pool_scope(
                 )
             )
             or not valid_sha256(v3_scope.get("configuration_hash"))
-            or not valid_hash32(v3_scope.get("as_of_block_hash"))
-            or int(v3_scope.get("as_of_block") or 0) <= 0
+            or not valid_nonzero_hash32(v3_scope.get("as_of_block_hash"))
+            or type(v3_scope.get("as_of_block")) is not int
+            or v3_scope.get("as_of_block") <= 0
             or not isinstance(v3_scope.get("pools"), list)
             or any(
                 not isinstance(row, dict)
@@ -1676,8 +1736,15 @@ def opening_verified_pool_scope(
         if v4_scope.get("applicable") is True and (
             v4_scope.get("snapshot_coherent") is not True
             or not valid_sha256(v4_scope.get("configuration_hash"))
-            or not valid_hash32(v4_scope.get("as_of_block_hash"))
-            or int(v4_scope.get("as_of_block") or 0) <= 0
+            or not valid_nonzero_hash32(v4_scope.get("as_of_block_hash"))
+            or type(v4_scope.get("as_of_block")) is not int
+            or v4_scope.get("as_of_block") <= 0
+            or (
+                v4_scope.get("as_of_block")
+                == v3_scope.get("as_of_block")
+                and norm(v4_scope.get("as_of_block_hash"))
+                != norm(v3_scope.get("as_of_block_hash"))
+            )
         ):
             return {
                 "status": "current_opening_scope_incomplete",
@@ -1690,6 +1757,34 @@ def opening_verified_pool_scope(
                 "v4_pool_count": 0,
                 "scope_hash": "",
             }
+        snapshot_refs = [
+            (
+                v3_scope["as_of_block"],
+                norm(v3_scope["as_of_block_hash"]),
+            )
+        ]
+        if v4_scope.get("applicable") is True:
+            snapshot_refs.append(
+                (
+                    v4_scope["as_of_block"],
+                    norm(v4_scope["as_of_block_hash"]),
+                )
+            )
+        for block, block_hash in snapshot_refs:
+            previous_hash = snapshot_hash_by_block.get(block)
+            if previous_hash is not None and previous_hash != block_hash:
+                return {
+                    "status": "current_opening_scope_incomplete",
+                    "complete": False,
+                    "source": "opening",
+                    "matching_event_count": len(matching),
+                    "pool_scope": [],
+                    "pool_count": 0,
+                    "v3_pool_count": 0,
+                    "v4_pool_count": 0,
+                    "scope_hash": "",
+                }
+            snapshot_hash_by_block[block] = block_hash
         v3_pools = []
         for row in v3_scope.get("pools", []):
             if not isinstance(row, dict):
@@ -1789,6 +1884,12 @@ def opening_verified_pool_scope(
             "v3_pool_count": 0,
             "v4_pool_count": 0,
             "scope_hash": "",
+            "snapshot_refs": [
+                {"block": block, "block_hash": block_hash}
+                for block, block_hash in sorted(
+                    snapshot_hash_by_block.items()
+                )
+            ],
         }
     scope_hash = liquidity_pool_scope_hash(normalized_pools)
     return {
@@ -1805,6 +1906,12 @@ def opening_verified_pool_scope(
             row["protocol"] == "v4_cl" for row in normalized_pools
         ),
         "scope_hash": scope_hash,
+        "snapshot_refs": [
+            {"block": block, "block_hash": block_hash}
+            for block, block_hash in sorted(
+                snapshot_hash_by_block.items()
+            )
+        ],
     }
 
 
@@ -6480,6 +6587,40 @@ def build_token_liquidity_retention(
     checkpoint_refresh = False
     effective_previous_latest = previous_latest
     verified_previous_hash = ""
+
+    def checkpoint_gap(
+        reason: str,
+        *,
+        reorged: bool = False,
+    ) -> tuple[dict[str, Any], None]:
+        return {
+            **window,
+            "status": "coverage_gap",
+            "reason": reason,
+            "coverage_mode": "verified_pool_indexed_topics",
+            "scope_complete": True,
+            "scope_hash": current_scope_hash,
+            "pool_count": len(pools),
+            "complete": False,
+            "selected_window_complete": False,
+            "log_error_count": 1,
+            "truncated": False,
+            "events_truncated": False,
+            "events": [],
+            "checkpoint_reorg_recovery": reorged,
+        }, None
+
+    opening_refs = opening_scope_snapshot_refs(
+        scope,
+        maximum_block=confirmed_tip,
+    )
+    if scope.get("source") == "opening" and opening_refs is None:
+        return checkpoint_gap("liquidity_opening_scope_hash_unavailable")
+    maximum_opening_ref = max(
+        (block for block, _block_hash in opening_refs or []),
+        default=0,
+    )
+
     bootstrap_retry_window = liquidity_state.get(
         "bootstrap_retry_window_blocks"
     )
@@ -6511,6 +6652,27 @@ def build_token_liquidity_retention(
     )
     if bootstrap_retry_pending:
         preferred_window_blocks = bootstrap_retry_window
+    if scope_rebaseline and previous_latest > 0:
+        previous_block_hash = str(
+            liquidity_state.get("latest_block_hash") or ""
+        ).lower()
+        canonical_previous_hash = liquidity_checkpoint_block_hash(
+            chain,
+            previous_latest,
+        )
+        if (
+            not valid_hash32(previous_block_hash)
+            or int(previous_block_hash[2:], 16) == 0
+            or not canonical_previous_hash
+        ):
+            return checkpoint_gap(
+                "liquidity_checkpoint_hash_unavailable"
+            )
+        if canonical_previous_hash != previous_block_hash:
+            return checkpoint_gap(
+                "liquidity_checkpoint_hash_mismatch",
+                reorged=True,
+            )
     if scope_rebaseline:
         if bootstrap_retry_pending:
             scan_from = scope_coverage_from
@@ -6549,21 +6711,9 @@ def build_token_liquidity_retention(
             or int(previous_block_hash[2:], 16) == 0
             or not canonical_previous_hash
         ):
-            return {
-                **window,
-                "status": "coverage_gap",
-                "reason": "liquidity_checkpoint_hash_unavailable",
-                "coverage_mode": "verified_pool_indexed_topics",
-                "scope_complete": True,
-                "scope_hash": current_scope_hash,
-                "pool_count": len(pools),
-                "complete": False,
-                "selected_window_complete": False,
-                "log_error_count": 1,
-                "truncated": False,
-                "events_truncated": False,
-                "events": [],
-            }, None
+            return checkpoint_gap(
+                "liquidity_checkpoint_hash_unavailable"
+            )
         if canonical_previous_hash != previous_block_hash:
             checkpoint_reorg_recovery = True
             try:
@@ -6615,6 +6765,23 @@ def build_token_liquidity_retention(
         else:
             verified_previous_hash = canonical_previous_hash
             scan_from = previous_latest + 1
+    direct_opening_proof_required = bool(
+        scope_rebaseline
+        or previous_latest <= 0
+        or checkpoint_reorg_recovery
+        or (
+            scope.get("source") == "opening"
+            and maximum_opening_ref > previous_latest
+        )
+    )
+    if direct_opening_proof_required:
+        opening_scope_issue = opening_scope_canonical_issue(
+            chain,
+            scope,
+            maximum_block=confirmed_tip,
+        )
+        if opening_scope_issue:
+            return checkpoint_gap(opening_scope_issue)
     alert_watermark_reinitialized = False
     if scope_rebaseline:
         alert_from = (
@@ -6733,6 +6900,17 @@ def build_token_liquidity_retention(
         coverage_metadata=coverage_metadata,
         alert_from_block=alert_from,
     )
+    if (
+        direct_opening_proof_required
+        and flow.get("selected_window_complete") is True
+    ):
+        opening_scope_issue = opening_scope_canonical_issue(
+            chain,
+            scope,
+            maximum_block=confirmed_tip,
+        )
+        if opening_scope_issue:
+            return checkpoint_gap(opening_scope_issue)
     next_reconciliation_state: dict[str, Any] | None = None
     if flow.get("selected_window_complete") is True:
         reconciliation_seed = (

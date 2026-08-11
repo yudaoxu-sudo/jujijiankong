@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = Path(os.environ.get("PROJECT_REGISTRY_PATH", ROOT / "output" / "project_registry" / "project_registry.json"))
 SUMMARY_PATH = Path(os.environ.get("PROJECT_REGISTRY_SUMMARY_PATH", ROOT / "output" / "project_registry" / "project_registry.md"))
+LOCK_PATH = ROOT / "output" / "locks" / "project_registry.lock"
 GENERIC_SYMBOLS = {"", "UNKNOWN", "LP", "POOL", "TOKEN", "V3", "V4", "BN", "BSC", "ALPHA"}
 NON_PROJECT_CONTRACT_MARKERS = {"quote_token", "tx_related", "pool_hook", "hook", "operator"}
 
@@ -25,51 +28,85 @@ def read_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path: Path, payload: Any) -> None:
+def write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            if path.exists():
+                os.fchmod(handle.fileno(), path.stat().st_mode & 0o7777)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def write_json(path: Path, payload: Any) -> None:
+    write_text_atomic(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
 
 
 def merge_signal(parsed: dict[str, Any], source: dict[str, Any] | None = None) -> dict[str, Any]:
-    registry = read_json(REGISTRY_PATH, {"generated_at": now_iso(), "projects": []})
-    projects = registry.setdefault("projects", [])
-    idx = find_project_index(projects, parsed)
-    created = idx is None
-    if created:
-        project = new_project(parsed)
-        projects.append(project)
-        idx = len(projects) - 1
-    project = projects[idx]
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            registry = read_json(
+                REGISTRY_PATH,
+                {"generated_at": now_iso(), "projects": []},
+            )
+            projects = registry.setdefault("projects", [])
+            idx = find_project_index(projects, parsed)
+            created = idx is None
+            if created:
+                project = new_project(parsed)
+                projects.append(project)
+                idx = len(projects) - 1
+            project = projects[idx]
 
-    before = fingerprint_project(project)
-    merge_into_project(project, parsed, source or {})
-    after = fingerprint_project(project)
-    added = diff_fingerprints(before, after)
-    project["updated_at"] = now_iso()
-    project["last_priority"] = max_priority(project.get("last_priority", ""), parsed.get("priority", ""))
-    registry["generated_at"] = now_iso()
-    write_json(REGISTRY_PATH, registry)
-    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SUMMARY_PATH.write_text(render_registry_markdown(registry), encoding="utf-8")
+            before = fingerprint_project(project)
+            merge_into_project(project, parsed, source or {})
+            after = fingerprint_project(project)
+            added = diff_fingerprints(before, after)
+            project["updated_at"] = now_iso()
+            project["last_priority"] = max_priority(
+                project.get("last_priority", ""),
+                parsed.get("priority", ""),
+            )
+            registry["generated_at"] = now_iso()
+            write_json(REGISTRY_PATH, registry)
+            write_text_atomic(
+                SUMMARY_PATH,
+                render_registry_markdown(registry),
+            )
 
-    if created:
-        status = "new_project"
-    elif added:
-        status = "updated_project"
-    else:
-        status = "duplicate_signal"
+            if created:
+                status = "new_project"
+            elif added:
+                status = "updated_project"
+            else:
+                status = "duplicate_signal"
 
-    return {
-        "status": status,
-        "project_key": project.get("project_key"),
-        "symbol": project.get("symbol"),
-        "added": added,
-        "known": known_counts(project),
-        "registry_path": str(REGISTRY_PATH),
-        "summary_path": str(SUMMARY_PATH),
-    }
+            return {
+                "status": status,
+                "project_key": project.get("project_key"),
+                "symbol": project.get("symbol"),
+                "added": added,
+                "known": known_counts(project),
+                "registry_path": str(REGISTRY_PATH),
+                "summary_path": str(SUMMARY_PATH),
+            }
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def new_project(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -114,15 +151,19 @@ def project_key(parsed: dict[str, Any]) -> str:
 
 
 def find_project_index(projects: list[dict[str, Any]], parsed: dict[str, Any]) -> int | None:
-    parsed_contracts = {address_key(row.get("address")) for row in project_contract_rows(parsed) if row.get("address")}
+    parsed_identities = contract_identity_keys(parsed)
     parsed_pools = {str(item).lower() for item in parsed.get("pool_ids", [])}
     parsed_txs = {str(item).lower() for item in parsed.get("txs", [])}
-    symbol = str(parsed.get("symbol") or "").upper()
+
+    if parsed_identities:
+        matches = [
+            idx
+            for idx, project in enumerate(projects)
+            if parsed_identities & contract_identity_keys(project)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     for idx, project in enumerate(projects):
-        contracts = {address_key(row.get("address")) for row in project_contract_rows(project) if row.get("address")}
-        if parsed_contracts and contracts and parsed_contracts & contracts:
-            return idx
         pools = {str(item).lower() for item in project.get("pool_ids", [])}
         if parsed_pools and pools and parsed_pools & pools:
             return idx
@@ -130,14 +171,18 @@ def find_project_index(projects: list[dict[str, Any]], parsed: dict[str, Any]) -
         if parsed_txs and txs and parsed_txs & txs:
             return idx
 
-    if symbol:
-        for idx, project in enumerate(projects):
-            if str(project.get("symbol") or "").upper() == symbol:
-                return idx
-            aliases = {str(item).upper() for item in project.get("aliases", [])}
-            if symbol in aliases:
-                return idx
-    return None
+    symbols = project_symbol_aliases(parsed)
+    matches = [
+        idx
+        for idx, project in enumerate(projects)
+        if symbols & project_symbol_aliases(project)
+    ]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    if len(contract_identity_keys(projects[match])) > 1:
+        return None
+    return match
 
 
 def merge_into_project(project: dict[str, Any], parsed: dict[str, Any], source: dict[str, Any]) -> None:
@@ -340,6 +385,13 @@ def address_key(value: Any) -> str:
     return str(value or "").lower()
 
 
+def chain_key(value: Any) -> str:
+    chain = str(value or "").strip().lower()
+    if chain in {"bnb", "binance-smart-chain"}:
+        return "bsc"
+    return chain
+
+
 def scalar_key(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True).lower()
 
@@ -353,7 +405,7 @@ def dict_key(value: dict[str, Any], fields: list[str]) -> str:
 
 def project_contract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
-    for row in payload.get("contracts", []):
+    for row in payload.get("contracts") or []:
         if not isinstance(row, dict):
             continue
         if not is_project_contract_row(row):
@@ -362,10 +414,10 @@ def project_contract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             rows.append(row)
     proposal = payload.get("watchlist_proposal") or {}
     if isinstance(proposal, dict):
-        for row in proposal.get("contracts", []):
+        for row in proposal.get("contracts") or []:
             if isinstance(row, dict) and row.get("address") and is_project_contract_row(row):
                 rows.append(row)
-    for row in payload.get("addresses", []):
+    for row in payload.get("addresses") or []:
         if not isinstance(row, dict):
             continue
         if row.get("label_hint") != "token_contract":
@@ -375,18 +427,46 @@ def project_contract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def contract_identity_keys(payload: dict[str, Any]) -> set[tuple[str, str]]:
+    identities: set[tuple[str, str]] = set()
+    for row in project_contract_rows(payload):
+        chain = chain_key(row.get("chain"))
+        address = address_key(row.get("address"))
+        if chain and address:
+            identities.add((chain, address))
+    return identities
+
+
+def project_symbol_aliases(payload: dict[str, Any]) -> set[str]:
+    primary = str(payload.get("symbol") or "").upper()
+    values = [primary, *alias_candidates(payload, primary)]
+    values.extend(
+        str(item).strip().upper()
+        for item in (payload.get("aliases") or [])
+    )
+    return {
+        value
+        for value in values
+        if value and value not in GENERIC_SYMBOLS
+    }
+
+
 def alias_candidates(parsed: dict[str, Any], primary_symbol: Any = "") -> list[str]:
     primary = str(primary_symbol or "").upper()
     candidates: list[str] = []
-    candidates.extend(str(item) for item in parsed.get("symbols", []))
+    candidates.extend(str(item) for item in (parsed.get("symbols") or []))
     token_alias = parsed.get("token_alias") or {}
     if isinstance(token_alias, dict):
         candidates.append(str(token_alias.get("display_symbol") or ""))
         candidates.append(str(token_alias.get("raw_symbol") or ""))
-        candidates.extend(str(item) for item in token_alias.get("aliases", []))
+        candidates.extend(
+            str(item) for item in (token_alias.get("aliases") or [])
+        )
     proposal = parsed.get("watchlist_proposal") or {}
     if isinstance(proposal, dict):
-        candidates.extend(str(item) for item in proposal.get("aliases", []))
+        candidates.extend(
+            str(item) for item in (proposal.get("aliases") or [])
+        )
     out = []
     for item in candidates:
         symbol = str(item or "").upper()

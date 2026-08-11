@@ -84,10 +84,16 @@ class RpcFailoverTests(unittest.TestCase):
         self._saved_urlopen = urllib.request.urlopen
         self._saved_disabled = rpc.DISABLED_NODE_REAL
         self._saved_disabled_urls = set(rpc.DISABLED_RPC_URLS)
+        self._saved_preferred_urls = dict(rpc.PREFERRED_RPC_URLS)
+        self._saved_preferred_snapshots = dict(
+            getattr(rpc, "PREFERRED_RPC_URL_SNAPSHOT_HASHES", {})
+        )
         for key in RPC_ENV_KEYS:
             os.environ.pop(key, None)
         rpc.DISABLED_NODE_REAL = False
         rpc.DISABLED_RPC_URLS.clear()
+        rpc.PREFERRED_RPC_URLS.clear()
+        getattr(rpc, "PREFERRED_RPC_URL_SNAPSHOT_HASHES", {}).clear()
 
     def tearDown(self) -> None:
         for key, value in self._saved_env.items():
@@ -99,6 +105,121 @@ class RpcFailoverTests(unittest.TestCase):
         rpc.DISABLED_NODE_REAL = self._saved_disabled
         rpc.DISABLED_RPC_URLS.clear()
         rpc.DISABLED_RPC_URLS.update(self._saved_disabled_urls)
+        rpc.PREFERRED_RPC_URLS.clear()
+        rpc.PREFERRED_RPC_URLS.update(self._saved_preferred_urls)
+        preferred_snapshots = getattr(
+            rpc,
+            "PREFERRED_RPC_URL_SNAPSHOT_HASHES",
+            None,
+        )
+        if preferred_snapshots is not None:
+            preferred_snapshots.clear()
+            preferred_snapshots.update(self._saved_preferred_snapshots)
+
+    def test_read_call_reuses_last_successful_endpoint(self) -> None:
+        calls: list[str] = []
+
+        def fake_rpc_call_url(url, method, params, timeout=30):
+            calls.append(url)
+            if url == "https://slow.invalid/rpc":
+                raise RuntimeError("rpc transport error")
+            return "0x1"
+
+        with (
+            patch.object(
+                rpc,
+                "rpc_urls",
+                return_value=[
+                    "https://slow.invalid/rpc",
+                    "https://fast.invalid/rpc",
+                ],
+            ),
+            patch.object(rpc, "rpc_call_url", side_effect=fake_rpc_call_url),
+        ):
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+
+        self.assertEqual(
+            calls,
+            [
+                "https://slow.invalid/rpc",
+                "https://fast.invalid/rpc",
+                "https://fast.invalid/rpc",
+            ],
+        )
+
+    def test_read_affinity_is_method_scoped_and_moves_after_failure(self) -> None:
+        calls: list[tuple[str, str]] = []
+        second_failed = False
+
+        def fake_rpc_call_url(url, method, params, timeout=30):
+            calls.append((method, url))
+            if method == "eth_getCode":
+                return "0x60"
+            if url == "https://first.invalid/rpc" or (
+                second_failed and url == "https://second.invalid/rpc"
+            ):
+                raise RuntimeError("rpc transport error")
+            return "0x1"
+
+        endpoints = [
+            "https://first.invalid/rpc",
+            "https://second.invalid/rpc",
+            "https://third.invalid/rpc",
+        ]
+        with (
+            patch.object(rpc, "rpc_urls", return_value=endpoints),
+            patch.object(rpc, "rpc_call_url", side_effect=fake_rpc_call_url),
+        ):
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+            self.assertEqual(rpc.rpc_call("bsc", "eth_getCode", []), "0x60")
+            second_failed = True
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+
+        self.assertEqual(
+            calls,
+            [
+                ("eth_call", endpoints[0]),
+                ("eth_call", endpoints[1]),
+                ("eth_getCode", endpoints[0]),
+                ("eth_call", endpoints[1]),
+                ("eth_call", endpoints[0]),
+                ("eth_call", endpoints[2]),
+                ("eth_call", endpoints[2]),
+            ],
+        )
+
+    def test_read_affinity_resets_when_endpoint_snapshot_changes(self) -> None:
+        calls: list[str] = []
+        endpoints = ["https://public.invalid/rpc"]
+
+        def fake_rpc_call_url(url, method, params, timeout=30):
+            calls.append(url)
+            return "0x1"
+
+        with (
+            patch.object(
+                rpc,
+                "rpc_urls",
+                side_effect=lambda chain, method: list(endpoints),
+            ),
+            patch.object(rpc, "rpc_call_url", side_effect=fake_rpc_call_url),
+        ):
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+            endpoints.insert(0, "https://configured.invalid/rpc")
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+            endpoints[0] = "https://replacement.invalid/rpc"
+            self.assertEqual(rpc.rpc_call("bsc", "eth_call", []), "0x1")
+
+        self.assertEqual(
+            calls,
+            [
+                "https://public.invalid/rpc",
+                "https://configured.invalid/rpc",
+                "https://replacement.invalid/rpc",
+            ],
+        )
 
     def test_nodereal_auth_failure_fails_over_to_next_url(self) -> None:
         os.environ["NODEREAL_API_KEY"] = "regression-test-key"
@@ -1318,6 +1439,31 @@ try:
 finally:
     os.close(temp_dir_fd)
 
+temp_fchmod_path = work / "fchmod_ok.tmp"
+temp_fchmod_fd = os.open(
+    temp_fchmod_path,
+    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+    0o600,
+)
+try:
+    os.fchmod(temp_fchmod_fd, 0o640)
+    print("TMP_FCHMOD_OK")
+except RuntimeError as exc:
+    print("TMP_FCHMOD_BLOCKED" if "sniper-offline-guard" in str(exc) else "TMP_FCHMOD_OTHER:%r" % (exc,))
+finally:
+    os.close(temp_fchmod_fd)
+
+outside_fchmod_fd = os.open(repo_root, os.O_RDONLY)
+try:
+    os.fchmod(outside_fchmod_fd, os.fstat(outside_fchmod_fd).st_mode & 0o7777)
+    print("OUTSIDE_FCHMOD_ALLOWED")
+except RuntimeError as exc:
+    print("OUTSIDE_FCHMOD_BLOCKED" if "sniper-offline-guard" in str(exc) else "OUTSIDE_FCHMOD_OTHER:%r" % (exc,))
+except Exception as exc:
+    print("OUTSIDE_FCHMOD_OTHER:%r" % (exc,))
+finally:
+    os.close(outside_fchmod_fd)
+
 try:
     handle = open(repo_root.parent / ".env.guard-probe", "r", encoding="utf-8")
     handle.close()
@@ -1552,6 +1698,8 @@ class OfflineVerifierGuardTests(unittest.TestCase):
         self.assertIn("OUTSIDE_ENV_BLOCKED", lines, result.stdout)
         self.assertIn("TMP_WRITE_OK", lines, result.stdout)
         self.assertIn("TMP_DIRFD_WRITE_OK", lines, result.stdout)
+        self.assertIn("TMP_FCHMOD_OK", lines, result.stdout)
+        self.assertIn("OUTSIDE_FCHMOD_BLOCKED", lines, result.stdout)
         self.assertIn("EXAMPLE_READ_OK", lines, result.stdout)
 
     def test_env_file_block_is_case_insensitive(self) -> None:

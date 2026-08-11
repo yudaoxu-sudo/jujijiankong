@@ -23,23 +23,31 @@ DEPLOY_PARITY_PATHS = (
     "input/dos_airdrop_pressure_evidence_2026-08-10.json",
     "input/dos_alpha_200_sell_receipt_2026-08-10.json",
     "scripts/alpha_holder_concentration_watch.py",
+    "scripts/alpha_onboarding_preflight.py",
     "scripts/alpha_opening_block_watch.py",
     "scripts/alpha_opening_sprint.sh",
     "scripts/alpha_liquidity_retention_watch.py",
     "scripts/alpha_prelaunch_watch.py",
+    "scripts/binance_alpha_catalog_watch.py",
     "scripts/fast_lane_health.py",
+    "scripts/ingest_alpha_signal.py",
     "scripts/runtime_health_watch.py",
     "scripts/build_alpha_daily_report.py",
     "scripts/test_aeon_monitor_regression.py",
+    "scripts/test_alpha_onboarding_preflight.py",
     "scripts/test_dos_prelaunch_config.py",
+    "scripts/test_generic_monitoring_pipeline.py",
+    "scripts/test_generic_onboarding_identity.py",
     "scripts/test_sniper_engine_units.py",
     "scripts/grvt_liquidity_replay_acceptance.py",
     "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",
+    "scripts/server_fast_lane.sh",
     "scripts/server_run_once.sh",
     "scripts/deploy_to_server.sh",
     "scripts/project_continuity_acceptance.py",
     "scripts/test_project_continuity_acceptance.py",
     "scripts/verify_sniper_engine.py",
+    "sniper_engine/project_registry.py",
     "sniper_engine/rpc.py",
 )
 REMOTE_RUNTIME_ISSUE_CODES = frozenset(
@@ -190,6 +198,8 @@ REMOTE_RETENTION_REASON_CODES = frozenset(
         "query_scope_incomplete",
         "checkpoint_unavailable",
         "coverage_gap",
+        "liquidity_opening_scope_hash_unavailable",
+        "liquidity_opening_scope_hash_mismatch",
         "invalid_runtime_metadata",
         "runtime_dependency_failed",
         "runtime_io_failed",
@@ -339,7 +349,9 @@ REMOTE_VALIDATION_ERROR_CODES = frozenset(
 REMOTE_PROBE = r"""
 import json
 import hashlib
+import os
 import re
+import stat
 import sys
 import time
 from datetime import datetime, timezone
@@ -359,6 +371,9 @@ historical_scope_reconcile_ids = {
     "b58cec136e8bdfc76e7739f9c5789bd4f60abafcbf5589a2cd6a671e37b5758e",
     "21e9f32ff27150b7d5241e90279327e37a37fd79b8e1f493deb45d94142b5b32",
 }
+historical_scope_identity_hash = (
+    "3e054dc799cf9846c39008d1ce4ca0b3fdb66f219e3a43af5733fa4f01f1f217"
+)
 liquidity_final_classifications = {
     "net_removed",
     "range_repositioned",
@@ -523,6 +538,8 @@ retention_reason_codes = {
     "query_scope_incomplete",
     "checkpoint_unavailable",
     "coverage_gap",
+    "liquidity_opening_scope_hash_unavailable",
+    "liquidity_opening_scope_hash_mismatch",
     "invalid_runtime_metadata",
     "runtime_dependency_failed",
     "runtime_io_failed",
@@ -981,25 +998,6 @@ grvt_replay_contract = (
     and grvt_replay.get("replay_duplicate_send_count") == 0
     and grvt_replay_hash_parity
 )
-watchlist = read_json(root / "config" / "current_alpha_watchlist.json")
-item_count = len(watchlist.get("items", [])) if isinstance(watchlist.get("items", []), list) else 0
-grvt_scope_keys = set()
-for watch_item in watchlist.get("items", []):
-    if (
-        not isinstance(watch_item, dict)
-        or str(watch_item.get("symbol") or "").upper() != "GRVT"
-    ):
-        continue
-    for contract in watch_item.get("contracts") or []:
-        if not isinstance(contract, dict):
-            continue
-        contract_chain = str(contract.get("chain") or "").lower()
-        contract_address = str(contract.get("address") or "").lower()
-        if (
-            re.fullmatch(r"[a-z0-9_-]{1,32}", contract_chain)
-            and re.fullmatch(r"0x[0-9a-f]{40}", contract_address)
-        ):
-            grvt_scope_keys.add((contract_chain, contract_address))
 parity_matches = 0
 for relative_path, expected_hash in expected_hashes.items():
     try:
@@ -1008,6 +1006,148 @@ for relative_path, expected_hash in expected_hashes.items():
         actual_hash = ""
     parity_matches += actual_hash == expected_hash
 liquidity = read_json(root / "output" / "alpha_liquidity_retention_watch" / "latest.json")
+declared_config_path = liquidity.get("config_path")
+validated_config_path = None
+validated_config_bytes = None
+config_path_contract = False
+if (
+    isinstance(declared_config_path, str)
+    and declared_config_path
+    and declared_config_path == declared_config_path.strip()
+):
+    try:
+        root_resolved = root.resolve()
+        declared_path = Path(declared_config_path)
+        allowed_config_paths = {
+            (root_resolved / "config/current_alpha_watchlist.json").resolve(),
+            (
+                root_resolved
+                / "output/binance_alpha_catalog_watch/current_watchlist.json"
+            ).resolve(),
+        }
+        snapshot_dir = root_resolved / "output/runtime_watchlist_cycles"
+        snapshot_dir_lexical = (
+            root.absolute() / "output/runtime_watchlist_cycles"
+        )
+        candidate_path = (
+            declared_path
+            if declared_path.is_absolute()
+            else root_resolved / declared_path
+        )
+        candidate_resolved = candidate_path.resolve()
+        candidate_descriptor = os.open(
+            candidate_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            candidate_metadata = os.fstat(candidate_descriptor)
+            with os.fdopen(
+                candidate_descriptor,
+                "rb",
+                closefd=False,
+            ) as candidate_handle:
+                candidate_bytes = candidate_handle.read()
+        finally:
+            os.close(candidate_descriptor)
+        candidate_regular = stat.S_ISREG(candidate_metadata.st_mode)
+        fixed_path_contract = bool(
+            ".." not in declared_path.parts
+            and candidate_regular
+            and candidate_resolved.is_relative_to(root_resolved)
+            and candidate_resolved in allowed_config_paths
+        )
+        snapshot_path_contract = False
+        if (
+            ".." not in declared_path.parts
+            and candidate_regular
+            and re.fullmatch(r"[0-9a-f]{64}\.json", candidate_path.name)
+            and snapshot_dir.exists()
+            and stat.S_ISDIR(snapshot_dir.lstat().st_mode)
+            and candidate_path.parent
+            in {snapshot_dir, snapshot_dir_lexical}
+            and candidate_path.parent.resolve() == snapshot_dir.resolve()
+            and candidate_resolved.is_relative_to(root_resolved)
+            and stat.S_IMODE(candidate_metadata.st_mode) == 0o444
+        ):
+            snapshot_path_contract = (
+                hashlib.sha256(candidate_bytes).hexdigest()
+                == candidate_path.stem
+            )
+        if fixed_path_contract or snapshot_path_contract:
+            validated_config_path = candidate_resolved
+            validated_config_bytes = candidate_bytes
+            config_path_contract = True
+    except (OSError, RuntimeError, ValueError):
+        pass
+try:
+    producer_watchlist = (
+        json.loads(validated_config_bytes.decode("utf-8"))
+        if config_path_contract
+        and isinstance(validated_config_bytes, bytes)
+        else {}
+    )
+except (UnicodeError, json.JSONDecodeError):
+    producer_watchlist = {}
+watchlist_items = producer_watchlist.get("items")
+monitoring_policy = producer_watchlist.get("monitoring_policy")
+focused_symbols_raw = (
+    monitoring_policy.get("symbols")
+    if isinstance(monitoring_policy, dict)
+    else None
+)
+focused_symbols = (
+    [value.strip().upper() for value in focused_symbols_raw]
+    if isinstance(focused_symbols_raw, list)
+    and all(isinstance(value, str) for value in focused_symbols_raw)
+    else []
+)
+active_watchlist_items = (
+    [row for row in watchlist_items if row.get("active_monitoring") is True]
+    if isinstance(watchlist_items, list)
+    and all(isinstance(row, dict) for row in watchlist_items)
+    else []
+)
+active_symbols = [
+    str(row.get("symbol") or "").strip().upper()
+    for row in active_watchlist_items
+]
+watchlist_project_identities = set()
+watchlist_identity_rows_valid = True
+for row in active_watchlist_items:
+    contracts = row.get("contracts")
+    if (
+        not isinstance(contracts, list)
+        or len(contracts) != 1
+        or not isinstance(contracts[0], dict)
+    ):
+        watchlist_identity_rows_valid = False
+        continue
+    chain = str(contracts[0].get("chain") or "").strip().lower()
+    address = str(contracts[0].get("address") or "").strip().lower()
+    if (
+        re.fullmatch(r"[a-z0-9_-]{1,32}", chain) is None
+        or re.fullmatch(r"0x[0-9a-f]{40}", address) is None
+    ):
+        watchlist_identity_rows_valid = False
+        continue
+    watchlist_project_identities.add((chain, address))
+watchlist_project_identity_contract = bool(
+    config_path_contract
+    and isinstance(monitoring_policy, dict)
+    and monitoring_policy.get("mode") == "exclusive_symbols"
+    and focused_symbols
+    and len(set(focused_symbols)) == len(focused_symbols)
+    and all(focused_symbols)
+    and isinstance(watchlist_items, list)
+    and all(isinstance(row, dict) for row in watchlist_items)
+    and all(type(row.get("active_monitoring")) is bool for row in watchlist_items)
+    and len(active_watchlist_items) == len(focused_symbols)
+    and set(active_symbols) == set(focused_symbols)
+    and len(set(active_symbols)) == len(active_symbols)
+    and watchlist_identity_rows_valid
+    and len(watchlist_project_identities) == len(active_watchlist_items)
+)
+item_count = len(active_watchlist_items) if watchlist_project_identity_contract else 0
 liquidity_count_keys = (
     "issue_count",
     "expected_count",
@@ -1022,20 +1162,276 @@ liquidity_counts = {
 }
 liquidity_expected_hash = liquidity.get("expected_identity_hash")
 liquidity_processed_hash = liquidity.get("processed_identity_hash")
+configured_identity_hash = hashlib.sha256(
+    json.dumps(
+        sorted(
+            f"{chain}:{address}"
+            for chain, address in watchlist_project_identities
+        ),
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 liquidity_identity_hash_parity = bool(
-    isinstance(liquidity_expected_hash, str)
+    watchlist_project_identity_contract
+    and isinstance(liquidity_expected_hash, str)
     and isinstance(liquidity_processed_hash, str)
     and re.fullmatch(r"[0-9a-f]{64}", liquidity_expected_hash)
     and liquidity_expected_hash == liquidity_processed_hash
+    and liquidity_expected_hash == configured_identity_hash
 )
-grvt_projects = [
-    row for row in liquidity.get("projects", [])
-    if isinstance(row, dict) and str(row.get("symbol") or "").upper() == "GRVT"
+liquidity_projects = liquidity.get("projects")
+liquidity_projects_shape_valid = bool(
+    isinstance(liquidity_projects, list)
+    and all(isinstance(row, dict) for row in liquidity_projects)
+)
+liquidity_project_identities = [
+    (row.get("chain"), row.get("address"))
+    for row in (liquidity_projects if liquidity_projects_shape_valid else [])
+    if (
+        isinstance(row.get("chain"), str)
+        and re.fullmatch(r"[a-z0-9_-]{1,32}", row["chain"])
+        and isinstance(row.get("address"), str)
+        and re.fullmatch(r"0x[0-9a-f]{40}", row["address"])
+    )
 ]
-grvt_flow = {}
-if len(grvt_projects) == 1:
-    retention = grvt_projects[0].get("retention_flow") or {}
-    grvt_flow = retention.get("liquidity_retention") or {}
+liquidity_project_table_contract = bool(
+    liquidity_projects_shape_valid
+    and watchlist_project_identity_contract
+    and all(type(row.get("required")) is bool for row in liquidity_projects)
+    and liquidity_counts["processed_count"] is not None
+    and len(liquidity_projects) == liquidity_counts["processed_count"]
+    and len(liquidity_project_identities) == len(liquidity_projects)
+    and len(set(liquidity_project_identities)) == len(liquidity_project_identities)
+    and set(liquidity_project_identities) == watchlist_project_identities
+)
+required_liquidity_projects = [
+    row for row in (liquidity_projects if isinstance(liquidity_projects, list) else [])
+    if isinstance(row, dict) and row.get("required") is True
+]
+nonrequired_liquidity_projects = [
+    row for row in (liquidity_projects if isinstance(liquidity_projects, list) else [])
+    if isinstance(row, dict) and row.get("required") is False
+]
+liquidity_scope_state_schema_version = 2
+
+
+def required_liquidity_alert_ready(project):
+    retention = (
+        project.get("retention_flow")
+        if isinstance(project.get("retention_flow"), dict)
+        else {}
+    )
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention.get("liquidity_retention"), dict)
+        else {}
+    )
+    catchup = (
+        flow.get("incremental_catchup")
+        if isinstance(flow.get("incremental_catchup"), dict)
+        else {}
+    )
+    flow_int_keys = (
+        "pool_count",
+        "v3_pool_count",
+        "v4_pool_count",
+        "v4_manager_count",
+        "event_filter_count",
+        "query_count",
+        "scope_batch_count",
+        "query_chunk_count",
+        "expected_query_count",
+        "scan_from_block",
+        "scan_to_block",
+        "previous_latest_block",
+        "latest_block",
+        "target_latest_block",
+        "observed_latest_block",
+        "confirmation_blocks",
+        "log_error_count",
+        "scope_state_schema_version",
+    )
+    catchup_int_keys = ("requested_to_block", "selected_to_block")
+    if (
+        not all(type(flow.get(key)) is int for key in flow_int_keys)
+        or not all(type(catchup.get(key)) is int for key in catchup_int_keys)
+    ):
+        return False
+    pool_count = flow.get("pool_count")
+    v3_count = flow.get("v3_pool_count")
+    v4_count = flow.get("v4_pool_count")
+    v4_manager_count = flow.get("v4_manager_count")
+    event_filter_count = flow.get("event_filter_count")
+    query_count = flow.get("query_count")
+    scope_batch_count = flow.get("scope_batch_count")
+    query_chunk_count = flow.get("query_chunk_count")
+    expected_query_count = flow.get("expected_query_count")
+    scan_from = flow.get("scan_from_block")
+    scan_to = flow.get("scan_to_block")
+    previous_latest = flow.get("previous_latest_block")
+    latest = flow.get("latest_block")
+    target_latest = flow.get("target_latest_block")
+    observed_latest = flow.get("observed_latest_block")
+    confirmation_blocks = flow.get("confirmation_blocks")
+    requested_to = catchup.get("requested_to_block")
+    selected_to = catchup.get("selected_to_block")
+    scope_hash = flow.get("scope_hash")
+    previous_scope_hash = flow.get("previous_scope_hash")
+    latest_block_hash = flow.get("latest_block_hash")
+    return bool(
+        flow.get("status") == "active"
+        and flow.get("coverage_mode") == "verified_pool_indexed_topics"
+        and flow.get("complete") is True
+        and flow.get("selected_window_complete") is True
+        and flow.get("scope_complete") is True
+        and flow.get("query_scope_complete") is True
+        and flow.get("continuous") is True
+        and flow.get("truncated") is False
+        and flow.get("events_truncated") is False
+        and flow.get("scope_rebaseline") is False
+        and flow.get("previous_catchup_active") is False
+        and flow.get("log_error_count") == 0
+        and flow.get("scope_state_schema_version")
+        == liquidity_scope_state_schema_version
+        and isinstance(scope_hash, str)
+        and re.fullmatch(r"[0-9a-f]{64}", scope_hash) is not None
+        and previous_scope_hash == scope_hash
+        and isinstance(latest_block_hash, str)
+        and re.fullmatch(r"0x[0-9a-f]{64}", latest_block_hash) is not None
+        and int(latest_block_hash[2:], 16) != 0
+        and confirmation_blocks >= 0
+        and target_latest == max(0, observed_latest - confirmation_blocks)
+        and pool_count > 0
+        and v3_count >= 0
+        and v4_count >= 0
+        and v4_manager_count >= 0
+        and pool_count == v3_count + v4_count
+        and scope_batch_count == int(v3_count > 0) + v4_manager_count
+        and v4_manager_count >= int(v4_count > 0)
+        and v4_manager_count <= v4_count
+        and event_filter_count == v3_count * 4 + v4_count * 2
+        and query_chunk_count > 0
+        and expected_query_count == scope_batch_count * query_chunk_count
+        and query_count == expected_query_count
+        and catchup.get("applicable") is True
+        and catchup.get("active") is False
+        and catchup.get("complete_selected_window") is True
+        and catchup.get("complete_requested_window") is True
+        and requested_to == selected_to == scan_to == target_latest
+        and previous_latest > 0
+        and scan_from == previous_latest + 1
+        and scan_from <= scan_to
+        and latest == scan_to
+    )
+
+
+project_flow_envelope_contract_flags = []
+for project in (
+    liquidity_projects if liquidity_projects_shape_valid else []
+):
+    retention = project.get("retention_flow")
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention, dict)
+        else None
+    )
+    project_flow_envelope_contract_flags.append(
+        bool(
+            project.get("operational_complete") is True
+            and isinstance(retention, dict)
+            and retention.get("events") == []
+            and isinstance(flow, dict)
+            and retention.get("status") == flow.get("status")
+        )
+    )
+required_liquidity_flows = []
+for project in required_liquidity_projects:
+    retention = project.get("retention_flow")
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention, dict)
+        else None
+    )
+    required_liquidity_flows.append(flow if isinstance(flow, dict) else {})
+nonrequired_flow_contract_flags = []
+for project in nonrequired_liquidity_projects:
+    retention = project.get("retention_flow")
+    flow = (
+        retention.get("liquidity_retention")
+        if isinstance(retention, dict)
+        else None
+    )
+    flow = flow if isinstance(flow, dict) else {}
+    latest_block = flow.get("latest_block")
+    target_latest_block = flow.get("target_latest_block")
+    nonrequired_flow_contract_flags.append(
+        bool(
+            flow.get("status") in {"not_required", "not_applicable"}
+            and flow.get("scope_complete") is True
+            and type(flow.get("pool_count")) is int
+            and flow.get("pool_count") == 0
+            and flow.get("events") == []
+            and (
+                flow.get("continuous") is None
+                or flow.get("continuous") is False
+            )
+            and (
+                latest_block is None
+                or (type(latest_block) is int and latest_block == 0)
+            )
+            and (
+                target_latest_block is None
+                or (
+                    type(target_latest_block) is int
+                    and target_latest_block == 0
+                )
+            )
+        )
+    )
+required_flow_complete_flags = [
+    required_liquidity_alert_ready(project)
+    for project in required_liquidity_projects
+]
+required_operational_complete_count = sum(
+    project.get("operational_complete") is True
+    for project in required_liquidity_projects
+)
+required_alert_ready_count = sum(required_flow_complete_flags)
+required_flow_contract = bool(
+    liquidity_project_table_contract
+    and liquidity_counts["required_count"] is not None
+    and liquidity_counts["complete_count"] is not None
+    and liquidity_counts["alert_ready_count"] is not None
+    and len(required_liquidity_projects) == liquidity_counts["required_count"]
+    and all(project_flow_envelope_contract_flags)
+    and all(nonrequired_flow_contract_flags)
+    and required_operational_complete_count
+    == liquidity_counts["complete_count"]
+    and required_operational_complete_count == len(required_liquidity_projects)
+    and required_alert_ready_count == liquidity_counts["alert_ready_count"]
+    and required_alert_ready_count == len(required_liquidity_projects)
+)
+required_flow_cursor = (
+    min(flow["latest_block"] for flow in required_liquidity_flows)
+    if required_liquidity_flows
+    and all(type(flow.get("latest_block")) is int for flow in required_liquidity_flows)
+    else None
+)
+required_flow_confirmed_tip = (
+    min(flow["target_latest_block"] for flow in required_liquidity_flows)
+    if required_liquidity_flows
+    and all(type(flow.get("target_latest_block")) is int for flow in required_liquidity_flows)
+    else None
+)
+required_flow_pool_count = (
+    sum(flow["pool_count"] for flow in required_liquidity_flows)
+    if required_liquidity_flows
+    and all(
+        type(flow.get("pool_count")) is int and flow.get("pool_count") > 0
+        for flow in required_liquidity_flows
+    )
+    else None
+)
 liquidity_state = read_json(root / "output" / "alpha_liquidity_retention_watch" / "state.json")
 holder_snapshot = read_json(root / "output" / "alpha_holder_concentration_watch" / "latest.json")
 grvt_holder_rows = [
@@ -1237,8 +1633,14 @@ for chain, token, reconciliation in reconciliation_scopes:
                 and historical_scope_id_occurrences.get(
                     str(row.get("reconcile_id")), 0
                 ) == 1
-                and (str(chain).lower(), str(token).lower())
-                in grvt_scope_keys
+                and hashlib.sha256(
+                    (
+                        str(chain).lower()
+                        + ":"
+                        + str(token).lower()
+                    ).encode("utf-8")
+                ).hexdigest()
+                == historical_scope_identity_hash
             ):
                 historical_unversioned_scope_count += 1
             else:
@@ -2006,17 +2408,14 @@ ok = (
     and liquidity_counts["processed_count"]
     == liquidity_counts["expected_count"]
     and liquidity_counts["dropped_count"] == 0
-    and 0 < liquidity_counts["required_count"]
+    and 0 <= liquidity_counts["required_count"]
     <= liquidity_counts["expected_count"]
     and liquidity_counts["complete_count"]
     == liquidity_counts["required_count"]
     and liquidity_counts["alert_ready_count"]
     == liquidity_counts["required_count"]
     and liquidity_identity_hash_parity
-    and grvt_flow.get("continuous") is True
-    and int(grvt_flow.get("latest_block") or 0) > 0
-    and int(grvt_flow.get("latest_block") or 0)
-    == int(grvt_flow.get("target_latest_block") or 0)
+    and required_flow_contract
     and v2_scope_contract_pass
     and micro_gas_history["valid"]
     and withdrawal_history["valid"]
@@ -2061,6 +2460,7 @@ print(json.dumps({
         "code_hash_parity": grvt_replay_hash_parity,
     },
     "grvt_liquidity": {
+        "active_flow_scope": "required_projects_aggregate",
         "status": safe_code(liquidity.get("status"), "missing"),
         "issue_count": liquidity_counts["issue_count"],
         "expected_count": liquidity_counts["expected_count"],
@@ -2071,10 +2471,10 @@ print(json.dumps({
         "alert_ready_count": liquidity_counts["alert_ready_count"],
         "alert_count": safe_int(liquidity.get("alert_count")),
         "complete_count": liquidity_counts["complete_count"],
-        "cursor": safe_int(grvt_flow.get("latest_block")),
-        "confirmed_tip": safe_int(grvt_flow.get("target_latest_block")),
-        "continuous": safe_bool(grvt_flow.get("continuous")),
-        "pool_count": safe_int(grvt_flow.get("pool_count")),
+        "cursor": required_flow_cursor,
+        "confirmed_tip": required_flow_confirmed_tip,
+        "continuous": all(required_flow_complete_flags),
+        "pool_count": required_flow_pool_count,
         "pending_count": pending_count,
         "completed_count": len(completed_rows),
         "completed_classes": completed_classes,
@@ -3209,6 +3609,7 @@ def sanitize_remote_runtime(
         "source_pool_equals_destination_pool",
     }
     liquidity_keys = {
+        "active_flow_scope",
         "status",
         "issue_count",
         "expected_count",
@@ -3292,6 +3693,7 @@ def sanitize_remote_runtime(
         or set(replay) != replay_keys
         or not isinstance(liquidity, dict)
         or set(liquidity) != liquidity_keys
+        or liquidity.get("active_flow_scope") != "required_projects_aggregate"
         or not isinstance(contract, dict)
         or set(contract) != contract_keys
         or not isinstance(holder, dict)
@@ -3713,7 +4115,7 @@ def sanitize_remote_runtime(
         and liquidity_ints["processed_count"]
         == liquidity_ints["expected_count"]
         and liquidity_ints["dropped_count"] == 0
-        and 0 < liquidity_ints["required_count"]
+        and 0 <= liquidity_ints["required_count"]
         <= liquidity_ints["expected_count"]
         and liquidity_ints["complete_count"]
         == liquidity_ints["required_count"]
@@ -3721,10 +4123,30 @@ def sanitize_remote_runtime(
         == liquidity_ints["required_count"]
         and identity_hash_parity is True
         and continuous is True
-        and type(liquidity_ints["cursor"]) is int
-        and type(liquidity_ints["confirmed_tip"]) is int
-        and liquidity_ints["cursor"] > 0
-        and liquidity_ints["cursor"] == liquidity_ints["confirmed_tip"]
+        and (
+            (
+                liquidity_ints["required_count"] == 0
+                and liquidity_ints["cursor"] is None
+                and liquidity_ints["confirmed_tip"] is None
+                and (
+                    liquidity_ints["pool_count"] is None
+                    or (
+                        type(liquidity_ints["pool_count"]) is int
+                        and liquidity_ints["pool_count"] == 0
+                    )
+                )
+            )
+            or (
+                liquidity_ints["required_count"] > 0
+                and type(liquidity_ints["cursor"]) is int
+                and type(liquidity_ints["confirmed_tip"]) is int
+                and liquidity_ints["cursor"] > 0
+                and liquidity_ints["cursor"]
+                == liquidity_ints["confirmed_tip"]
+                and type(liquidity_ints["pool_count"]) is int
+                and liquidity_ints["pool_count"] > 0
+            )
+        )
         and contract_pass_flag is True
         and contract_recomputed
         and all(row["valid"] is True for row in safe_histories)
@@ -3765,6 +4187,7 @@ def sanitize_remote_runtime(
             "runtime_rpc_coverage": replay_rpc_coverage,
         },
         "grvt_liquidity": {
+            "active_flow_scope": "required_projects_aggregate",
             "status": liquidity_status,
             **liquidity_ints,
             "identity_hash_parity": identity_hash_parity,

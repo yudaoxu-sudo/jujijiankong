@@ -237,27 +237,42 @@ def airdrop_watchlist_path() -> Path:
 
 def configured_airdrop_identity_hash() -> tuple[str, str]:
     payload = read_json(airdrop_watchlist_path())
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return "", "configured airdrop watchlist invalid"
     identities: list[dict[str, Any]] = []
     event_ids: list[str] = []
-    for item in payload.get("items", []):
+    event_types = {"airdrop_claim", "airdrop_release"}
+    for item in items:
         if not isinstance(item, dict) or item.get("active_monitoring") is False:
             continue
         if not str(item.get("priority") or "").startswith(("P0", "P1")):
             continue
+        schedule = (
+            item["event_schedule"]
+            if "event_schedule" in item
+            else []
+        )
+        if not isinstance(schedule, list):
+            return "", "configured airdrop event schedule invalid"
         contract = next(
             (
                 str(row.get("address") or "")
-                for row in item.get("contracts", [])
+                for row in (item.get("contracts") or [])
                 if isinstance(row, dict) and row.get("address")
             ),
             "",
         )
-        for row in item.get("event_schedule", []):
-            if not isinstance(row, dict) or str(
+        for row in schedule:
+            if not isinstance(row, dict):
+                return "", "configured airdrop event schedule invalid"
+            if str(
                 row.get("event_type") or ""
-            ).lower() not in {"airdrop_claim", "airdrop_release"}:
+            ).strip().lower() not in event_types:
                 continue
             event_id = str(row.get("event_id") or "").strip()
+            if not event_id or not item.get("symbol") or not contract:
+                return "", "configured airdrop event identity missing"
             event_ids.append(event_id)
             identities.append(
                 {
@@ -266,8 +281,6 @@ def configured_airdrop_identity_hash() -> tuple[str, str]:
                     "event_id": event_id,
                 }
             )
-    if not event_ids or any(not value for value in event_ids):
-        return "", "configured airdrop event identity missing"
     if len(event_ids) != len(set(event_ids)):
         return "", "configured airdrop event identity duplicate"
     return airdrop_identity_hash(identities), ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -36,6 +37,8 @@ READ_CAPABLE_PUBLIC_RPCS = {
 
 DISABLED_NODE_REAL = False
 DISABLED_RPC_URLS: set[str] = set()
+PREFERRED_RPC_URLS: dict[tuple[str, str], str] = {}
+PREFERRED_RPC_URL_SNAPSHOT_HASHES: dict[tuple[str, str], str] = {}
 LOG_SPLIT_HTTP_STATUSES = {400, 413, 422}
 READ_ONLY_RPC_METHODS = {
     "debug_traceCall",
@@ -281,16 +284,46 @@ def rpc_call(
             ) from None
         raise RuntimeError("; ".join(errors) or f"no rpc url for {chain}") from None
 
+    preferred_key = (
+        (chain, method) if method in READ_ONLY_RPC_METHODS else None
+    )
+    if preferred_key is not None:
+        snapshot_hash = hashlib.sha256(
+            json.dumps(
+                urls,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            PREFERRED_RPC_URL_SNAPSHOT_HASHES.get(preferred_key)
+            != snapshot_hash
+        ):
+            PREFERRED_RPC_URLS.pop(preferred_key, None)
+            PREFERRED_RPC_URL_SNAPSHOT_HASHES[preferred_key] = snapshot_hash
+    preferred_url = (
+        PREFERRED_RPC_URLS.get(preferred_key)
+        if preferred_key is not None
+        else None
+    )
+    if preferred_url in urls:
+        urls = [preferred_url, *(url for url in urls if url != preferred_url)]
+    elif preferred_url is not None:
+        PREFERRED_RPC_URLS.pop(preferred_key, None)
     for index, url in enumerate(urls):
         request_timeout = deadline_timeout(timeout, deadline)
         try:
-            return rpc_call_url(
+            result = rpc_call_url(
                 url,
                 method,
                 params,
                 timeout=request_timeout,
             )
+            if preferred_key is not None:
+                PREFERRED_RPC_URLS[preferred_key] = url
+            return result
         except (HTTPError, RpcHTTPError) as exc:
+            if preferred_key is not None and url == preferred_url:
+                PREFERRED_RPC_URLS.pop(preferred_key, None)
             status = exc.code if isinstance(exc, HTTPError) else exc.status
             errors.append(f"{chain} rpc[{index + 1}] http {status}")
             if url == nodereal_url and status in {401, 403}:
@@ -314,6 +347,8 @@ def rpc_call(
                 continue
             raise RuntimeError("; ".join(errors)) from None
         except RuntimeError:
+            if preferred_key is not None and url == preferred_url:
+                PREFERRED_RPC_URLS.pop(preferred_key, None)
             errors.append(f"{chain} rpc[{index + 1}] runtime_error")
             if index + 1 < len(urls):
                 continue

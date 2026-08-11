@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,11 +30,82 @@ HISTORICAL_SCOPE_RECONCILE_IDS = (
     "b58cec136e8bdfc76e7739f9c5789bd4f60abafcbf5589a2cd6a671e37b5758e",
     "21e9f32ff27150b7d5241e90279327e37a37fd79b8e1f493deb45d94142b5b32",
 )
+HISTORICAL_SCOPE_CHAIN = "bsc"
+HISTORICAL_SCOPE_TOKEN = "0x46f2564e0fa8248d15125e7e54173cfbdef91be7"
 
 
 def write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def liquidity_identity_hash(*identities: tuple[str, str]) -> str:
+    encoded = json.dumps(
+        sorted(f"{chain}:{address}" for chain, address in identities),
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def complete_liquidity_retention_flow(
+    latest_block: int = 2,
+) -> dict[str, object]:
+    scope_hash = "a" * 64
+    return {
+        "status": "active",
+        "coverage_mode": "verified_pool_indexed_topics",
+        "complete": True,
+        "selected_window_complete": True,
+        "scope_complete": True,
+        "scope_hash": scope_hash,
+        "previous_scope_hash": scope_hash,
+        "scope_rebaseline": False,
+        "scope_state_schema_version": 2,
+        "pool_count": 1,
+        "v3_pool_count": 1,
+        "v4_pool_count": 0,
+        "v4_manager_count": 0,
+        "event_filter_count": 4,
+        "scan_from_block": latest_block,
+        "scan_to_block": latest_block,
+        "previous_latest_block": latest_block - 1,
+        "latest_block": latest_block,
+        "target_latest_block": latest_block,
+        "observed_latest_block": latest_block + 2,
+        "confirmation_blocks": 2,
+        "latest_block_hash": "0x" + "1" * 64,
+        "continuous": True,
+        "previous_catchup_active": False,
+        "query_scope_complete": True,
+        "query_count": 1,
+        "scope_batch_count": 1,
+        "query_chunk_count": 1,
+        "expected_query_count": 1,
+        "incremental_catchup": {
+            "applicable": True,
+            "active": False,
+            "requested_to_block": latest_block,
+            "selected_to_block": latest_block,
+            "complete_selected_window": True,
+            "complete_requested_window": True,
+        },
+        "log_error_count": 0,
+        "truncated": False,
+        "events_truncated": False,
+        "events": [],
+    }
+
+
+def complete_project_retention_flow(
+    latest_block: int = 2,
+) -> dict[str, object]:
+    return {
+        "status": "active",
+        "events": [],
+        "liquidity_retention": complete_liquidity_retention_flow(
+            latest_block
+        ),
+    }
 
 
 def safe_issue_summary(**overrides: object) -> dict[str, object]:
@@ -149,9 +221,14 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
     write_json(
         root / "config/current_alpha_watchlist.json",
         {
+            "monitoring_policy": {
+                "mode": "exclusive_symbols",
+                "symbols": ["GRVT"],
+            },
             "items": [
                 {
                     "symbol": "GRVT",
+                    "active_monitoring": True,
                     "contracts": [
                         {
                             "chain": "bsc",
@@ -171,6 +248,7 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
     write_json(
         root / "output/alpha_liquidity_retention_watch/latest.json",
         {
+            "config_path": "config/current_alpha_watchlist.json",
             "status": "healthy",
             "issue_count": 0,
             "expected_count": 1,
@@ -179,18 +257,20 @@ def remote_probe_fixture(root: Path) -> tuple[dict[str, str], Path]:
             "required_count": 1,
             "complete_count": 1,
             "alert_ready_count": 1,
-            "expected_identity_hash": "1" * 64,
-            "processed_identity_hash": "1" * 64,
+            "expected_identity_hash": liquidity_identity_hash(
+                ("bsc", "0x" + "a" * 40)
+            ),
+            "processed_identity_hash": liquidity_identity_hash(
+                ("bsc", "0x" + "a" * 40)
+            ),
             "projects": [
                 {
                     "symbol": "GRVT",
-                    "retention_flow": {
-                        "liquidity_retention": {
-                            "continuous": True,
-                            "latest_block": 1,
-                            "target_latest_block": 1,
-                        }
-                    },
+                    "chain": "bsc",
+                    "address": "0x" + "a" * 40,
+                    "required": True,
+                    "operational_complete": True,
+                    "retention_flow": complete_project_retention_flow(),
                 }
             ],
         },
@@ -288,8 +368,8 @@ def write_reconciliation_fixture(
     completed: list[dict] | None = None,
     sent_reconcile_ids: list[str] | None = None,
 ) -> None:
-    chain = "bsc"
-    token = "0x" + "a" * 40
+    chain = HISTORICAL_SCOPE_CHAIN
+    token = HISTORICAL_SCOPE_TOKEN
     write_json(
         root / "output/alpha_liquidity_retention_watch/state.json",
         {
@@ -501,6 +581,27 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_hashes, _ = remote_probe_fixture(root)
+            watchlist_path = root / "config/current_alpha_watchlist.json"
+            watchlist = json.loads(
+                watchlist_path.read_text(encoding="utf-8")
+            )
+            watchlist["monitoring_policy"]["symbols"].append("TEST")
+            watchlist["items"].append(
+                {
+                    "symbol": "TEST",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {
+                            "chain": "bsc",
+                            "address": "0x" + "b" * 40,
+                        }
+                    ],
+                }
+            )
+            write_json(watchlist_path, watchlist)
+            expected_hashes["config/current_alpha_watchlist.json"] = (
+                hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+            )
             liquidity_path = (
                 root
                 / "output/alpha_liquidity_retention_watch/latest.json"
@@ -516,8 +617,24 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                     "required_count": 2,
                     "complete_count": 2,
                     "alert_ready_count": 2,
-                    "expected_identity_hash": "2" * 64,
-                    "processed_identity_hash": "2" * 64,
+                    "expected_identity_hash": liquidity_identity_hash(
+                        ("bsc", "0x" + "a" * 40),
+                        ("bsc", "0x" + "b" * 40),
+                    ),
+                    "processed_identity_hash": liquidity_identity_hash(
+                        ("bsc", "0x" + "a" * 40),
+                        ("bsc", "0x" + "b" * 40),
+                    ),
+                }
+            )
+            baseline["projects"].append(
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": "0x" + "b" * 40,
+                    "required": True,
+                    "operational_complete": True,
+                    "retention_flow": complete_project_retention_flow(3),
                 }
             )
             write_json(liquidity_path, baseline)
@@ -526,6 +643,18 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             sanitized, valid = sanitize_remote_runtime(complete)
             self.assertTrue(valid)
             self.assertEqual(sanitized["status"], "pass")
+
+            for forged_pool_count in (None, 0):
+                with self.subTest(forged_pool_count=forged_pool_count):
+                    forged_pool = json.loads(json.dumps(complete))
+                    forged_pool["grvt_liquidity"]["pool_count"] = (
+                        forged_pool_count
+                    )
+                    safe_forged_pool, forged_pool_valid = (
+                        sanitize_remote_runtime(forged_pool)
+                    )
+                    self.assertTrue(forged_pool_valid)
+                    self.assertEqual(safe_forged_pool["status"], "fail")
 
             nullable = json.loads(json.dumps(complete))
             nullable["grvt_liquidity"]["required_count"] = None
@@ -545,7 +674,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 ("processed_count", 1),
                 ("required_count", "2"),
                 ("processed_identity_hash", "3" * 64),
-                ("expected_identity_hash", int("2" * 64)),
+                ("expected_identity_hash", 2),
                 ("processed_identity_hash", True),
                 ("processed_identity_hash", None),
             ):
@@ -560,6 +689,788 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                     )
                     self.assertTrue(rejected_valid)
                     self.assertEqual(safe_rejected["status"], "fail")
+
+    def test_remote_liquidity_accepts_synthetic_focus_without_grvt_project(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            watchlist_path = root / "config/current_alpha_watchlist.json"
+            write_json(
+                watchlist_path,
+                {
+                    "monitoring_policy": {
+                        "mode": "exclusive_symbols",
+                        "symbols": ["TEST"],
+                    },
+                    "items": [
+                        {
+                            "symbol": "TEST",
+                            "active_monitoring": True,
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": "0x" + "b" * 40,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            expected_hashes["config/current_alpha_watchlist.json"] = (
+                hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+            )
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(liquidity_path.read_text(encoding="utf-8"))
+            liquidity["projects"] = [
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": "0x" + "b" * 40,
+                    "required": True,
+                    "operational_complete": True,
+                    "retention_flow": complete_project_retention_flow(17),
+                }
+            ]
+            liquidity["expected_identity_hash"] = liquidity_identity_hash(
+                ("bsc", "0x" + "b" * 40)
+            )
+            liquidity["processed_identity_hash"] = liquidity[
+                "expected_identity_hash"
+            ]
+            write_json(liquidity_path, liquidity)
+            payload = run_remote_probe(root, expected_hashes)
+            sanitized, valid = sanitize_remote_runtime(payload)
+
+        self.assertEqual(payload["status"], "pass")
+        self.assertTrue(valid)
+        self.assertEqual(sanitized["status"], "pass")
+        self.assertTrue(payload["grvt_replay_acceptance"]["contract_pass"])
+        self.assertEqual(
+            payload["grvt_liquidity"]["active_flow_scope"],
+            "required_projects_aggregate",
+        )
+        self.assertEqual(payload["grvt_liquidity"]["cursor"], 17)
+        self.assertEqual(payload["grvt_liquidity"]["confirmed_tip"], 17)
+        self.assertTrue(payload["grvt_liquidity"]["continuous"])
+
+    def test_remote_liquidity_accepts_empty_preopening_obligation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity.update(
+                {
+                    "required_count": 0,
+                    "complete_count": 0,
+                    "alert_ready_count": 0,
+                }
+            )
+            liquidity["projects"][0]["required"] = False
+            liquidity["projects"][0]["operational_complete"] = True
+            false_flows = {
+                "before_opening": {
+                    "status": "not_required",
+                    "events": [],
+                    "liquidity_retention": {
+                        "status": "not_required",
+                        "reason": "before_opening",
+                        "opening_time_utc": "2026-08-12T00:00:00+00:00",
+                        "age_hours": -1,
+                        "coverage_mode": "verified_pool_indexed_topics",
+                        "scope_complete": True,
+                        "pool_count": 0,
+                        "events": [],
+                    },
+                },
+                "explicit_no_pool": {
+                    "status": "not_applicable",
+                    "events": [],
+                    "liquidity_retention": {
+                        "status": "not_applicable",
+                        "reason": "no_verified_pool",
+                        "coverage_mode": "verified_pool_indexed_topics",
+                        "scope_complete": True,
+                        "scope_hash": "",
+                        "pool_count": 0,
+                        "v3_pool_count": 0,
+                        "v4_pool_count": 0,
+                        "complete": True,
+                        "selected_window_complete": False,
+                        "log_error_count": 0,
+                        "truncated": False,
+                        "events_truncated": False,
+                        "events": [],
+                    },
+                },
+            }
+            for label, retention_flow in false_flows.items():
+                with self.subTest(label=label):
+                    candidate = json.loads(json.dumps(liquidity))
+                    candidate["projects"][0]["retention_flow"] = (
+                        retention_flow
+                    )
+                    write_json(liquidity_path, candidate)
+                    payload = run_remote_probe(root, expected_hashes)
+                    sanitized, valid = sanitize_remote_runtime(payload)
+
+                    self.assertEqual(payload["status"], "pass")
+                    self.assertTrue(valid)
+                    self.assertEqual(sanitized["status"], "pass")
+                    self.assertEqual(
+                        payload["grvt_liquidity"]["required_count"], 0
+                    )
+                    self.assertTrue(
+                        payload["grvt_liquidity"]["continuous"]
+                    )
+                    self.assertIsNone(
+                        payload["grvt_liquidity"]["cursor"]
+                    )
+                    self.assertIsNone(
+                        payload["grvt_liquidity"]["confirmed_tip"]
+                    )
+                    self.assertIsNone(
+                        payload["grvt_liquidity"]["pool_count"]
+                    )
+                    self.assertTrue(
+                        payload["grvt_liquidity"]
+                        ["verdict_coverage_contract"]["pass"]
+                    )
+
+                    zero_pool = json.loads(json.dumps(payload))
+                    zero_pool["grvt_liquidity"]["pool_count"] = 0
+                    safe_zero_pool, zero_pool_valid = (
+                        sanitize_remote_runtime(zero_pool)
+                    )
+                    self.assertTrue(zero_pool_valid)
+                    self.assertEqual(safe_zero_pool["status"], "pass")
+
+                    positive_pool = json.loads(json.dumps(payload))
+                    positive_pool["grvt_liquidity"]["pool_count"] = 1
+                    safe_positive_pool, positive_pool_valid = (
+                        sanitize_remote_runtime(positive_pool)
+                    )
+                    self.assertTrue(positive_pool_valid)
+                    self.assertEqual(
+                        safe_positive_pool["status"], "fail"
+                    )
+
+                    for malformed_label in (
+                        "operational_incomplete",
+                        "outer_status_mismatch",
+                        "outer_events_nonempty",
+                    ):
+                        malformed = json.loads(json.dumps(candidate))
+                        project = malformed["projects"][0]
+                        if malformed_label == "operational_incomplete":
+                            project["operational_complete"] = False
+                        elif malformed_label == "outer_status_mismatch":
+                            project["retention_flow"]["status"] = "active"
+                        else:
+                            project["retention_flow"]["events"] = [{}]
+                        write_json(liquidity_path, malformed)
+                        self.assertEqual(
+                            run_remote_probe(root, expected_hashes)["status"],
+                            "fail",
+                        )
+
+    def test_remote_liquidity_rejects_nonboolean_required_and_active_false_flow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            baseline.update(
+                {
+                    "required_count": 0,
+                    "complete_count": 0,
+                    "alert_ready_count": 0,
+                }
+            )
+            for label, required in (
+                ("missing", object()),
+                ("none", None),
+                ("string", "false"),
+                ("active_false", False),
+            ):
+                with self.subTest(label=label):
+                    candidate = json.loads(json.dumps(baseline))
+                    if label == "missing":
+                        candidate["projects"][0].pop("required")
+                    else:
+                        candidate["projects"][0]["required"] = required
+                    write_json(liquidity_path, candidate)
+                    payload = run_remote_probe(root, expected_hashes)
+
+                    self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_rejects_invalid_required_flow_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            for label, field, value in (
+                ("missing_status", "status", None),
+                ("wrong_status", "status", "not_required"),
+                ("missing_pool_count", "pool_count", None),
+                ("zero_pool_count", "pool_count", 0),
+            ):
+                with self.subTest(label=label):
+                    candidate = json.loads(json.dumps(baseline))
+                    flow = candidate["projects"][0]["retention_flow"][
+                        "liquidity_retention"
+                    ]
+                    if label.startswith("missing_"):
+                        flow.pop(field)
+                    else:
+                        flow[field] = value
+                    write_json(liquidity_path, candidate)
+                    payload = run_remote_probe(root, expected_hashes)
+
+                    self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_rejects_invalid_project_flow_envelope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            for label in (
+                "operational_incomplete",
+                "outer_status_mismatch",
+                "outer_events_nonempty",
+                "core_complete_false",
+                "core_selected_window_false",
+                "core_scope_complete_false",
+            ):
+                with self.subTest(label=label):
+                    candidate = json.loads(json.dumps(baseline))
+                    project = candidate["projects"][0]
+                    flow = project["retention_flow"][
+                        "liquidity_retention"
+                    ]
+                    if label == "operational_incomplete":
+                        project["operational_complete"] = False
+                    elif label == "outer_status_mismatch":
+                        project["retention_flow"]["status"] = "not_required"
+                    elif label == "outer_events_nonempty":
+                        project["retention_flow"]["events"] = [{}]
+                    elif label == "core_complete_false":
+                        flow["complete"] = False
+                    elif label == "core_selected_window_false":
+                        flow["selected_window_complete"] = False
+                    else:
+                        flow["scope_complete"] = False
+                    write_json(liquidity_path, candidate)
+
+                    self.assertEqual(
+                        run_remote_probe(root, expected_hashes)["status"],
+                        "fail",
+                    )
+
+    def test_remote_liquidity_recomputes_alert_ready_full_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            for label in (
+                "catchup",
+                "query",
+                "scope_hash",
+                "latest_hash",
+                "confirmed_tip",
+                "pool_relation",
+                "strict_numeric_type",
+                "core_flag",
+            ):
+                with self.subTest(label=label):
+                    candidate = json.loads(json.dumps(baseline))
+                    flow = candidate["projects"][0]["retention_flow"][
+                        "liquidity_retention"
+                    ]
+                    if label == "catchup":
+                        flow["incremental_catchup"]["active"] = True
+                    elif label == "query":
+                        flow["query_count"] = 2
+                    elif label == "scope_hash":
+                        flow["previous_scope_hash"] = "b" * 64
+                    elif label == "latest_hash":
+                        flow["latest_block_hash"] = "0x" + "0" * 64
+                    elif label == "confirmed_tip":
+                        flow["observed_latest_block"] += 1
+                    elif label == "pool_relation":
+                        flow["event_filter_count"] = 3
+                    elif label == "strict_numeric_type":
+                        flow["query_count"] = "1"
+                    else:
+                        flow["query_scope_complete"] = False
+                    write_json(liquidity_path, candidate)
+
+                    self.assertEqual(
+                        run_remote_probe(root, expected_hashes)["status"],
+                        "fail",
+                    )
+
+    def test_remote_alert_ready_predicate_tracks_producer_helper_fields(
+        self,
+    ) -> None:
+        producer_source = Path(__file__).with_name(
+            "alpha_holder_concentration_watch.py"
+        ).read_text(encoding="utf-8")
+        producer_start = producer_source.index(
+            "def liquidity_retention_alert_coverage_complete("
+        )
+        producer_end = producer_source.index(
+            "\ndef liquidity_selected_window_alert_coverage_complete(",
+            producer_start,
+        )
+        producer_helper = producer_source[producer_start:producer_end]
+        remote_start = REMOTE_PROBE.index(
+            "def required_liquidity_alert_ready("
+        )
+        remote_end = REMOTE_PROBE.index(
+            "project_flow_envelope_contract_flags =", remote_start
+        )
+        remote_helper = REMOTE_PROBE[remote_start:remote_end]
+        producer_fields = set(
+            re.findall(r'\.get\("([a-z0-9_]+)"\)', producer_helper)
+        )
+        producer_fields.update(
+            re.findall(r'\["([a-z0-9_]+)"\]', producer_helper)
+        )
+        remote_fields = set(
+            re.findall(r'"([a-z0-9_]+)"', remote_helper)
+        )
+        self.assertTrue(producer_fields.issubset(remote_fields))
+
+        producer_version = re.search(
+            r"^LIQUIDITY_SCOPE_STATE_SCHEMA_VERSION = ([0-9]+)$",
+            producer_source,
+            re.MULTILINE,
+        )
+        remote_version = re.search(
+            r"^liquidity_scope_state_schema_version = ([0-9]+)$",
+            REMOTE_PROBE,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(producer_version)
+        self.assertIsNotNone(remote_version)
+        self.assertEqual(
+            producer_version.group(1), remote_version.group(1)
+        )
+
+    def test_remote_liquidity_rejects_project_identity_outside_focus(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            watchlist_path = root / "config/current_alpha_watchlist.json"
+            write_json(
+                watchlist_path,
+                {
+                    "monitoring_policy": {
+                        "mode": "exclusive_symbols",
+                        "symbols": ["TEST"],
+                    },
+                    "items": [
+                        {
+                            "symbol": "TEST",
+                            "active_monitoring": True,
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": "0x" + "b" * 40,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            expected_hashes["config/current_alpha_watchlist.json"] = (
+                hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+            )
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity["projects"][0].update(
+                {
+                    "symbol": "OTHER",
+                    "chain": "bsc",
+                    "address": "0x" + "c" * 40,
+                }
+            )
+            liquidity["expected_identity_hash"] = liquidity_identity_hash(
+                ("bsc", "0x" + "c" * 40)
+            )
+            liquidity["processed_identity_hash"] = liquidity[
+                "expected_identity_hash"
+            ]
+            write_json(liquidity_path, liquidity)
+            payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_uses_declared_runtime_watchlist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            runtime_watchlist = (
+                root
+                / "output/binance_alpha_catalog_watch/current_watchlist.json"
+            )
+            write_json(
+                runtime_watchlist,
+                {
+                    "monitoring_policy": {
+                        "mode": "exclusive_symbols",
+                        "symbols": ["TEST"],
+                    },
+                    "items": [
+                        {
+                            "symbol": "TEST",
+                            "active_monitoring": True,
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": "0x" + "b" * 40,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity["config_path"] = (
+                "output/binance_alpha_catalog_watch/current_watchlist.json"
+            )
+            liquidity["projects"][0].update(
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": "0x" + "b" * 40,
+                }
+            )
+            liquidity["expected_identity_hash"] = liquidity_identity_hash(
+                ("bsc", "0x" + "b" * 40)
+            )
+            liquidity["processed_identity_hash"] = liquidity[
+                "expected_identity_hash"
+            ]
+            write_json(liquidity_path, liquidity)
+            relative_payload = run_remote_probe(root, expected_hashes)
+            liquidity["config_path"] = str(runtime_watchlist)
+            write_json(liquidity_path, liquidity)
+            absolute_payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(relative_payload["status"], "pass")
+        self.assertEqual(absolute_payload["status"], "pass")
+
+    def test_remote_liquidity_accepts_content_addressed_cycle_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            source = root / "config/current_alpha_watchlist.json"
+            snapshot_bytes = source.read_bytes()
+            snapshot_hash = hashlib.sha256(snapshot_bytes).hexdigest()
+            snapshot_dir = root / "output/runtime_watchlist_cycles"
+            snapshot_dir.mkdir(parents=True)
+            snapshot = snapshot_dir / f"{snapshot_hash}.json"
+            snapshot.write_bytes(snapshot_bytes)
+            snapshot.chmod(0o444)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity["config_path"] = str(snapshot.relative_to(root))
+            write_json(liquidity_path, liquidity)
+            relative_payload = run_remote_probe(root, expected_hashes)
+            liquidity["config_path"] = str(snapshot)
+            write_json(liquidity_path, liquidity)
+            absolute_payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(relative_payload["status"], "pass")
+        self.assertEqual(absolute_payload["status"], "pass")
+
+    def test_remote_liquidity_rejects_invalid_cycle_snapshot_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            source = root / "config/current_alpha_watchlist.json"
+            snapshot_bytes = source.read_bytes()
+            snapshot_hash = hashlib.sha256(snapshot_bytes).hexdigest()
+            snapshot_dir = root / "output/runtime_watchlist_cycles"
+            snapshot_dir.mkdir(parents=True)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+
+            def probe(config_path: Path | str) -> str:
+                candidate = json.loads(json.dumps(baseline))
+                candidate["config_path"] = str(config_path)
+                write_json(liquidity_path, candidate)
+                return run_remote_probe(root, expected_hashes)["status"]
+
+            wrong_hash = snapshot_dir / ("f" * 64 + ".json")
+            wrong_hash.write_bytes(snapshot_bytes)
+            wrong_hash.chmod(0o444)
+            self.assertEqual(probe(wrong_hash), "fail")
+
+            writable = snapshot_dir / f"{snapshot_hash}.json"
+            writable.write_bytes(snapshot_bytes)
+            writable.chmod(0o644)
+            self.assertEqual(probe(writable), "fail")
+
+            writable.unlink()
+            writable.symlink_to(source)
+            self.assertEqual(probe(writable), "fail")
+            writable.unlink()
+
+            nested = snapshot_dir / "nested"
+            nested.mkdir()
+            nested_snapshot = nested / f"{snapshot_hash}.json"
+            nested_snapshot.write_bytes(snapshot_bytes)
+            nested_snapshot.chmod(0o444)
+            self.assertEqual(probe(nested_snapshot), "fail")
+            self.assertEqual(
+                probe(
+                    "output/runtime_watchlist_cycles/../"
+                    "runtime_watchlist_cycles/"
+                    f"{snapshot_hash}.json"
+                ),
+                "fail",
+            )
+
+    def test_remote_liquidity_rejects_unsafe_config_path_and_forged_hash(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            baseline = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            absolute_canonical = json.loads(json.dumps(baseline))
+            absolute_canonical["config_path"] = str(
+                root / "config/current_alpha_watchlist.json"
+            )
+            write_json(liquidity_path, absolute_canonical)
+            self.assertEqual(
+                run_remote_probe(root, expected_hashes)["status"],
+                "pass",
+            )
+
+            for config_path in (
+                None,
+                "output/other/current_watchlist.json",
+                "/tmp/current_watchlist.json",
+                "output/../config/current_alpha_watchlist.json",
+                str(
+                    root
+                    / "output/../config/current_alpha_watchlist.json"
+                ),
+            ):
+                with self.subTest(config_path=config_path):
+                    mutated = json.loads(json.dumps(baseline))
+                    if config_path is None:
+                        mutated.pop("config_path")
+                    else:
+                        mutated["config_path"] = config_path
+                    write_json(liquidity_path, mutated)
+                    self.assertEqual(
+                        run_remote_probe(root, expected_hashes)["status"],
+                        "fail",
+                    )
+
+            forged = json.loads(json.dumps(baseline))
+            forged["expected_identity_hash"] = "f" * 64
+            forged["processed_identity_hash"] = "f" * 64
+            write_json(liquidity_path, forged)
+            payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_rejects_any_incomplete_required_flow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            watchlist_path = root / "config/current_alpha_watchlist.json"
+            watchlist = json.loads(
+                watchlist_path.read_text(encoding="utf-8")
+            )
+            watchlist["monitoring_policy"]["symbols"].append("TEST")
+            watchlist["items"].append(
+                {
+                    "symbol": "TEST",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {
+                            "chain": "bsc",
+                            "address": "0x" + "b" * 40,
+                        }
+                    ],
+                }
+            )
+            write_json(watchlist_path, watchlist)
+            expected_hashes["config/current_alpha_watchlist.json"] = (
+                hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+            )
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(liquidity_path.read_text(encoding="utf-8"))
+            liquidity.update(
+                {
+                    "expected_count": 2,
+                    "processed_count": 2,
+                    "required_count": 2,
+                    "complete_count": 2,
+                    "alert_ready_count": 2,
+                    "expected_identity_hash": liquidity_identity_hash(
+                        ("bsc", "0x" + "a" * 40),
+                        ("bsc", "0x" + "b" * 40),
+                    ),
+                    "processed_identity_hash": liquidity_identity_hash(
+                        ("bsc", "0x" + "a" * 40),
+                        ("bsc", "0x" + "b" * 40),
+                    ),
+                }
+            )
+            liquidity["projects"].append(
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": "0x" + "b" * 40,
+                    "required": True,
+                    "operational_complete": True,
+                    "retention_flow": complete_project_retention_flow(17),
+                }
+            )
+            liquidity["projects"][-1]["retention_flow"][
+                "liquidity_retention"
+            ]["continuous"] = False
+            write_json(liquidity_path, liquidity)
+            payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_rejects_duplicate_project_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(liquidity_path.read_text(encoding="utf-8"))
+            liquidity.update(
+                {
+                    "expected_count": 2,
+                    "processed_count": 2,
+                    "required_count": 2,
+                    "complete_count": 2,
+                    "alert_ready_count": 2,
+                }
+            )
+            liquidity["projects"].append(
+                json.loads(json.dumps(liquidity["projects"][0]))
+            )
+            write_json(liquidity_path, liquidity)
+            payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(payload["status"], "fail")
+
+    def test_remote_liquidity_rejects_missing_processed_project_row(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected_hashes, _ = remote_probe_fixture(root)
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(liquidity_path.read_text(encoding="utf-8"))
+            liquidity.update(
+                {
+                    "expected_count": 2,
+                    "processed_count": 2,
+                }
+            )
+            write_json(liquidity_path, liquidity)
+            payload = run_remote_probe(root, expected_hashes)
+
+        self.assertEqual(payload["status"], "fail")
 
     def test_remote_runtime_generated_at_must_be_canonical_for_pass(
         self,
@@ -1330,6 +2241,8 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         for reason_code in (
             "pool_scope_empty",
             "operator_attribution_failed",
+            "liquidity_opening_scope_hash_unavailable",
+            "liquidity_opening_scope_hash_mismatch",
             "seed_conflict",
             "seed_conflict_invalid",
             "seed_conflict_scope",
@@ -2089,14 +3002,22 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "input/dos_airdrop_pressure_evidence_2026-08-10.json",
             "input/dos_alpha_200_sell_receipt_2026-08-10.json",
             "scripts/alpha_holder_concentration_watch.py",
+            "scripts/alpha_onboarding_preflight.py",
             "scripts/alpha_opening_block_watch.py",
             "scripts/alpha_opening_sprint.sh",
             "scripts/alpha_prelaunch_watch.py",
+            "scripts/binance_alpha_catalog_watch.py",
             "scripts/build_alpha_daily_report.py",
             "scripts/fast_lane_health.py",
+            "scripts/ingest_alpha_signal.py",
             "scripts/runtime_health_watch.py",
+            "scripts/server_fast_lane.sh",
+            "scripts/test_alpha_onboarding_preflight.py",
             "scripts/test_dos_prelaunch_config.py",
+            "scripts/test_generic_monitoring_pipeline.py",
+            "scripts/test_generic_onboarding_identity.py",
             "scripts/test_sniper_engine_units.py",
+            "sniper_engine/project_registry.py",
             "sniper_engine/rpc.py",
         }
         self.assertTrue(protected.issubset(set(DEPLOY_PARITY_PATHS)))
@@ -2125,6 +3046,52 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_hashes, _ = remote_probe_fixture(root)
+            watchlist_path = root / "config/current_alpha_watchlist.json"
+            write_json(
+                watchlist_path,
+                {
+                    "monitoring_policy": {
+                        "mode": "exclusive_symbols",
+                        "symbols": ["TEST"],
+                    },
+                    "items": [
+                        {
+                            "symbol": "TEST",
+                            "active_monitoring": True,
+                            "contracts": [
+                                {
+                                    "chain": "bsc",
+                                    "address": "0x" + "b" * 40,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            expected_hashes["config/current_alpha_watchlist.json"] = (
+                hashlib.sha256(watchlist_path.read_bytes()).hexdigest()
+            )
+            liquidity_path = (
+                root
+                / "output/alpha_liquidity_retention_watch/latest.json"
+            )
+            liquidity = json.loads(
+                liquidity_path.read_text(encoding="utf-8")
+            )
+            liquidity["projects"][0].update(
+                {
+                    "symbol": "TEST",
+                    "chain": "bsc",
+                    "address": "0x" + "b" * 40,
+                }
+            )
+            liquidity["expected_identity_hash"] = liquidity_identity_hash(
+                ("bsc", "0x" + "b" * 40)
+            )
+            liquidity["processed_identity_hash"] = liquidity[
+                "expected_identity_hash"
+            ]
+            write_json(liquidity_path, liquidity)
             historical = [
                 {
                     "reconcile_id": reconcile_id,
@@ -2145,6 +3112,10 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(contract["historical_unversioned_scope_count"], 3)
         self.assertEqual(contract["v2_scope_unresolved_count"], 0)
         self.assertTrue(contract["pass"])
+        self.assertNotIn(
+            HISTORICAL_SCOPE_TOKEN,
+            json.dumps(payload, sort_keys=True).lower(),
+        )
 
     def test_remote_probe_rejects_historical_scope_row_with_extra_issue(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2239,7 +3210,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertEqual(contract["historical_unversioned_scope_count"], 0)
         self.assertEqual(contract["missing_contract_version_count"], 1)
 
-    def test_remote_probe_rejects_historical_id_outside_grvt_scope(self) -> None:
+    def test_remote_probe_rejects_historical_id_outside_fixed_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_hashes, _ = remote_probe_fixture(root)
@@ -2255,7 +3226,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 root / "output/alpha_liquidity_retention_watch/state.json",
                 {
                     "tokens": {
-                        "ethereum:0x" + "b" * 40: {
+                        "bsc:0x" + "b" * 40: {
                             "liquidity": {
                                 "reconciliation": {
                                     "pending": [],

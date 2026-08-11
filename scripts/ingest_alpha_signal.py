@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +25,8 @@ SIGNAL_DIR = ROOT / "input" / "signals"
 OUT_DIR = ROOT / "output" / "signals"
 WATCHLIST_PATH = ROOT / "config" / "current_alpha_watchlist.json"
 PREDICTION_PATH = ROOT / "config" / "current_prediction_markets.json"
+APPLY_LOCK_PATH = ROOT / "output" / "locks" / "alpha_signal_apply.lock"
+PENDING_MONITORING_ACTIVATION = "pending_manual_onboarding"
 
 EVM_ADDR_RE = re.compile(r"(?<![a-fA-F0-9])0x[a-fA-F0-9]{40}(?![a-fA-F0-9])")
 TX_RE = re.compile(r"0x[a-fA-F0-9]{64}")
@@ -116,7 +121,22 @@ def read_json(path: Path, default: Any) -> Any:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            if path.exists():
+                os.fchmod(handle.fileno(), path.stat().st_mode & 0o7777)
+            handle.write(json.dumps(payload, indent=2, ensure_ascii=False))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def source_files(paths: list[str]) -> list[Path]:
@@ -745,22 +765,48 @@ def apply_proposals(parsed: dict[str, Any]) -> None:
     source_policy = parsed.get("source_policy", {})
     if isinstance(source_policy, dict) and source_policy.get("context_only") is True:
         return
-    watchlist = read_json(WATCHLIST_PATH, {"generated_at": now_iso(), "items": []})
-    prediction = read_json(PREDICTION_PATH, {"generated_at": now_iso(), "items": []})
+    APPLY_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with APPLY_LOCK_PATH.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            watchlist = read_json(
+                WATCHLIST_PATH,
+                {"generated_at": now_iso(), "items": []},
+            )
+            prediction = read_json(
+                PREDICTION_PATH,
+                {"generated_at": now_iso(), "items": []},
+            )
 
-    proposal = parsed.get("watchlist_proposal", {})
-    symbol = proposal.get("symbol", "UNKNOWN")
-    if symbol and symbol != "UNKNOWN":
-        watchlist["items"] = merge_by_symbol(watchlist.get("items", []), proposal)
-        watchlist["generated_at"] = now_iso()
-        write_json(WATCHLIST_PATH, watchlist)
+            proposal = parsed.get("watchlist_proposal", {})
+            symbol = proposal.get("symbol", "UNKNOWN")
+            if symbol and symbol != "UNKNOWN":
+                merge_proposal = proposal
+                monitoring_policy = watchlist.get("monitoring_policy")
+                if (
+                    isinstance(monitoring_policy, dict)
+                    and monitoring_policy.get("mode") == "exclusive_symbols"
+                ):
+                    merge_proposal = copy.deepcopy(proposal)
+                    merge_proposal["active_monitoring"] = False
+                    merge_proposal["monitoring_activation"] = (
+                        PENDING_MONITORING_ACTIVATION
+                    )
+                watchlist["items"] = merge_by_symbol(
+                    watchlist.get("items", []),
+                    merge_proposal,
+                )
+                watchlist["generated_at"] = now_iso()
+                write_json(WATCHLIST_PATH, watchlist)
 
-    prediction_items = prediction.get("items", [])
-    for item in parsed.get("prediction_proposals", []):
-        prediction_items = merge_prediction(prediction_items, item)
-    prediction["items"] = prediction_items
-    prediction["generated_at"] = now_iso()
-    write_json(PREDICTION_PATH, prediction)
+            prediction_items = prediction.get("items", [])
+            for item in parsed.get("prediction_proposals", []):
+                prediction_items = merge_prediction(prediction_items, item)
+            prediction["items"] = prediction_items
+            prediction["generated_at"] = now_iso()
+            write_json(PREDICTION_PATH, prediction)
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def evidence_rank(status: Any, authority: Any = "") -> int:
@@ -883,50 +929,152 @@ def merge_signal_facts(
 
 
 def merge_by_symbol(items: list[dict[str, Any]], proposal: dict[str, Any]) -> list[dict[str, Any]]:
-    symbol = proposal.get("symbol", "").upper()
-    for idx, item in enumerate(items):
-        if str(item.get("symbol", "")).upper() == symbol:
-            merged = dict(item)
-            for key in [
-                "aliases",
-                "contracts",
-                "catalysts",
-                "known_blocks",
-                "known_times",
-                "known_txs",
-                "pool_ids",
-                "required_checks",
-            ]:
-                merged[key] = merge_list(merged.get(key, []), proposal.get(key, []))
-            merged["event_schedule"] = merge_event_schedule(
-                merged.get("event_schedule", []),
-                proposal.get("event_schedule", []),
-            )
-            if proposal.get("facts"):
-                merged["facts"] = merge_signal_facts(
-                    merged.get("facts", {}),
-                    proposal.get("facts", {}),
-                )
-            if proposal.get("prelaunch_research"):
-                from scripts.binance_alpha_catalog_watch import (
-                    merge_prelaunch_research,
-                )
+    identities = watchlist_contract_identities(proposal)
+    if identities:
+        matches = [
+            idx
+            for idx, item in enumerate(items)
+            if identities & watchlist_contract_identities(item)
+        ]
+    else:
+        symbols = watchlist_symbol_aliases(proposal)
+        matches = [
+            idx
+            for idx, item in enumerate(items)
+            if symbols & watchlist_symbol_aliases(item)
+        ]
+    if (
+        len(matches) != 1
+        or (
+            not identities
+            and len(watchlist_contract_identities(items[matches[0]])) > 1
+        )
+    ):
+        items.append(proposal)
+        return items
 
-                merged["prelaunch_research"] = (
-                    merge_prelaunch_research(
-                        merged.get("prelaunch_research", {}),
-                        proposal["prelaunch_research"],
-                    )
-                )
-            if priority_rank(str(proposal.get("priority", ""))) > priority_rank(str(merged.get("priority", ""))):
-                merged["priority"] = proposal.get("priority")
-            for key in ["chain", "name"]:
-                if not merged.get(key) or merged.get(key) in {"unknown", "P3_BACKLOG"}:
-                    merged[key] = proposal.get(key, merged.get(key))
-            items[idx] = merged
-            return items
-    items.append(proposal)
+    idx = matches[0]
+    item = items[idx]
+    merged = dict(item)
+    for key in [
+        "aliases",
+        "contracts",
+        "catalysts",
+        "known_blocks",
+        "known_times",
+        "known_txs",
+        "pool_ids",
+        "required_checks",
+    ]:
+        incoming = list(proposal.get(key) or [])
+        if (
+            key == "aliases"
+            and proposal.get("symbol")
+            and str(proposal.get("symbol")).upper()
+            != str(item.get("symbol") or "").upper()
+        ):
+            incoming.append(str(proposal["symbol"]).upper())
+        if key == "contracts":
+            merged[key] = merge_contract_rows(
+                list(merged.get(key) or []),
+                incoming,
+            )
+        else:
+            merged[key] = merge_list(merged.get(key, []), incoming)
+    merged["event_schedule"] = merge_event_schedule(
+        merged.get("event_schedule", []),
+        proposal.get("event_schedule", []),
+    )
+    if proposal.get("facts"):
+        merged["facts"] = merge_signal_facts(
+            merged.get("facts", {}),
+            proposal.get("facts", {}),
+        )
+    if proposal.get("prelaunch_research"):
+        from scripts.binance_alpha_catalog_watch import (
+            merge_prelaunch_research,
+        )
+
+        merged["prelaunch_research"] = (
+            merge_prelaunch_research(
+                merged.get("prelaunch_research", {}),
+                proposal["prelaunch_research"],
+            )
+        )
+    if priority_rank(str(proposal.get("priority", ""))) > priority_rank(str(merged.get("priority", ""))):
+        merged["priority"] = proposal.get("priority")
+    for key in ["chain", "name"]:
+        if not merged.get(key) or merged.get(key) in {"unknown", "P3_BACKLOG"}:
+            merged[key] = proposal.get(key, merged.get(key))
+    items[idx] = merged
     return items
+
+
+def watchlist_contract_identities(
+    payload: dict[str, Any],
+) -> set[tuple[str, str]]:
+    identities: set[tuple[str, str]] = set()
+    for row in payload.get("contracts") or []:
+        if not isinstance(row, dict):
+            continue
+        identity = watchlist_contract_identity(row)
+        if identity is not None:
+            identities.add(identity)
+    return identities
+
+
+def watchlist_contract_identity(
+    row: dict[str, Any],
+) -> tuple[str, str] | None:
+    chain = normalize_chain(str(row.get("chain") or "").strip())
+    address = str(row.get("address") or "").strip().lower()
+    return (chain, address) if chain and address else None
+
+
+def merge_contract_rows(
+    existing: list[Any],
+    incoming: list[Any],
+) -> list[Any]:
+    merged: list[Any] = []
+    positions: dict[tuple[str, str], int] = {}
+    for row in [*existing, *incoming]:
+        identity = (
+            watchlist_contract_identity(row)
+            if isinstance(row, dict)
+            else None
+        )
+        if identity is None:
+            if not any(
+                str(current).lower() == str(row).lower()
+                for current in merged
+            ):
+                merged.append(copy.deepcopy(row))
+            continue
+        position = positions.get(identity)
+        if position is None:
+            positions[identity] = len(merged)
+            merged.append(copy.deepcopy(row))
+            continue
+        current = merged[position]
+        for field, value in row.items():
+            if field in {"chain", "address"}:
+                continue
+            if (
+                current.get(field) in (None, "", [], {})
+                and value not in (None, "", [], {})
+            ):
+                current[field] = copy.deepcopy(value)
+    return merged
+
+
+def watchlist_symbol_aliases(payload: dict[str, Any]) -> set[str]:
+    values = [payload.get("symbol"), *(payload.get("aliases") or [])]
+    return {
+        str(value).strip().upper()
+        for value in values
+        if str(value or "").strip()
+        and str(value).strip().upper() != "UNKNOWN"
+    }
 
 
 def merge_prediction(items: list[dict[str, Any]], proposal: dict[str, Any]) -> list[dict[str, Any]]:

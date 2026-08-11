@@ -62,38 +62,26 @@ wait "$user_collector_pid"
 run_step "${FAST_BINANCE_ALPHA_CATALOG_TIMEOUT_SECONDS:-20}" python3 scripts/binance_alpha_catalog_watch.py
 
 runtime_ttl="${BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS:-21600}"
-if [[ -z "${ALPHA_WATCHLIST_PATH:-}" ]]; then
-  runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
-  curated_watchlist="config/current_alpha_watchlist.json"
-  runtime_age="$(
-    python3 -c 'import os, sys, time; print(max(0, int(time.time() - os.path.getmtime(sys.argv[1]))))' \
-      "$runtime_watchlist" 2>/dev/null || echo "$((runtime_ttl + 1))"
-  )"
-  runtime_policy_status="$(
-    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
-      "$runtime_watchlist" "$curated_watchlist" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
-  )"
-  if [[ "$runtime_policy_status" == "static_invalid" ]]; then
-    echo "server_fast_lane failed: curated Alpha monitoring policy is invalid" >&2
-    exit 78
-  fi
-  if [[ -s "$runtime_watchlist" ]] \
-    && (( runtime_age <= runtime_ttl )) \
-    && [[ "$runtime_policy_status" == "runtime_valid" ]]; then
-    export ALPHA_WATCHLIST_PATH="$runtime_watchlist"
-  else
-    export ALPHA_WATCHLIST_PATH="$curated_watchlist"
-    echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) fast lane using curated watchlist fallback after runtime policy check"
-  fi
-else
-  configured_policy_status="$(
-    python3 -c 'from pathlib import Path; import sys; from scripts.binance_alpha_catalog_watch import watchlist_policy_status; print(watchlist_policy_status(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])))' \
-      "$ALPHA_WATCHLIST_PATH" "config/current_alpha_watchlist.json" "$runtime_ttl" 2>/dev/null || echo "static_invalid"
-  )"
-  if [[ "$configured_policy_status" != "runtime_valid" ]]; then
-    echo "server_fast_lane failed: configured Alpha watchlist violates the curated monitoring policy" >&2
-    exit 78
-  fi
+runtime_watchlist="output/binance_alpha_catalog_watch/current_watchlist.json"
+curated_watchlist="config/current_alpha_watchlist.json"
+configured_watchlist="${ALPHA_WATCHLIST_PATH:-}"
+materialized_watchlist_status=0
+materialized_watchlist="$(
+  python3 -c 'from pathlib import Path; import sys; from scripts.alpha_onboarding_preflight import select_and_materialize_watchlist; configured = Path(sys.argv[4]) if sys.argv[4] else None; print(select_and_materialize_watchlist(runtime_path=Path(sys.argv[1]), static_path=Path(sys.argv[2]), max_age_seconds=int(sys.argv[3]), configured_path=configured))' \
+    "$runtime_watchlist" "$curated_watchlist" "$runtime_ttl" "$configured_watchlist"
+)" || materialized_watchlist_status=$?
+if (( materialized_watchlist_status != 0 )) || [[ -z "$materialized_watchlist" ]]; then
+  echo "server_fast_lane failed: policy-checked Alpha watchlist cycle snapshot unavailable" >&2
+  exit 78
+fi
+export ALPHA_WATCHLIST_PATH="$materialized_watchlist"
+onboarding_preflight_status=0
+python3 scripts/alpha_onboarding_preflight.py \
+  --watchlist "$ALPHA_WATCHLIST_PATH" \
+  --profile "binance_alpha_bsc.v1" || onboarding_preflight_status=$?
+if (( onboarding_preflight_status != 0 )); then
+  echo "server_fast_lane failed: Alpha onboarding preflight blocked" >&2
+  exit 78
 fi
 
 run_step "${FAST_PREDICTION_MARKET_TIMEOUT_SECONDS:-20}" python3 scripts/prediction_market_watch.py &

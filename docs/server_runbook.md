@@ -1,6 +1,6 @@
 # Server Runbook
 
-更新日期：2026-07-26
+更新日期：2026-08-11
 
 当前版本已经覆盖本地推文评分、Telegram/项目线索摄取、Alpha 项目级监控、预发布窗口、Alpha 开盘首批买家回溯、首批买家 funding source、Alpha 官方价格动量、Alpha 盘中大额流监控、holder 集中度、合约 OI/funding/盘口/强平、Surf 外部市场辅助层、外部辅助源 readiness、预测市场、日报、系统自检和失败才推送的运行健康告警。
 
@@ -138,6 +138,38 @@ alpha_id 去重，并显式输出 eligible、selected、retained、expired 和 d
 last-known-good 运行时清单，缺失或过期时回退 `config/current_alpha_watchlist.json`；
 `BINANCE_ALPHA_CATALOG_STALE_TTL_SECONDS` 可调整该时限，显式设置的
 `ALPHA_WATCHLIST_PATH` 始终优先。
+
+### 通用新币准入
+
+当前可执行的通用 profile 是 `binance_alpha_bsc.v1`，对应 adapter
+`generic_alpha_watchers.v1`。新币只通过 `config/current_alpha_watchlist.json`
+接入：`monitoring_policy.symbols` 中的每个 symbol 必须恰好对应一个
+active P0/P1 项目、一个非报价币的 BSC 合约，以及一个可解析的开盘时间锚点。
+若 `ALPHA_HOLDER_PRIORITIES` 缩窄了优先级，focused 项目也必须落在同一范围内。
+`pool_ids` 可以先留空；唯一开盘时间会生成 BSC/USDT 池发现范围。
+已知池行必须使用 BSC 且与 USDT 配对，`pool_id` 只接受空 discovery、
+20-byte 池地址或 32-byte pool id。空投日程是可选输入；
+一旦显式配置，结构或事件身份不完整会 fail-closed。
+
+本地准入检查：
+
+```bash
+SNIPER_OFFLINE=1 python3 scripts/alpha_onboarding_preflight.py \
+  --watchlist config/current_alpha_watchlist.json \
+  --profile binance_alpha_bsc.v1
+```
+
+`pass` 记录该配置已能被开盘、盘中、holder 和 liquidity retention
+用同一 `chain+contract` 身份消费。RPC 覆盖和链上结论继续由运行时 acceptance 独立判定。
+主循环和每分钟 fast lane 都会在 watcher 前执行同一准入检查。
+若 `ALPHA_INTRADAY_REVIEW_SYMBOL` 或 `ALPHA_PRICE_REVIEW_SYMBOL` 已设置，其值必须命中本轮 focused active symbol；遗留的旧币过滤器会在 watcher 启动前阻断。
+
+两个 server 入口会对本轮选中的 watchlist 做一次读取，写入
+`output/runtime_watchlist_cycles/<sha256>.json` 的只读内容寻址快照，然后让 preflight 和所有下游 watcher 继承该快照路径。这保证同一轮的项目身份和准入证据不会被并行 catalog/ingest 替换。快照创建、权限、哈希或路径验证失败均 fail-closed。当前保留快照供后续 continuity acceptance 读取；未实施自动删除，后续 GC 必须排除仍被最新 liquidity artifact 引用的快照。
+
+选中 runtime 来源时，时效和策略验证使用同一个 `O_NOFOLLOW` descriptor 中的 bytes 与 `fstat` 结果，快照直接由这份已验证 bytes 生成；curated 来源也只读一次。
+
+其他链或非 Binance Alpha 流程需要新的显式 profile/adapter，不会隐式沿用 BSC 合同。
 
 Telegram bot 采集器先以 `--defer-analysis` 拉取并合并线索。项目、预发布、盘中、合约和价格
 快路径完成后立即用 `--flush-pending` 发送富化结果，重型开盘买家追踪继续在后续步骤运行并独立

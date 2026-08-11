@@ -64,6 +64,12 @@ LIQUIDITY_SEED_CONFLICT_REASONS = frozenset(
         "seed_conflict_progress_reconciliation_not_dominant",
     }
 )
+LIQUIDITY_OPENING_SCOPE_CANONICAL_REASONS = frozenset(
+    {
+        "liquidity_opening_scope_hash_unavailable",
+        "liquidity_opening_scope_hash_mismatch",
+    }
+)
 LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT = {
     "checkpoint_relation": "not_applicable",
     "reconciliation_conflict_shape": "not_applicable",
@@ -918,6 +924,73 @@ def liquidity_scope_conflict_reason(
     return "seed_conflict_scope_not_strict_expansion"
 
 
+def liquidity_reconciliation_semantics(
+    seed: dict[str, Any],
+) -> dict[str, Any] | None:
+    state = holder.migrate_liquidity_reconciliation_state(
+        seed.get("reconciliation"), maximum_seconds=900
+    )
+    if state.get("state_invalid") is True:
+        return None
+    state.pop("updated_at", None)
+    return state
+
+
+def select_current_scope_recovery(
+    current_scope: Any,
+    standalone: dict[str, Any],
+    holder_seed: dict[str, Any],
+) -> dict[str, Any]:
+    relation = liquidity_scope_conflict_reason(
+        current_scope, standalone, holder_seed
+    )
+    source = {
+        "seed_conflict_scope_current_standalone_strict_expansion": "standalone",
+        "seed_conflict_scope_current_holder_strict_expansion": "holder",
+    }.get(relation, "")
+    seeds = {"standalone": standalone, "holder": holder_seed}
+    if not source or any(
+        liquidity_seed_state_kind(seed) != "checkpoint"
+        for seed in seeds.values()
+    ):
+        return {}
+    other = "holder" if source == "standalone" else "standalone"
+    expanded, narrow = seeds[source], seeds[other]
+    checkpoint_fields = (
+        "latest_block",
+        "latest_block_hash",
+        "catchup_active",
+        "catchup_live_from_block",
+        "next_catchup_window_blocks",
+    )
+    expanded_reconciliation = liquidity_reconciliation_semantics(expanded)
+    if (
+        any(expanded.get(key) != narrow.get(key) for key in checkpoint_fields)
+        or int(expanded.get("scope_coverage_from_block") or 0)
+        > int(narrow.get("scope_coverage_from_block") or 0)
+        or not holder.valid_nonzero_hash32(expanded.get("latest_block_hash"))
+        or expanded_reconciliation is None
+        or expanded_reconciliation != liquidity_reconciliation_semantics(narrow)
+    ):
+        return {}
+    return {
+        "seed": copy.deepcopy(narrow),
+        "source": other,
+        "conflict": False,
+        "conflict_reason": "none",
+        "progress_recovery": True,
+        "conflict_detail": dict(LIQUIDITY_SEED_CONFLICT_DETAIL_DEFAULT),
+    }
+
+
+def checkpoint_recovery_reorged(
+    selection: dict[str, Any], flow: dict[str, Any]
+) -> bool:
+    return selection.get("progress_recovery") is True and flow.get(
+        "checkpoint_reorg_recovery"
+    ) is True
+
+
 def liquidity_reconciliation_dominates(
     candidate: dict[str, Any],
     previous: dict[str, Any],
@@ -1201,6 +1274,9 @@ def liquidity_operational_issue(
 ) -> str:
     if not required:
         return ""
+    canonical_reason = str(flow.get("reason") or "")
+    if canonical_reason in LIQUIDITY_OPENING_SCOPE_CANONICAL_REASONS:
+        return canonical_reason
     if flow.get("status") != "active":
         return f"status={flow.get('status', 'missing')}"
     if int(flow.get("pool_count") or 0) <= 0:
@@ -1389,7 +1465,10 @@ def liquidity_runtime_diagnostic(
         "seed_conflict",
         *LIQUIDITY_SEED_CONFLICT_REASONS,
     }
-    if normalized_error_code in safe_error_codes:
+    flow_reason = str(flow.get("reason") or "")
+    if flow_reason in LIQUIDITY_OPENING_SCOPE_CANONICAL_REASONS:
+        reason_code = flow_reason
+    elif normalized_error_code in safe_error_codes:
         reason_code = normalized_error_code
     elif flow.get("status") != "active":
         reason_code = "coverage_gap"
@@ -1560,9 +1639,6 @@ def build_snapshot() -> dict[str, Any]:
             persisted_liquidity = selection["seed"]
             seed_source = str(selection["source"])
             seed_conflict = bool(selection["conflict"] is True)
-            progress_recovery = bool(
-                selection.get("progress_recovery") is True
-            )
             seed_conflict_reason = str(
                 selection.get("conflict_reason") or "seed_conflict"
             )
@@ -1609,11 +1685,23 @@ def build_snapshot() -> dict[str, Any]:
                         token,
                         persisted_scope={},
                     )
-                    seed_conflict_reason = liquidity_scope_conflict_reason(
+                    recovery = select_current_scope_recovery(
                         current_scope,
                         standalone_seed,
                         holder_seed,
                     )
+                    if recovery:
+                        selection = recovery
+                        persisted_liquidity = recovery["seed"]
+                        seed_source = str(recovery["source"])
+                        seed_conflict = False
+                        seed_conflict_reason = "none"
+                    else:
+                        seed_conflict_reason = liquidity_scope_conflict_reason(
+                            current_scope,
+                            standalone_seed,
+                            holder_seed,
+                        )
                 if seed_conflict:
                     raise LiquiditySeedConflict(seed_conflict_reason)
                 if persisted_liquidity.get(
@@ -1708,10 +1796,7 @@ def build_snapshot() -> dict[str, Any]:
                             liquidity_state=persisted_liquidity,
                         )
                     )
-                    if (
-                        progress_recovery
-                        and flow.get("checkpoint_reorg_recovery") is True
-                    ):
+                    if checkpoint_recovery_reorged(selection, flow):
                         next_liquidity_state = None
                         seed_conflict = True
                         raise LiquiditySeedConflict(
