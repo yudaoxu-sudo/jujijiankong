@@ -8223,6 +8223,73 @@ class RuntimeIntegrationRegressionTests(unittest.TestCase):
             {100, 500, 3000, 10000},
         )
 
+    def test_v3_cycle_rows_rotate_after_slow_factory_lookup(
+        self,
+    ) -> None:
+        fixture = _V3CycleFixture((100, 500, 3000, 10000))
+        get_pool_calls = {100: 0, 500: 0, 3000: 0, 10000: 0}
+        slow_lookup = {"enabled": True, "seen": False}
+
+        def rpc(
+            _chain: str,
+            method: str,
+            params: list[object],
+            **_kwargs: object,
+        ) -> object:
+            if method == "eth_getBlockByNumber":
+                slow_lookup["seen"] = False
+                return {"hash": "0x" + "a" * 64}
+            self.assertEqual(method, "eth_call")
+            call = params[0]
+            self.assertEqual(call["to"], fixture.factory)
+            fee = int(str(call["data"])[-64:], 16)
+            get_pool_calls[fee] += 1
+            if slow_lookup["enabled"] and fee == 500:
+                slow_lookup["seen"] = True
+                raise RuntimeError("fixture slow provider failure")
+            if slow_lookup["seen"]:
+                raise fixture.opening.RpcDeadlineExceeded(
+                    "fixture lookup deadline"
+                )
+            return "0x" + "0" * 64
+
+        with fixture.patches(rpc):
+            first = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+            lookup_cursor_key = next(iter(fixture.identity_cursor))
+            identity_cursor_key = next(iter(fixture.row_cache))
+            self.assertEqual(
+                lookup_cursor_key,
+                ("factory_lookup",) + identity_cursor_key,
+            )
+            fixture.identity_cursor[identity_cursor_key] = 0
+            second = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+            second_cursors = copy.deepcopy(fixture.identity_cursor)
+            cached = next(iter(fixture.row_cache.values()))
+            cached_fees = {key[1] for key in cached["rows"]}
+            slow_lookup["enabled"] = False
+            third = fixture.opening.supported_v3_pool_scope(
+                fixture.event(), 200
+            )
+
+        self.assertFalse(first["complete"])
+        self.assertTrue(first["deadline_exceeded"])
+        self.assertFalse(second["complete"])
+        self.assertFalse(second["deadline_exceeded"])
+        self.assertNotEqual(lookup_cursor_key, identity_cursor_key)
+        self.assertNotIn(lookup_cursor_key, second_cursors)
+        self.assertIn(identity_cursor_key, second_cursors)
+        self.assertEqual(cached_fees, {100, 3000, 10000})
+        self.assertEqual(
+            get_pool_calls,
+            {100: 1, 500: 3, 3000: 2, 10000: 1},
+        )
+        self.assertTrue(third["complete"])
+        self.assertEqual(fixture.identity_cursor, {})
+
     def test_v3_cycle_rows_cross_history_and_recompute_conflict(
         self,
     ) -> None:

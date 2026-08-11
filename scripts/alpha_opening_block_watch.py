@@ -878,6 +878,7 @@ def supported_v3_pool_scope(
     identity_cursor_cache = event.get(
         "_opening_snapshot_v3_identity_cursor"
     )
+    lookup_cursor_key = ("factory_lookup",) + row_cache_key
     row_cache_value = (
         row_cache.get(row_cache_key)
         if isinstance(row_cache, dict)
@@ -903,6 +904,7 @@ def supported_v3_pool_scope(
         row_cache.pop(row_cache_key, None)
         if isinstance(identity_cursor_cache, dict):
             identity_cursor_cache.pop(row_cache_key, None)
+            identity_cursor_cache.pop(lookup_cursor_key, None)
     if cycle_rows_only and (
         cached_cycle_rows is None
         or len(cached_cycle_rows["rows"]) != len(fee_rows)
@@ -1096,6 +1098,7 @@ def supported_v3_pool_scope(
             row_cache.pop(row_cache_key, None)
             if isinstance(identity_cursor_cache, dict):
                 identity_cursor_cache.pop(row_cache_key, None)
+                identity_cursor_cache.pop(lookup_cursor_key, None)
     if cycle_rows_only and len(successful_rows) != len(fee_rows):
         return copy.deepcopy(cached)
     pending_identity_rows: list[
@@ -1104,9 +1107,39 @@ def supported_v3_pool_scope(
     verified_rows: list[
         tuple[str, dict[str, Any], int, str, str, str, str]
     ] = []
-    for factory, factory_row, fee, quote in fee_rows:
+    fee_row_positions = {
+        (factory, fee, quote): index
+        for index, (factory, _factory_row, fee, quote)
+        in enumerate(fee_rows)
+    }
+    lookup_rows = fee_rows
+    lookup_retry_index: int | None = None
+    if (
+        fee_rows
+        and row_cache_enabled
+        and isinstance(identity_cursor_cache, dict)
+    ):
+        raw_lookup_index = identity_cursor_cache.get(
+            lookup_cursor_key, 0
+        )
+        if (
+            type(raw_lookup_index) is not int
+            or not 0 <= raw_lookup_index < len(fee_rows)
+        ):
+            identity_cursor_cache.pop(lookup_cursor_key, None)
+        else:
+            lookup_rows = sorted(
+                fee_rows,
+                key=lambda row: (
+                    fee_row_positions[(row[0], row[2], row[3])]
+                    - raw_lookup_index
+                )
+                % len(fee_rows),
+            )
+    for factory, factory_row, fee, quote in lookup_rows:
         attempted += 1
         query_key = (factory, fee, quote)
+        query_index = fee_row_positions[query_key]
         try:
             if row_cache_enabled and query_key in successful_rows:
                 cached_row = successful_rows[query_key]
@@ -1139,22 +1172,36 @@ def supported_v3_pool_scope(
                 continue
             if state != "address":
                 response_validation_errors += 1
+                if lookup_retry_index is None:
+                    lookup_retry_index = (
+                        query_index + 1
+                    ) % len(fee_rows)
                 continue
             pending_identity_rows.append(
                 (factory, factory_row, fee, quote, pool)
             )
         except OpeningTraceDeadlineExceeded:
             deadline_exceeded = True
+            if row_cache_enabled and isinstance(
+                identity_cursor_cache, dict
+            ):
+                identity_cursor_cache[lookup_cursor_key] = (
+                    lookup_retry_index
+                    if lookup_retry_index is not None
+                    else (query_index + 1) % len(fee_rows)
+                )
             break
         except Exception:
             provider_errors += 1
             provider_error_stages.add("factory_lookup")
+            if lookup_retry_index is None:
+                lookup_retry_index = (
+                    query_index + 1
+                ) % len(fee_rows)
+    else:
+        if isinstance(identity_cursor_cache, dict):
+            identity_cursor_cache.pop(lookup_cursor_key, None)
     identity_next_index = 0
-    fee_row_positions = {
-        (factory, fee, quote): index
-        for index, (factory, _factory_row, fee, quote)
-        in enumerate(fee_rows)
-    }
     if (
         pending_identity_rows
         and row_cache_enabled
@@ -1291,6 +1338,7 @@ def supported_v3_pool_scope(
             row_cache.pop(row_cache_key, None)
         if isinstance(identity_cursor_cache, dict):
             identity_cursor_cache.pop(row_cache_key, None)
+            identity_cursor_cache.pop(lookup_cursor_key, None)
     as_of_block_hash = ""
     snapshot_coherent = False
     if fee_rows and initial_block_hash:
@@ -1318,6 +1366,7 @@ def supported_v3_pool_scope(
         row_cache.pop(row_cache_key, None)
         if isinstance(identity_cursor_cache, dict):
             identity_cursor_cache.pop(row_cache_key, None)
+            identity_cursor_cache.pop(lookup_cursor_key, None)
     if cycle_rows_only and not snapshot_coherent:
         return copy.deepcopy(cached)
     if not snapshot_coherent:
@@ -1436,6 +1485,7 @@ def supported_v3_pool_scope(
         cycle_cache[cycle_cache_key] = copy.deepcopy(result)
     if complete and isinstance(identity_cursor_cache, dict):
         identity_cursor_cache.pop(row_cache_key, None)
+        identity_cursor_cache.pop(lookup_cursor_key, None)
     return result
 
 
