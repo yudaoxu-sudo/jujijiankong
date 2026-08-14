@@ -371,6 +371,36 @@ class AlphaLiquidityRecoveryEnrichmentTests(unittest.TestCase):
         self.assertNotIn("liquidity_operator", serialized)
         self.assertNotIn("liquidity_operator_class", serialized)
 
+    def test_historical_v4_removal_needs_only_canonical_block_evidence(
+        self,
+    ) -> None:
+        event = copy.deepcopy(
+            self.bundle().standalone_seed["reconciliation"]["deferred_events"][0]
+        )
+        event.update(
+            {
+                "protocol": "v4_cl",
+                "type": "lp_remove_observation",
+                "historical_catchup": True,
+                "lp_owner": "",
+            }
+        )
+        block = enrichment._record(
+            "block",
+            {
+                "number": event["block"],
+                "hash": holder.norm(event["block_hash"]),
+                "timestamp": 1_700_000_000 + event["block"],
+            },
+        )
+        cache = {
+            "blocks": {enrichment._block_key(event): block},
+            "transactions": {},
+            "codes": {},
+        }
+        self.assertTrue(enrichment._production_operator_skip(event))
+        self.assertEqual(enrichment._raw_evidence_state(event, cache), "ready")
+
     def test_tampered_event_or_cache_blocks_validation_and_materialize(
         self,
     ) -> None:
