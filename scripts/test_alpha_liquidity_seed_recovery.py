@@ -147,7 +147,6 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
             "pending": [],
             "completed": completed,
-            "deferred_events": [],
             "updated_at": "2026-08-14T01:00:00+00:00",
         }
         self.standalone_seed = self._seed(
@@ -305,6 +304,30 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
         self.assertEqual(no_overlap.safe_plan["status"], "probe_required")
         self.assertFalse(hasattr(recovery, "apply_recovery"))
         self.assertFalse(hasattr(recovery, "rollback_recovery"))
+
+    def test_holder_seed_allows_only_official_reconciliation_normalization(
+        self,
+    ) -> None:
+        raw = copy.deepcopy(
+            self.holder_state["tokens"][KEY]["retention_flow"]["liquidity"]
+        )
+        self.assertNotIn("deferred_events", raw["reconciliation"])
+        normalized = recovery.validated_seed(raw, "holder")
+        expected = copy.deepcopy(raw)
+        expected["reconciliation"] = holder.migrate_liquidity_reconciliation_state(
+            raw["reconciliation"], maximum_seconds=900
+        )
+        self.assertEqual(normalized, expected)
+        other_difference = copy.deepcopy(raw)
+        other_difference["unexpected_normalized_field"] = "must_fail"
+        with self.assertRaises(recovery.RecoveryBlocked) as caught:
+            recovery.validated_seed(other_difference, "holder")
+        self.assertEqual(caught.exception.code, "holder_seed_invalid")
+        standalone = copy.deepcopy(self.standalone_seed)
+        standalone["reconciliation"].pop("deferred_events")
+        with self.assertRaises(recovery.RecoveryBlocked) as caught:
+            recovery.validated_seed(standalone, "standalone")
+        self.assertEqual(caught.exception.code, "standalone_seed_invalid")
 
     def test_plan_blocks_canonical_scope_and_capacity_failures(self) -> None:
         cases = []

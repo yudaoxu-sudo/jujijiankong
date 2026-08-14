@@ -134,9 +134,15 @@ def validate_watchlist(config: dict[str, Any]) -> None:
         raise RecoveryBlocked("eligible_identity_scope_invalid")
 def validated_seed(raw: Any, source: str) -> dict[str, Any]:
     seed = fast.validated_liquidity_seed(raw, DOS_TOKEN)
+    expected = raw
+    if source == "holder" and isinstance(raw, dict) \
+            and isinstance(raw.get("reconciliation"), dict):
+        expected = copy.deepcopy(raw)
+        expected["reconciliation"] = holder.migrate_liquidity_reconciliation_state(
+            raw["reconciliation"], maximum_seconds=900)
     if fast.liquidity_seed_status(raw, seed) != "valid" \
             or fast.liquidity_seed_state_kind(seed) != "checkpoint" \
-            or seed != raw:
+            or seed != expected:
         raise RecoveryBlocked(source + "_seed_invalid")
     return seed
 def identity(row: dict[str, Any]) -> tuple[str, str, str]:
