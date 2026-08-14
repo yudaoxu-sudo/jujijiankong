@@ -104,10 +104,13 @@ def _code_key(address: str, event: dict[str, Any]) -> str:
     )
 
 def _production_operator_skip(event: dict[str, Any]) -> bool:
-    return str(event.get("protocol") or "") == "v3" \
-        and str(event.get("type") or "") in CANDIDATE_TYPES \
-        and event.get("historical_catchup") is True \
-        and str(event.get("type") or "") != "lp_add_observation"
+    event_type = str(event.get("type") or "")
+    return str(event.get("protocol") or "") != "v3" \
+        or event_type not in CANDIDATE_TYPES \
+        or (
+            event.get("historical_catchup") is True
+            and event_type != "lp_add_observation"
+        )
 
 def _record(kind: str, core: dict[str, Any]) -> dict[str, Any]:
     return {**core, "receipt_sha256": recovery.digest({"kind": kind, "value": core})}
