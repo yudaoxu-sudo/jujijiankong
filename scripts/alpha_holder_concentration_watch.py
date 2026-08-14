@@ -4374,6 +4374,31 @@ LIQUIDITY_PARTIAL_NEXT_HOP_EVIDENCE_LEVEL = (
 LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION = (
     "liquidity_verdict_coverage.v2"
 )
+LIQUIDITY_RECOVERY_NOTIFICATION_POLICY = "suppress_recovery_replay.v1"
+
+
+def recovery_replay_notification_policy(value: Any) -> str:
+    return (
+        LIQUIDITY_RECOVERY_NOTIFICATION_POLICY
+        if isinstance(value, dict)
+        and value.get("notification_policy")
+        == LIQUIDITY_RECOVERY_NOTIFICATION_POLICY
+        else ""
+    )
+
+
+def recovery_replay_notification_fields(value: Any) -> dict[str, Any]:
+    policy = recovery_replay_notification_policy(value)
+    return (
+        {
+            "notification_policy": policy,
+            "notify": False,
+            "alert_eligible": False,
+            "historical_catchup": True,
+        }
+        if policy
+        else {}
+    )
 
 
 def liquidity_evidence_error_code(exc: Exception) -> str:
@@ -5481,6 +5506,11 @@ def reconcile_liquidity_events(
                 "destination_ranges": [],
                 **pending_time_fields(event),
                 "source_event": event,
+                **(
+                    {"notification_policy": policy}
+                    if (policy := recovery_replay_notification_policy(event))
+                    else {}
+                ),
             }
             pending.append(pending_row)
             pending_by_id[reconcile_id] = pending_row
@@ -5552,6 +5582,11 @@ def reconcile_liquidity_events(
                 "destination_ranges": [],
                 **pending_time_fields(event),
                 "source_event": event,
+                **(
+                    {"notification_policy": policy}
+                    if (policy := recovery_replay_notification_policy(event))
+                    else {}
+                ),
             }
             pending.append(pending_row)
             pending_by_id[reconcile_id] = pending_row
@@ -5755,6 +5790,7 @@ def reconcile_liquidity_events(
             "notify": False,
             "coverage_issue_code": issue_code,
             "evidence_coverage_issues": list(dict.fromkeys(evidence_issues))[:8],
+            **recovery_replay_notification_fields(pending_row),
         }
         contract_version = pending_row.get(
             "verdict_coverage_contract_version"
@@ -6002,6 +6038,7 @@ def reconcile_liquidity_events(
                 "notify": True,
                 "alert_eligible": True,
                 "historical_catchup": False,
+                **recovery_replay_notification_fields(pending_row),
                 "reconcile_id": reconcile_id,
                 "verdict_coverage_contract_version": (
                     LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
@@ -6107,6 +6144,7 @@ def reconcile_liquidity_events(
                     LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
                 ),
                 "classification": classification,
+                **recovery_replay_notification_fields(pending_row),
                 "completed_at": current.isoformat(),
                 "first_seen_at": str(
                     pending_row.get("first_seen_at") or ""
