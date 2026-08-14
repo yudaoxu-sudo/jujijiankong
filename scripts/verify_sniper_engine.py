@@ -671,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
         ROOT / "scripts" / "test_sniper_engine_units.py",
         ROOT / "scripts" / "test_aeon_monitor_regression.py",
         ROOT / "scripts" / "test_dos_prelaunch_config.py",
+        ROOT / "scripts" / "test_kii_prelaunch_config.py",
         ROOT / "scripts" / "rebuild_opening_sell_evidence.py",
         ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py",
         ROOT / "scripts" / "test_micro_gas_boundaries.py",
@@ -2159,6 +2160,7 @@ def main(argv: list[str] | None = None) -> int:
         ("Alpha liquidity seed recovery migration regression tests", "test_alpha_liquidity_seed_recovery.py"),
         ("Alpha liquidity recovery notification policy regression tests", "test_alpha_holder_recovery_notification_policy.py"),
         ("Alpha liquidity recovery enrichment regression tests", "test_prepare_alpha_liquidity_recovery_enrichment.py"),
+        ("KII prelaunch evidence and generic-scope regression", "test_kii_prelaunch_config.py"),
         ("opening direct-sell evidence rebuild tests", "test_rebuild_opening_sell_evidence.py"),
         ("CEX micro-gas synthetic boundary regression tests", "test_micro_gas_boundaries.py"),
         ("CEX micro-gas identity-gate regression tests", "test_micro_gas_identity_gate.py"),
@@ -2744,6 +2746,7 @@ assert readback_gate['can_follow'] is False, readback_gate
         arx_item = next((item for item in items if item.get("symbol") == "ARX"), {})
         nes_item = next((item for item in items if item.get("symbol") == "NES"), {})
         grvt_item = next((item for item in items if item.get("symbol") == "GRVT"), {})
+        kii_item = next((item for item in items if item.get("symbol") == "KII"), {})
         policy = current.get("monitoring_policy", {})
         active_symbols = sorted(
             str(item.get("symbol") or "").upper()
@@ -2760,9 +2763,12 @@ assert readback_gate['can_follow'] is False, readback_gate
             and o_item.get("active_monitoring") is False
             and policy == {
                 "mode": "exclusive_symbols",
-                "symbols": ["DOS"],
+                "symbols": ["DOS", "KII"],
             }
-            and active_symbols == ["DOS"]
+            and active_symbols == ["DOS", "KII"]
+            and kii_item.get("priority") == "P0_PRELAUNCH"
+            and kii_item.get("active_monitoring") is True
+            and bool(kii_item.get("prelaunch_research"))
             and grvt_item.get("priority") == "P4_ARCHIVED_CASE"
             and grvt_item.get("active_monitoring") is False
             and grvt_item.get("monitoring_paused_at")
@@ -3437,6 +3443,7 @@ assert okx_inst_family('ARX-USDT-SWAP', {'instFamily': 'ARX-USDT'}) == 'ARX-USDT
         str(ROOT / "scripts" / "test_sniper_engine_units.py"),
         str(ROOT / "scripts" / "test_aeon_monitor_regression.py"),
         str(ROOT / "scripts" / "test_dos_prelaunch_config.py"),
+        str(ROOT / "scripts" / "test_kii_prelaunch_config.py"),
         str(ROOT / "scripts" / "rebuild_opening_sell_evidence.py"),
         str(ROOT / "scripts" / "test_rebuild_opening_sell_evidence.py"),
         str(ROOT / "scripts" / "test_micro_gas_boundaries.py"),

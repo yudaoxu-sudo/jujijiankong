@@ -31599,7 +31599,7 @@ raise SystemExit(0 if ok else 1)
             path.write_text(json.dumps(invalid), encoding="utf-8")
             self.assertIn("event", health.prelaunch_output_issue(path))
 
-    def test_fast_health_identity_hash_matches_exclusive_dos_focus(
+    def test_fast_health_identity_hash_matches_exclusive_current_focus(
         self,
     ) -> None:
         import scripts.alpha_liquidity_retention_watch as fast
@@ -31608,9 +31608,10 @@ raise SystemExit(0 if ok else 1)
 
         grvt_address = self._address("1")
         dos_address = self._address("3")
+        kii_address = self._address("4")
         policy = {
             "mode": "exclusive_symbols",
-            "symbols": ["DOS"],
+            "symbols": ["DOS", "KII"],
         }
         watchlist = {
             "monitoring_policy": policy,
@@ -31635,6 +31636,14 @@ raise SystemExit(0 if ok else 1)
                     ],
                 },
                 {
+                    "symbol": "KII",
+                    "priority": "P0_PRELAUNCH",
+                    "active_monitoring": True,
+                    "contracts": [
+                        {"chain": "bsc", "address": kii_address}
+                    ],
+                },
+                {
                     "symbol": "AEON",
                     "priority": "P1_MONITOR",
                     "active_monitoring": False,
@@ -31647,6 +31656,7 @@ raise SystemExit(0 if ok else 1)
         expected_hash = fast.stable_identity_hash(
             [
                 {"chain": "bsc", "address": dos_address},
+                {"chain": "bsc", "address": kii_address},
             ]
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -31669,7 +31679,30 @@ raise SystemExit(0 if ok else 1)
                     health.monitoring_scope_issue(liquidity_path),
                     "",
                 )
-                watchlist["items"][2]["active_monitoring"] = True
+                liquidity_path.write_text(
+                    json.dumps(
+                        {
+                            "expected_identity_hash": fast.stable_identity_hash(
+                                [
+                                    {
+                                        "chain": "bsc",
+                                        "address": dos_address,
+                                    }
+                                ]
+                            )
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    health.monitoring_scope_issue(liquidity_path),
+                    "liquidity identity set does not match the focused watchlist",
+                )
+                liquidity_path.write_text(
+                    json.dumps({"expected_identity_hash": expected_hash}),
+                    encoding="utf-8",
+                )
+                watchlist["items"][3]["active_monitoring"] = True
                 watchlist_path.write_text(
                     json.dumps(watchlist),
                     encoding="utf-8",
@@ -31688,7 +31721,8 @@ raise SystemExit(0 if ok else 1)
                 )
                 watchlist["items"][0]["active_monitoring"] = False
                 watchlist["items"][1]["active_monitoring"] = False
-                watchlist["items"][2]["active_monitoring"] = True
+                watchlist["items"][2]["active_monitoring"] = False
+                watchlist["items"][3]["active_monitoring"] = True
                 watchlist_path.write_text(
                     json.dumps(watchlist),
                     encoding="utf-8",

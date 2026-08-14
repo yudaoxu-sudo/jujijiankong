@@ -1,9 +1,10 @@
 {
-  "generated_at": "2026-08-14T05:12:20+00:00",
+  "generated_at": "2026-08-14T08:10:32+00:00",
   "monitoring_policy": {
     "mode": "exclusive_symbols",
     "symbols": [
-      "DOS"
+      "DOS",
+      "KII"
     ]
   },
   "items": [
@@ -1403,6 +1404,478 @@
         "lifecycle_first_seen_at": "2026-08-09T16:20:58+00:00",
         "lifecycle_first_seen_basis": "first_tracked_monitor_commit",
         "lifecycle_first_seen_ref": "git:d6d05b4c60201ffb62c2aee8a6f9a847b832c93f",
+        "research_source_policy": "official_onchain_market_social_inference_separated"
+      }
+    },
+    {
+      "symbol": "KII",
+      "name": "KiiChain",
+      "priority": "P0_PRELAUNCH",
+      "chain": "bsc",
+      "active_monitoring": true,
+      "opening_max_age_hours": 720,
+      "opening_liquidity_max_age_seconds": 2592000,
+      "intraday_max_age_hours": 72,
+      "project_lookback_blocks": 250000,
+      "project_operator_probe": "owner",
+      "contracts": [
+        {
+          "chain": "bsc",
+          "address": "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+          "confidence": "official_hyperlane_registry_and_canonical_pool_key_verified",
+          "evidence_ids": [
+            "kii-official-bridge-docs",
+            "kii-hyperlane-route-registry",
+            "kii-onchain-pool-key-latest"
+          ]
+        }
+      ],
+      "pool_ids": [
+        {
+          "chain": "bsc",
+          "pool_id": "0xf43fdb854021ddeb41e06ac1d6e5df475197038ba5d3cba147f469a56870cd1b",
+          "start_time_utc8": "2026-08-14 21:00:00",
+          "hook": "0xb0bb171d333569cfd28a37f5c5dddaaa90ad46af",
+          "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+          "pair": "USDT/KII",
+          "verification_status": "verified_canonical_pool_key_latest_eth_call_start_time_composite",
+          "evidence_ids": [
+            "kii-onchain-pool-key-latest",
+            "kii-onchain-pool-start",
+            "kii-kucoin-listing",
+            "kii-kraken-listing",
+            "kii-mexc-listing"
+          ]
+        }
+      ],
+      "catalysts": [
+        "Binance Alpha first feature",
+        "Binance Alpha Points airdrop after trading opens",
+        "KuCoin Kraken and MEXC synchronized trading open",
+        "KII Hyperlane cross-chain inventory movement"
+      ],
+      "known_times": [
+        {
+          "time": "2026-08-14 21:00",
+          "reason": "verified_prelaunch_pool",
+          "evidence_ids": [
+            "kii-kucoin-listing",
+            "kii-kraken-listing",
+            "kii-mexc-listing",
+            "kii-onchain-pool-start"
+          ]
+        }
+      ],
+      "event_schedule": [
+        {
+          "event_id": "kii-binance-alpha-open",
+          "event_type": "alpha_open",
+          "venue": "Binance Alpha",
+          "time_utc8": "2026-08-14 21:00",
+          "time_utc": "2026-08-14T13:00:00+00:00",
+          "time_precision": "exact_composite",
+          "authority": "binance_wallet_official_launch_day_multi_cex_exact_time_and_onchain_pool_start",
+          "verification_status": "verified_composite_schedule_catalog_contract_pending",
+          "evidence_ids": [
+            "kii-binance-wallet-official",
+            "kii-kucoin-listing",
+            "kii-kraken-listing",
+            "kii-mexc-listing",
+            "kii-onchain-pool-start"
+          ]
+        },
+        {
+          "event_id": "kii-binance-alpha-points-claim",
+          "event_type": "airdrop_claim",
+          "venue": "Binance Alpha",
+          "program": "Binance Alpha Points",
+          "time_utc8": "2026-08-14 21:00",
+          "claim_start_utc": "2026-08-14T13:00:00+00:00",
+          "claim_end_utc": "",
+          "time_precision": "relative_to_verified_composite_trading_open",
+          "authority": "binance_wallet_official",
+          "verification_status": "verified_claim_after_trading_open_quantity_threshold_unknown",
+          "distribution_identity_status": "missing",
+          "channel_allocation_status": "unknown",
+          "claim_rules_status": "pending_official_details",
+          "allocation_overlap_policy": "unknown_do_not_project",
+          "evidence_ids": [
+            "kii-binance-wallet-official"
+          ]
+        }
+      ],
+      "required_checks": [
+        "binance_public_catalog_contract_match",
+        "binance_alpha_claim_rules_and_allocation",
+        "receipt_verified_pool_state",
+        "pool_active_range_depth",
+        "buy_depth_simulation",
+        "sellability_and_recovery",
+        "tge_gap_attribution",
+        "airdrop_distributor_and_claim_outflow",
+        "cross_chain_inventory",
+        "cex_deposit_addresses_and_project_inflow",
+        "market_maker_address_attribution",
+        "opening_forecast_vs_actual"
+      ],
+      "prelaunch_research": {
+        "schema_version": "alpha_prelaunch_research.v1",
+        "revision": 1,
+        "as_of": "2026-08-14T08:10:32+00:00",
+        "research_status": "blocked",
+        "evidence": [
+          {
+            "evidence_id": "kii-binance-wallet-official",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/BinanceWallet/status/2088144184356327544",
+            "published_at": "2026-08-14T06:02:24+00:00",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_launch_day_and_points_claim_after_trading_open",
+            "verification_scope": "first_platform_feature_on_august_14_and_points_claim_after_trading_open_only_quantity_threshold_and_exact_time_not_stated"
+          },
+          {
+            "evidence_id": "kii-binance-public-catalog-sample",
+            "evidence_kind": "official_api",
+            "source_ref": "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list",
+            "observed_at": "2026-08-14T05:23:00+00:00",
+            "verification_status": "verified_absence_as_of_observation",
+            "row_count": 661,
+            "matched_rows": 0,
+            "verification_scope": "symbol_and_exact_bsc_contract_no_match"
+          },
+          {
+            "evidence_id": "kii-kucoin-listing",
+            "evidence_kind": "official_exchange",
+            "source_ref": "https://x.com/kucoincom/status/2087883151309971557",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_exact_trading_time",
+            "verification_scope": "KII_USDT_2026-08-14T13:00:00Z"
+          },
+          {
+            "evidence_id": "kii-kraken-listing",
+            "evidence_kind": "official_exchange",
+            "source_ref": "https://x.com/krakenlistings/status/2087913968220463434",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_exact_trading_time",
+            "verification_scope": "KII_2026-08-14T13:00:00Z"
+          },
+          {
+            "evidence_id": "kii-mexc-listing",
+            "evidence_kind": "official_exchange",
+            "source_ref": "https://x.com/Alpha_MEXC/status/2087875468574028111",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_exact_trading_time",
+            "verification_scope": "KII_USDT_2026-08-14T13:00:00Z"
+          },
+          {
+            "evidence_id": "kii-official-tokenomics",
+            "evidence_kind": "official",
+            "source_ref": "https://x.com/KiiChainio/status/2087965618125328530",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified",
+            "verification_scope": "allocation_percentages_and_tge_unlock_components"
+          },
+          {
+            "evidence_id": "kii-official-initial-supply",
+            "evidence_kind": "official",
+            "source_ref": "https://docs.kiiglobal.io/docs/learn/tokenomics/intro-coin-details.md",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified",
+            "verification_scope": "max_supply_1800000000_initial_circulating_supply_324000000"
+          },
+          {
+            "evidence_id": "kii-official-bridge-docs",
+            "evidence_kind": "official",
+            "source_ref": "https://docs.kiiglobal.io/docs/learn/getting-started/bridge.md",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified",
+            "verification_scope": "hyperlane_route_chains_addresses_and_native_synthetic_roles"
+          },
+          {
+            "evidence_id": "kii-hyperlane-route-registry",
+            "evidence_kind": "official_registry",
+            "source_ref": "https://github.com/hyperlane-xyz/hyperlane-registry/blob/main/deployments/warp_routes/KII/kiichain-config.yaml",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified",
+            "verification_scope": "kiichain_EvmHypNative_bsc_EvmHypSynthetic_and_connected_routes"
+          },
+          {
+            "evidence_id": "kii-onchain-pool-key-latest",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:eth_call:0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b:0x0e2d484a:0xf43fdb854021ddeb41e06ac1d6e5df475197038ba5d3cba147f469a56870cd1b:115854592",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_canonical_pool_key_latest_eth_call",
+            "verification_scope": "block_hash_0xff61dac895b83477971c1b94d294df27ade6db5bd3846972a703c1402b4ddf83_currency0_USDT_currency1_KII_hook_manager_fee67_parameters0x10045"
+          },
+          {
+            "evidence_id": "kii-onchain-pool-start",
+            "evidence_kind": "onchain",
+            "source_ref": "bsc:eth_call:0xb0bb171d333569cfd28a37f5c5dddaaa90ad46af:0x8a451723:0xf43fdb854021ddeb41e06ac1d6e5df475197038ba5d3cba147f469a56870cd1b:115854592",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "verified_coherent_block_read",
+            "verification_scope": "poolStartedTimestamp_bytes32_result_1786712400_block_hash_0xff61dac895b83477971c1b94d294df27ade6db5bd3846972a703c1402b4ddf83"
+          },
+          {
+            "evidence_id": "kii-detailed-social-research",
+            "evidence_kind": "social",
+            "source_ref": "https://x.com/2024macbookpro/status/2088171836786057245",
+            "published_at": "2026-08-14T07:52:16+00:00",
+            "observed_at": "2026-08-14T08:10:32+00:00",
+            "verification_status": "discovery_only_unverified_claims",
+            "verification_scope": "pool_ranges_cex_allocations_public_sale_wallet_clusters_market_maker_and_snipe_model_require_receipt_or_official_verification"
+          }
+        ],
+        "identity": {
+          "chain": "bsc",
+          "contract": "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+          "name": "Kiichain",
+          "symbol": "KII",
+          "decimals": 18,
+          "contract_role": "evm_hyp_synthetic",
+          "canonical_chain": "kiichain",
+          "canonical_standard": "EvmHypNative",
+          "official_catalog_status": "pending_no_match_as_of_observation",
+          "verification_status": "official_bridge_registry_and_canonical_pool_key_verified_binance_catalog_pending",
+          "evidence_ids": [
+            "kii-official-bridge-docs",
+            "kii-hyperlane-route-registry",
+            "kii-onchain-pool-key-latest",
+            "kii-binance-public-catalog-sample"
+          ]
+        },
+        "timeline": [
+          {
+            "event": "alpha_open",
+            "venue": "Binance Alpha",
+            "time_utc": "2026-08-14T13:00:00+00:00",
+            "time_utc8": "2026-08-14 21:00",
+            "time_precision": "exact_composite",
+            "verification_status": "verified_composite_schedule_catalog_contract_pending",
+            "evidence_ids": [
+              "kii-binance-wallet-official",
+              "kii-kucoin-listing",
+              "kii-kraken-listing",
+              "kii-mexc-listing",
+              "kii-onchain-pool-start"
+            ]
+          },
+          {
+            "event": "binance_alpha_points_claim",
+            "venue": "Binance Alpha",
+            "time_utc": "2026-08-14T13:00:00+00:00",
+            "time_utc8": "2026-08-14 21:00",
+            "time_precision": "relative_to_verified_composite_trading_open",
+            "verification_status": "verified_claim_after_trading_open_quantity_threshold_unknown",
+            "evidence_ids": [
+              "kii-binance-wallet-official"
+            ]
+          }
+        ],
+        "pool": {
+          "pool_model": "pancakeswap_infinity_cl_manager_pool_id",
+          "pool_id": "0xf43fdb854021ddeb41e06ac1d6e5df475197038ba5d3cba147f469a56870cd1b",
+          "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+          "hook": "0xb0bb171d333569cfd28a37f5c5dddaaa90ad46af",
+          "pair": "USDT/KII",
+          "opening_timestamp_utc": "2026-08-14T13:00:00+00:00",
+          "opening_timestamp_utc8": "2026-08-14 21:00",
+          "pool_key": {
+            "token0": "0x55d398326f99059ff775485246999027b3197955",
+            "token1": "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+            "hook": "0xb0bb171d333569cfd28a37f5c5dddaaa90ad46af",
+            "pool_manager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+            "fee": 67,
+            "parameters": "0x0000000000000000000000000000000000000000000000000000000000010045",
+            "as_of_block": 115854592,
+            "as_of_block_hash": "0xff61dac895b83477971c1b94d294df27ade6db5bd3846972a703c1402b4ddf83",
+            "verification_status": "verified_coherent_block_read"
+          },
+          "active_liquidity": null,
+          "range_depth": null,
+          "sellability": "blocked_missing_active_liquidity_and_reverse_quote",
+          "social_range_model_status": "unverified_claims_only",
+          "evidence_ids": [
+            "kii-onchain-pool-key-latest",
+            "kii-onchain-pool-start",
+            "kii-detailed-social-research"
+          ]
+        },
+        "supply": {
+          "max_supply": "1800000000",
+          "official_initial_circulating_supply": "324000000",
+          "official_initial_circulating_percent": "18",
+          "component_sum_token_amount": "314190000",
+          "component_sum_percent": "17.455",
+          "headline_component_gap_token_amount": "9810000",
+          "headline_component_gap_percent": "0.545",
+          "reconciliation_status": "blocked_unattributed_gap",
+          "tge_components": [
+            {
+              "bucket_id": "airdrop_tge",
+              "percent_of_total": "2.1",
+              "token_amount": "37800000",
+              "verification_status": "verified_official_tokenomics",
+              "evidence_ids": [
+                "kii-official-tokenomics"
+              ]
+            },
+            {
+              "bucket_id": "public_sale_tge",
+              "percent_of_total": "0.275",
+              "token_amount": "4950000",
+              "verification_status": "verified_official_tokenomics",
+              "evidence_ids": [
+                "kii-official-tokenomics"
+              ]
+            },
+            {
+              "bucket_id": "ecosystem_and_rd_tge",
+              "percent_of_total": "5",
+              "token_amount": "90000000",
+              "verification_status": "verified_official_tokenomics",
+              "evidence_ids": [
+                "kii-official-tokenomics"
+              ]
+            },
+            {
+              "bucket_id": "community_incentives_tge",
+              "percent_of_total": "10.08",
+              "token_amount": "181440000",
+              "verification_status": "verified_official_tokenomics",
+              "evidence_ids": [
+                "kii-official-tokenomics"
+              ]
+            }
+          ],
+          "evidence_ids": [
+            "kii-official-tokenomics",
+            "kii-official-initial-supply"
+          ]
+        },
+        "cross_chain": {
+          "transport": "hyperlane_warp_route",
+          "canonical_chain": "kiichain",
+          "canonical_standard": "EvmHypNative",
+          "canonical_contract": "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+          "bsc_standard": "EvmHypSynthetic",
+          "bsc_contract": "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+          "connected_chains": [
+            "kiichain",
+            "bsc",
+            "polygon",
+            "base",
+            "ethereum",
+            "mantle"
+          ],
+          "inventory_reconciliation_status": "blocked_missing_coherent_multichain_supply_snapshot",
+          "evidence_ids": [
+            "kii-official-bridge-docs",
+            "kii-hyperlane-route-registry"
+          ]
+        },
+        "venues": {
+          "cex": [
+            {
+              "venue": "Binance Alpha",
+              "market": "alpha",
+              "trading_state": "official_launch_day_verified_exact_time_composite",
+              "catalog_contract_state": "pending_no_match_as_of_observation",
+              "airdrop_state": "official_after_trading_open_details_pending",
+              "verification_status": "partially_verified",
+              "evidence_ids": [
+                "kii-binance-wallet-official",
+                "kii-binance-public-catalog-sample"
+              ]
+            },
+            {
+              "venue": "KuCoin",
+              "market": "KII/USDT",
+              "trading_state": "scheduled_2026-08-14T13:00:00Z",
+              "verification_status": "verified",
+              "evidence_ids": [
+                "kii-kucoin-listing"
+              ]
+            },
+            {
+              "venue": "Kraken",
+              "market": "KII",
+              "trading_state": "scheduled_2026-08-14T13:00:00Z",
+              "verification_status": "verified",
+              "evidence_ids": [
+                "kii-kraken-listing"
+              ]
+            },
+            {
+              "venue": "MEXC",
+              "market": "KII/USDT",
+              "trading_state": "scheduled_2026-08-14T13:00:00Z",
+              "verification_status": "verified",
+              "evidence_ids": [
+                "kii-mexc-listing"
+              ]
+            }
+          ]
+        },
+        "unverified_candidates": {
+          "binance_alpha_allocation_percent": "1",
+          "okx_allocation_percent": "0.3",
+          "bybit_deposit_identity": "unknown",
+          "market_maker_addresses": []
+        },
+        "decision": {
+          "action": "Observe",
+          "automatic_trading": false,
+          "summary": "Official Binance Alpha launch-day and points-claim intent, synchronized exchange time, BSC synthetic-token identity, canonical Pancake Infinity pool key, and hook start timestamp are verified. Binance catalog identity, claim allocation, live depth, sell recovery, TGE gap attribution, cross-chain inventory, CEX deposits, and market-maker identities remain blocked.",
+          "entry_conditions": [
+            "Binance Alpha public catalog exact contract match",
+            "official Alpha allocation and claim rules",
+            "receipt-backed active liquidity and sell recovery",
+            "reproducible 10k 50k and 100k two-way depth",
+            "TGE gap and cross-chain inventory reconcile",
+            "CEX deposit and market-maker flows are attributable"
+          ],
+          "exit_triggers": [
+            "official contract or schedule conflicts",
+            "sellability or recovery fails",
+            "airdrop bridge or project supply overwhelms verified depth",
+            "project or market-maker CEX inflow appears"
+          ]
+        },
+        "missing_fields": [
+          "identity.binance_public_catalog_exact_match",
+          "events.binance_alpha_claim_quantity_threshold_and_end",
+          "pool.active_liquidity_range_depth_and_sell_recovery",
+          "supply.initial_circulating_gap_attribution",
+          "supply.coherent_multichain_inventory_snapshot",
+          "supply.airdrop_distributor_and_claim_receipts",
+          "venues.deposit_addresses_and_project_inflows",
+          "actors.market_maker_addresses",
+          "opening_forecast_vs_actual"
+        ],
+        "conflicts": [
+          {
+            "path": "identity.binance_public_catalog",
+            "detail": "Binance Wallet officially announces KII for August 14, while the sampled public Alpha catalog has no symbol or exact-contract match. Keep the catalog identity pending until a later official row appears."
+          },
+          {
+            "path": "supply.initial_circulating",
+            "detail": "Official headline initial circulating supply is 324M or 18%; explicitly enumerated TGE components sum to 314.19M or 17.455%, leaving 9.81M or 0.545% unattributed."
+          },
+          {
+            "path": "social.pool_and_distribution_claims",
+            "detail": "Pool ranges, Binance 1%, OKX 0.3%, Bybit deposit, public-sale wallet clustering, market-maker identity, and snipe model remain social discovery claims without complete official or receipt proof."
+          }
+        ]
+      },
+      "facts": {
+        "project_name": "KiiChain",
+        "raw_symbol": "KII",
+        "display_symbol": "KII",
+        "monitoring_anchor_time_utc": "2026-08-14T13:00:00+00:00",
+        "monitoring_anchor_basis": "binance_wallet_official_launch_day_multi_cex_exact_time_and_onchain_pool_start",
+        "lifecycle_first_seen_at": "2026-08-14T08:10:32+00:00",
+        "lifecycle_first_seen_basis": "local_curated_monitoring_activation",
+        "lifecycle_first_seen_ref": "config:current_alpha_watchlist.json:generated_at",
         "research_source_policy": "official_onchain_market_social_inference_separated"
       }
     },

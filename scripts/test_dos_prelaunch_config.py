@@ -30,9 +30,9 @@ def main() -> int:
     )
     assert payload["monitoring_policy"] == {
         "mode": "exclusive_symbols",
-        "symbols": ["DOS"],
+        "symbols": ["DOS", "KII"],
     }
-    assert active == ["DOS"]
+    assert active == ["DOS", "KII"]
     grvt = next(item for item in items if item.get("symbol") == "GRVT")
     assert grvt["active_monitoring"] is False
     assert grvt["priority"] == "P4_ARCHIVED_CASE"
@@ -137,7 +137,7 @@ def main() -> int:
     assert all(
         item.get("active_monitoring") is False
         for item in items
-        if item.get("symbol") != "DOS"
+        if item.get("symbol") not in {"DOS", "KII"}
     )
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     assert evidence["schema"] == "dos_prelaunch_evidence.v1"
