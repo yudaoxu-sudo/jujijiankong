@@ -44,6 +44,7 @@ DEPLOY_PARITY_PATHS = (
     "scripts/test_alpha_holder_recovery_notification_policy.py",
     "scripts/test_prepare_alpha_liquidity_recovery_enrichment.py",
     "scripts/test_kii_prelaunch_config.py",
+    "scripts/test_manual_research_proposal_policy.py",
     "scripts/test_sniper_engine_units.py",
     "scripts/grvt_liquidity_replay_acceptance.py",
     "scripts/fixtures/grvt_v3_quote_only_removal_receipt_2026-08-07.json",

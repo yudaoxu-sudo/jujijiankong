@@ -1418,6 +1418,10 @@
       "intraday_max_age_hours": 72,
       "project_lookback_blocks": 250000,
       "project_operator_probe": "owner",
+      "proposal_policy": {
+        "mode": "manual_research_managed",
+        "suppress_discovery_proposals": true
+      },
       "contracts": [
         {
           "chain": "bsc",

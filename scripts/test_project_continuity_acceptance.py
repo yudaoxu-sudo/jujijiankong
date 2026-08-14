@@ -3022,6 +3022,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
             "scripts/test_alpha_holder_recovery_notification_policy.py",
             "scripts/test_prepare_alpha_liquidity_recovery_enrichment.py",
             "scripts/test_kii_prelaunch_config.py",
+            "scripts/test_manual_research_proposal_policy.py",
             "scripts/test_sniper_engine_units.py",
             "sniper_engine/project_registry.py",
             "sniper_engine/rpc.py",

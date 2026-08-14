@@ -28,6 +28,7 @@ STATE_PATH = ROOT / "output" / "telegram_signals" / "state.json"
 PENDING_PATH = ROOT / "output" / "telegram_signals" / "pending_analysis.json"
 OUT_DIR = ROOT / "output" / "telegram_signals"
 SIGNAL_DIR = ROOT / "input" / "signals" / "telegram"
+WATCHLIST_PATH = ROOT / "config" / "current_alpha_watchlist.json"
 QUOTE_SYMBOLS = {"USDT", "USDC", "BUSD", "FDUSD", "BNB", "WBNB", "ETH", "WETH", "BTCB"}
 GENERIC_SYMBOLS = {"", "UNKNOWN", "LP", "POOL", "TOKEN", "V3", "V4", "BN", "BSC", "ALPHA"}
 TELEGRAM_LIMIT = 3900
@@ -324,12 +325,14 @@ def is_private_chat(message: dict[str, Any]) -> bool:
     return chat.get("type") == "private"
 
 
-def analysis_message(parsed: dict[str, Any], applied: bool) -> str:
+def analysis_message(parsed: dict[str, Any], applied: bool, suppression: dict[str, Any] | None = None) -> str:
     prices = parsed.get("prices", {})
     registry = parsed.get("project_registry") or {}
     runtime = project_runtime_context(parsed)
+    suppression = suppression or proposal_suppression(parsed)
+    heading = "已有投研补充" if suppression["suppressed"] else "新线索分析"
     lines = [
-        f"新线索分析: {display_symbol(parsed)}",
+        f"{heading}: {display_symbol(parsed)}",
         f"有效总结: {signal_effective_summary(parsed, runtime)}",
         f"分级: {parsed.get('priority')}",
         f"标题: {parsed.get('title')}",
@@ -388,7 +391,8 @@ def analysis_message(parsed: dict[str, Any], applied: bool) -> str:
     for check in parsed.get("next_checks", [])[:6]:
         lines.append(f"- {check_label(check)}")
     lines.append("")
-    lines.append(f"配置更新: {'已自动合并' if applied else '已生成提案'}")
+    update = "人工投研已接管，自动发现提案已跳过" if suppression["suppressed"] else ("已自动合并" if applied else "已生成提案")
+    lines.append(f"配置更新: {update}")
     return "\n".join(lines)
 
 
@@ -434,6 +438,98 @@ def normalized_contract(value: Any) -> str:
     if not re.fullmatch(r"0x[a-f0-9]{40}", text):
         return ""
     return text
+
+
+def load_current_watchlist() -> dict[str, Any]:
+    try:
+        payload = read_json(WATCHLIST_PATH, {"items": []})
+    except (OSError, ValueError):
+        return {"items": [], "_proposal_policy_warning": "current_watchlist_unreadable"}
+    return payload if isinstance(payload, dict) else {"items": []}
+
+
+def contract_identities(payload: dict[str, Any]) -> tuple[set[tuple[str, str]], bool]:
+    rows = payload.get("contracts")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        return set(), True
+    identities: set[tuple[str, str]] = set()
+    has_contract = any(isinstance(row, dict) and "address" in row for row in rows)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_address = str(row.get("address") or "").strip()
+        if not raw_address:
+            continue
+        address = normalized_contract(raw_address)
+        chain = str(row.get("chain") or payload.get("chain") or "").strip().lower()
+        if chain in {"bsc", "bnb", "bep20", "binance-smart-chain"}:
+            chain = "bsc"
+        if address and chain:
+            identities.add((chain, address))
+    return identities, has_contract
+
+
+def symbol_aliases(payload: dict[str, Any]) -> set[str]:
+    facts = payload.get("facts") or {}
+    values = [payload.get("symbol"), *(payload.get("symbols") or []), *(payload.get("aliases") or [])]
+    if isinstance(facts, dict):
+        values.extend([facts.get("raw_symbol"), facts.get("display_symbol")])
+    return {
+        str(value).strip().upper()
+        for value in values
+        if str(value or "").strip().upper() not in GENERIC_SYMBOLS
+    }
+
+
+def suppression_decision(suppressed: bool, reason: str, match_method: str = "") -> dict[str, Any]:
+    return {"suppressed": suppressed, "match_method": match_method, "reason": reason}
+
+
+def proposal_suppression(
+    parsed: dict[str, Any],
+    watchlist: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_policy = parsed.get("source_policy") or {}
+    if (
+        not isinstance(source_policy, dict)
+        or source_policy.get("authority") != "social_discovery"
+        or not isinstance(parsed.get("watchlist_proposal"), dict)
+    ):
+        return suppression_decision(False, "outside_discovery_proposal_scope")
+
+    payload = watchlist if watchlist is not None else load_current_watchlist()
+    warning = payload.get("_proposal_policy_warning")
+    if warning:
+        return suppression_decision(False, str(warning))
+    items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+    proposal = parsed["watchlist_proposal"]
+    identities, has_contract = contract_identities(proposal)
+    if has_contract:
+        matches = [
+            item
+            for item in items
+            if identities and identities <= contract_identities(item)[0]
+        ]
+        match_method = "chain_contract"
+    else:
+        aliases = symbol_aliases(parsed) | symbol_aliases(proposal)
+        matches = [item for item in items if aliases & symbol_aliases(item)]
+        if len(matches) == 1 and len(contract_identities(matches[0])[0]) != 1:
+            matches = []
+        match_method = "symbol_alias"
+
+    if len(matches) != 1:
+        return suppression_decision(False, "identity_not_unique")
+    policy = matches[0].get("proposal_policy") or {}
+    if not (
+        isinstance(policy, dict)
+        and policy.get("mode") == "manual_research_managed"
+        and policy.get("suppress_discovery_proposals") is True
+    ):
+        return suppression_decision(False, "manual_research_policy_not_enabled")
+    return suppression_decision(True, "manual_research_managed", match_method)
 
 
 def parsed_contracts(parsed: dict[str, Any]) -> set[str]:
@@ -616,9 +712,11 @@ def registry_status_text(registry: dict[str, Any]) -> str:
     return status_map.get(status, status)
 
 
-def should_push(parsed: dict[str, Any], private_chat: bool) -> bool:
+def should_push(parsed: dict[str, Any], private_chat: bool, suppression: dict[str, Any] | None = None) -> bool:
     if private_chat:
         return True
+    if (suppression or proposal_suppression(parsed))["suppressed"]:
+        return False
     if not priority_allowed_for_push(parsed):
         return False
     registry = parsed.get("project_registry") or {}
@@ -726,15 +824,17 @@ def process_update(
     stem = signal_path.stem
     write_json(OUT_DIR / f"{stem}.json", parsed)
     (OUT_DIR / f"{stem}.md").write_text(render_markdown(parsed), encoding="utf-8")
+    suppression = proposal_suppression(parsed)
     applied = should_auto_apply(parsed)
     if applied:
         apply_proposals(parsed)
 
     target_chat = os.environ.get("SIGNAL_ANALYSIS_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID", "")
     pushed = False
-    push_eligible = bool(target_chat and should_push(parsed, is_private_chat(message)))
+    private_chat = is_private_chat(message)
+    push_eligible = bool(target_chat and should_push(parsed, private_chat, suppression))
     if push_eligible and not defer_analysis:
-        result = send_message(token, target_chat, analysis_message(parsed, applied))
+        result = send_message(token, target_chat, analysis_message(parsed, applied, suppression))
         pushed = bool(result.get("ok") and not result.get("disabled"))
     return {
         "status": "processed",
@@ -746,6 +846,8 @@ def process_update(
         "symbol": parsed.get("symbol"),
         "priority": parsed.get("priority"),
         "registry_status": parsed.get("project_registry", {}).get("status"),
+        "proposal_suppression_reason": suppression["reason"],
+        "private_chat": private_chat,
     }
 
 
@@ -766,6 +868,7 @@ def append_pending_analysis(rows: list[dict[str, Any]]) -> None:
             "update_id": row["update_id"],
             "analysis_artifact": row["analysis_artifact"],
             "applied": bool(row.get("applied")),
+            "private_chat": bool(row.get("private_chat")),
             "queued_at": now_iso(),
         }
     write_json(
@@ -789,20 +892,36 @@ def flush_pending_analysis(token: str) -> int:
         "",
     )
     if not pending or not target_chat:
-        print(json.dumps({"status": "pass", "pending": len(pending), "sent": 0}, ensure_ascii=False))
+        print(json.dumps({"status": "pass", "pending": len(pending), "sent": 0, "suppressed": 0}, ensure_ascii=False))
         return 0
     remaining = list(pending)
     sent = 0
+    suppressed = 0
+    watchlist = load_current_watchlist()
     for row in pending:
         artifact_name = Path(str(row["analysis_artifact"])).name
         parsed_path = OUT_DIR / artifact_name
         parsed = read_json(parsed_path, {})
         if not parsed:
             raise RuntimeError(f"pending analysis artifact missing: {artifact_name}")
+        suppression = proposal_suppression(parsed, watchlist)
+        private_chat = row.get("private_chat") is not False
+        if suppression["suppressed"] and not private_chat:
+            suppressed += 1
+            remaining = [
+                item
+                for item in remaining
+                if item.get("update_id") != row.get("update_id")
+            ]
+            write_json(
+                PENDING_PATH,
+                {"updated_at": now_iso(), "items": remaining},
+            )
+            continue
         result = send_message(
             token,
             target_chat,
-            analysis_message(parsed, bool(row.get("applied"))),
+            analysis_message(parsed, bool(row.get("applied")), suppression),
         )
         if not result.get("ok") or result.get("disabled"):
             raise RuntimeError(f"pending analysis send failed: {artifact_name}")
@@ -816,7 +935,7 @@ def flush_pending_analysis(token: str) -> int:
             PENDING_PATH,
             {"updated_at": now_iso(), "items": remaining},
         )
-    print(json.dumps({"status": "pass", "pending": len(pending), "sent": sent}, ensure_ascii=False))
+    print(json.dumps({"status": "pass", "pending": len(pending), "sent": sent, "suppressed": suppressed}, ensure_ascii=False))
     return 0
 
 
