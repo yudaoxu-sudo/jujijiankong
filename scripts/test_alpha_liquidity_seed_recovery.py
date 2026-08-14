@@ -502,6 +502,50 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
                 )
         self.assertEqual(caught.exception.code, "standalone_seed_invalid")
 
+    def test_plan_accepts_positive_opening_match_count_only(self) -> None:
+        coherent_scope = copy.deepcopy(self.current_scope)
+        coherent_scope["matching_event_count"] = 2
+        with mock.patch.object(
+            holder,
+            "opening_verified_pool_scope",
+            return_value=coherent_scope,
+        ):
+            bundle = recovery.build_recovery_bundle(
+                self.paths,
+                checkpoint_hash_reader=self._canonical_hash,
+            )
+        self.assertEqual(bundle.safe_plan["status"], "probe_required")
+
+        invalid_scopes = []
+        for count in (0, 1.0, "2", True, None):
+            scope = copy.deepcopy(self.current_scope)
+            scope["matching_event_count"] = count
+            invalid_scopes.append((repr(count), scope))
+        invalid_helper = copy.deepcopy(coherent_scope)
+        invalid_helper["status"] = "incomplete"
+        invalid_scopes.append(("helper_invalid", invalid_helper))
+        invalid_scopes.extend(
+            (f"helper_{type(value).__name__}", value)
+            for value in (None, [], "invalid", 2)
+        )
+        for value in (None, "invalid", 2):
+            scope = copy.deepcopy(coherent_scope)
+            scope["pool_scope"] = [value]
+            invalid_scopes.append((f"pool_row_{type(value).__name__}", scope))
+        for label, scope in invalid_scopes:
+            with self.subTest(case=label):
+                with mock.patch.object(
+                    holder,
+                    "opening_verified_pool_scope",
+                    return_value=scope,
+                ):
+                    with self.assertRaises(recovery.RecoveryBlocked) as caught:
+                        recovery.build_recovery_bundle(
+                            self.paths,
+                            checkpoint_hash_reader=self._canonical_hash,
+                        )
+                self.assertEqual(caught.exception.code, "opening_scope_invalid")
+
     def test_plan_rejects_input_changed_after_json_read(self) -> None:
         changed = False
 

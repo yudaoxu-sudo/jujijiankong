@@ -158,11 +158,16 @@ def identity(row: dict[str, Any]) -> tuple[str, str, str]:
             holder.norm(row.get("pool_id")))
 def validate_scope(scope: dict[str, Any], standalone: dict[str, Any],
                    current_holder: dict[str, Any]) -> None:
+    if not isinstance(scope, dict):
+        raise RecoveryBlocked("opening_scope_invalid")
     pools = scope.get("pool_scope")
+    matching_event_count = scope.get("matching_event_count")
     if scope.get("status") != "verified_pool_scope" \
             or scope.get("complete") is not True or scope.get("source") != "opening" \
-            or scope.get("matching_event_count") != 1 or not isinstance(pools, list) \
-            or not pools or scope.get("scope_hash") != holder.liquidity_pool_scope_hash(pools):
+            or type(matching_event_count) is not int or matching_event_count <= 0 \
+            or not isinstance(pools, list) \
+            or not pools or any(not isinstance(row, dict) for row in pools) \
+            or scope.get("scope_hash") != holder.liquidity_pool_scope_hash(pools):
         raise RecoveryBlocked("opening_scope_invalid")
     holder_pools, old_pools = current_holder.get("pool_scope"), standalone.get("pool_scope")
     if pools != holder_pools or scope.get("scope_hash") != current_holder.get("scope_hash"):
