@@ -82,6 +82,88 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             "quote_symbol": "USDT",
         }
 
+    def _real_deferred(self, index: int) -> dict[str, object]:
+        event = self._deferred(index)
+        if index < 390:
+            event.update({
+                "type": "lp_add_observation",
+                "lp_added_amount_raw": 100,
+                "quote_added_amount_raw": 100,
+                "historical_catchup": index < 168,
+            })
+        elif index < 439:
+            event["historical_catchup"] = True
+        elif index < 444:
+            event["lp_removed_amount_raw"] = 0
+            event["quote_removed_amount_raw"] = 0
+        return event
+
+    def _prior_pending(self) -> dict[str, object]:
+        event = self._deferred(900)
+        return {
+            "reconcile_id": holder.liquidity_reconciliation_id(event),
+            "verdict_coverage_contract_version": (
+                holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            ),
+            "first_seen_at": "2099-08-14T01:00:00+00:00",
+            "last_updated_at": "2099-08-14T01:00:00+00:00",
+            "expires_at": "2099-08-14T02:00:00+00:00",
+            "operator": "",
+            "operator_basis": "unattributed",
+            "operator_confidence": "low",
+            "operator_class": "",
+            "source_pool": event["pool"],
+            "source_block": event["block"],
+            "source_log_index": event["log_index"],
+            "source_block_hash": event["block_hash"],
+            "quote_token": event["quote_token"],
+            "quote_symbol": event["quote_symbol"],
+            "quote_decimals": event["quote_decimals"],
+            "removed_target_raw": 100,
+            "removed_quote_raw": 100,
+            "added_target_raw": 10,
+            "added_quote_raw": 0,
+            "destination_pools": [],
+            "add_transactions": [],
+            "materiality_basis": "target_supply",
+            "source_ranges": holder.liquidity_event_ranges(event, "source_ranges"),
+            "destination_ranges": [],
+            "source_chain_timestamp": "2099-08-14T01:00:00+00:00",
+            "source_chain_timestamp_basis": "observed_fallback",
+            "source_event": event,
+        }
+
+    def _install_real_distribution(self) -> None:
+        events = [self._real_deferred(index) for index in range(499)]
+        overlap = events[-1]
+        standalone = copy.deepcopy(self.standalone_state)
+        standalone["tokens"][KEY]["liquidity"]["reconciliation"][
+            "deferred_events"
+        ] = events
+        holder_state = copy.deepcopy(self.holder_state)
+        reconciliation = holder_state["tokens"][KEY]["retention_flow"][
+            "liquidity"
+        ]["reconciliation"]
+        reconciliation["pending"] = [self._prior_pending()]
+        reconciliation["completed"][0] = {
+            "reconcile_id": holder.liquidity_reconciliation_id(overlap),
+            "completed_at": "2026-08-14T00:00:00+00:00",
+            "classification": "unresolved_coverage",
+            "source_block": overlap["block"],
+            "source_tx": overlap["tx"],
+            "notify": False,
+            "verdict_coverage_contract_version": (
+                holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            ),
+            "source_receipt_canonical": False,
+            "verdict_coverage_complete": False,
+            "evidence_level": "coverage_incomplete",
+            "coverage_issue_code": "liquidity_reconciliation_expired_incomplete",
+            "evidence_coverage_issues": ["liquidity_operator_unavailable"],
+        }
+        self._write_json(self.paths.standalone_state, standalone)
+        self._write_json(self.paths.holder_state, holder_state)
+
     def _seed(
         self,
         pools: list[dict[str, object]],
@@ -136,6 +218,19 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             }
             for index in range(5)
         ]
+        completed[0].pop("source_log_index")
+        completed[0].pop("source_pool")
+        completed[0].update({
+            "notify": False,
+            "verdict_coverage_contract_version": (
+                holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            ),
+            "source_receipt_canonical": False,
+            "verdict_coverage_complete": False,
+            "evidence_level": "coverage_incomplete",
+            "coverage_issue_code": "liquidity_reconciliation_expired_incomplete",
+            "evidence_coverage_issues": ["liquidity_operator_unavailable"],
+        })
         standalone_reconciliation = {
             "schema": holder.LIQUIDITY_RECONCILIATION_SCHEMA,
             "pending": [],
@@ -275,9 +370,18 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
         self.assertEqual(len(reconciliation["deferred_events"]), 499)
         self.assertEqual(first.safe_plan["ambiguous_overlap_count"], 1)
         self.assertEqual(first.safe_plan["status"], "probe_required")
+        self.assertIsInstance(first.archive_bytes, bytes)
+        self.assertEqual(
+            first.safe_plan["archive_sha256"], recovery.digest(first.archive_bytes)
+        )
+        self.assertEqual(first.safe_plan["archive_event_count"], 499)
         safe_output = json.dumps(first.safe_plan, sort_keys=True).lower()
         self.assertNotIn("apply", safe_output)
         self.assertNotIn("rollback", safe_output)
+        for raw in ("original_events", "standalone_seed", "holder_seed",
+                    str(self._deferred(0)["tx"]).lower(),
+                    str(self._deferred(4)["pool"]).lower()):
+            self.assertNotIn(raw, safe_output)
         self.assertTrue(
             fast.liquidity_reconciliation_dominates(
                 first.candidate_seed,
@@ -318,6 +422,27 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             raw["reconciliation"], maximum_seconds=900
         )
         self.assertEqual(normalized, expected)
+        for field in ("pending", "completed", "deferred_events"):
+            with self.subTest(oversize=field):
+                oversized = copy.deepcopy(raw)
+                if field == "pending":
+                    template = self._prior_pending()
+                    rows = [
+                        {**copy.deepcopy(template), "reconcile_id": f"{index + 1:064x}"}
+                        for index in range(501)
+                    ]
+                elif field == "completed":
+                    template = raw["reconciliation"]["completed"][1]
+                    rows = [
+                        {**copy.deepcopy(template), "reconcile_id": f"{index + 1:064x}"}
+                        for index in range(501)
+                    ]
+                else:
+                    rows = [self._deferred(index + 1000) for index in range(501)]
+                oversized["reconciliation"][field] = rows
+                with self.assertRaises(recovery.RecoveryBlocked) as caught:
+                    recovery.validated_seed(oversized, "holder")
+                self.assertEqual(caught.exception.code, "holder_seed_invalid")
         other_difference = copy.deepcopy(raw)
         other_difference["unexpected_normalized_field"] = "must_fail"
         with self.assertRaises(recovery.RecoveryBlocked) as caught:
@@ -402,6 +527,99 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
                 )
         self.assertEqual(caught.exception.code, "input_hash_changed")
 
+    def test_plan_rejects_non_integer_deferred_identity_fields(self) -> None:
+        original = self.standalone_seed["reconciliation"]["deferred_events"][0]
+        for field in ("block", "log_index"):
+            value = original[field]
+            for bad in (float(value) + 0.9, str(value), False):
+                with self.subTest(field=field, bad=bad):
+                    state = copy.deepcopy(self.standalone_state)
+                    state["tokens"][KEY]["liquidity"]["reconciliation"][
+                        "deferred_events"
+                    ][0][field] = bad
+                    self._write_json(self.paths.standalone_state, state)
+                    with self.assertRaises(recovery.RecoveryBlocked) as caught:
+                        self._bundle()
+                    self.assertEqual(
+                        caught.exception.code, "reconciliation_identity_invalid"
+                    )
+                    self._write_json(
+                        self.paths.standalone_state, self.standalone_state
+                    )
+        state = copy.deepcopy(self.standalone_state)
+        state["tokens"][KEY]["liquidity"]["reconciliation"][
+            "deferred_events"
+        ][0]["pool"] = address("9")
+        self._write_json(self.paths.standalone_state, state)
+        with self.assertRaises(recovery.RecoveryBlocked) as caught:
+            self._bundle()
+        self.assertEqual(caught.exception.code, "reconciliation_scope_invalid")
+        self._write_json(self.paths.standalone_state, self.standalone_state)
+
+    def test_plan_rejects_malformed_prior_pending_source_identity(self) -> None:
+        self._install_real_distribution()
+        baseline = json.loads(self.paths.holder_state.read_text(encoding="utf-8"))
+        for side in ("pending", "source_event"):
+            for pending_field, event_field in (
+                ("source_block", "block"),
+                ("source_log_index", "log_index"),
+            ):
+                original = baseline["tokens"][KEY]["retention_flow"][
+                    "liquidity"
+                ]["reconciliation"]["pending"][0][pending_field]
+                for bad in (float(original) + 0.9, str(original), False, -1, None):
+                    with self.subTest(side=side, field=pending_field, bad=bad):
+                        state = copy.deepcopy(baseline)
+                        pending = state["tokens"][KEY]["retention_flow"][
+                            "liquidity"
+                        ]["reconciliation"]["pending"][0]
+                        target = pending if side == "pending" else pending["source_event"]
+                        field = pending_field if side == "pending" else event_field
+                        if bad is None:
+                            target.pop(field)
+                        else:
+                            target[field] = bad
+                        self._write_json(self.paths.holder_state, state)
+                        with self.assertRaises(recovery.RecoveryBlocked):
+                            self._bundle()
+        for side, field, bad in (
+            ("pending", "reconcile_id", "f" * 64),
+            ("pending", "source_pool", address("9")),
+            ("pending", "source_pool", ""),
+            ("pending", "source_block_hash", hash32("9")),
+            ("pending", "source_block_hash", ""),
+            ("pending", "source_tx", hash32("9")),
+            ("source_event", "pool", address("9")),
+            ("source_event", "pool", ""),
+            ("source_event", "block_hash", hash32("9")),
+            ("source_event", "block_hash", ""),
+            ("source_event", "tx", hash32("9")),
+        ):
+            with self.subTest(side=side, field=field, bad=bad):
+                state = copy.deepcopy(baseline)
+                pending = state["tokens"][KEY]["retention_flow"]["liquidity"][
+                    "reconciliation"
+                ]["pending"][0]
+                target = pending if side == "pending" else pending["source_event"]
+                target[field] = bad
+                self._write_json(self.paths.holder_state, state)
+                with self.assertRaises(recovery.RecoveryBlocked):
+                    self._bundle()
+        state = copy.deepcopy(baseline)
+        pending = state["tokens"][KEY]["retention_flow"]["liquidity"][
+            "reconciliation"
+        ]["pending"][0]
+        pending["source_pool"] = address("9")
+        pending["source_event"]["pool"] = address("9")
+        pending["reconcile_id"] = holder.liquidity_reconciliation_id(
+            pending["source_event"]
+        )
+        self._write_json(self.paths.holder_state, state)
+        with self.assertRaises(recovery.RecoveryBlocked) as caught:
+            self._bundle()
+        self.assertEqual(caught.exception.code, "reconciliation_scope_invalid")
+        self._write_json(self.paths.holder_state, baseline)
+
     def test_plan_requires_exact_dos_only_scope(self) -> None:
         cases = []
         policy = copy.deepcopy(self.config)
@@ -430,6 +648,11 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
     ) -> None:
         bundle = self._bundle()
         next_state = copy.deepcopy(bundle.candidate_state)
+        next_state["tokens"][KEY]["liquidity"]["reconciliation"][
+            "deferred_events"
+        ] = next_state["tokens"][KEY]["liquidity"]["reconciliation"][
+            "deferred_events"
+        ][1:]
         snapshot = {
             "schema": fast.SNAPSHOT_SCHEMA,
             "status": "healthy",
@@ -478,54 +701,6 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
         self.assertEqual(build.call_count, 1)
         self.assertEqual(protected_before, recovery.protected_manifest(self.paths))
 
-    def test_probe_rejects_ambiguous_completed_deferred_evidence_loss(self) -> None:
-        bundle = self._bundle()
-        next_seed = copy.deepcopy(bundle.candidate_seed)
-        next_seed["reconciliation"]["deferred_events"] = next_seed[
-            "reconciliation"
-        ]["deferred_events"][1:]
-        self.assertTrue(
-            fast.liquidity_reconciliation_dominates(
-                next_seed, bundle.candidate_seed
-            )
-        )
-        self.assertFalse(
-            recovery.reconciliation_rows_preserved(
-                bundle.candidate_seed, next_seed
-            )
-        )
-
-    def test_reconciliation_rejects_any_original_event_field_mutation(self) -> None:
-        bundle = self._bundle()
-        for mode in ("deferred", "pending"):
-            for field, before, after in (
-                ("direction", "out", "in"),
-                ("evidence_level", "receipt", "fabricated"),
-                ("materiality_basis", "quote_absolute", "unverified"),
-                ("pool_id", "0x01", "0x02"),
-            ):
-                with self.subTest(mode=mode, field=field):
-                    previous = copy.deepcopy(bundle.candidate_seed)
-                    event = previous["reconciliation"]["deferred_events"][2]
-                    event[field] = before
-                    candidate = copy.deepcopy(previous)
-                    moved = candidate["reconciliation"]["deferred_events"][2]
-                    moved[field] = after
-                    if mode == "pending":
-                        candidate["reconciliation"]["deferred_events"].pop(2)
-                        candidate["reconciliation"]["pending"].append(
-                            {
-                                "reconcile_id": holder.liquidity_reconciliation_id(
-                                    event
-                                ),
-                                "source_event": moved,
-                            }
-                        )
-                    self.assertFalse(
-                        recovery.reconciliation_rows_preserved(
-                            previous, candidate
-                        )
-                    )
     def test_completed_transition_accepts_valid_contracts(self) -> None:
         bundle = self._bundle()
         previous = copy.deepcopy(bundle.candidate_seed)
@@ -582,21 +757,11 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             "evidence_coverage_issues": ["liquidity_operator_unavailable"],
         }
         for completed in (final, unresolved):
-            candidate = copy.deepcopy(previous)
-            candidate["reconciliation"]["deferred_events"].pop(2)
-            candidate["reconciliation"]["completed"].append(completed)
-            self.assertTrue(
-                recovery.reconciliation_rows_preserved(previous, candidate)
-            )
+            self.assertTrue(recovery.valid_completed_transition(completed))
+            self.assertTrue(recovery.completed_covers_event(completed, event))
         invalid_unresolved = {**unresolved, "verdict_coverage_contract_version": "v1"}
         self.assertFalse(
             recovery.valid_completed_transition(invalid_unresolved)
-        )
-        candidate = copy.deepcopy(previous)
-        candidate["reconciliation"]["deferred_events"].pop(2)
-        candidate["reconciliation"]["completed"].append(invalid_unresolved)
-        self.assertFalse(
-            recovery.reconciliation_rows_preserved(previous, candidate)
         )
         producer_unresolved = copy.deepcopy(unresolved)
         producer_unresolved.pop("source_log_index")
@@ -610,51 +775,71 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
 
     def test_completed_transition_requires_final_coverage_contract(self) -> None:
         bundle = self._bundle()
-        for source_kind in ("deferred", "pending"):
-            for classification in ("forged", "unresolved_coverage", "net_removed"):
-                with self.subTest(
-                    source_kind=source_kind, classification=classification
-                ):
-                    previous = copy.deepcopy(bundle.candidate_seed)
-                    event = previous["reconciliation"]["deferred_events"].pop(2)
-                    reconcile_id = holder.liquidity_reconciliation_id(event)
-                    if source_kind == "pending":
-                        previous["reconciliation"]["pending"].append(
-                            {
-                                "reconcile_id": reconcile_id,
-                                "source_event": copy.deepcopy(event),
-                            }
-                        )
-                    else:
-                        previous["reconciliation"]["deferred_events"].append(event)
-                    candidate = copy.deepcopy(previous)
-                    if source_kind == "pending":
-                        candidate["reconciliation"]["pending"].pop()
-                    else:
-                        candidate["reconciliation"]["deferred_events"].pop()
-                    candidate["reconciliation"]["completed"].append(
-                        {
-                            "reconcile_id": reconcile_id,
-                            "classification": classification,
-                            "source_block": event["block"],
-                            "source_log_index": event["log_index"],
-                            "source_tx": event["tx"],
-                            "source_pool": event["pool"],
-                            "verdict_coverage_contract_version": (
-                                holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
-                            ),
-                            "source_receipt_canonical": True,
-                            "verdict_coverage_complete": True,
-                            "evidence_level": "receipt_canonical_bounded_15m",
-                        }
-                    )
-                    self.assertFalse(
-                        recovery.reconciliation_rows_preserved(
-                            previous, candidate
-                        )
-                    )
+        event = bundle.candidate_seed["reconciliation"]["deferred_events"][2]
+        for classification in ("forged", "unresolved_coverage", "net_removed"):
+            with self.subTest(classification=classification):
+                completed = {
+                    "reconcile_id": holder.liquidity_reconciliation_id(event),
+                    "classification": classification,
+                    "source_block": event["block"],
+                    "source_log_index": event["log_index"],
+                    "source_tx": event["tx"],
+                    "source_pool": event["pool"],
+                    "verdict_coverage_contract_version": (
+                        holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+                    ),
+                    "source_receipt_canonical": True,
+                    "verdict_coverage_complete": True,
+                    "evidence_level": "receipt_canonical_bounded_15m",
+                }
+                self.assertFalse(recovery.valid_completed_transition(completed))
+                self.assertFalse(recovery.completed_covers_event(completed, event))
+
+    def test_completed_transition_requires_strict_integer_source_identity(
+        self,
+    ) -> None:
+        bundle = self._bundle()
+        event = bundle.candidate_seed["reconciliation"]["deferred_events"][0]
+        completed = {
+            "reconcile_id": holder.liquidity_reconciliation_id(event),
+            "classification": "unresolved_coverage",
+            "notify": False,
+            "verdict_coverage_contract_version": (
+                holder.LIQUIDITY_VERDICT_COVERAGE_CONTRACT_VERSION
+            ),
+            "source_receipt_canonical": False,
+            "verdict_coverage_complete": False,
+            "evidence_level": "coverage_incomplete",
+            "coverage_issue_code": "liquidity_reconciliation_expired_incomplete",
+            "evidence_coverage_issues": ["liquidity_operator_unavailable"],
+            "source_block": event["block"],
+            "source_log_index": event["log_index"],
+            "source_tx": event["tx"],
+            "source_pool": event["pool"],
+        }
+        self.assertTrue(recovery.completed_covers_event(completed, event))
+        for side in ("completed", "event"):
+            for completed_field, event_field in (
+                ("source_block", "block"),
+                ("source_log_index", "log_index"),
+            ):
+                original = event[event_field]
+                for bad in (float(original) + 0.9, str(original), False):
+                    with self.subTest(side=side, field=event_field, bad=bad):
+                        changed_event = copy.deepcopy(event)
+                        changed_completed = copy.deepcopy(completed)
+                        if side == "completed":
+                            changed_completed[completed_field] = bad
+                        else:
+                            changed_event[event_field] = bad
+                            changed_completed["reconcile_id"] = (
+                                holder.liquidity_reconciliation_id(changed_event)
+                            )
+                        self.assertFalse(recovery.completed_covers_event(
+                            changed_completed, changed_event))
 
     def test_probe_runs_real_build_snapshot_over_499_deferred(self) -> None:
+        self._install_real_distribution()
         bundle = self._bundle()
         bounded_calls = []
 
@@ -714,17 +899,220 @@ class AlphaLiquiditySeedRecoveryTests(unittest.TestCase):
             mock.patch.object(fast, "run_once", side_effect=AssertionError),
             mock.patch.object(holder, "maybe_send_telegram", side_effect=AssertionError),
         ):
+            result = recovery.probe_recovery(
+                self.paths,
+                bundle.plan_hash,
+                checkpoint_hash_reader=self._canonical_hash,
+            )
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["archive_event_count"], 499)
+        self.assertEqual(result["transition_counts"], {
+            "add_consumed": 390,
+            "completed": 0,
+            "deferred_exact": 0,
+            "historical_removal_suppressed": 49,
+            "legacy_unresolved_overlap": 1,
+            "pending": 54,
+            "zero_material_removal": 5,
+        })
+        self.assertEqual(result["unaccounted_count"], 0)
+        self.assertEqual(result["duplicate_disposition_count"], 0)
+        self.assertEqual(result["next_pending_count"], 55)
+        self.assertEqual(bounded_calls, [(8, 2201, 2300)])
+        probe_output = json.dumps(result, sort_keys=True).lower()
+        for raw in ("original_events", "standalone_seed", "holder_seed",
+                    str(self._real_deferred(0)["tx"]).lower(),
+                    str(self._real_deferred(4)["pool"]).lower()):
+            self.assertNotIn(raw, probe_output)
+
+    def test_typed_accounting_rejects_field_loss_and_ambiguous_destination(
+        self,
+    ) -> None:
+        bundle = self._bundle()
+        event = bundle.candidate_seed["reconciliation"]["deferred_events"][2]
+        key = holder.liquidity_reconciliation_id(event)
+        for mode in ("field_loss", "ambiguous"):
+            with self.subTest(mode=mode):
+                next_seed = copy.deepcopy(bundle.candidate_seed)
+                overlap_id = next_seed["reconciliation"]["completed"][0][
+                    "reconcile_id"
+                ]
+                next_seed["reconciliation"]["deferred_events"] = [
+                    row for row in next_seed["reconciliation"]["deferred_events"]
+                    if holder.liquidity_reconciliation_id(row) != overlap_id
+                ]
+                if mode == "field_loss":
+                    moved = next(
+                        row for row in next_seed["reconciliation"]["deferred_events"]
+                        if holder.liquidity_reconciliation_id(row) == key
+                    )
+                    next_seed["reconciliation"]["deferred_events"].remove(moved)
+                    moved.pop("pool")
+                else:
+                    moved = copy.deepcopy(event)
+                next_seed["reconciliation"]["pending"].append({
+                    "reconcile_id": key,
+                    "source_block": event["block"],
+                    "source_log_index": event["log_index"],
+                    "source_pool": event["pool"],
+                    "source_block_hash": event["block_hash"],
+                    "source_event": moved,
+                })
+                accounting = recovery.typed_transition_accounting(
+                    bundle, next_seed
+                )
+                self.assertGreater(
+                    accounting[
+                        "unaccounted_count"
+                        if mode == "field_loss"
+                        else "duplicate_disposition_count"
+                    ],
+                    0,
+                )
+
+    def test_typed_accounting_rejects_explicit_legacy_overlap_mismatch(
+        self,
+    ) -> None:
+        bundle = self._bundle()
+        for field, value in (
+            ("source_pool", address("9")),
+            ("source_block_hash", hash32("9")),
+        ):
+            with self.subTest(field=field):
+                next_seed = copy.deepcopy(bundle.candidate_seed)
+                overlap = next_seed["reconciliation"]["completed"][0]
+                overlap_id = overlap["reconcile_id"]
+                next_seed["reconciliation"]["deferred_events"] = [
+                    row for row in next_seed["reconciliation"]["deferred_events"]
+                    if holder.liquidity_reconciliation_id(row) != overlap_id
+                ]
+                overlap[field] = value
+                accounting = recovery.typed_transition_accounting(bundle, next_seed)
+                self.assertEqual(accounting["unaccounted_count"], 1)
+
+    def test_legacy_overlap_requires_strict_integer_archived_event_identity(
+        self,
+    ) -> None:
+        bundle = self._bundle()
+        event = bundle.candidate_seed["reconciliation"]["deferred_events"][0]
+        completed = bundle.candidate_seed["reconciliation"]["completed"][0]
+        self.assertTrue(recovery.legacy_unresolved_covers_event(completed, event))
+        for field in ("block", "log_index"):
+            value = event[field]
+            for bad in (float(value) + 0.9, str(value), False):
+                with self.subTest(field=field, bad=bad):
+                    changed = copy.deepcopy(event)
+                    changed[field] = bad
+                    row = copy.deepcopy(completed)
+                    row["reconcile_id"] = holder.liquidity_reconciliation_id(
+                        changed
+                    )
+                    self.assertFalse(
+                        recovery.legacy_unresolved_covers_event(row, changed)
+                    )
+
+    def test_typed_accounting_rejects_new_unresolved_as_legacy_overlap(
+        self,
+    ) -> None:
+        bundle = self._bundle()
+        next_seed = copy.deepcopy(bundle.candidate_seed)
+        target = next_seed["reconciliation"]["deferred_events"].pop(2)
+        template = copy.deepcopy(next_seed["reconciliation"]["completed"][0])
+        template.update({
+            "reconcile_id": holder.liquidity_reconciliation_id(target),
+            "source_block": target["block"],
+            "source_tx": target["tx"],
+        })
+        next_seed["reconciliation"]["completed"].append(template)
+        accounting = recovery.typed_transition_accounting(bundle, next_seed)
+        self.assertEqual(accounting["unaccounted_count"], 1)
+
+    def test_typed_accounting_rejects_prior_pending_regression(self) -> None:
+        self._install_real_distribution()
+        bundle = self._bundle()
+        before_pending = bundle.candidate_seed["reconciliation"]["pending"][0]
+        self.assertTrue(recovery.pending_transition_valid(
+            before_pending, copy.deepcopy(before_pending)))
+        for field, value in (
+            ("added_target_raw", 9),
+            ("removed_target_raw", 101),
+            ("verdict_coverage_contract_version", "v1"),
+            ("reconcile_id", "f" * 64),
+            ("source_pool", address("9")),
+            ("source_block_hash", hash32("9")),
+            ("source_tx", hash32("9")),
+            ("forced_classification", "removed_plus_sold"),
+            ("last_updated_at", "2099-08-13T01:00:00+00:00"),
+            ("last_updated_at", "invalid"),
+            ("destination_pools", [address("9"), address("9")]),
+        ):
+            with self.subTest(field=field, value=value):
+                next_seed = copy.deepcopy(bundle.candidate_seed)
+                next_seed["reconciliation"]["pending"][0][field] = value
+                self.assertFalse(recovery.pending_transition_valid(
+                    before_pending, next_seed["reconciliation"]["pending"][0]))
+                accounting = recovery.typed_transition_accounting(bundle, next_seed)
+                self.assertEqual(accounting["prior_pending_invalid_count"], 1)
+        next_seed = copy.deepcopy(bundle.candidate_seed)
+        next_seed["reconciliation"]["pending"][0].pop("quote_symbol")
+        self.assertFalse(recovery.pending_transition_valid(
+            before_pending, next_seed["reconciliation"]["pending"][0]))
+        accounting = recovery.typed_transition_accounting(bundle, next_seed)
+        self.assertEqual(accounting["prior_pending_invalid_count"], 1)
+
+        holder_state = json.loads(self.paths.holder_state.read_text(encoding="utf-8"))
+        prior = holder_state["tokens"][KEY]["retention_flow"]["liquidity"][
+            "reconciliation"
+        ]["pending"][0]
+        prior.update({"pairing_ambiguous": True, "range_changed": True})
+        self._write_json(self.paths.holder_state, holder_state)
+        sticky_bundle = self._bundle()
+        sticky_next = copy.deepcopy(sticky_bundle.candidate_seed)
+        sticky = sticky_next["reconciliation"]["pending"][0]
+        sticky.update({"pairing_ambiguous": False, "range_changed": False})
+        accounting = recovery.typed_transition_accounting(sticky_bundle, sticky_next)
+        self.assertEqual(accounting["prior_pending_invalid_count"], 1)
+
+    def test_probe_rejects_snapshot_alert_key(self) -> None:
+        bundle = self._bundle()
+        snapshot = {
+            "schema": fast.SNAPSHOT_SCHEMA,
+            "status": "healthy",
+            "issue_count": 0,
+            "expected_count": 1,
+            "processed_count": 1,
+            "required_count": 1,
+            "complete_count": 1,
+            "projects": [{
+                "symbol": "DOS",
+                "chain": "bsc",
+                "address": TOKEN,
+                "operational_complete": True,
+                "runtime_diagnostic": {
+                    "reason_code": "none",
+                    "provider_status": "complete",
+                    "coverage_status": "complete",
+                    "next_state_kind": "checkpoint",
+                },
+            }],
+            "_next_state": copy.deepcopy(bundle.candidate_state),
+        }
+        with (
+            mock.patch.object(
+                holder,
+                "opening_verified_pool_scope",
+                return_value=copy.deepcopy(self.current_scope),
+            ),
+            mock.patch.object(fast, "build_snapshot", return_value=snapshot),
+            mock.patch.object(holder, "alert_keys", return_value=["dos-alert"]),
+        ):
             with self.assertRaises(recovery.RecoveryBlocked) as caught:
                 recovery.probe_recovery(
                     self.paths,
                     bundle.plan_hash,
                     checkpoint_hash_reader=self._canonical_hash,
                 )
-        self.assertEqual(
-            caught.exception.code,
-            "clone_probe_reconciliation_evidence_loss",
-        )
-        self.assertEqual(bounded_calls, [(8, 2201, 2300)])
+        self.assertEqual(caught.exception.code, "clone_probe_alert_pending")
 
     def test_probe_rejects_stale_plan_without_state_write(self) -> None:
         bundle = self._bundle()
