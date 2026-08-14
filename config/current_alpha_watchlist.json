@@ -1,10 +1,9 @@
 {
-  "generated_at": "2026-08-09T16:13:15+00:00",
+  "generated_at": "2026-08-14T05:12:20+00:00",
   "monitoring_policy": {
     "mode": "exclusive_symbols",
     "symbols": [
-      "DOS",
-      "GRVT"
+      "DOS"
     ]
   },
   "items": [
@@ -1410,9 +1409,11 @@
     {
       "symbol": "GRVT",
       "name": "Grvt",
-      "priority": "P0_DEEP_REVIEW",
+      "priority": "P4_ARCHIVED_CASE",
       "chain": "bsc",
-      "active_monitoring": true,
+      "active_monitoring": false,
+      "monitoring_paused_at": "2026-08-14T05:12:20+00:00",
+      "archive_reason": "User confirmed full GRVT exit and disabled active monitoring and notifications on 2026-08-14. Keep historical evidence and replay fixtures only.",
       "opening_max_age_hours": 720,
       "opening_liquidity_max_age_seconds": 2592000,
       "intraday_max_age_hours": 72,

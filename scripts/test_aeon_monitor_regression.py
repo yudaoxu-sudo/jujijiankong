@@ -31599,7 +31599,7 @@ raise SystemExit(0 if ok else 1)
             path.write_text(json.dumps(invalid), encoding="utf-8")
             self.assertIn("event", health.prelaunch_output_issue(path))
 
-    def test_fast_health_identity_hash_matches_exclusive_dos_grvt_focus(
+    def test_fast_health_identity_hash_matches_exclusive_dos_focus(
         self,
     ) -> None:
         import scripts.alpha_liquidity_retention_watch as fast
@@ -31610,7 +31610,7 @@ raise SystemExit(0 if ok else 1)
         dos_address = self._address("3")
         policy = {
             "mode": "exclusive_symbols",
-            "symbols": ["DOS", "GRVT"],
+            "symbols": ["DOS"],
         }
         watchlist = {
             "monitoring_policy": policy,
@@ -31620,8 +31620,8 @@ raise SystemExit(0 if ok else 1)
             "items": [
                 {
                     "symbol": "GRVT",
-                    "priority": "P0_DEEP_REVIEW",
-                    "active_monitoring": True,
+                    "priority": "P4_ARCHIVED_CASE",
+                    "active_monitoring": False,
                     "contracts": [
                         {"chain": "bsc", "address": grvt_address}
                     ],
@@ -31647,7 +31647,6 @@ raise SystemExit(0 if ok else 1)
         expected_hash = fast.stable_identity_hash(
             [
                 {"chain": "bsc", "address": dos_address},
-                {"chain": "bsc", "address": grvt_address},
             ]
         )
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -30,9 +30,18 @@ def main() -> int:
     )
     assert payload["monitoring_policy"] == {
         "mode": "exclusive_symbols",
-        "symbols": ["DOS", "GRVT"],
+        "symbols": ["DOS"],
     }
-    assert active == ["DOS", "GRVT"]
+    assert active == ["DOS"]
+    grvt = next(item for item in items if item.get("symbol") == "GRVT")
+    assert grvt["active_monitoring"] is False
+    assert grvt["priority"] == "P4_ARCHIVED_CASE"
+    assert grvt["monitoring_paused_at"] == "2026-08-14T05:12:20+00:00"
+    assert grvt["archive_reason"] == (
+        "User confirmed full GRVT exit and disabled active monitoring and "
+        "notifications on 2026-08-14. Keep historical evidence and replay "
+        "fixtures only."
+    )
     dos = next(item for item in items if item.get("symbol") == "DOS")
     assert dos["chain"] == "bsc"
     assert dos["facts"]["monitoring_anchor_time_utc"] == (
@@ -128,7 +137,7 @@ def main() -> int:
     assert all(
         item.get("active_monitoring") is False
         for item in items
-        if item.get("symbol") not in {"DOS", "GRVT"}
+        if item.get("symbol") != "DOS"
     )
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     assert evidence["schema"] == "dos_prelaunch_evidence.v1"

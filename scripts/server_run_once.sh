@@ -119,6 +119,16 @@ if (( onboarding_preflight_status != 0 )); then
   echo "server_run_once failed: Alpha onboarding preflight blocked" >&2
   exit 78
 fi
+grvt_replay_scope_status=0
+grvt_replay_scope="$(
+  python3 -c 'import json, sys; rows = [row for row in json.load(open(sys.argv[1], encoding="utf-8")).get("items", []) if str(row.get("symbol") or "").upper() == "GRVT"]; assert len(rows) == 1; state = rows[0].get("active_monitoring"); assert state is True or state is False; print("active" if state else "inactive")' \
+    "$ALPHA_WATCHLIST_PATH"
+)" || grvt_replay_scope_status=$?
+if (( grvt_replay_scope_status != 0 )) \
+  || [[ "$grvt_replay_scope" != "active" && "$grvt_replay_scope" != "inactive" ]]; then
+  echo "server_run_once failed: GRVT replay scope unavailable" >&2
+  exit 78
+fi
 if [[ "$REQUESTED_ALPHA_PROJECT_ONLY" == "1" ]]; then
   project_only_cycles="${ALPHA_PROJECT_ONLY_CYCLES:-1}"
   if [[ ! "$project_only_cycles" =~ ^[1-9][0-9]*$ ]] \
@@ -165,7 +175,9 @@ run_step "${ALPHA_OPENING_TIMEOUT_SECONDS:-720}" bash scripts/alpha_opening_spri
 run_step "${ALPHA_INTRADAY_POST_OPENING_TIMEOUT_SECONDS:-360}" env ALPHA_INTRADAY_REQUIRED_ONLY=1 ALPHA_INTRADAY_WATCHER_BUDGET_SECONDS="${ALPHA_INTRADAY_POST_OPENING_WATCHER_BUDGET_SECONDS:-330}" python3 scripts/alpha_intraday_flow_watch.py
 run_step "${OPENING_COHORT_FUNDER_TIMEOUT_SECONDS:-90}" python3 scripts/review_opening_cohort_funders.py --lookback-blocks "${OPENING_COHORT_FUNDER_LOOKBACK_BLOCKS:-120}" --max-scan-seconds "${OPENING_COHORT_FUNDER_MAX_SCAN_SECONDS:-25}"
 run_step "${ALPHA_HOLDER_TIMEOUT_SECONDS:-240}" python3 scripts/alpha_holder_concentration_watch.py
-if [[ "${RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE:-0}" == "1" ]]; then
+if [[ "$grvt_replay_scope" == "inactive" ]]; then
+  echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) skipped inactive GRVT replay refresh"
+elif [[ "${RUN_GRVT_LIQUIDITY_REPLAY_ACCEPTANCE:-0}" == "1" ]]; then
   run_step "${GRVT_LIQUIDITY_REPLAY_ACCEPTANCE_TIMEOUT_SECONDS:-240}" \
     python3 scripts/grvt_liquidity_replay_acceptance.py \
       --rpc-mode runtime \

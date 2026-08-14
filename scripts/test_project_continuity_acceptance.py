@@ -3929,6 +3929,12 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
                 "SNIPER_PROJECT_ONLY_RUN_LOCK_FILE=/tmp/sniper_server_run_once.lock"
             ),
             "incomplete project scan gate": "project_watch_incomplete=1",
+            "disabled replay remains unchanged": (
+                "replay_artifact_refreshed_while_disabled=1"
+            ),
+            "Telegram state remains unchanged": (
+                "telegram_delivery_state_changed=1"
+            ),
         }
         for label, marker in required_contracts.items():
             self.assertTrue(
@@ -3945,6 +3951,7 @@ class ProjectContinuityAcceptanceTests(unittest.TestCase):
         self.assertIn('SNIPER_OVERLAP_SKIP_EXIT_CODE:-0', server_run)
         self.assertIn('ALPHA_PROJECT_WATCH_PREFLIGHT_COMPLETE:-0', server_run)
         self.assertIn("project preflight progress still present", server_run)
+        self.assertIn("skipped inactive GRVT replay refresh", server_run)
 
     def test_markdown_reports_machine_result(self) -> None:
         payload = evaluate(healthy_snapshot(), allow_dirty=False, remote_required=False)

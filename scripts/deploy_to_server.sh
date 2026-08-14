@@ -45,18 +45,20 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
   fi
   heartbeat_command="cd $remote_dir_quoted && python3 -c 'import json; print(json.load(open(\"output/runtime_health/last_cycle.json\")).get(\"generated_at\", \"\"))'"
   health_status_command="cd $remote_dir_quoted && python3 -c 'import json; print(json.load(open(\"output/runtime_health/last_cycle.json\")).get(\"status\", \"\"))'"
-  replay_revision_command="cd $remote_dir_quoted && python3 -c 'from pathlib import Path; p=Path(\"output/grvt_liquidity_replay_acceptance/latest.json\"); print(p.stat().st_mtime_ns if p.exists() else \"\")'"
+  replay_revision_command="cd $remote_dir_quoted && python3 -c 'from pathlib import Path; import hashlib; p=Path(\"output/grvt_liquidity_replay_acceptance/latest.json\"); print(f\"{p.stat().st_mtime_ns}:{p.stat().st_size}:{hashlib.sha256(p.read_bytes()).hexdigest()}\" if p.exists() else \"\")'"
+  telegram_state_command="cd $remote_dir_quoted && python3 -c 'from pathlib import Path; import hashlib, json; names=[\"output/monitoring/telegram_seen_alerts.json\",\"output/monitoring/telegram_last_sent_at.txt\",\"output/alpha_prelaunch_watch/seen_alerts.json\",\"output/alpha_prelaunch_watch/seen_airdrop_alerts.json\",\"output/alpha_project_watch/last_push.json\",\"output/alpha_intraday_flow_watch/last_push.json\",\"output/alpha_opening_block_watch/last_push.json\",\"output/alpha_holder_concentration_watch/last_push.json\",\"output/alpha_liquidity_retention_watch/last_push.json\",\"output/alpha_price_momentum_watch/last_push.json\",\"output/arx_opening_block_watch/last_push.json\"]; rows=[]; [(rows.append([name, p.stat().st_mtime_ns, p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest()]) if p.exists() else rows.append([name, None, None, None])) for name in names for p in [Path(name)]]; print(hashlib.sha256(json.dumps(rows,separators=(\",\",\":\")).encode()).hexdigest())'"
   heartbeat_before=$("${ssh_cmd[@]}" "$remote_target" "$heartbeat_command" 2>/dev/null) || {
     printf '%s\n' 'remote_no_telegram_cycle=fail' >&2
     exit 1
   }
-  replay_revision_before=""
-  if [[ "$grvt_replay_acceptance" == "1" ]]; then
-    replay_revision_before=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
-      printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_before_failed=1' >&2
-      exit 1
-    }
-  fi
+  replay_revision_before=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
+    printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_before_failed=1' >&2
+    exit 1
+  }
+  telegram_state_before=$("${ssh_cmd[@]}" "$remote_target" "$telegram_state_command" 2>/dev/null) || {
+    printf '%s\n' 'remote_no_telegram_cycle=fail telegram_probe_before_failed=1' >&2
+    exit 1
+  }
   project_only_cycle_limit="${SNIPER_DEPLOY_PROJECT_ONLY_CYCLES:-12}"
   if [[ ! "$project_only_cycle_limit" =~ ^[1-9][0-9]*$ ]] \
     || (( 10#$project_only_cycle_limit > 64 )); then
@@ -109,6 +111,26 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
     printf '%s\n' 'remote_no_telegram_cycle=fail health_probe_failed=1' >&2
     exit 1
   }
+  replay_revision_after=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
+    printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_after_failed=1' >&2
+    exit 1
+  }
+  telegram_state_after=$("${ssh_cmd[@]}" "$remote_target" "$telegram_state_command" 2>/dev/null) || {
+    printf '%s\n' 'remote_no_telegram_cycle=fail telegram_probe_after_failed=1' >&2
+    exit 1
+  }
+  if [[ "$telegram_state_after" != "$telegram_state_before" ]]; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail telegram_delivery_state_changed=1' >&2
+    exit 1
+  fi
+  if [[ "$grvt_replay_acceptance" == "0" && "$replay_revision_after" != "$replay_revision_before" ]]; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail replay_artifact_refreshed_while_disabled=1' >&2
+    exit 1
+  fi
+  if [[ "$grvt_replay_acceptance" == "1" && ( -z "$replay_revision_after" || "$replay_revision_after" == "$replay_revision_before" ) ]]; then
+    printf '%s\n' 'remote_no_telegram_cycle=fail replay_artifact_not_refreshed=1' >&2
+    exit 1
+  fi
   if [[ -z "$heartbeat_after" || "$heartbeat_after" == "$heartbeat_before" ]]; then
     printf '%s\n' "remote_no_telegram_cycle=fail heartbeat_unchanged=1 cycle_status=$remote_cycle_status" >&2
     exit 1
@@ -120,16 +142,6 @@ if [[ "${SNIPER_DEPLOY_RUN_NO_TELEGRAM:-0}" == "1" ]]; then
   if [[ "$health_status_after" != "healthy" ]]; then
     printf '%s\n' 'remote_no_telegram_cycle=fail runtime_status_unhealthy=1' >&2
     exit 1
-  fi
-  if [[ "$grvt_replay_acceptance" == "1" ]]; then
-    replay_revision_after=$("${ssh_cmd[@]}" "$remote_target" "$replay_revision_command" 2>/dev/null) || {
-      printf '%s\n' 'remote_no_telegram_cycle=fail replay_probe_after_failed=1' >&2
-      exit 1
-    }
-    if [[ -z "$replay_revision_after" || "$replay_revision_after" == "$replay_revision_before" ]]; then
-      printf '%s\n' 'remote_no_telegram_cycle=fail replay_artifact_not_refreshed=1' >&2
-      exit 1
-    fi
   fi
   printf '%s\n' "deploy=pass cron_install=pass remote_no_telegram_cycle=pass overlap_attempts=$overlap_attempt"
 else

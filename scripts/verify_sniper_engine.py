@@ -1075,8 +1075,13 @@ def main(argv: list[str] | None = None) -> int:
             and row.get("authority")
             for row in grvt["prelaunch_research"]["timeline"]
         ), grvt["prelaunch_research"]["timeline"]
+        historical_grvt = {
+            **grvt,
+            "priority": "P0_DEEP_REVIEW",
+            "active_monitoring": True,
+        }
         grvt_events = prelaunch_watch.build_events(
-            {"items": [grvt]},
+            {"items": [historical_grvt]},
             datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc),
         )
         grvt_report = prelaunch_watch.render_report(
@@ -1100,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
             if row.get("symbol") == "DOS"
         )
         pressure_events = prelaunch_watch.build_airdrop_pressure_events(
-            {"items": [dos, grvt]},
+            {"items": [dos, historical_grvt]},
             datetime(2026, 8, 10, 10, 11, tzinfo=timezone.utc),
         )
         dos_pressure = {
@@ -2730,6 +2735,7 @@ assert readback_gate['can_follow'] is False, readback_gate
         o_item = next((item for item in items if item.get("symbol") == "O"), {})
         arx_item = next((item for item in items if item.get("symbol") == "ARX"), {})
         nes_item = next((item for item in items if item.get("symbol") == "NES"), {})
+        grvt_item = next((item for item in items if item.get("symbol") == "GRVT"), {})
         policy = current.get("monitoring_policy", {})
         active_symbols = sorted(
             str(item.get("symbol") or "").upper()
@@ -2746,9 +2752,14 @@ assert readback_gate['can_follow'] is False, readback_gate
             and o_item.get("active_monitoring") is False
             and policy == {
                 "mode": "exclusive_symbols",
-                "symbols": ["DOS", "GRVT"],
+                "symbols": ["DOS"],
             }
-            and active_symbols == ["DOS", "GRVT"]
+            and active_symbols == ["DOS"]
+            and grvt_item.get("priority") == "P4_ARCHIVED_CASE"
+            and grvt_item.get("active_monitoring") is False
+            and grvt_item.get("monitoring_paused_at")
+            == "2026-08-14T05:12:20+00:00"
+            and "full GRVT exit" in grvt_item.get("archive_reason", "")
             and all("active_monitoring" in item for item in items)
             and bool(arx_item.get("market_context"))
             and bool(nes_item.get("contracts"))
@@ -7769,9 +7780,42 @@ print(len(text))
         focused_symbols = {
             str(symbol).upper() for symbol in policy.get("symbols", [])
         }
+        watchlist_by_symbol = {
+            str(row.get("symbol") or "").upper(): row
+            for row in watchlist.get("items", [])
+            if isinstance(row, dict)
+            and str(row.get("symbol") or "").strip()
+        }
         project_symbols = {
             str(row.get("symbol") or "").upper() for row in projects
         }
+        historical_extra_symbols = project_symbols - focused_symbols
+        project_generated_at = str(project_watch.get("generated_at") or "")
+
+        def historical_project_precedes_pause(symbol: str) -> bool:
+            row = watchlist_by_symbol.get(symbol)
+            if (
+                not isinstance(row, dict)
+                or row.get("active_monitoring") is not False
+            ):
+                return False
+            try:
+                generated = datetime.fromisoformat(
+                    project_generated_at.replace("Z", "+00:00")
+                )
+                paused = datetime.fromisoformat(
+                    str(row.get("monitoring_paused_at") or "").replace(
+                        "Z", "+00:00"
+                    )
+                )
+            except ValueError:
+                return False
+            return (
+                generated.tzinfo is not None
+                and paused.tzinfo is not None
+                and generated.astimezone(timezone.utc)
+                < paused.astimezone(timezone.utc)
+            )
         analysis_complete = all(
             "spot_action" in row.get("analysis", {})
             and "perp_action" in row.get("analysis", {})
@@ -7895,13 +7939,43 @@ print(len(text))
             and analysis_complete
             and focused_projects_complete
         )
+        historical_archived_output_ok = (
+            policy.get("mode") == "exclusive_symbols"
+            and bool(focused_symbols)
+            and bool(historical_extra_symbols)
+            and focused_symbols.issubset(project_symbols)
+            and all(
+                historical_project_precedes_pause(symbol)
+                for symbol in historical_extra_symbols
+            )
+            and int(project_watch.get("project_count") or 0)
+            == len(project_symbols)
+            and int(project_watch.get("expected_project_count") or 0)
+            == len(project_symbols)
+            and project_watch.get("coverage_complete") is True
+            and analysis_complete
+            and focused_projects_complete
+        )
         project_watch_ok = (
             "alert_count" in project_watch
-            and (focused_output_ok or legacy_output_ok)
+            and (
+                focused_output_ok
+                or historical_archived_output_ok
+                or legacy_output_ok
+            )
+        )
+        output_mode = (
+            "focused"
+            if focused_output_ok
+            else (
+                "historical_archived"
+                if historical_archived_output_ok
+                else "legacy"
+            )
         )
         project_watch_msg = (
             f"{len(projects)} projects, "
-            f"mode={'focused' if focused_output_ok else 'legacy'}, "
+            f"mode={output_mode}, "
             f"alerts={project_watch.get('alert_count')}, skipped={skipped}"
         )
     except Exception as exc:
