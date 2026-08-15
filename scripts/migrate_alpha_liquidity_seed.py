@@ -477,7 +477,14 @@ def pending_transition_valid(before: dict[str, Any], after: dict[str, Any]) -> b
 TRANSITION_KINDS = ("deferred_exact", "pending", "completed",
                     "legacy_unresolved_overlap", "add_consumed",
                     "historical_removal_suppressed", "zero_material_removal")
-def typed_transition_accounting(bundle: RecoveryBundle, next_seed: dict[str, Any]) -> dict[str, Any]:
+def typed_transition_accounting(
+    bundle: RecoveryBundle,
+    next_seed: dict[str, Any],
+    *,
+    event_preserved: Callable[[dict[str, Any], Any], bool] = (
+        original_event_preserved
+    ),
+) -> dict[str, Any]:
     try:
         archive = json.loads(bundle.archive_bytes)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -558,7 +565,7 @@ def typed_transition_accounting(bundle: RecoveryBundle, next_seed: dict[str, Any
         matches = []
         matches.extend("deferred_exact" for row in deferred.get(key, []) if row == event)
         matches.extend("pending" for row in pending.get(key, [])
-                       if original_event_preserved(event, row.get("source_event")))
+                       if event_preserved(event, row.get("source_event")))
         for row in completed.get(key, []):
             if before_completed.get(key) == row \
                     and legacy_unresolved_covers_event(row, event):
