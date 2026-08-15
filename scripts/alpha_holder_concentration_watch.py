@@ -5436,6 +5436,7 @@ def reconcile_liquidity_events(
                 and event_type != "lp_add_observation"
             )
         ):
+            event.update(recovery_replay_notification_fields(event))
             output_events.append(event)
             continue
         reconcile_id = liquidity_reconciliation_id(event)

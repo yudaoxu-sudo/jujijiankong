@@ -264,6 +264,54 @@ class RecoveryNotificationPolicyTest(unittest.TestCase):
         self.assertFalse(normal_verdict["historical_catchup"])
         self.assertEqual(len(self.alert_keys_for(normal_verdict)), 1)
 
+    def test_recovery_policy_suppresses_non_v3_passthrough(self) -> None:
+        recovery = {
+            **self.removal,
+            "protocol": "v4_cl",
+            "notification_policy": POLICY,
+            "notify": True,
+            "alert_eligible": True,
+            "level": "HIGH",
+        }
+        events, state, _metadata = holder.reconcile_liquidity_events(
+            [recovery],
+            {},
+            token_decimals=0,
+            observed_at=self.started,
+            evidence_by_id={},
+        )
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["notification_policy"], POLICY)
+        self.assertFalse(event["notify"])
+        self.assertFalse(event["alert_eligible"])
+        self.assertTrue(event["historical_catchup"])
+        self.assertEqual(event["level"], "HIGH")
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(state["completed"], [])
+        self.assertEqual(self.alert_keys_for(event), [])
+
+        normal = {
+            **self.removal,
+            "protocol": "v4_cl",
+            "notify": True,
+            "alert_eligible": True,
+            "level": "HIGH",
+        }
+        normal_events, _state, _metadata = holder.reconcile_liquidity_events(
+            [normal],
+            {},
+            token_decimals=0,
+            observed_at=self.started,
+            evidence_by_id={},
+        )
+        self.assertNotIn("notification_policy", normal_events[0])
+        self.assertTrue(normal_events[0]["notify"])
+        self.assertTrue(normal_events[0]["alert_eligible"])
+        self.assertEqual(normal_events[0]["level"], "HIGH")
+        self.assertFalse(normal_events[0]["historical_catchup"])
+        self.assertEqual(len(self.alert_keys_for(normal_events[0])), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
