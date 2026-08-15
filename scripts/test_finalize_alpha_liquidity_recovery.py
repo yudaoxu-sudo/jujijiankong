@@ -234,6 +234,210 @@ class CandidateARecoveryPreparationTests(unittest.TestCase):
             )
         )
 
+    def test_candidate_a_rederives_only_operator_and_reconciliation_fields(
+        self,
+    ) -> None:
+        standalone = json.loads(
+            self.paths.standalone_state.read_text(encoding="utf-8")
+        )
+        events = standalone["tokens"][recovery.DOS_KEY]["liquidity"][
+            "reconciliation"
+        ]["deferred_events"]
+        changed = 0
+        for event in events:
+            if event.get("historical_catchup") is True or event.get(
+                "type"
+            ) not in holder.LIQUIDITY_RECONCILIATION_REMOVAL_TYPES:
+                continue
+            if int(event.get("lp_removed_amount_raw") or 0) <= 0 \
+                    and int(event.get("quote_removed_amount_raw") or 0) <= 0:
+                continue
+            event.update({
+                "alert_eligible": True,
+                "chain_timestamp": "2099-01-01T00:00:00+00:00",
+                "chain_timestamp_basis": "observed_fallback",
+                "level": "HIGH",
+                "liquidity_operator": recovery_tests.address("d"),
+                "liquidity_operator_basis": "transaction_sender_eoa",
+                "liquidity_operator_class": "stale_classification",
+                "liquidity_operator_confidence": "low",
+            })
+            changed += 1
+        self.assertEqual(changed, 55)
+        self.fixture._write_json(self.paths.standalone_state, standalone)
+
+        bundle = self._bundle()
+        sidecar = self._ready_sidecar(bundle)
+        sidecar_sha256 = recovery.digest(
+            recovery.json_bytes(sidecar, pretty=True)
+        )
+        with mock.patch.object(holder, "global_address_labels", return_value={}):
+            candidate = finalizer.build_candidate_a(
+                bundle,
+                sidecar,
+                expected_sidecar_sha256=sidecar_sha256,
+                observed_at=self.OBSERVED_AT,
+            )
+        self.assertTrue(finalizer._clean_accounting(candidate.accounting))
+        self.assertEqual(
+            candidate.accounting["transition_counts"],
+            finalizer.EXPECTED_TRANSITIONS,
+        )
+        strict = recovery.typed_transition_accounting(bundle, candidate.seed)
+        self.assertEqual(strict["transition_counts"]["pending"], 0)
+        self.assertEqual(strict["unaccounted_count"], 54)
+
+        original = next(
+            row for row in events
+            if holder.liquidity_reconciliation_id(row)
+            in {
+                pending["reconcile_id"]
+                for pending in candidate.seed["reconciliation"]["pending"]
+            }
+        )
+        source = next(
+            row["source_event"]
+            for row in candidate.seed["reconciliation"]["pending"]
+            if row["reconcile_id"]
+            == holder.liquidity_reconciliation_id(original)
+        )
+        materialized = next(
+            row for row in enrichment.materialize_ready_events(
+                bundle,
+                sidecar,
+                expected_sidecar_sha256=sidecar_sha256,
+            )
+            if holder.liquidity_reconciliation_id(row)
+            == holder.liquidity_reconciliation_id(original)
+        )
+        materialized["notification_policy"] = (
+            holder.LIQUIDITY_RECOVERY_NOTIFICATION_POLICY
+        )
+        self.assertTrue(
+            finalizer._candidate_a_event_preserved(
+                original, materialized, source
+            )
+        )
+        changed_values = {
+            "alert_eligible": True,
+            "chain_timestamp": "2101-01-01T00:00:00+00:00",
+            "chain_timestamp_basis": "observed_fallback",
+            "level": "HIGH",
+            "liquidity_operator": recovery_tests.address("e"),
+            "liquidity_operator_basis": "unattributed",
+            "liquidity_operator_class": "changed",
+            "liquidity_operator_confidence": "low",
+            "quote_symbol": "MUTATED",
+            "reconcile_id": recovery.digest("changed"),
+            "reconciliation_status": "completed_replay",
+        }
+        for field, value in changed_values.items():
+            with self.subTest(field=field):
+                changed_source = copy.deepcopy(source)
+                changed_source[field] = value
+                self.assertFalse(finalizer._candidate_a_event_preserved(
+                    original, materialized, changed_source
+                ))
+        for stage in ("materialized", "candidate"):
+            with self.subTest(stage=stage, field="unexpected_extra"):
+                changed_materialized = copy.deepcopy(materialized)
+                changed_source = copy.deepcopy(source)
+                if stage == "materialized":
+                    changed_materialized["unexpected_extra"] = True
+                    changed_source["unexpected_extra"] = True
+                else:
+                    changed_source["unexpected_extra"] = True
+                self.assertFalse(finalizer._candidate_a_event_preserved(
+                    original, changed_materialized, changed_source
+                ))
+
+    def test_candidate_a_full_path_rejects_rederived_or_core_tampering(
+        self,
+    ) -> None:
+        archive_ids = {
+            holder.liquidity_reconciliation_id(row)
+            for row in self.bundle.standalone_seed["reconciliation"][
+                "deferred_events"
+            ]
+        }
+        original_reconcile = holder.reconcile_liquidity_events
+        changed_values = {
+            "alert_eligible": True,
+            "chain_timestamp": "2101-01-01T00:00:00+00:00",
+            "chain_timestamp_basis": "observed_fallback",
+            "level": "HIGH",
+            "liquidity_operator": recovery_tests.address("e"),
+            "liquidity_operator_basis": "unattributed",
+            "liquidity_operator_class": "changed",
+            "liquidity_operator_confidence": "low",
+            "quote_symbol": "MUTATED",
+            "reconcile_id": recovery.digest("changed"),
+            "reconciliation_status": "completed_replay",
+            "unexpected_extra": True,
+        }
+        for field, value in changed_values.items():
+            def tampering(*args, **kwargs):
+                output, state, metadata = original_reconcile(*args, **kwargs)
+                row = next(
+                    pending for pending in state["pending"]
+                    if pending.get("reconcile_id") in archive_ids
+                )
+                row["source_event"][field] = value
+                return output, state, metadata
+
+            with self.subTest(field=field), mock.patch.object(
+                holder, "global_address_labels", return_value={}
+            ), mock.patch.object(
+                holder, "reconcile_liquidity_events", side_effect=tampering
+            ):
+                with self.assertRaises(recovery.RecoveryBlocked) as caught:
+                    finalizer.build_candidate_a(
+                        self.bundle,
+                        self.sidecar,
+                        expected_sidecar_sha256=self.sidecar_sha256,
+                        observed_at=self.OBSERVED_AT,
+                    )
+                self.assertEqual(
+                    caught.exception.code,
+                    "candidate_a_transition_invalid",
+                )
+
+        original_materialize = enrichment.materialize_ready_events
+
+        def tampered_materialized(*args, **kwargs):
+            events = original_materialize(*args, **kwargs)
+            event = next(
+                row for row in events
+                if row.get("historical_catchup") is not True
+                and row.get("type")
+                in holder.LIQUIDITY_RECONCILIATION_REMOVAL_TYPES
+                and (
+                    int(row.get("lp_removed_amount_raw") or 0) > 0
+                    or int(row.get("quote_removed_amount_raw") or 0) > 0
+                )
+            )
+            event["quote_symbol"] = "MUTATED"
+            return events
+
+        with mock.patch.object(
+            holder, "global_address_labels", return_value={}
+        ), mock.patch.object(
+            enrichment,
+            "materialize_ready_events",
+            side_effect=tampered_materialized,
+        ):
+            with self.assertRaises(recovery.RecoveryBlocked) as caught:
+                finalizer.build_candidate_a(
+                    self.bundle,
+                    self.sidecar,
+                    expected_sidecar_sha256=self.sidecar_sha256,
+                    observed_at=self.OBSERVED_AT,
+                )
+        self.assertEqual(
+            caught.exception.code,
+            "candidate_a_transition_invalid",
+        )
+
     def test_candidate_hard_gates_shape_transition_and_alert(self) -> None:
         with mock.patch.object(finalizer, "EXPECTED_COUNTS", {
             "pending": 55, "completed": 6, "deferred_events": 0,

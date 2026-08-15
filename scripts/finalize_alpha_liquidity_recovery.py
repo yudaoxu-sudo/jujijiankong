@@ -30,6 +30,19 @@ EXPECTED_TRANSITIONS = {
     "pending": 54,
     "zero_material_removal": 5,
 }
+RECONCILED_EVENT_FIELDS = frozenset({"alert_eligible", "level"})
+MATERIALIZED_EVENT_FIELDS = frozenset({
+    *enrichment.OPERATOR_FIELDS,
+    "chain_timestamp",
+    "chain_timestamp_basis",
+})
+MATERIALIZED_EVENT_ADDITIONS = MATERIALIZED_EVENT_FIELDS | {
+    "notification_policy",
+}
+CANDIDATE_EVENT_ADDITIONS = RECONCILED_EVENT_FIELDS | {
+    "reconcile_id",
+    "reconciliation_status",
+}
 ARTIFACTS = {
     "source_archive.json": "source_archive_sha256",
     "sidecar.json": "sidecar_sha256",
@@ -95,6 +108,45 @@ def _clean_accounting(value: Any) -> bool:
     )
 
 
+def _candidate_a_event_preserved(
+    original: dict[str, Any], materialized: Any, candidate: Any
+) -> bool:
+    try:
+        identity = holder.liquidity_reconciliation_id(original)
+    except Exception:
+        return False
+    stable_original = {
+        key: value
+        for key, value in original.items()
+        if key not in MATERIALIZED_EVENT_FIELDS
+    }
+    stable_materialized = {
+        key: value
+        for key, value in materialized.items()
+        if key not in RECONCILED_EVENT_FIELDS
+    } if isinstance(materialized, dict) else {}
+    return bool(
+        isinstance(materialized, dict)
+        and set(original) <= set(materialized)
+        and set(materialized) - set(original)
+        <= MATERIALIZED_EVENT_ADDITIONS
+        and isinstance(candidate, dict)
+        and set(materialized) <= set(candidate)
+        and set(candidate) - set(materialized)
+        <= CANDIDATE_EVENT_ADDITIONS
+        and recovery.original_event_preserved(
+            stable_original, materialized
+        )
+        and recovery.original_event_preserved(
+            stable_materialized, candidate
+        )
+        and candidate.get("alert_eligible") is False
+        and candidate.get("level") == "INFO"
+        and candidate.get("reconcile_id") == identity
+        and candidate.get("reconciliation_status") == "pending"
+    )
+
+
 def build_candidate_a(
     bundle: recovery.RecoveryBundle,
     sidecar: dict[str, Any],
@@ -118,6 +170,11 @@ def build_candidate_a(
         }
         for event in events
     ]
+    materialized_by_id = {
+        holder.liquidity_reconciliation_id(event): event for event in events
+    }
+    if len(materialized_by_id) != len(events):
+        raise recovery.RecoveryBlocked("candidate_a_archive_count_invalid")
     output, next_reconciliation, _metadata = holder.reconcile_liquidity_events(
         events,
         copy.deepcopy(bundle.candidate_seed["reconciliation"]),
@@ -136,7 +193,22 @@ def build_candidate_a(
         raise recovery.RecoveryBlocked("candidate_a_shape_changed")
     if fast.validated_liquidity_seed(seed, recovery.DOS_TOKEN) != seed:
         raise recovery.RecoveryBlocked("candidate_a_seed_invalid")
-    accounting = recovery.typed_transition_accounting(bundle, seed)
+    def event_preserved(original: dict[str, Any], candidate: Any) -> bool:
+        try:
+            materialized = materialized_by_id.get(
+                holder.liquidity_reconciliation_id(original)
+            )
+        except Exception:
+            return False
+        return _candidate_a_event_preserved(
+            original, materialized, candidate
+        )
+
+    accounting = recovery.typed_transition_accounting(
+        bundle,
+        seed,
+        event_preserved=event_preserved,
+    )
     if not _clean_accounting(accounting):
         raise recovery.RecoveryBlocked("candidate_a_transition_invalid")
     if any(
